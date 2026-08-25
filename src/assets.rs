@@ -1,0 +1,66 @@
+//! 应用自己的静态资源，叠在 gpui-component 自带的资源之上。
+//!
+//! gpui-component 的 `IconName` 是在宏展开期从它自己的 `assets/icons` 目录生成的，
+//! 所以那一套图标是固定的。设计稿要用的几个图标不在里面，就放在本仓库的
+//! `assets/icons/` 下，由这里内嵌进二进制，再用 [`crate::ui::AppIcon`] 按路径取用。
+//!
+//! 查找顺序是"先自己、后组件库"：同名资源以本仓库为准，其余全部透传，
+//! 这样组件库里的 99 个图标依然可用。
+
+use std::borrow::Cow;
+
+use gpui::{AssetSource, Result, SharedString};
+
+/// 本仓库内嵌的资源，路径与 `assets/` 下的相对路径一致。
+///
+/// 用 `include_bytes!` 而不是 `rust-embed`：数量是个位数，编译期就能定死，
+/// 不值得为此多一个依赖和一次目录遍历。
+const OWNED: &[(&str, &[u8])] = &[
+    (
+        "icons/activity.svg",
+        include_bytes!("../assets/icons/activity.svg"),
+    ),
+    (
+        "icons/code-xml.svg",
+        include_bytes!("../assets/icons/code-xml.svg"),
+    ),
+    (
+        "icons/key-round.svg",
+        include_bytes!("../assets/icons/key-round.svg"),
+    ),
+    (
+        "icons/server.svg",
+        include_bytes!("../assets/icons/server.svg"),
+    ),
+    (
+        "icons/sparkles.svg",
+        include_bytes!("../assets/icons/sparkles.svg"),
+    ),
+    ("icons/zap.svg", include_bytes!("../assets/icons/zap.svg")),
+];
+
+/// 注册给 `gpui_platform::application().with_assets(..)` 的资源源。
+pub struct Assets;
+
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if let Some((_, bytes)) = OWNED.iter().find(|(name, _)| *name == path) {
+            return Ok(Some(Cow::Borrowed(bytes)));
+        }
+
+        gpui_component_assets::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        let mut paths = gpui_component_assets::Assets.list(path)?;
+        paths.extend(
+            OWNED
+                .iter()
+                .filter(|(name, _)| name.starts_with(path))
+                .map(|(name, _)| SharedString::from(*name)),
+        );
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+}

@@ -1,10 +1,15 @@
 //! 主窗口的界面层。
 
 mod action_bar;
+mod host_card;
+mod icons;
+mod palette;
 mod panels;
 mod workspace;
 
-pub use action_bar::{ActionBar, ActivityItem};
+pub use action_bar::{ActionBar, ActivityItem, BarCommand};
+pub use host_card::HostCard;
+pub use icons::AppIcon;
 pub use workspace::{ToggleBottomDock, ToggleRightDock, Workspace};
 
 use gpui::{App, KeyBinding};

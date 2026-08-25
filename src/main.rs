@@ -1,12 +1,13 @@
 //! WinSSH Pro：跨平台原生 SSH 客户端。
 
+mod assets;
 mod session;
 mod ui;
 
 use gpui::{AppContext as _, Bounds, WindowBounds, WindowKind, WindowOptions, px, size};
 use gpui_component::{Root, TitleBar};
-use gpui_component_assets::Assets;
 
+use assets::Assets;
 use ui::Workspace;
 
 fn main() {

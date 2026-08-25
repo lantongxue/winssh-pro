@@ -13,6 +13,6 @@ mod welcome;
 pub use activity_log::ActivityLogPanel;
 pub use host_info::HostInfoPanel;
 pub use settings::SettingsPanel;
-pub use sidebar::SidebarPanel;
+pub use sidebar::{SidebarEvent, SidebarPanel};
 pub use terminal::TerminalPanel;
 pub use welcome::WelcomePanel;
