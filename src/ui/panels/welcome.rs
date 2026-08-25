@@ -13,8 +13,6 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::ui::ShowSessions;
-
 /// 主快捷键提示。与 [`crate::ui::init`] 里注册的键位保持一致。
 #[cfg(target_os = "macos")]
 const SHORTCUTS: [(&str, &str); 3] = [
@@ -87,8 +85,8 @@ impl Render for WelcomePanel {
                         .primary()
                         .icon(IconName::Network)
                         .label("浏览会话")
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(ShowSessions), cx)
+                        .on_click(|_, _, _| {
+                            // 会话面板始终可见，这里不再需要 action
                         }),
                 ),
             )

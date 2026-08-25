@@ -8,13 +8,14 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 - 依赖管理：cargo
 - GUI 框架：gpui
 - 三方 UI 组件：gpui-component
-- SSH 核心库：russh
+- SSH+SFPT 核心库：russh
 
 ## 开发规则
 
 - 组件化优先原则
 - 原生高性能原则
 - 内存安全原则
+- gpui-component 是优先级最高的组件库，zed 只做代码参考
 - 任何功能组件的实现必须阅读【参考代码】章节提到的代码库，从里面找可以复用的组件/模块，避免重复造轮子
 
 ## 参考代码
@@ -22,7 +23,7 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 1. @refs/zed 是 gpui 库的完整实现，里面包含了许多重要的组件等
 2. @refs/gpui-component 是基于 gpui 库封装的三方组件库，采用了类似 shadcn 的设计模式，是一个综合性的 Rust 桌面应用开发框架。它将生产级 UI 系统、应用级数据与布局能力、编辑能力，以及可复用的行为、状态和基础设施整合在一起。
 
-对于 gpui-component 库，我们只参考带有样式的 ui 组件，对于 base 组件不需要参考。
+对于 gpui-component 库，我们只参考并使用带有样式的 ui 组件，对于 base 组件不需要参考。
 
 上述的参考代码库里面不仅有相关的 demo，还有完善的文档可以参考。
 

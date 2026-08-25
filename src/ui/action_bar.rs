@@ -25,7 +25,7 @@ pub const ACTION_BAR_WIDTH: Pixels = px(48.);
 const ITEM_SIZE: Pixels = ACTION_BAR_WIDTH;
 
 /// 选中指示条的宽度。
-const INDICATOR_WIDTH: Pixels = px(3.);
+const INDICATOR_WIDTH: Pixels = px(2.);
 
 /// 活动栏上的一个导航条目，对应侧边栏里的一类内容。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
