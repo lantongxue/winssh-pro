@@ -54,6 +54,8 @@ fn main() {
                 .update(cx, |_, window, cx| {
                     window.activate_window();
                     window.set_window_title("WinSSH Pro");
+                    // 系统深浅设置在 Linux 上是开窗之后才送达的，订阅之后补上。
+                    ui::observe_appearance(window, cx).detach();
                     cx.on_release(|_, cx| cx.quit()).detach();
                 })
                 .expect("初始化主窗口失败");

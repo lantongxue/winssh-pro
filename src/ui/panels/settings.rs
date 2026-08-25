@@ -5,12 +5,14 @@ use gpui::{
     ParentElement as _, Render, SharedString, Styled as _, Window, div,
 };
 use gpui_component::{
-    ActiveTheme as _, Theme, ThemeMode,
+    ActiveTheme as _, ThemeMode,
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
     switch::Switch,
     v_flex,
 };
+
+use crate::ui::appearance;
 
 pub struct SettingsPanel {
     focus_handle: FocusHandle,
@@ -74,7 +76,8 @@ impl Render for SettingsPanel {
                                     } else {
                                         ThemeMode::Light
                                     };
-                                    Theme::change(mode, Some(window), cx);
+                                    // 手动切换之后主题不再跟随系统。
+                                    appearance::set_theme_mode(mode, window, cx);
                                 },
                             )),
                     ),
