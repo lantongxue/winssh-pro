@@ -39,10 +39,11 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 | `src/ui/panels/` | `*Panel` | 进 `gpui_component::dock` 的面板，可拖拽、分屏、存布局（`TerminalPanel`、`HostInfoPanel`、`EventLogPanel`…） |
 | `src/ui/dialogs/` | `*Dialog` | 盖在窗口中央、要用户答复的一层（`HostFormDialog`） |
 | `src/ui/cards/` | `*Card` | 列表或网格里代表一条数据的那一块（`HostCard`） |
+| `src/ui/menus/` | `*Menu` | 点开之后浮在内容之上的一列动作（`HostMenu`） |
 
 新增一类组件就照这个样子新开一个目录，不要塞进已有目录里凑合：
-菜单 → `menus/` + `*Menu`，抽屉 → `drawers/` + `*Drawer`，
-气泡/浮层 → `popovers/` + `*Popover`。目录在第一个组件落地时创建，不留空目录。
+抽屉 → `drawers/` + `*Drawer`，气泡/浮层 → `popovers/` + `*Popover`。
+目录在第一个组件落地时创建，不留空目录。
 
 不是组件的两处：`src/ui/theme/`（主题、配色、图标这些"画法"）
 和 `src/ui/workspace.rs`（把上面这些拼起来的窗口外壳）。

@@ -14,12 +14,20 @@ pub enum AppIcon {
     Activity,
     /// `</>`：命令片段。
     CodeXml,
+    /// 带同步箭头的文件夹：SFTP 传输。
+    FolderSync,
     /// 圆头钥匙：密钥与凭据。
     KeyRound,
+    /// 铅笔：编辑已有的东西。
+    Pencil,
     /// 双层机架：主机与会话。
     Server,
     /// 星芒：AI 助手。
     Sparkles,
+    /// `>_`：终端。组件库只有加了外框的 `SquareTerminal`，设计稿用的是裸提示符。
+    Terminal,
+    /// 垃圾桶：删除。组件库的 `Delete` 是退格键那个图标，不是桶。
+    Trash,
     /// 闪电：快速连接这类即时动作。
     Zap,
 }
@@ -29,9 +37,13 @@ impl IconNamed for AppIcon {
         match self {
             Self::Activity => "icons/activity.svg",
             Self::CodeXml => "icons/code-xml.svg",
+            Self::FolderSync => "icons/folder-sync.svg",
             Self::KeyRound => "icons/key-round.svg",
+            Self::Pencil => "icons/pencil.svg",
             Self::Server => "icons/server.svg",
             Self::Sparkles => "icons/sparkles.svg",
+            Self::Terminal => "icons/terminal.svg",
+            Self::Trash => "icons/trash-2.svg",
             Self::Zap => "icons/zap.svg",
         }
         .into()

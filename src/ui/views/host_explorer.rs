@@ -11,6 +11,10 @@
 //! 一张 [`HostCard`]，两者高度不同，所以用不了 [`gpui_component::tree`] 那种
 //! 等高列表（它底层是 `uniform_list`，所有行共用第一行量出来的高度）。
 //! 换来的是虚拟滚动仍然在，代价是树自带的键盘上下左右没有了。
+//!
+//! 卡片可以拖：拖到别的卡片上是排序（一条蓝线画出它会落在哪儿），拖到分组头上
+//! 是移动到那个分组的末尾。顺序就是 [`HostGroup::hosts`] 的顺序，所以拖动改的是
+//! 数据本身，不是一层显示用的排序。
 
 use std::{
     collections::{HashMap, HashSet},
@@ -18,9 +22,9 @@ use std::{
 };
 
 use gpui::{
-    App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString, Size,
-    StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
+    App, AppContext as _, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render,
+    SharedString, Size, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::{
@@ -41,6 +45,7 @@ use crate::{
     host::{Host, HostGroup, HostStatus, sample_host_groups, sample_host_statuses},
     ui::{
         cards::{HOST_CARD_HEIGHT, HostCard},
+        menus::HostAction,
         panels::{HostInfoPanel, TerminalPanel},
         theme::palette,
     },
@@ -49,11 +54,20 @@ use crate::{
 /// 最近打开最多记住多少台主机。
 const RECENT_LIMIT: usize = 8;
 
-/// 分组头那一行的高度。
+/// 分组头那一行的高度，也就是它悬停底色的高度。
 const GROUP_ROW_HEIGHT: Pixels = px(36.);
+
+/// 分组头下面留给第一张卡片的缝。比卡片之间的缝宽：分组头悬停时整行会亮起来，
+/// 那块底色贴着卡片的边框，看上去像把卡片压住了。
+const GROUP_ROW_GAP: Pixels = px(8.);
 
 /// 一张主机卡片下面留给下一张的缝。
 const HOST_ROW_GAP: Pixels = px(4.);
+
+/// 分组头那一行的高度：悬停底色，加下面那道缝。
+fn group_row_height() -> Pixels {
+    GROUP_ROW_HEIGHT + GROUP_ROW_GAP
+}
 
 /// 主机那一行的高度：卡片本身，加下面那道缝。虚拟列表要先知道每一行多高，
 /// 所以卡片的高度由 [`HOST_CARD_HEIGHT`] 声明，不能靠内容量出来。
@@ -70,6 +84,15 @@ const GUIDE_OFFSET: Pixels = px(8.);
 
 /// 相邻筛选片之间的缝。
 const CHIP_GAP: Pixels = px(6.);
+
+/// 拖拽时那条插入位置线的粗细。
+const DROP_LINE: Pixels = px(2.);
+
+/// 分组头在被拖着的主机悬在上面时的底色。品牌蓝压到很淡：它说的是
+/// “松手就落这儿”，不该盖过分组头本身的字。
+fn drop_tint() -> gpui::Hsla {
+    palette::blue().opacity(0.35)
+}
 
 /// 列表里的一行。
 enum Row {
@@ -91,9 +114,62 @@ enum Row {
 impl Row {
     fn height(&self) -> Pixels {
         match self {
-            Self::Group { .. } => GROUP_ROW_HEIGHT,
+            Self::Group { .. } => group_row_height(),
             Self::Host { .. } => host_row_height(),
         }
+    }
+}
+
+/// 正在被拖着的那台主机。
+///
+/// 它同时是拖拽载荷的类型标记：列表只接这一个类型，别处（比如 Dock 的标签页）
+/// 拖过来的东西不会被当成主机。
+#[derive(Clone)]
+struct DraggedHost {
+    host: Host,
+}
+
+/// 松手之后那台主机会落到哪儿。
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DropTarget {
+    /// 插到这台主机的前面（`after` 为假）或后面，落进它所在的分组。
+    Host { id: SharedString, after: bool },
+    /// 放到这个分组的末尾。分组头是唯一能表达“放到最后”的落点。
+    GroupEnd(SharedString),
+}
+
+/// 拖拽时跟着鼠标走的那一小块。
+///
+/// 只留身份那一行（名字 + 地址）：整张 88 高的卡片跟着鼠标飞，会把底下的
+/// 插入线和分组头一起盖住，而那两样正是这时候要看的东西。
+struct HostDragPreview {
+    host: Host,
+}
+
+impl Render for HostDragPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .gap_2()
+            .items_center()
+            .px_2()
+            .py_1()
+            .rounded(cx.theme().radius)
+            .bg(palette::recessed(cx))
+            .border_1()
+            .border_color(palette::blue())
+            .shadow_md()
+            .text_sm()
+            .font_semibold()
+            .text_color(cx.theme().sidebar_foreground)
+            .child(self.host.name.clone())
+            .child(
+                div()
+                    .font_family("monospace")
+                    .text_xs()
+                    .font_normal()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(self.host.address())),
+            )
     }
 }
 
@@ -116,8 +192,9 @@ pub enum HostExplorerEvent {
     Collapse,
     /// 新建一台主机。
     NewHost,
-    /// 打开某台主机的更多菜单。菜单内容还没定，先把入口连通。
-    HostMenu(Host),
+    /// 用户在某台主机的菜单里选了一项，而这一项不是列表自己能办的事 ——
+    /// 编辑要开对话框、删除要先问一句，这些都归宿主。
+    HostAction { host: Host, action: HostAction },
 }
 
 pub struct HostExplorerView {
@@ -132,6 +209,11 @@ pub struct HostExplorerView {
     collapsed: HashSet<SharedString>,
     /// 当前正在看的主机。卡片靠它显示选中态。
     selected: Option<SharedString>,
+    /// 正在被拖着的那台主机。原位上那张卡片靠它画成“正在搬走”的样子。
+    dragging: Option<SharedString>,
+    /// 拖拽过程中记下的落点，只在指针停在某张卡片上时有值 ——
+    /// 分组头那个落点由 `drag_over` 直接画，不用记。
+    drop_target: Option<DropTarget>,
     /// 当前过滤词命中的主机数，不受分组筛选影响 —— 它是“全部”那一片上的计数。
     matched: usize,
     rows: Vec<Row>,
@@ -167,6 +249,8 @@ impl HostExplorerView {
             filter: HostFilter::All,
             collapsed,
             selected: None,
+            dragging: None,
+            drop_target: None,
             matched: 0,
             rows: Vec::new(),
             row_sizes: Rc::new(Vec::new()),
@@ -246,6 +330,122 @@ impl HostExplorerView {
         self.rebuild_rows(cx);
     }
 
+    /// 卡片菜单里选中的那一项。开会话是这个视图自己的事（它连着 Dock），
+    /// 其余的往外发 —— 视图没有主机仓储，也没有开对话框的位置。
+    fn run_host_action(
+        &mut self,
+        action: HostAction,
+        host: &Host,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            HostAction::OpenTerminal => self.open_host(host, window, cx),
+            action => cx.emit(HostExplorerEvent::HostAction {
+                host: host.clone(),
+                action,
+            }),
+        }
+    }
+
+    /// 拖拽经过某一行时记下落点。
+    ///
+    /// 每一行都会收到所有的拖拽移动事件，不管指针在不在自己身上（`on_drag_move`
+    /// 是这么设计的），所以“不在我身上”只能清掉我自己记的那一份 —— 无条件清空
+    /// 会把别的行刚记下的落点抹掉，抹与记谁先谁后还取决于行的绘制顺序。
+    fn track_drop(
+        &mut self,
+        id: &SharedString,
+        event: &DragMoveEvent<DraggedHost>,
+        cx: &mut Context<Self>,
+    ) {
+        // 谁在被拖，从载荷里读。每一行都会收到这个事件，所以随便哪一行记下来
+        // 都是同一个答案 —— 原位那张卡片靠它画成“正在搬走”的样子。
+        let dragged = event.drag(cx).host.id.clone();
+        if self.dragging.as_ref() != Some(&dragged) {
+            self.dragging = Some(dragged.clone());
+            cx.notify();
+        }
+
+        let mine = matches!(&self.drop_target, Some(DropTarget::Host { id: at, .. }) if at == id);
+
+        // 拖着一台主机悬在它自己身上不是落点：那一下松手什么也不会变。
+        if !event.bounds.contains(&event.event.position) || &dragged == id {
+            if mine {
+                self.drop_target = None;
+                cx.notify();
+            }
+            return;
+        }
+
+        // 上半张卡插到它前面，下半张插到它后面 —— 这样最后一个位置也够得着。
+        let target = DropTarget::Host {
+            id: id.clone(),
+            after: event.event.position.y > event.bounds.center().y,
+        };
+        if self.drop_target.as_ref() != Some(&target) {
+            self.drop_target = Some(target);
+            cx.notify();
+        }
+    }
+
+    /// 把一台主机移到落点：跨分组就是“移动到那个分组”，同分组就是排序。
+    /// 顺序改的是 [`HostGroup::hosts`] 本身，所以拖完的结果就是数据的样子。
+    fn move_host(&mut self, id: &SharedString, target: &DropTarget, cx: &mut Context<Self>) {
+        self.dragging = None;
+        self.drop_target = None;
+
+        let Some((from_group, from_ix)) = self.locate(id) else {
+            return;
+        };
+        let Some((to_group, to_ix)) = self.resolve(target) else {
+            return;
+        };
+
+        let host = self.groups[from_group].hosts.remove(from_ix);
+        // 落点是按移动前的下标算的，从同一个分组里先抽掉一台，它就往前挪了一位。
+        let to_ix = match from_group == to_group && from_ix < to_ix {
+            true => to_ix - 1,
+            false => to_ix,
+        };
+        let hosts = &mut self.groups[to_group].hosts;
+        let to_ix = to_ix.min(hosts.len());
+        hosts.insert(to_ix, host);
+
+        // 落进一个收起的分组就把它展开：不然这台主机看着像是被拖没了。
+        let name = self.groups[to_group].name.clone();
+        self.collapsed.remove(&name);
+        self.rebuild_rows(cx);
+    }
+
+    /// 一台主机现在待在哪儿：(分组下标, 组内下标)。
+    fn locate(&self, id: &SharedString) -> Option<(usize, usize)> {
+        self.groups
+            .iter()
+            .enumerate()
+            .find_map(|(group_ix, group)| {
+                group
+                    .hosts
+                    .iter()
+                    .position(|host| &host.id == id)
+                    .map(|host_ix| (group_ix, host_ix))
+            })
+    }
+
+    /// 落点换算成插入位置：(分组下标, 插到组内第几位)。
+    fn resolve(&self, target: &DropTarget) -> Option<(usize, usize)> {
+        match target {
+            DropTarget::Host { id, after } => {
+                let (group_ix, host_ix) = self.locate(id)?;
+                Some((group_ix, host_ix + usize::from(*after)))
+            }
+            DropTarget::GroupEnd(name) => {
+                let group_ix = self.groups.iter().position(|group| &group.name == name)?;
+                Some((group_ix, self.groups[group_ix].hosts.len()))
+            }
+        }
+    }
+
     /// 按 id 找回一台主机，连同它所属的分组 —— 过滤时分组名也参与匹配。
     fn host(&self, id: &SharedString) -> Option<(&HostGroup, &Host)> {
         self.groups.iter().find_map(|group| {
@@ -319,7 +519,9 @@ impl HostExplorerView {
                     .iter()
                     .filter(|host| Self::matches(host, group, &query))
                     .collect();
-                if hosts.is_empty() {
+                // 搜索时一台都没命中的分组就不出现；平时空分组要留着 ——
+                // 它是能往里拖东西的落点，拖空了的分组也得有地方拖回去。
+                if hosts.is_empty() && searching {
                     continue;
                 }
 
@@ -462,7 +664,11 @@ impl HostExplorerView {
             .on_click(cx.listener(move |this, _, _, cx| this.set_filter(filter.clone(), cx)))
     }
 
-    /// 分组头：整行可点，点一下开合这一组。
+    /// 分组头：整行可点，点一下开合这一组。可点的那块只占上面 [`GROUP_ROW_HEIGHT`]，
+    /// 下面那道缝留在外层容器里 —— 悬停底色因此不会贴上第一张卡片。
+    ///
+    /// 它同时是“移动到这个分组”的落点：拖一台主机悬在上面，整行染成淡蓝，
+    /// 松手就落到这个分组的末尾。
     fn render_group_row(
         &self,
         ix: usize,
@@ -470,10 +676,11 @@ impl HostExplorerView {
         count: usize,
         expanded: bool,
         cx: &mut Context<Self>,
-    ) -> ListItem {
+    ) -> impl IntoElement {
         let toggled = name.clone();
+        let dropped = name.clone();
 
-        ListItem::new(("group", ix))
+        let row = ListItem::new(("group", ix))
             .w_full()
             .h(GROUP_ROW_HEIGHT)
             .px(GUTTER)
@@ -527,10 +734,26 @@ impl HostExplorerView {
                     ),
             )
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_group(&toggled, cx)))
+            // 悬停高亮交给 `drag_over`，落点不用记在状态里：分组头只有“落进来”
+            // 这一种落法，不像卡片还要分上半张和下半张。
+            .drag_over::<DraggedHost>(|style, _, _, _| style.bg(drop_tint()))
+            .on_drop(cx.listener(move |this, dragged: &DraggedHost, _, cx| {
+                let id = dragged.host.id.clone();
+                this.move_host(&id, &DropTarget::GroupEnd(dropped.clone()), cx);
+            }));
+
+        div()
+            .w_full()
+            .h(group_row_height())
+            .pb(GROUP_ROW_GAP)
+            .child(row)
     }
 
     /// 一台主机：卡片本身由 [`HostCard`] 负责，这里只管它在列表里的位置 ——
-    /// 缩进、缩进导轨，以及下面留给下一张的缝。
+    /// 缩进、缩进导轨，下面留给下一张的缝，以及拖拽。
+    ///
+    /// 拖拽挂在这一层而不是卡片上：卡片不知道自己在哪个列表的第几位，
+    /// 排到哪儿去只有这个视图算得出来。
     fn render_host_row(
         &self,
         ix: usize,
@@ -540,10 +763,21 @@ impl HostExplorerView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let selected = self.selected.as_ref() == Some(&host.id);
+        // 拖拽结束后 `dragging` 可能还留着，跟着 `has_active_drag` 一起判断，
+        // 拖到一半松手在别处也不会留下一张压暗的卡片。
+        let dragging = cx.has_active_drag() && self.dragging.as_ref() == Some(&host.id);
         let clicked = host.clone();
-        let menued = host.clone();
+        let actioned = host.clone();
+        let dragged = host.clone();
+        let tracked = host.id.clone();
+        let dropped = host.id.clone();
+        // 「最近」那一档是按最近使用排的，不是用户排的，所以那里不给拖 ——
+        // 拖出来的顺序下一次打开主机就没了。
+        let sortable = self.filter != HostFilter::Recent;
 
         div()
+            .id(("host-row", ix))
+            .relative()
             .w_full()
             .h(host_row_height())
             .pb(HOST_ROW_GAP)
@@ -553,9 +787,37 @@ impl HostExplorerView {
                     .border_l_1()
                     .border_color(cx.theme().sidebar_border)
             })
+            .when(sortable, |this| {
+                this.on_drag(
+                    DraggedHost {
+                        host: dragged.clone(),
+                    },
+                    |dragged, _, _, cx| {
+                        let host = dragged.host.clone();
+                        cx.new(|_| HostDragPreview { host })
+                    },
+                )
+                .on_drag_move(cx.listener(
+                    move |this, event: &DragMoveEvent<DraggedHost>, _, cx| {
+                        this.track_drop(&tracked, event, cx);
+                    },
+                ))
+                .on_drop(cx.listener(move |this, dragged: &DraggedHost, _, cx| {
+                    // 落点是拖拽移动时记下的。万一一次移动事件都没赶上，
+                    // 就按“插到这张卡片前面”办 —— 指针正停在它上面。
+                    let target = this.drop_target.clone().unwrap_or(DropTarget::Host {
+                        id: dropped.clone(),
+                        after: false,
+                    });
+                    let id = dragged.host.id.clone();
+                    this.move_host(&id, &target, cx);
+                }))
+            })
+            .children(self.render_drop_line(&host.id, cx))
             .child(
                 HostCard::new(("host", ix), host.clone(), status)
                     .selected(selected)
+                    .dragging(dragging)
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         if event.click_count() >= 2 {
                             this.open_host(&clicked, window, cx);
@@ -563,10 +825,39 @@ impl HostExplorerView {
                             this.select_host(&clicked, cx);
                         }
                     }))
-                    .on_menu(cx.listener(move |_, _, _, cx| {
-                        cx.emit(HostExplorerEvent::HostMenu(menued.clone()))
+                    .on_action(cx.listener(move |this, action: &HostAction, window, cx| {
+                        this.run_host_action(*action, &actioned, window, cx);
                     })),
             )
+    }
+
+    /// 插入位置那条线：画在卡片的上沿或下沿，线在哪儿松手后主机就落在哪儿。
+    fn render_drop_line(&self, id: &SharedString, cx: &App) -> Option<impl IntoElement> {
+        // 拖拽在别处松了手的话状态可能还留着，这里一并挡掉：没有拖拽就没有线。
+        if !cx.has_active_drag() {
+            return None;
+        }
+
+        let DropTarget::Host { id: at, after } = self.drop_target.as_ref()? else {
+            return None;
+        };
+        if at != id {
+            return None;
+        }
+
+        Some(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .h(DROP_LINE)
+                .rounded_full()
+                .bg(palette::blue())
+                .map(|this| match after {
+                    true => this.bottom_0(),
+                    false => this.top_0(),
+                }),
+        )
     }
 
     fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> gpui::AnyElement {

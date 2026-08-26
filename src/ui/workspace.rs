@@ -1,4 +1,4 @@
-//! 主窗口外壳：标题栏 + 固定活动栏 + 侧边栏 + Dock 工作区 + 状态栏。
+//! 主窗口外壳：标题栏 + 固定活动栏 + 侧边栏 + Dock 工作区。
 //!
 //! 外壳本身不放业务内容。左侧活动栏是稳定的全局导航，紧接着是可收起的侧边栏，
 //! 右边整块交给 [`DockArea`]：终端占据中心、事件日志在底部、主机信息与设置在右侧，
@@ -12,12 +12,9 @@ use gpui::{
     ParentElement as _, Render, Styled as _, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, IconName, ResizableState, Root, Sizable as _, StyledExt as _, TitleBar,
-    WindowExt as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme as _, ResizableState, Root, StyledExt as _, TitleBar, WindowExt as _,
     dock::{DockArea, DockLayout, DockPlacement, DockSkin, panel_handle},
     h_flex, h_resizable, resizable_panel,
-    status_bar::StatusBar,
 };
 
 use crate::ui::{
@@ -77,9 +74,12 @@ impl Workspace {
                 HostExplorerEvent::NewHost => {
                     HostFormDialog::open(this.host_explorer.clone(), window, cx)
                 }
-                HostExplorerEvent::HostMenu(host) => {
-                    window.push_notification(format!("{} 的操作菜单还在开发中。", host.name), cx)
-                }
+                // 菜单里除了「打开终端」，其余几项的功能还没有落地。
+                // 先如实说明是哪一项，而不是让菜单点下去毫无反应。
+                HostExplorerEvent::HostAction { host, action } => window.push_notification(
+                    format!("{}：“{}”还在开发中。", host.name, action.label()),
+                    cx,
+                ),
             },
         )
         .detach();
@@ -215,40 +215,6 @@ impl Workspace {
                 .into_any_element(),
         }
     }
-
-    fn render_status_bar(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        StatusBar::new()
-            .left(
-                Button::new("status-toggle-left")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::PanelLeft)
-                    .tooltip("侧边栏")
-                    // 侧边栏不在 dock 里，所以它和视图标题行上的收起按钮走同一条路。
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
-            )
-            .left(
-                Button::new("status-toggle-bottom")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::PanelBottom)
-                    .tooltip("事件日志")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_dock(DockPlacement::Bottom, window, cx);
-                    })),
-            )
-            .left(
-                Button::new("status-toggle-right")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::PanelRight)
-                    .tooltip("主机信息与设置")
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_dock(DockPlacement::Right, window, cx);
-                    })),
-            )
-            .right(div().child(self.view.label()))
-    }
 }
 
 impl Render for Workspace {
@@ -306,7 +272,6 @@ impl Render for Workspace {
                         )
                     })),
             )
-            .child(self.render_status_bar(window, cx))
             .children(sheet_layer)
             .children(dialog_layer)
             .children(notification_layer)

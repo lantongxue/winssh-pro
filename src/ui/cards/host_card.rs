@@ -12,6 +12,9 @@
 //! 底色比列表暗一档，加一圈细边：卡片看起来是嵌在列表里的一块，
 //! 而不是浮在上面的一层。选中时边框换成品牌蓝，底色不变 ——
 //! 这样选中与“有活着的会话”这两件事不会争同一个视觉信号。
+//!
+//! 操作菜单有两个入口，内容是同一份 [`HostMenu::items`]：第一行右端的 ⋮ 按钮，
+//! 以及在卡片上右键。右键是桌面端的习惯动作，菜单跟着鼠标位置弹。
 
 use std::rc::Rc;
 
@@ -20,15 +23,14 @@ use gpui::{
     ParentElement as _, Pixels, RenderOnce, SharedString, StatefulInteractiveElement as _,
     Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
-use gpui_component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
-};
+use gpui_component::{ActiveTheme as _, StyledExt as _, h_flex, menu::ContextMenuExt as _, v_flex};
 
 use crate::{
     host::{Host, HostStatus},
-    ui::theme::palette,
+    ui::{
+        menus::{HostAction, HostActionHandler, HostMenu},
+        theme::palette,
+    },
 };
 
 /// 卡片高度。三行内容的高度是定死的，不随内容伸缩 —— 列表要靠它做虚拟滚动，
@@ -68,8 +70,9 @@ pub struct HostCard {
     host: Host,
     status: HostStatus,
     selected: bool,
+    dragging: bool,
     on_click: Option<ClickHandler>,
-    on_menu: Option<ClickHandler>,
+    on_action: Option<HostActionHandler>,
 }
 
 impl HostCard {
@@ -79,14 +82,25 @@ impl HostCard {
             host,
             status,
             selected: false,
+            dragging: false,
             on_click: None,
-            on_menu: None,
+            on_action: None,
         }
     }
 
     /// 这台主机是不是当前正在看的那台。
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
+        self
+    }
+
+    /// 这张卡片正在被拖着走。
+    ///
+    /// 原位上留下的这一张压到半透明、边框改虚线，跟禁用状态是同一套画法
+    /// （框架里的禁用也是把颜色压到五成）：它已经不是能点的东西了，
+    /// 真正在手上的是跟着鼠标那一枚，落点由列表那条蓝线指。
+    pub fn dragging(mut self, dragging: bool) -> Self {
+        self.dragging = dragging;
         self
     }
 
@@ -100,18 +114,19 @@ impl HostCard {
         self
     }
 
-    /// 打开右上角的更多菜单。
-    pub fn on_menu(
+    /// 用户在操作菜单里选了某一项，⋮ 按钮和右键都走这里。卡片不做任何一项动作，
+    /// 它既没有会话，也没有主机仓储 —— 只负责把选择报出去。
+    pub fn on_action(
         mut self,
-        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+        handler: impl Fn(&HostAction, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.on_menu = Some(Rc::new(handler));
+        self.on_action = Some(Rc::new(handler));
         self
     }
 
     /// 第一行：会话指示点 + 名字 + 更多菜单。
     fn render_identity(&self, cx: &App) -> impl IntoElement {
-        let on_menu = self.on_menu.clone();
+        let on_action = self.on_action.clone();
         // 没有活着的会话时这个点不消失，只是暗下去 —— 位置固定，名字才不会左右跳。
         let dot = if self.status.connected {
             palette::magenta()
@@ -136,19 +151,15 @@ impl HostCard {
                     .child(self.host.name.clone()),
             )
             .child(
-                Button::new("host-card-menu")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::EllipsisVertical)
-                    .tooltip("更多")
-                    .accessibility_id("更多")
-                    .on_click(move |event, window, cx| {
-                        // 菜单是卡片自己的事，别让点击冒泡上去把这台主机也选中。
-                        cx.stop_propagation();
-                        if let Some(on_menu) = on_menu.as_ref() {
-                            on_menu(event, window, cx);
-                        }
-                    }),
+                // 菜单的开合状态按元素 id 存在窗口上，所以 id 取主机自己的 ——
+                // 卡片在列表里的序号会随筛选和展开变化，拿它当 id 会串。
+                HostMenu::new(SharedString::from(format!(
+                    "host-card-menu:{}",
+                    self.host.id
+                )))
+                .when_some(on_action, |this, on_action| {
+                    this.on_action(move |action, window, cx| on_action(action, window, cx))
+                }),
             )
     }
 
@@ -216,6 +227,7 @@ fn dot_element(size: Pixels, tone: Hsla) -> AnyElement {
 impl RenderOnce for HostCard {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let on_click = self.on_click.clone();
+        let on_action = self.on_action.clone();
         let address = SharedString::from(self.host.address());
 
         v_flex()
@@ -232,9 +244,12 @@ impl RenderOnce for HostCard {
             } else {
                 cx.theme().sidebar_border
             })
-            .when(!self.selected, |this| {
+            // 拖着走的时候不再给悬停反馈：指针虽然还压在它身上，
+            // 但这一张已经不是能点的东西了。
+            .when(!self.selected && !self.dragging, |this| {
                 this.hover(|this| this.border_color(cx.theme().ring))
             })
+            .when(self.dragging, |this| this.opacity(0.5).border_dashed())
             .child(self.render_identity(cx))
             .child(
                 // 地址用等宽字体：它是要被照抄进别处的东西，
@@ -252,5 +267,9 @@ impl RenderOnce for HostCard {
             .when_some(on_click, |this, on_click| {
                 this.on_click(move |event, window, cx| on_click(event, window, cx))
             })
+            // 右键菜单挂在整张卡片上，所以要摆在链子最后 —— 它包住上面这一整个
+            // 元素，之后再接 `child`、`on_click` 就接不上了。菜单的开合状态按
+            // 卡片的元素 id 存，和 ⋮ 那个下拉菜单各存一份，互不干扰。
+            .context_menu(HostMenu::items(on_action))
     }
 }
