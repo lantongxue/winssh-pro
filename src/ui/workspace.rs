@@ -21,8 +21,10 @@ use gpui_component::{
 };
 
 use crate::ui::{
-    ActivityAction, ActivityBar, HostExplorerEvent, HostExplorerView, PlaceholderView, SidebarView,
+    bars::{ActivityAction, ActivityBar},
+    dialogs::HostFormDialog,
     panels::{EventLogPanel, HostInfoPanel, SettingsPanel, WelcomePanel},
+    views::{HostExplorerEvent, HostExplorerView, PlaceholderView, SidebarView},
 };
 
 actions!(
@@ -72,8 +74,9 @@ impl Workspace {
             window,
             |this, _, event: &HostExplorerEvent, window, cx| match event {
                 HostExplorerEvent::Collapse => this.toggle_sidebar(cx),
-                // 主机仓储还没有落地，先如实说明，而不是弹一个填不进去的表单。
-                HostExplorerEvent::NewHost => window.push_notification("新建主机还在开发中。", cx),
+                HostExplorerEvent::NewHost => {
+                    HostFormDialog::open(this.host_explorer.clone(), window, cx)
+                }
                 HostExplorerEvent::HostMenu(host) => {
                     window.push_notification(format!("{} 的操作菜单还在开发中。", host.name), cx)
                 }

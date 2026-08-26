@@ -12,7 +12,7 @@ use gpui::{
 use gpui_component::{ActiveTheme as _, Icon, Sizable as _, v_flex};
 
 use super::{SidebarView, collapse_button, view_header};
-use crate::ui::palette;
+use crate::ui::theme::palette;
 
 type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 

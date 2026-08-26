@@ -1,18 +1,17 @@
-//! 侧边栏：活动栏与 Dock 之间那一栏，一次只显示一个视图。
+//! 视图（`*View`）：侧边栏里的整块内容，一次只显示一个。
 //!
-//! 显示哪个视图由活动栏决定（[`SidebarView`]）。视图各自是独立组件：主机视图
-//! 有完整实现（[`HostExplorerView`]），其余三个还没落地，统一走
-//! [`PlaceholderView`]。所有视图共用同一条标题行，版式常量也放在这里，
-//! 换视图时这一栏的骨架不会跳。
+//! 侧边栏是活动栏与 Dock 之间那一栏，显示哪个视图由活动栏决定（[`SidebarView`]）。
+//! 视图各自是独立组件：主机视图有完整实现（[`HostExplorerView`]），其余三个还没
+//! 落地，统一走 [`PlaceholderView`]。所有视图共用同一条标题行，版式常量也放在
+//! 这里，换视图时这一栏的骨架不会跳。
 //!
-//! 命名约定：这一栏里的组件叫 `*View`，进 [`gpui_component::dock`] 的才叫
-//! `*Panel`。
+//! 视图不进 [`gpui_component::dock`]：它由 [`crate::ui::Workspace`] 直接渲染在一个
+//! 可拖宽的区域里，不能被拖走、分屏或另存布局。要那些能力的是 `*Panel`，
+//! 见 [`crate::ui::panels`]。
 
-mod host_card;
 mod host_explorer;
 mod placeholder;
 
-pub use host_card::HostCard;
 pub use host_explorer::{HostExplorerEvent, HostExplorerView};
 pub use placeholder::PlaceholderView;
 
@@ -23,7 +22,7 @@ use gpui_component::{
     h_flex,
 };
 
-use crate::ui::{AppIcon, palette};
+use crate::ui::theme::{AppIcon, palette};
 
 /// 标题行高度。它是 chrome，不随内容变化。
 pub(crate) const HEADER_HEIGHT: Pixels = px(36.);

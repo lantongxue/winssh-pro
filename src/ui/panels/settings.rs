@@ -12,7 +12,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::ui::appearance;
+use crate::ui::theme::appearance;
 
 pub struct SettingsPanel {
     focus_handle: FocusHandle,

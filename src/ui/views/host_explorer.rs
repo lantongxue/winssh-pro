@@ -36,15 +36,13 @@ use gpui_component::{
     v_flex, v_virtual_list,
 };
 
-use super::{
-    GUTTER, HostCard, ICON_SIZE, SidebarView, collapse_button, host_card::HOST_CARD_HEIGHT,
-    view_header,
-};
+use super::{GUTTER, ICON_SIZE, SidebarView, collapse_button, view_header};
 use crate::{
     host::{Host, HostGroup, HostStatus, sample_host_groups, sample_host_statuses},
     ui::{
-        palette,
+        cards::{HOST_CARD_HEIGHT, HostCard},
         panels::{HostInfoPanel, TerminalPanel},
+        theme::palette,
     },
 };
 
@@ -180,6 +178,29 @@ impl HostExplorerView {
         };
         this.rebuild_rows(cx);
         this
+    }
+
+    /// 当前的分组列表，供新建主机对话框读取（跳板机候选、分组归属）。
+    pub fn groups(&self) -> &[HostGroup] {
+        &self.groups
+    }
+
+    /// 把一台新主机加入指定分组，分组不存在就新建一个。
+    /// 随后跳到那个分组并选中新主机，让"新建"这个操作有看得见的结果。
+    pub fn add_host(&mut self, group: SharedString, host: Host, cx: &mut Context<Self>) {
+        if let Some(existing) = self.groups.iter_mut().find(|g| g.name == group) {
+            existing.hosts.push(host.clone());
+        } else {
+            self.groups.push(HostGroup {
+                name: group.clone(),
+                hosts: vec![host.clone()],
+            });
+        }
+
+        self.collapsed.remove(&group);
+        self.filter = HostFilter::Group(group);
+        self.select_host(&host, cx);
+        self.rebuild_rows(cx);
     }
 
     fn set_filter(&mut self, filter: HostFilter, cx: &mut Context<Self>) {

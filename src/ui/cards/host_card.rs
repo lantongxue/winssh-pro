@@ -28,7 +28,7 @@ use gpui_component::{
 
 use crate::{
     host::{Host, HostStatus},
-    ui::palette,
+    ui::theme::palette,
 };
 
 /// 卡片高度。三行内容的高度是定死的，不随内容伸缩 —— 列表要靠它做虚拟滚动，

@@ -22,7 +22,10 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::ui::{AppIcon, SidebarView, palette};
+use crate::ui::{
+    theme::{AppIcon, palette},
+    views::SidebarView,
+};
 
 /// 活动栏宽度。固定值：图标是等宽的，随内容伸缩只会让全局导航不稳定。
 pub const ACTIVITY_BAR_WIDTH: Pixels = px(48.);
