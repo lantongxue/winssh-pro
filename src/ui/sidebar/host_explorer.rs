@@ -1,11 +1,11 @@
-//! 侧边栏面板：活动栏选中的那一类内容，停靠在活动栏右边。
+//! 主机视图：侧边栏里管理主机的那一块，按分组浏览、搜索并打开主机。
 //!
 //! 版式来自设计稿，自上而下四段：标题行、搜索 + 分组筛选、列表、底部主操作。
 //! 标题行和底部是 chrome（面板自己的底色），中间的输入框、筛选片和列表都落在
 //! 亮一档的内容表面上，段与段之间用 1px 分隔线断开。
 //!
 //! 分组做成一排可横向滚动的筛选片，列表因此只呈现被选中的那一部分 ——
-//! 不必再套一层“服务器 / 最近”的分段标题，列表的第一层就是分组本身。
+//! 不必再套一层“主机 / 最近”的分段标题，列表的第一层就是分组本身。
 //!
 //! 列表是一个按行记尺寸的虚拟列表：分组头是一行 36 的普通行，展开后的主机是
 //! 一张 [`HostCard`]，两者高度不同，所以用不了 [`gpui_component::tree`] 那种
@@ -27,7 +27,7 @@ use gpui_component::{
     ActiveTheme as _, Colorize as _, Icon, IconName, Sizable as _, StyledExt as _,
     VirtualListScrollHandle,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
-    dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, panel_handle},
+    dock::{DockArea, DockPlacement, panel_handle},
     h_flex,
     input::{Input, InputEvent, InputState},
     list::ListItem,
@@ -36,17 +36,20 @@ use gpui_component::{
     v_flex, v_virtual_list,
 };
 
-use super::{HostInfoPanel, TerminalPanel};
+use super::{
+    GUTTER, HostCard, ICON_SIZE, SidebarView, collapse_button, host_card::HOST_CARD_HEIGHT,
+    view_header,
+};
 use crate::{
-    session::{HostStatus, Session, SessionGroup, sample_groups, sample_statuses},
-    ui::{ActivityItem, HostCard, host_card::HOST_CARD_HEIGHT, palette},
+    host::{Host, HostGroup, HostStatus, sample_host_groups, sample_host_statuses},
+    ui::{
+        palette,
+        panels::{HostInfoPanel, TerminalPanel},
+    },
 };
 
 /// 最近打开最多记住多少台主机。
 const RECENT_LIMIT: usize = 8;
-
-/// 标题行高度。它是 chrome，不随内容变化。
-const HEADER_HEIGHT: Pixels = px(36.);
 
 /// 分组头那一行的高度。
 const GROUP_ROW_HEIGHT: Pixels = px(36.);
@@ -62,12 +65,6 @@ fn host_row_height() -> Pixels {
 
 /// 展开箭头占位宽度：叶子节点也留出同样的宽度，图标才会排成一列。
 const CHEVRON_WIDTH: Pixels = px(16.);
-
-/// 行内三列（箭头、图标、文字）统一的图标尺寸。
-const ICON_SIZE: Pixels = px(16.);
-
-/// 四段共用的横向留白。
-const GUTTER: Pixels = px(8.);
 
 /// 缩进导轨的位置，以及导轨到卡片的距离。导轨落在分组头箭头那一列的正下方，
 /// 一眼就能看出这些卡片挂在上面那个分组下面。
@@ -86,7 +83,7 @@ enum Row {
     },
     /// 一台主机，画成一张卡片。
     Host {
-        session: Session,
+        host: Host,
         status: HostStatus,
         /// 是否挂在某个分组下面。“最近”那一档是平铺的，不画缩进导轨。
         nested: bool,
@@ -102,9 +99,9 @@ impl Row {
     }
 }
 
-/// 分组筛选片。选中哪一片，列表就只显示那一部分。
+/// 列表的筛选条件，对应搜索框下面那一排片。选中哪一片，列表就只显示那一部分。
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum GroupFilter {
+enum HostFilter {
     /// 全部分组。
     All,
     /// 最近打开过的主机，按最近使用排序，不再按分组归类。
@@ -113,27 +110,26 @@ enum GroupFilter {
     Group(SharedString),
 }
 
-/// 面板往外发的请求。面板不知道窗口是怎么布局的，也没有主机仓储，
+/// 视图往外发的请求。它不知道窗口是怎么布局的，也没有主机仓储，
 /// 所以“收起”和“新建”都只把意图发出去，由宿主决定怎么做。
 #[derive(Clone, Debug)]
-pub enum SidebarEvent {
+pub enum HostExplorerEvent {
     /// 收起整个侧边栏。
     Collapse,
     /// 新建一台主机。
     NewHost,
     /// 打开某台主机的更多菜单。菜单内容还没定，先把入口连通。
-    HostMenu(Session),
+    HostMenu(Host),
 }
 
-pub struct SidebarPanel {
-    activity: ActivityItem,
-    groups: Vec<SessionGroup>,
+pub struct HostExplorerView {
+    groups: Vec<HostGroup>,
     /// 每台主机的运行时状态。连接层接上之后由那边推送，现在是示例值。
     statuses: HashMap<SharedString, HostStatus>,
     /// 最近打开过的主机，最新的在前。
     recent: Vec<SharedString>,
-    /// 当前选中的分组筛选片。
-    filter: GroupFilter,
+    /// 当前选中的筛选片。
+    filter: HostFilter,
     /// 用户手动收起的分组，重建列表时保留他的选择。
     collapsed: HashSet<SharedString>,
     /// 当前正在看的主机。卡片靠它显示选中态。
@@ -150,7 +146,7 @@ pub struct SidebarPanel {
     focus_handle: FocusHandle,
 }
 
-impl SidebarPanel {
+impl HostExplorerView {
     pub fn new(
         dock_area: WeakEntity<DockArea>,
         host_info: Entity<HostInfoPanel>,
@@ -163,15 +159,14 @@ impl SidebarPanel {
             .detach();
 
         // 设计稿里分组默认是收起的：先给一份紧凑的总览，展开哪一组交给用户。
-        let groups = sample_groups();
+        let groups = sample_host_groups();
         let collapsed = groups.iter().map(|group| group.name.clone()).collect();
 
         let mut this = Self {
-            activity: ActivityItem::Sessions,
             groups,
-            statuses: sample_statuses(),
+            statuses: sample_host_statuses(),
             recent: Vec::new(),
-            filter: GroupFilter::All,
+            filter: HostFilter::All,
             collapsed,
             selected: None,
             matched: 0,
@@ -187,16 +182,7 @@ impl SidebarPanel {
         this
     }
 
-    pub fn set_activity(&mut self, activity: ActivityItem, cx: &mut Context<Self>) {
-        if self.activity == activity {
-            return;
-        }
-
-        self.activity = activity;
-        cx.notify();
-    }
-
-    fn set_filter(&mut self, filter: GroupFilter, cx: &mut Context<Self>) {
+    fn set_filter(&mut self, filter: HostFilter, cx: &mut Context<Self>) {
         if self.filter == filter {
             return;
         }
@@ -213,25 +199,25 @@ impl SidebarPanel {
     }
 
     /// 单击：把这台主机作为当前工作对象，右侧的主机信息跟着变。
-    fn select_host(&mut self, session: &Session, cx: &mut Context<Self>) {
-        self.selected = Some(session.id.clone());
+    fn select_host(&mut self, host: &Host, cx: &mut Context<Self>) {
+        self.selected = Some(host.id.clone());
         self.host_info
-            .update(cx, |host_info, cx| host_info.show(session.clone(), cx));
+            .update(cx, |host_info, cx| host_info.show(host.clone(), cx));
         cx.notify();
     }
 
     /// 双击：在中心区新开一个终端标签页，并记进“最近”。
-    fn open_host(&mut self, session: &Session, window: &mut Window, cx: &mut Context<Self>) {
-        self.select_host(session, cx);
+    fn open_host(&mut self, host: &Host, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_host(host, cx);
 
-        self.recent.retain(|id| id != &session.id);
-        self.recent.insert(0, session.id.clone());
+        self.recent.retain(|id| id != &host.id);
+        self.recent.insert(0, host.id.clone());
         self.recent.truncate(RECENT_LIMIT);
 
         // 连接层还没接上，会话指示点先由这里点亮 —— 有一个打开的终端就算活着。
-        self.statuses.entry(session.id.clone()).or_default().live = true;
+        self.statuses.entry(host.id.clone()).or_default().connected = true;
 
-        let panel = TerminalPanel::new(session.clone(), window, cx);
+        let panel = TerminalPanel::new(host.clone(), window, cx);
         _ = self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
         });
@@ -240,13 +226,13 @@ impl SidebarPanel {
     }
 
     /// 按 id 找回一台主机，连同它所属的分组 —— 过滤时分组名也参与匹配。
-    fn host(&self, id: &SharedString) -> Option<(&SessionGroup, &Session)> {
+    fn host(&self, id: &SharedString) -> Option<(&HostGroup, &Host)> {
         self.groups.iter().find_map(|group| {
             group
-                .sessions
+                .hosts
                 .iter()
-                .find(|session| &session.id == id)
-                .map(|session| (group, session))
+                .find(|host| &host.id == id)
+                .map(|host| (group, host))
         })
     }
 
@@ -258,10 +244,10 @@ impl SidebarPanel {
         self.search.read(cx).value().trim().to_lowercase()
     }
 
-    fn matches(session: &Session, group: &SessionGroup, query: &str) -> bool {
+    fn matches(host: &Host, group: &HostGroup, query: &str) -> bool {
         query.is_empty()
-            || session.name.to_lowercase().contains(query)
-            || session.address().to_lowercase().contains(query)
+            || host.name.to_lowercase().contains(query)
+            || host.address().to_lowercase().contains(query)
             || group.name.to_lowercase().contains(query)
     }
 
@@ -277,40 +263,40 @@ impl SidebarPanel {
         let mut matched = 0;
         for group in &self.groups {
             matched += group
-                .sessions
+                .hosts
                 .iter()
-                .filter(|session| Self::matches(session, group, &query))
+                .filter(|host| Self::matches(host, group, &query))
                 .count();
         }
 
-        if self.filter == GroupFilter::Recent {
+        if self.filter == HostFilter::Recent {
             // 最近这一档是一串平铺的主机，本来就跨分组，再按分组套一层没有意义。
             for id in &self.recent {
-                let Some((group, session)) = self.host(id) else {
+                let Some((group, host)) = self.host(id) else {
                     continue;
                 };
-                if !Self::matches(session, group, &query) {
+                if !Self::matches(host, group, &query) {
                     continue;
                 }
 
                 rows.push(Row::Host {
-                    session: session.clone(),
+                    host: host.clone(),
                     status: self.status(id),
                     nested: false,
                 });
             }
         } else {
             for group in &self.groups {
-                if let GroupFilter::Group(name) = &self.filter
+                if let HostFilter::Group(name) = &self.filter
                     && &group.name != name
                 {
                     continue;
                 }
 
-                let hosts: Vec<&Session> = group
-                    .sessions
+                let hosts: Vec<&Host> = group
+                    .hosts
                     .iter()
-                    .filter(|session| Self::matches(session, group, &query))
+                    .filter(|host| Self::matches(host, group, &query))
                     .collect();
                 if hosts.is_empty() {
                     continue;
@@ -326,10 +312,10 @@ impl SidebarPanel {
                 if !expanded {
                     continue;
                 }
-                for session in hosts {
+                for host in hosts {
                     rows.push(Row::Host {
-                        session: session.clone(),
-                        status: self.status(&session.id),
+                        host: host.clone(),
+                        status: self.status(&host.id),
                         nested: true,
                     });
                 }
@@ -346,53 +332,22 @@ impl SidebarPanel {
         cx.notify();
     }
 
-    /// 标题行：图标 + 当前分类名 + 新建 + 收起。它对所有分类都成立，
-    /// 所以放在最外层，而不是会话那一段里面。
+    /// 标题行：视图图标 + 名称 + 新建 + 收起。前两段是所有视图共用的 chrome，
+    /// 由 [`view_header`] 提供，这里只补上主机视图自己的两个按钮。
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_sessions = self.activity == ActivityItem::Sessions;
-
-        h_flex()
-            .flex_shrink_0()
-            .h(HEADER_HEIGHT)
-            .px(GUTTER)
-            .gap_2()
-            .items_center()
-            .border_b_1()
-            .border_color(cx.theme().sidebar_border)
+        view_header(SidebarView::Hosts, cx)
             .child(
-                Icon::new(self.activity.icon())
-                    .with_size(ICON_SIZE)
-                    .flex_shrink_0()
-                    .text_color(palette::teal()),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_sm()
-                    .font_semibold()
-                    .child(self.activity.label()),
-            )
-            .when(is_sessions, |this| {
-                this.child(
-                    Button::new("sidebar-add")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Plus)
-                        .tooltip("新建主机")
-                        .accessibility_id("新建主机")
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SidebarEvent::NewHost))),
-                )
-            })
-            .child(
-                Button::new("sidebar-collapse")
+                Button::new("host-explorer-add")
                     .ghost()
                     .xsmall()
-                    .icon(IconName::ChevronLeft)
-                    .tooltip("收起侧边栏")
-                    .accessibility_id("收起侧边栏")
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SidebarEvent::Collapse))),
+                    .icon(IconName::Plus)
+                    .tooltip("新建主机")
+                    .accessibility_id("新建主机")
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(HostExplorerEvent::NewHost))),
+            )
+            .child(
+                collapse_button()
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(HostExplorerEvent::Collapse))),
             )
     }
 
@@ -401,10 +356,10 @@ impl SidebarPanel {
         // 先把片渲染出来再交给 `children`：闭包借了 `cx`，惰性迭代器会把这个
         // 借用带出闭包体，borrow checker 不放行。
         let chips: Vec<_> = self
-            .chips()
+            .filters()
             .into_iter()
             .enumerate()
-            .map(|(ix, (filter, label))| self.render_chip(ix, filter, label, cx))
+            .map(|(ix, (filter, label))| self.render_filter_chip(ix, filter, label, cx))
             .collect();
 
         v_flex()
@@ -427,7 +382,7 @@ impl SidebarPanel {
                 // 片比面板宽是常态：横向滚动，不换行也不挤压 ——
                 // 换行会让这一段的高度随分组数量变化，整个面板就跟着跳。
                 h_flex()
-                    .id("sidebar-filter-row")
+                    .id("host-explorer-filters")
                     .w_full()
                     .gap(CHIP_GAP)
                     .overflow_x_scroll()
@@ -436,28 +391,28 @@ impl SidebarPanel {
     }
 
     /// 筛选片的顺序：全部、最近，然后是各个分组。
-    fn chips(&self) -> Vec<(GroupFilter, SharedString)> {
-        let mut chips = vec![
+    fn filters(&self) -> Vec<(HostFilter, SharedString)> {
+        let mut filters = vec![
             (
-                GroupFilter::All,
+                HostFilter::All,
                 SharedString::from(format!("全部 ({})", self.matched)),
             ),
-            (GroupFilter::Recent, SharedString::from("最近")),
+            (HostFilter::Recent, SharedString::from("最近")),
         ];
-        chips.extend(
+        filters.extend(
             self.groups
                 .iter()
-                .map(|group| (GroupFilter::Group(group.name.clone()), group.name.clone())),
+                .map(|group| (HostFilter::Group(group.name.clone()), group.name.clone())),
         );
-        chips
+        filters
     }
 
     /// 返回具体的 [`Button`] 而不是 `impl IntoElement`：后者会隐式捕获 `cx` 的
     /// 生命周期，装进 `Vec` 之后借用就跟着跑出闭包了。
-    fn render_chip(
+    fn render_filter_chip(
         &self,
         ix: usize,
-        filter: GroupFilter,
+        filter: HostFilter,
         label: SharedString,
         cx: &mut Context<Self>,
     ) -> Button {
@@ -475,7 +430,7 @@ impl SidebarPanel {
             .hover(palette::surface_strong(cx))
             .active(palette::surface_strong(cx));
 
-        Button::new(("sidebar-filter", ix))
+        Button::new(("host-explorer-filter", ix))
             .custom(variant)
             .small()
             .rounded(cx.theme().radius)
@@ -558,14 +513,14 @@ impl SidebarPanel {
     fn render_host_row(
         &self,
         ix: usize,
-        session: &Session,
+        host: &Host,
         status: HostStatus,
         nested: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let selected = self.selected.as_ref() == Some(&session.id);
-        let clicked = session.clone();
-        let menued = session.clone();
+        let selected = self.selected.as_ref() == Some(&host.id);
+        let clicked = host.clone();
+        let menued = host.clone();
 
         div()
             .w_full()
@@ -578,7 +533,7 @@ impl SidebarPanel {
                     .border_color(cx.theme().sidebar_border)
             })
             .child(
-                HostCard::new(("host", ix), session.clone(), status)
+                HostCard::new(("host", ix), host.clone(), status)
                     .selected(selected)
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         if event.click_count() >= 2 {
@@ -588,7 +543,7 @@ impl SidebarPanel {
                         }
                     }))
                     .on_menu(cx.listener(move |_, _, _, cx| {
-                        cx.emit(SidebarEvent::HostMenu(menued.clone()))
+                        cx.emit(HostExplorerEvent::HostMenu(menued.clone()))
                     })),
             )
     }
@@ -603,11 +558,11 @@ impl SidebarPanel {
                 .render_group_row(ix, name.clone(), *count, *expanded, cx)
                 .into_any_element(),
             Row::Host {
-                session,
+                host,
                 status,
                 nested,
             } => self
-                .render_host_row(ix, session, *status, *nested, cx)
+                .render_host_row(ix, host, *status, *nested, cx)
                 .into_any_element(),
         }
     }
@@ -636,7 +591,7 @@ impl SidebarPanel {
             .when(!empty, |this| {
                 this.child(
                     v_flex()
-                        .id("sidebar-rows")
+                        .id("host-explorer-rows")
                         .relative()
                         .size_full()
                         .child(
@@ -673,7 +628,7 @@ impl SidebarPanel {
             .border_t_1()
             .border_color(cx.theme().sidebar_border)
             .child(
-                Button::new("sidebar-new-host")
+                Button::new("host-explorer-new-host")
                     .custom(variant)
                     // Custom 变体的常态底色会被稀释两成，这里把设计稿的实色压回去；
                     // 悬停与按下仍然走上面 variant 里的颜色。
@@ -682,87 +637,30 @@ impl SidebarPanel {
                     .icon(IconName::Plus)
                     .label("新建主机")
                     .w_full()
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SidebarEvent::NewHost))),
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(HostExplorerEvent::NewHost))),
             )
-    }
-
-    /// 尚未实现的导航分类统一给出空状态，而不是一个看起来能用的空列表。
-    fn render_placeholder(&self, activity: ActivityItem, cx: &App) -> impl IntoElement {
-        let hint = match activity {
-            ActivityItem::Snippets => "常用命令与脚本会显示在这里，可以直接发到当前会话。",
-            ActivityItem::Keys => "私钥、口令与 known_hosts 会显示在这里。",
-            ActivityItem::Monitor => "已连接主机的 CPU、内存与网络占用会显示在这里。",
-            ActivityItem::Sessions => "",
-        };
-
-        v_flex()
-            .flex_1()
-            .min_h_0()
-            .p_6()
-            .gap_2()
-            .items_center()
-            .justify_center()
-            .text_center()
-            .child(
-                Icon::new(activity.icon())
-                    .large()
-                    .text_color(palette::idle(cx)),
-            )
-            .child(div().text_sm().child(activity.label()))
-            .child(div().text_xs().text_color(palette::idle(cx)).child(hint))
-    }
-
-    fn render_sessions(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .flex_1()
-            .min_h_0()
-            .child(self.render_filters(cx))
-            .child(Separator::horizontal().color(cx.theme().sidebar_border))
-            .child(self.render_list(cx))
-            .child(Separator::horizontal().color(cx.theme().sidebar_border))
-            .child(self.render_footer(cx))
     }
 }
 
-impl EventEmitter<PanelEvent> for SidebarPanel {}
-impl EventEmitter<SidebarEvent> for SidebarPanel {}
+impl EventEmitter<HostExplorerEvent> for HostExplorerView {}
 
-impl Focusable for SidebarPanel {
+impl Focusable for HostExplorerView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl BasePanel for SidebarPanel {
-    fn panel_name(&self) -> &'static str {
-        "SidebarPanel"
-    }
-
-    fn closable(&self, _: &App) -> bool {
-        false
-    }
-}
-
-impl Panel for SidebarPanel {
-    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        self.activity.label()
-    }
-
-    fn inner_padding(&self, _: &App) -> bool {
-        false
-    }
-}
-
-impl Render for SidebarPanel {
+impl Render for HostExplorerView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
             .child(self.render_header(cx))
-            .child(match self.activity {
-                ActivityItem::Sessions => self.render_sessions(cx).into_any_element(),
-                activity => self.render_placeholder(activity, cx).into_any_element(),
-            })
+            .child(self.render_filters(cx))
+            .child(Separator::horizontal().color(cx.theme().sidebar_border))
+            .child(self.render_list(cx))
+            .child(Separator::horizontal().color(cx.theme().sidebar_border))
+            .child(self.render_footer(cx))
     }
 }

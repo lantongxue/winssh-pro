@@ -18,6 +18,27 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 - gpui-component 是优先级最高的组件库，zed 只做代码参考
 - 任何功能组件的实现必须阅读【参考代码】章节提到的代码库，从里面找可以复用的组件/模块，避免重复造轮子
 
+## 命名规范
+
+术语跟着设计原型走，一个概念只用一个词：
+
+- **主机（Host）**：一条保存下来的连接配置，对应原型里的 `ServerHost`。分组是 `HostGroup`。
+- **会话（Session）**：照着主机打开的那条活着的连接，也就是中心区的一个终端标签页。
+- **活动栏（ActivityBar）**：最左边那条固定的窄栏，切换侧边栏视图，底部是全局动作。
+- **侧边栏（sidebar）**：活动栏与 Dock 之间那一栏，一次显示一个 `SidebarView`。
+
+组件后缀表示它是什么，不能混用：
+
+- `*Bar`：窗口边上固定不动的 chrome（`ActivityBar`、状态栏）。
+- `*View`：侧边栏里的视图，不进 Dock（`HostExplorerView`、`PlaceholderView`）。
+- `*Panel`：进 `gpui_component::dock` 的面板，可拖拽、分屏、保存布局（`TerminalPanel`、`HostInfoPanel`、`EventLogPanel`…）。
+- `*Card`：列表里代表一条数据的卡片（`HostCard`）。
+
+文件名与它导出的主类型对应：`host_explorer.rs` → `HostExplorerView`，
+`event_log.rs` → `EventLogPanel`。一个文件只放一个组件；同一区域的组件放进同名目录
+（`src/ui/sidebar/`、`src/ui/panels/`）。元素 id 用组件名的 kebab-case 前缀，
+例如 `host-explorer-filter`。
+
 ## 参考代码
 
 1. @refs/zed 是 gpui 库的完整实现，里面包含了许多重要的组件等

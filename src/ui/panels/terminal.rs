@@ -1,4 +1,4 @@
-//! 终端面板：一个已打开会话的工作区，停靠在 Dock 中心区，可拖拽、可分屏。
+//! 终端面板：一台主机上的一个已打开会话，停靠在 Dock 中心区，可拖拽、可分屏。
 //!
 //! 这里只渲染终端的外壳与连接过程的回显；PTY、SSH 传输与渲染管线接入后，
 //! 只需要替换 [`TerminalPanel::render`] 里的内容区域。
@@ -13,30 +13,30 @@ use gpui_component::{
     h_flex, v_flex,
 };
 
-use crate::session::Session;
+use crate::host::Host;
 
 pub struct TerminalPanel {
-    session: Session,
+    host: Host,
     /// 连接过程的回显。真正的终端接入后由 PTY 输出替换。
     lines: Vec<SharedString>,
     focus_handle: FocusHandle,
 }
 
 impl TerminalPanel {
-    pub fn new(session: Session, _: &mut Window, cx: &mut App) -> Entity<Self> {
+    pub fn new(host: Host, _: &mut Window, cx: &mut App) -> Entity<Self> {
         cx.new(|cx| {
             let lines = vec![
-                SharedString::from(format!("$ ssh {}", session.address())),
+                SharedString::from(format!("$ ssh {}", host.address())),
                 SharedString::from(format!(
                     "Connected to {} ({})",
-                    session.host, session.platform
+                    host.hostname, host.platform
                 )),
                 SharedString::from("Last login: Mon Aug 25 09:12:03 2026 from 10.0.0.2"),
-                SharedString::from(format!("{}@{}:~$ ", session.user, session.name)),
+                SharedString::from(format!("{}@{}:~$ ", host.user, host.name)),
             ];
 
             Self {
-                session,
+                host,
                 lines,
                 focus_handle: cx.focus_handle(),
             }
@@ -68,11 +68,11 @@ impl Panel for TerminalPanel {
                     .xsmall()
                     .text_color(cx.theme().muted_foreground),
             )
-            .child(self.session.name.clone())
+            .child(self.host.name.clone())
     }
 
     fn tab_name(&self, _: &App) -> Option<SharedString> {
-        Some(self.session.name.clone())
+        Some(self.host.name.clone())
     }
 
     fn inner_padding(&self, _: &App) -> bool {

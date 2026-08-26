@@ -1,18 +1,24 @@
 //! 主窗口的界面层。
+//!
+//! 三类组件，后缀区分职责：
+//!
+//! - `*Bar`：窗口边上固定不动的 chrome，例如 [`ActivityBar`]；
+//! - `*View`：侧边栏里的视图，一次显示一个，见 [`sidebar`]；
+//! - `*Panel`：进 [`gpui_component::dock`] 的面板，可拖拽、分屏、保存布局，见 [`panels`]。
 
-mod action_bar;
+mod activity_bar;
 mod appearance;
-mod host_card;
 mod icons;
 mod palette;
 mod panels;
+mod sidebar;
 mod workspace;
 
-pub use action_bar::{ActionBar, ActivityItem, BarCommand};
+pub use activity_bar::{ActivityAction, ActivityBar};
 pub use appearance::observe as observe_appearance;
-pub use host_card::HostCard;
 pub use icons::AppIcon;
-pub use workspace::{ToggleBottomDock, ToggleRightDock, Workspace};
+pub use sidebar::{HostExplorerEvent, HostExplorerView, PlaceholderView, SidebarView};
+pub use workspace::{ToggleBottomDock, ToggleRightDock, ToggleSidebar, Workspace};
 
 use gpui::{App, KeyBinding};
 use gpui_component::dock::{ClosePanel, ToggleZoom};
@@ -27,6 +33,7 @@ const CMD: &str = "ctrl";
 pub fn init(cx: &mut App) {
     appearance::init(cx);
     cx.bind_keys(vec![
+        KeyBinding::new(&format!("{CMD}-b"), ToggleSidebar, None),
         KeyBinding::new(&format!("{CMD}-j"), ToggleBottomDock, None),
         KeyBinding::new(&format!("{CMD}-alt-b"), ToggleRightDock, None),
         KeyBinding::new(&format!("{CMD}-w"), ClosePanel, None),

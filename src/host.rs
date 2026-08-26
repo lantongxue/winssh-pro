@@ -1,31 +1,34 @@
-//! 会话数据模型。
+//! 主机数据模型。
 //!
-//! 主窗口只消费这里的只读描述：连接、认证与状态同步属于后续的连接层，
-//! 布局层不应该知道它们如何实现。
+//! 术语按设计原型统一：**主机**是一条保存下来的连接配置，**会话**是照着它打开
+//! 的那条活着的连接。这个文件只描述前者 —— 连接、认证与状态同步属于后续的
+//! 连接层，界面层不应该知道它们如何实现。
 
 use std::collections::HashMap;
 
 use gpui::SharedString;
 
-/// 一个 SSH 会话的配置描述。
+/// 一台主机的连接配置。
 #[derive(Clone, Debug)]
-pub struct Session {
+pub struct Host {
     pub id: SharedString,
+    /// 显示名，例如 `web-01`。
     pub name: SharedString,
     pub user: SharedString,
-    pub host: SharedString,
+    /// 主机名或 IP，例如 `10.0.1.11`。
+    pub hostname: SharedString,
     pub port: u16,
     /// 主机所属的操作系统标识，用于展示，例如 `Ubuntu 24.04`。
     pub platform: SharedString,
 }
 
-impl Session {
-    /// `user@host:port` 形式的地址，端口为 22 时省略端口。
+impl Host {
+    /// `user@hostname:port` 形式的地址，端口为 22 时省略端口。
     pub fn address(&self) -> String {
         if self.port == 22 {
-            format!("{}@{}", self.user, self.host)
+            format!("{}@{}", self.user, self.hostname)
         } else {
-            format!("{}@{}:{}", self.user, self.host, self.port)
+            format!("{}@{}:{}", self.user, self.hostname, self.port)
         }
     }
 
@@ -48,43 +51,43 @@ impl Session {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HostStatus {
     /// 当前是否有打开的会话。
-    pub live: bool,
+    pub connected: bool,
     /// 最近一次探测的往返时延，单位毫秒。`None` 表示还没探过。
     pub latency_ms: Option<u32>,
 }
 
-/// 会话分组，对应侧边栏里的一段列表。
+/// 主机分组，对应主机面板列表里的一段。
 #[derive(Clone, Debug)]
-pub struct SessionGroup {
+pub struct HostGroup {
     pub name: SharedString,
-    pub sessions: Vec<Session>,
+    pub hosts: Vec<Host>,
 }
 
-fn session(
+fn host(
     id: &'static str,
     name: &'static str,
     user: &'static str,
-    host: &'static str,
+    hostname: &'static str,
     port: u16,
     platform: &'static str,
-) -> Session {
-    Session {
+) -> Host {
+    Host {
         id: id.into(),
         name: name.into(),
         user: user.into(),
-        host: host.into(),
+        hostname: hostname.into(),
         port,
         platform: platform.into(),
     }
 }
 
-/// 示例会话数据。接入配置存储后由仓储层替换，界面代码无需改动。
-pub fn sample_groups() -> Vec<SessionGroup> {
+/// 示例主机数据。接入配置存储后由仓储层替换，界面代码无需改动。
+pub fn sample_host_groups() -> Vec<HostGroup> {
     vec![
-        SessionGroup {
+        HostGroup {
             name: "生产环境".into(),
-            sessions: vec![
-                session(
+            hosts: vec![
+                host(
                     "prod-web-1",
                     "web-01",
                     "deploy",
@@ -92,7 +95,7 @@ pub fn sample_groups() -> Vec<SessionGroup> {
                     22,
                     "Ubuntu 24.04",
                 ),
-                session(
+                host(
                     "prod-web-2",
                     "web-02",
                     "deploy",
@@ -100,7 +103,7 @@ pub fn sample_groups() -> Vec<SessionGroup> {
                     22,
                     "Ubuntu 24.04",
                 ),
-                session(
+                host(
                     "prod-db-1",
                     "db-01",
                     "postgres",
@@ -110,10 +113,10 @@ pub fn sample_groups() -> Vec<SessionGroup> {
                 ),
             ],
         },
-        SessionGroup {
+        HostGroup {
             name: "测试环境".into(),
-            sessions: vec![
-                session(
+            hosts: vec![
+                host(
                     "stage-app",
                     "stage-app",
                     "root",
@@ -121,7 +124,7 @@ pub fn sample_groups() -> Vec<SessionGroup> {
                     22,
                     "Rocky Linux 9",
                 ),
-                session(
+                host(
                     "stage-ci",
                     "stage-ci",
                     "runner",
@@ -131,9 +134,9 @@ pub fn sample_groups() -> Vec<SessionGroup> {
                 ),
             ],
         },
-        SessionGroup {
+        HostGroup {
             name: "本地".into(),
-            sessions: vec![session(
+            hosts: vec![host(
                 "local-vm",
                 "dev-vm",
                 "kali",
@@ -147,7 +150,7 @@ pub fn sample_groups() -> Vec<SessionGroup> {
 
 /// 示例运行时状态，按主机 id 索引。连接层接上之后整个函数会被那边替换掉。
 /// 这里刻意混了几种情况：有会话的、可达但慢的、还没探过的。
-pub fn sample_statuses() -> HashMap<SharedString, HostStatus> {
+pub fn sample_host_statuses() -> HashMap<SharedString, HostStatus> {
     [
         ("prod-web-1", true, Some(4)),
         ("prod-web-2", false, Some(18)),
@@ -157,6 +160,14 @@ pub fn sample_statuses() -> HashMap<SharedString, HostStatus> {
         ("local-vm", true, Some(1)),
     ]
     .into_iter()
-    .map(|(id, live, latency_ms)| (SharedString::from(id), HostStatus { live, latency_ms }))
+    .map(|(id, connected, latency_ms)| {
+        (
+            SharedString::from(id),
+            HostStatus {
+                connected,
+                latency_ms,
+            },
+        )
+    })
     .collect()
 }

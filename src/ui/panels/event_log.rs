@@ -1,4 +1,7 @@
-//! 活动日志面板：停靠在 Dock 底部，记录连接、传输与转发的结果。
+//! 事件日志面板：停靠在 Dock 底部，记录连接、传输与转发的结果。
+//!
+//! 叫“事件”而不是“活动”：左侧那条栏是活动栏，两处都用“活动”会分不清
+//! 说的是导航还是日志。
 
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
@@ -43,19 +46,19 @@ pub struct LogEntry {
     message: SharedString,
 }
 
-pub struct ActivityLogPanel {
+pub struct EventLogPanel {
     entries: Vec<LogEntry>,
     focus_handle: FocusHandle,
 }
 
-impl ActivityLogPanel {
+impl EventLogPanel {
     pub fn new(_: &mut Window, cx: &mut App) -> Entity<Self> {
         cx.new(|cx| Self {
             entries: vec![
                 LogEntry {
                     level: LogLevel::Info,
                     time: "09:12:03".into(),
-                    message: "已加载 6 个会话配置".into(),
+                    message: "已加载 6 个主机配置".into(),
                 },
                 LogEntry {
                     level: LogLevel::Info,
@@ -78,30 +81,30 @@ impl ActivityLogPanel {
     }
 }
 
-impl EventEmitter<PanelEvent> for ActivityLogPanel {}
+impl EventEmitter<PanelEvent> for EventLogPanel {}
 
-impl Focusable for ActivityLogPanel {
+impl Focusable for EventLogPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl BasePanel for ActivityLogPanel {
+impl BasePanel for EventLogPanel {
     fn panel_name(&self) -> &'static str {
-        "ActivityLogPanel"
+        "EventLogPanel"
     }
 }
 
-impl Panel for ActivityLogPanel {
+impl Panel for EventLogPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("活动日志")
+        SharedString::from("事件日志")
     }
 }
 
-impl Render for ActivityLogPanel {
+impl Render for EventLogPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
-            .id("activity-log")
+            .id("event-log")
             .size_full()
             .gap_1()
             .overflow_y_scroll()

@@ -17,13 +17,13 @@ use gpui_component::{
 #[cfg(target_os = "macos")]
 const SHORTCUTS: [(&str, &str); 3] = [
     ("打开侧边栏", "cmd-b"),
-    ("打开活动日志", "cmd-j"),
+    ("打开事件日志", "cmd-j"),
     ("打开主机信息", "cmd-alt-b"),
 ];
 #[cfg(not(target_os = "macos"))]
 const SHORTCUTS: [(&str, &str); 3] = [
     ("打开侧边栏", "ctrl-b"),
-    ("打开活动日志", "ctrl-j"),
+    ("打开事件日志", "ctrl-j"),
     ("打开主机信息", "ctrl-alt-b"),
 ];
 
@@ -81,12 +81,12 @@ impl Render for WelcomePanel {
             )
             .child(
                 h_flex().gap_2().child(
-                    Button::new("browse-sessions")
+                    Button::new("browse-hosts")
                         .primary()
                         .icon(IconName::Network)
-                        .label("浏览会话")
+                        .label("浏览主机")
                         .on_click(|_, _, _| {
-                            // 会话面板始终可见，这里不再需要 action
+                            // 侧边栏默认展开，主机列表始终可见，这里不再需要 action
                         }),
                 ),
             )

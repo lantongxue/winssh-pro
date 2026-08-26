@@ -10,24 +10,24 @@ use gpui_component::{
     h_flex, v_flex,
 };
 
-use crate::session::Session;
+use crate::host::Host;
 
 pub struct HostInfoPanel {
-    session: Option<Session>,
+    host: Option<Host>,
     focus_handle: FocusHandle,
 }
 
 impl HostInfoPanel {
     pub fn new(_: &mut Window, cx: &mut App) -> Entity<Self> {
         cx.new(|cx| Self {
-            session: None,
+            host: None,
             focus_handle: cx.focus_handle(),
         })
     }
 
-    /// 由侧边栏在打开会话时调用，让右侧始终描述“正在工作的那台主机”。
-    pub fn show(&mut self, session: Session, cx: &mut Context<Self>) {
-        self.session = Some(session);
+    /// 由主机视图在选中主机时调用，让右侧始终描述“正在工作的那台主机”。
+    pub fn show(&mut self, host: Host, cx: &mut Context<Self>) {
+        self.host = Some(host);
         cx.notify();
     }
 
@@ -71,7 +71,7 @@ impl Panel for HostInfoPanel {
 
 impl Render for HostInfoPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(session) = self.session.clone() else {
+        let Some(host) = self.host.clone() else {
             return v_flex()
                 .size_full()
                 .gap_2()
@@ -87,18 +87,18 @@ impl Render for HostInfoPanel {
                     div()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child("打开一个会话后显示主机信息"),
+                        .child("选中一台主机后显示它的连接信息"),
                 );
         };
 
         v_flex()
             .size_full()
             .gap_1()
-            .child(div().pb_1().child(session.name.clone()))
-            .child(self.render_row("地址", session.address().into(), cx))
-            .child(self.render_row("用户", session.user.clone(), cx))
-            .child(self.render_row("端口", session.port.to_string().into(), cx))
-            .child(self.render_row("系统", session.platform.clone(), cx))
+            .child(div().pb_1().child(host.name.clone()))
+            .child(self.render_row("地址", host.address().into(), cx))
+            .child(self.render_row("用户", host.user.clone(), cx))
+            .child(self.render_row("端口", host.port.to_string().into(), cx))
+            .child(self.render_row("系统", host.platform.clone(), cx))
             .child(self.render_row("认证方式", "公钥（ed25519）".into(), cx))
     }
 }

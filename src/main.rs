@@ -1,7 +1,7 @@
 //! WinSSH Pro：跨平台原生 SSH 客户端。
 
 mod assets;
-mod session;
+mod host;
 mod ui;
 
 use gpui::{AppContext as _, Bounds, WindowBounds, WindowKind, WindowOptions, px, size};
@@ -32,7 +32,7 @@ fn main() {
                     window_size,
                     cx,
                 ))),
-                // 低于这个尺寸，侧边栏 + 终端的双栏结构就不再成立。
+                // 低于这个尺寸，活动栏 + 侧边栏 + 终端的三栏结构就不再成立。
                 window_min_size: Some(size(px(880.), px(560.))),
                 kind: WindowKind::Normal,
                 #[cfg(target_os = "linux")]

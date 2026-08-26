@@ -1,4 +1,4 @@
-//! 列表里代表一台主机的卡片。
+//! 主机列表里代表一台主机的卡片。
 //!
 //! 分组展开后每台主机占一张卡片，而不是一行文字：一台主机要同时交代身份
 //! （名字、地址）、平台和当前状态，一行塞不下，挤在一行里也读不出层次。
@@ -6,7 +6,7 @@
 //! 卡片自上而下三行，都从同一条左边缘起排，扫读时眼睛只需要走一列：
 //!
 //! 1. 会话指示点 + 名字 + 更多菜单
-//! 2. `user@host:port`，等宽字体 —— 地址是要照抄的东西，对齐比排版好看更重要
+//! 2. `user@hostname:port`，等宽字体 —— 地址是要照抄的东西，对齐比排版好看更重要
 //! 3. 平台标签 + 可达性指示（延迟）
 //!
 //! 底色比列表暗一档，加一圈细边：卡片看起来是嵌在列表里的一块，
@@ -27,7 +27,7 @@ use gpui_component::{
 };
 
 use crate::{
-    session::{HostStatus, Session},
+    host::{Host, HostStatus},
     ui::palette,
 };
 
@@ -47,10 +47,10 @@ const META_HEIGHT: Pixels = px(20.);
 const ROW_GAP: Pixels = px(6.);
 
 /// 会话指示点的直径。它在名字左边，所以比正文略大一点才压得住。
-const LIVE_DOT: Pixels = px(10.);
+const SESSION_DOT: Pixels = px(10.);
 
 /// 可达性指示点的直径。它是延迟数字的附注，所以做小。
-const HEALTH_DOT: Pixels = px(6.);
+const LATENCY_DOT: Pixels = px(6.);
 
 /// 名字与指示点之间的距离，也是第三行各段之间的距离。
 const INLINE_GAP: Pixels = px(8.);
@@ -65,7 +65,7 @@ type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 #[derive(IntoElement)]
 pub struct HostCard {
     id: ElementId,
-    session: Session,
+    host: Host,
     status: HostStatus,
     selected: bool,
     on_click: Option<ClickHandler>,
@@ -73,10 +73,10 @@ pub struct HostCard {
 }
 
 impl HostCard {
-    pub fn new(id: impl Into<ElementId>, session: Session, status: HostStatus) -> Self {
+    pub fn new(id: impl Into<ElementId>, host: Host, status: HostStatus) -> Self {
         Self {
             id: id.into(),
-            session,
+            host,
             status,
             selected: false,
             on_click: None,
@@ -113,7 +113,7 @@ impl HostCard {
     fn render_identity(&self, cx: &App) -> impl IntoElement {
         let on_menu = self.on_menu.clone();
         // 没有活着的会话时这个点不消失，只是暗下去 —— 位置固定，名字才不会左右跳。
-        let dot = if self.status.live {
+        let dot = if self.status.connected {
             palette::magenta()
         } else {
             cx.theme().sidebar_border
@@ -124,7 +124,7 @@ impl HostCard {
             .h(IDENTITY_HEIGHT)
             .gap(INLINE_GAP)
             .items_center()
-            .child(dot_element(LIVE_DOT, dot))
+            .child(dot_element(SESSION_DOT, dot))
             .child(
                 div()
                     .flex_1()
@@ -133,7 +133,7 @@ impl HostCard {
                     .text_sm()
                     .font_semibold()
                     .text_color(cx.theme().sidebar_foreground)
-                    .child(self.session.name.clone()),
+                    .child(self.host.name.clone()),
             )
             .child(
                 Button::new("host-card-menu")
@@ -172,14 +172,14 @@ impl HostCard {
                     .font_family("monospace")
                     .text_xs()
                     .text_color(palette::idle(cx))
-                    .child(self.session.platform_tag()),
+                    .child(self.host.platform_tag()),
             )
-            .children(self.render_health(cx))
+            .children(self.render_latency(cx))
     }
 
     /// 可达性：一个点加一个毫秒数。还没探过就整段不画 ——
     /// 画一个灰点写“--”只是在占位，读者还得再判断一次那是什么意思。
-    fn render_health(&self, cx: &App) -> Option<impl IntoElement> {
+    fn render_latency(&self, cx: &App) -> Option<impl IntoElement> {
         let latency_ms = self.status.latency_ms?;
         let tone = if latency_ms <= SLOW_LATENCY_MS {
             palette::green()
@@ -192,7 +192,7 @@ impl HostCard {
                 .flex_shrink_0()
                 .gap_1()
                 .items_center()
-                .child(dot_element(HEALTH_DOT, tone))
+                .child(dot_element(LATENCY_DOT, tone))
                 .child(
                     div()
                         .text_xs()
@@ -216,7 +216,7 @@ fn dot_element(size: Pixels, tone: Hsla) -> AnyElement {
 impl RenderOnce for HostCard {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let on_click = self.on_click.clone();
-        let address = SharedString::from(self.session.address());
+        let address = SharedString::from(self.host.address());
 
         v_flex()
             .id(self.id.clone())

@@ -1,15 +1,15 @@
-//! 主窗口外壳：标题栏 + 固定活动栏 + 会话面板 + Dock 工作区 + 状态栏。
+//! 主窗口外壳：标题栏 + 固定活动栏 + 侧边栏 + Dock 工作区 + 状态栏。
 //!
 //! 外壳本身不放业务内容。左侧活动栏是稳定的全局导航，紧接着是可收起的侧边栏，
-//! 右边整块交给 [`DockArea`]：终端占据中心、活动日志在底部、主机信息与设置在右侧，
+//! 右边整块交给 [`DockArea`]：终端占据中心、事件日志在底部、主机信息与设置在右侧，
 //! 可以拖拽、折叠与缩放。侧边栏不在 dock 系统内 —— 它的宽度归 `ResizableState`，
-//! 开合归 [`Workspace::sessions_open`]。
+//! 开合归 [`Workspace::sidebar_open`]，显示哪个视图归 [`Workspace::view`]。
 
 use std::rc::Rc;
 
 use gpui::{
-    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, Styled as _, Window, actions, div, prelude::FluentBuilder as _, px,
+    AnyElement, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Styled as _, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, IconName, ResizableState, Root, Sizable as _, StyledExt as _, TitleBar,
@@ -21,16 +21,16 @@ use gpui_component::{
 };
 
 use crate::ui::{
-    ActionBar, ActivityItem, BarCommand,
-    panels::{
-        ActivityLogPanel, HostInfoPanel, SettingsPanel, SidebarEvent, SidebarPanel, WelcomePanel,
-    },
+    ActivityAction, ActivityBar, HostExplorerEvent, HostExplorerView, PlaceholderView, SidebarView,
+    panels::{EventLogPanel, HostInfoPanel, SettingsPanel, WelcomePanel},
 };
 
 actions!(
     winssh,
     [
-        /// 打开或收起底部的活动日志。
+        /// 打开或收起左侧的侧边栏。
+        ToggleSidebar,
+        /// 打开或收起底部的事件日志。
         ToggleBottomDock,
         /// 打开或收起右侧的主机信息与设置。
         ToggleRightDock,
@@ -41,16 +41,17 @@ actions!(
 const DOCK_ID: &str = "winssh-main-dock";
 const DOCK_VERSION: usize = 1;
 
-const SESSIONS_WIDTH: gpui::Pixels = px(300.);
-const LOG_HEIGHT: gpui::Pixels = px(180.);
-const INSPECTOR_WIDTH: gpui::Pixels = px(300.);
+const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
+const EVENT_LOG_HEIGHT: gpui::Pixels = px(180.);
+const HOST_INFO_WIDTH: gpui::Pixels = px(300.);
 
 pub struct Workspace {
     dock_area: Entity<DockArea>,
-    sessions_panel: Entity<SidebarPanel>,
-    activity: ActivityItem,
+    host_explorer: Entity<HostExplorerView>,
+    /// 侧边栏当前显示哪个视图，也就是活动栏上选中的那个条目。
+    view: SidebarView,
     /// 侧边栏是否展开。收起时活动栏留在原处，右边整块让给 Dock。
-    sessions_open: bool,
+    sidebar_open: bool,
     resizable_state: Entity<ResizableState>,
     _skin: Rc<DockSkin>,
 }
@@ -63,18 +64,18 @@ impl Workspace {
         let host_info = HostInfoPanel::new(window, cx);
         let settings = SettingsPanel::new(window, cx);
         let welcome = WelcomePanel::new(window, cx);
-        let activity_log = ActivityLogPanel::new(window, cx);
-        let sessions_panel =
-            cx.new(|cx| SidebarPanel::new(dock_area.downgrade(), host_info.clone(), window, cx));
+        let event_log = EventLogPanel::new(window, cx);
+        let host_explorer = cx
+            .new(|cx| HostExplorerView::new(dock_area.downgrade(), host_info.clone(), window, cx));
         cx.subscribe_in(
-            &sessions_panel,
+            &host_explorer,
             window,
-            |this, _, event: &SidebarEvent, window, cx| match event {
-                SidebarEvent::Collapse => this.toggle_sessions(cx),
+            |this, _, event: &HostExplorerEvent, window, cx| match event {
+                HostExplorerEvent::Collapse => this.toggle_sidebar(cx),
                 // 主机仓储还没有落地，先如实说明，而不是弹一个填不进去的表单。
-                SidebarEvent::NewHost => window.push_notification("新建主机还在开发中。", cx),
-                SidebarEvent::HostMenu(session) => {
-                    window.push_notification(format!("{} 的操作菜单还在开发中。", session.name), cx)
+                HostExplorerEvent::NewHost => window.push_notification("新建主机还在开发中。", cx),
+                HostExplorerEvent::HostMenu(host) => {
+                    window.push_notification(format!("{} 的操作菜单还在开发中。", host.name), cx)
                 }
             },
         )
@@ -92,7 +93,7 @@ impl Workspace {
 
             area.set_dock(
                 DockPlacement::Bottom,
-                DockLayout::tabs().panel_view(panel_handle(activity_log), cx),
+                DockLayout::tabs().panel_view(panel_handle(event_log), cx),
                 window,
                 cx,
             );
@@ -106,14 +107,14 @@ impl Workspace {
             );
 
             for (placement, size) in [
-                (DockPlacement::Bottom, LOG_HEIGHT),
-                (DockPlacement::Right, INSPECTOR_WIDTH),
+                (DockPlacement::Bottom, EVENT_LOG_HEIGHT),
+                (DockPlacement::Right, HOST_INFO_WIDTH),
             ] {
                 area.set_dock_size(placement, size, window, cx);
                 area.set_dock_collapsible(placement, true, window, cx);
             }
 
-            // 打开窗口时先把空间让给会话与终端，日志和主机信息按需唤出。
+            // 打开窗口时先把空间让给主机列表与终端，日志和主机信息按需唤出。
             for placement in [DockPlacement::Bottom, DockPlacement::Right] {
                 if area.is_dock_open(placement) {
                     area.toggle_dock(placement, window, cx);
@@ -123,16 +124,16 @@ impl Workspace {
 
         Self {
             dock_area,
-            sessions_panel,
-            activity: ActivityItem::Sessions,
-            sessions_open: true,
+            host_explorer,
+            view: SidebarView::Hosts,
+            sidebar_open: true,
             resizable_state,
             _skin: skin,
         }
     }
 
-    fn toggle_sessions(&mut self, cx: &mut Context<Self>) {
-        self.sessions_open = !self.sessions_open;
+    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_open = !self.sidebar_open;
         cx.notify();
     }
 
@@ -147,34 +148,31 @@ impl Workspace {
         });
     }
 
-    /// 选中活动栏条目：切换侧边栏内容。
+    /// 选中活动栏条目：切换侧边栏视图。
     /// 再次点击当前条目等于收起侧边栏 —— 同一个键既是“去这儿”也是“别看了”。
-    fn select_activity(
-        &mut self,
-        activity: ActivityItem,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.activity == activity {
-            self.toggle_sessions(cx);
+    fn select_view(&mut self, view: SidebarView, cx: &mut Context<Self>) {
+        if self.view == view {
+            self.toggle_sidebar(cx);
             return;
         }
 
-        self.activity = activity;
-        self.sessions_open = true;
-        self.sessions_panel
-            .update(cx, |panel, cx| panel.set_activity(activity, cx));
+        self.view = view;
+        self.sidebar_open = true;
         cx.notify();
     }
 
     /// 执行活动栏底部的全局动作。
-    fn run_command(&mut self, command: BarCommand, window: &mut Window, cx: &mut Context<Self>) {
-        match command {
-            BarCommand::Settings => self.toggle_dock(DockPlacement::Right, window, cx),
+    fn run_action(&mut self, action: ActivityAction, window: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            ActivityAction::Settings => self.toggle_dock(DockPlacement::Right, window, cx),
             // 这两个入口的功能还没有落地。先如实说明，而不是让按钮点下去毫无反应。
-            BarCommand::Assistant => window.push_notification("AI 助手还在开发中。", cx),
-            BarCommand::QuickConnect => window.push_notification("快速连接还在开发中。", cx),
+            ActivityAction::Assistant => window.push_notification("AI 助手还在开发中。", cx),
+            ActivityAction::QuickConnect => window.push_notification("快速连接还在开发中。", cx),
         }
+    }
+
+    fn on_toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_sidebar(cx);
     }
 
     fn on_toggle_bottom_dock(
@@ -204,6 +202,17 @@ impl Workspace {
         )
     }
 
+    /// 侧边栏当前那个视图。只有主机视图有实现，其余三个走占位视图 ——
+    /// 它们的状态还没有，所以不必常驻一个 `Entity`，每帧构建就够了。
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+        match self.view {
+            SidebarView::Hosts => self.host_explorer.clone().into_any_element(),
+            view => PlaceholderView::new(view)
+                .on_collapse(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)))
+                .into_any_element(),
+        }
+    }
+
     fn render_status_bar(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         StatusBar::new()
             .left(
@@ -212,15 +221,15 @@ impl Workspace {
                     .xsmall()
                     .icon(IconName::PanelLeft)
                     .tooltip("侧边栏")
-                    // 侧边栏不在 dock 里，所以它和面板标题行上的收起按钮走同一条路。
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_sessions(cx))),
+                    // 侧边栏不在 dock 里，所以它和视图标题行上的收起按钮走同一条路。
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
             )
             .left(
                 Button::new("status-toggle-bottom")
                     .ghost()
                     .xsmall()
                     .icon(IconName::PanelBottom)
-                    .tooltip("活动日志")
+                    .tooltip("事件日志")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.toggle_dock(DockPlacement::Bottom, window, cx);
                     })),
@@ -235,7 +244,7 @@ impl Workspace {
                         this.toggle_dock(DockPlacement::Right, window, cx);
                     })),
             )
-            .right(div().child(self.activity.label()))
+            .right(div().child(self.view.label()))
     }
 }
 
@@ -252,6 +261,7 @@ impl Render for Workspace {
             .v_flex()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_bottom_dock))
             .on_action(cx.listener(Self::on_toggle_right_dock))
             .child(self.render_title_bar(window, cx))
@@ -264,16 +274,16 @@ impl Render for Workspace {
                     .min_h_0()
                     .items_stretch()
                     .child(
-                        ActionBar::new(self.activity)
-                            .on_select(cx.listener(|this, item: &ActivityItem, window, cx| {
-                                this.select_activity(*item, window, cx);
+                        ActivityBar::new(self.view)
+                            .on_select(cx.listener(|this, view: &SidebarView, _, cx| {
+                                this.select_view(*view, cx);
                             }))
-                            .on_command(cx.listener(|this, command: &BarCommand, window, cx| {
-                                this.run_command(*command, window, cx);
+                            .on_action(cx.listener(|this, action: &ActivityAction, window, cx| {
+                                this.run_action(*action, window, cx);
                             })),
                     )
                     .child(div().flex_1().min_w_0().map(|this| {
-                        if !self.sessions_open {
+                        if !self.sidebar_open {
                             return this.child(self.dock_area.clone());
                         }
 
@@ -282,9 +292,9 @@ impl Render for Workspace {
                                 .with_state(&self.resizable_state)
                                 .child(
                                     resizable_panel()
-                                        .size(SESSIONS_WIDTH)
+                                        .size(SIDEBAR_WIDTH)
                                         .size_range(px(240.)..px(560.))
-                                        .child(self.sessions_panel.clone()),
+                                        .child(self.render_sidebar(cx)),
                                 )
                                 .child(
                                     resizable_panel()

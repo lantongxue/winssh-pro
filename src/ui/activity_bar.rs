@@ -1,13 +1,13 @@
 //! 主窗口最左侧的固定活动栏。
 //!
 //! 活动栏是应用的全局导航：它的宽度、位置和条目顺序不随内容变化，
-//! 右侧的 Dock 区域才是会变的工作区。它只负责表达“当前在哪一类工作上”，
-//! 面板的开合由 [`crate::ui::Workspace`] 决定。
+//! 右侧的侧边栏与 Dock 区域才是会变的工作区。它只负责表达“当前在哪一类工作上”，
+//! 侧边栏的开合由 [`crate::ui::Workspace`] 决定。
 //!
 //! 版式来自设计稿：48 宽的窄栏里放 36×36 的圆角药丸，药丸中间是 18px 图标，
 //! 相邻药丸留 6 的缝。选中态由两处表达 —— 药丸底色，加上贴着栏最左边缘的
-//! 一条 3×24 蓝色指示条。栏被分成两组：上面是导航，底部一组是全局动作，
-//! 中间的留白由 flex 撑开，只在底部那组上方画一条分隔线。
+//! 一条 3×24 蓝色指示条。栏被分成两组：上面是切换侧边栏视图的导航，底部一组是
+//! 全局动作，中间的留白由 flex 撑开，只在底部那组上方画一条分隔线。
 
 use std::rc::Rc;
 
@@ -22,10 +22,10 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::ui::{AppIcon, palette};
+use crate::ui::{AppIcon, SidebarView, palette};
 
 /// 活动栏宽度。固定值：图标是等宽的，随内容伸缩只会让全局导航不稳定。
-pub const ACTION_BAR_WIDTH: Pixels = px(48.);
+pub const ACTIVITY_BAR_WIDTH: Pixels = px(48.);
 
 /// 栏首尾的留白，也是分隔线与底部那组之间的距离。
 const BAR_PADDING: Pixels = px(8.);
@@ -46,57 +46,10 @@ const INDICATOR_WIDTH: Pixels = px(3.);
 const INDICATOR_HEIGHT: Pixels = px(24.);
 const INDICATOR_RADIUS: Pixels = px(2.);
 
-/// 活动栏上的一个导航条目，对应侧边栏里的一类内容。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ActivityItem {
-    /// 会话列表：按分组浏览并打开主机。
-    Sessions,
-    /// 命令片段：常用命令与脚本，可直接发到会话里。
-    Snippets,
-    /// 密钥与凭据：私钥、口令与 known_hosts。
-    Keys,
-    /// 资源监控：已连接主机的 CPU、内存与网络。
-    Monitor,
-}
-
-impl ActivityItem {
-    /// 自上而下的排列顺序。
-    pub const ALL: [ActivityItem; 4] = [Self::Sessions, Self::Snippets, Self::Keys, Self::Monitor];
-
-    pub fn id(&self) -> &'static str {
-        match self {
-            Self::Sessions => "sessions",
-            Self::Snippets => "snippets",
-            Self::Keys => "keys",
-            Self::Monitor => "monitor",
-        }
-    }
-
-    /// 条目名称，同时用作侧边栏标题与图标按钮的可访问名称。
-    pub fn label(&self) -> SharedString {
-        match self {
-            Self::Sessions => "会话",
-            Self::Snippets => "命令片段",
-            Self::Keys => "密钥",
-            Self::Monitor => "资源监控",
-        }
-        .into()
-    }
-
-    pub fn icon(&self) -> AppIcon {
-        match self {
-            Self::Sessions => AppIcon::Server,
-            Self::Snippets => AppIcon::CodeXml,
-            Self::Keys => AppIcon::KeyRound,
-            Self::Monitor => AppIcon::Activity,
-        }
-    }
-}
-
-/// 活动栏底部的全局动作。它们不切换侧边栏内容，所以和导航条目分成两组，
+/// 活动栏底部的全局动作。它们不切换侧边栏视图，所以和导航条目分成两组，
 /// 中间用分隔线断开 —— 位置稳定，但按下去的结果是一次性的。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BarCommand {
+pub enum ActivityAction {
     /// AI 助手。
     Assistant,
     /// 快速连接：直接输入地址开一个会话。
@@ -105,9 +58,9 @@ pub enum BarCommand {
     Settings,
 }
 
-impl BarCommand {
+impl ActivityAction {
     /// 自上而下的排列顺序。
-    pub const ALL: [BarCommand; 3] = [Self::Assistant, Self::QuickConnect, Self::Settings];
+    pub const ALL: [ActivityAction; 3] = [Self::Assistant, Self::QuickConnect, Self::Settings];
 
     pub fn id(&self) -> &'static str {
         match self {
@@ -144,46 +97,46 @@ impl BarCommand {
     }
 }
 
-type ItemHandler = Rc<dyn Fn(&ActivityItem, &mut Window, &mut App)>;
-type CommandHandler = Rc<dyn Fn(&BarCommand, &mut Window, &mut App)>;
+type ViewHandler = Rc<dyn Fn(&SidebarView, &mut Window, &mut App)>;
+type ActionHandler = Rc<dyn Fn(&ActivityAction, &mut Window, &mut App)>;
 
 /// 固定在窗口左侧的活动栏。
 #[derive(IntoElement)]
-pub struct ActionBar {
-    active: ActivityItem,
-    on_select: Option<ItemHandler>,
-    on_command: Option<CommandHandler>,
+pub struct ActivityBar {
+    active: SidebarView,
+    on_select: Option<ViewHandler>,
+    on_action: Option<ActionHandler>,
 }
 
-impl ActionBar {
-    pub fn new(active: ActivityItem) -> Self {
+impl ActivityBar {
+    pub fn new(active: SidebarView) -> Self {
         Self {
             active,
             on_select: None,
-            on_command: None,
+            on_action: None,
         }
     }
 
-    /// 选中某个导航条目。再次选中当前条目由宿主决定语义（这里是收起侧边栏）。
+    /// 选中某个侧边栏视图。再次选中当前视图由宿主决定语义（这里是收起侧边栏）。
     pub fn on_select(
         mut self,
-        handler: impl Fn(&ActivityItem, &mut Window, &mut App) + 'static,
+        handler: impl Fn(&SidebarView, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_select = Some(Rc::new(handler));
         self
     }
 
     /// 触发底部的某个全局动作。
-    pub fn on_command(
+    pub fn on_action(
         mut self,
-        handler: impl Fn(&BarCommand, &mut Window, &mut App) + 'static,
+        handler: impl Fn(&ActivityAction, &mut Window, &mut App) + 'static,
     ) -> Self {
-        self.on_command = Some(Rc::new(handler));
+        self.on_action = Some(Rc::new(handler));
         self
     }
 
-    fn render_item(&self, item: ActivityItem, cx: &App) -> impl IntoElement {
-        let selected = item == self.active;
+    fn render_view(&self, view: SidebarView, cx: &App) -> impl IntoElement {
+        let selected = view == self.active;
         let on_select = self.on_select.clone();
         let tone = if selected {
             palette::teal()
@@ -193,35 +146,35 @@ impl ActionBar {
 
         slot(
             selected.then(palette::blue),
-            pill(ElementId::Name(item.id().into()), item.icon(), tone, cx)
-                .tooltip(item.label())
-                .accessibility_id(item.label())
+            pill(ElementId::Name(view.id().into()), view.icon(), tone, cx)
+                .tooltip(view.label())
+                .accessibility_id(view.label())
                 .selected(selected)
                 .toggled(selected)
                 .on_click(move |_, window, cx| {
                     if let Some(on_select) = on_select.as_ref() {
-                        on_select(&item, window, cx);
+                        on_select(&view, window, cx);
                     }
                 }),
         )
     }
 
-    fn render_command(&self, command: BarCommand, cx: &App) -> impl IntoElement {
-        let on_command = self.on_command.clone();
+    fn render_action(&self, action: ActivityAction, cx: &App) -> impl IntoElement {
+        let on_action = self.on_action.clone();
 
         slot(
             None,
             pill(
-                ElementId::Name(command.id().into()),
-                command.icon(),
-                command.tone(cx),
+                ElementId::Name(action.id().into()),
+                action.icon(),
+                action.tone(cx),
                 cx,
             )
-            .tooltip(command.label())
-            .accessibility_id(command.label())
+            .tooltip(action.label())
+            .accessibility_id(action.label())
             .on_click(move |_, window, cx| {
-                if let Some(on_command) = on_command.as_ref() {
-                    on_command(&command, window, cx);
+                if let Some(on_action) = on_action.as_ref() {
+                    on_action(&action, window, cx);
                 }
             }),
         )
@@ -258,7 +211,7 @@ fn slot(indicator: Option<Hsla>, pill: Button) -> impl IntoElement {
 /// 图标药丸：36×36 的圆角方块，中间一个 18px 图标。
 ///
 /// 底色是主题强调色压到很低的一层 —— 设计稿里它正好和右侧面板同色，
-/// 也就是说“选中的条目”和“它打开的面板”是同一块表面。
+/// 也就是说“选中的条目”和“它打开的视图”是同一块表面。
 fn pill(id: ElementId, icon: impl Into<Icon>, tone: Hsla, cx: &App) -> Button {
     let variant = ButtonCustomVariant::new(cx)
         .color(cx.theme().transparent)
@@ -274,12 +227,12 @@ fn pill(id: ElementId, icon: impl Into<Icon>, tone: Hsla, cx: &App) -> Button {
         .icon(icon)
 }
 
-impl RenderOnce for ActionBar {
+impl RenderOnce for ActivityBar {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         v_flex()
-            .id("action-bar")
+            .id("activity-bar")
             .flex_shrink_0()
-            .w(ACTION_BAR_WIDTH)
+            .w(ACTIVITY_BAR_WIDTH)
             .h_full()
             .py(BAR_PADDING)
             .bg(cx.theme().sidebar)
@@ -287,9 +240,9 @@ impl RenderOnce for ActionBar {
             .border_color(cx.theme().sidebar_border)
             .child(
                 v_flex().gap(PILL_GAP).children(
-                    ActivityItem::ALL
+                    SidebarView::ALL
                         .into_iter()
-                        .map(|item| self.render_item(item, cx)),
+                        .map(|view| self.render_view(view, cx)),
                 ),
             )
             // 导航占据上半部分，全局动作沉到底部：两组的职责不同。
@@ -299,9 +252,9 @@ impl RenderOnce for ActionBar {
             .child(Separator::horizontal().color(cx.theme().sidebar_border))
             .child(
                 v_flex().pt(BAR_PADDING).gap(PILL_GAP).children(
-                    BarCommand::ALL
+                    ActivityAction::ALL
                         .into_iter()
-                        .map(|command| self.render_command(command, cx)),
+                        .map(|action| self.render_action(action, cx)),
                 ),
             )
     }
