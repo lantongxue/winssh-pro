@@ -10,6 +10,13 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["fo
 gpui-component = { path = "refs/gpui-component/crates/ui", version = "0.5.2" }
 gpui-component-assets = { path = "refs/gpui-component/crates/assets", version = "0.5.1" }
 
+# 终端内核。VT 解析、屏幕缓冲、滚动回卷与 PTY 都由 alacritty 提供。
+# 用的是 zed 的那个 fork，rev 与 `refs/zed` 自己钉的一致（见 refs/alacritty）：
+# `src/terminal/` 是照着 zed 的 `crates/terminal` + `crates/terminal_view`
+# 移植的，API 必须对得上。和 gpui 一样落到本地检出，不走网络克隆。
+alacritty_terminal = { path = "refs/alacritty/alacritty_terminal", version = "0.26.1-dev" }
+futures = "0.3"
+
 # The reference checkouts under `refs/` are the sources of truth for both the
 # GPUI runtime and the component library, so the git coordinates above resolve
 # to the local trees instead of the network.

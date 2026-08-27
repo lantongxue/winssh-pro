@@ -311,8 +311,9 @@ impl HostExplorerView {
         cx.notify();
     }
 
-    /// 双击：在中心区新开一个终端标签页，并记进“最近”。
-    fn open_host(&mut self, host: &Host, window: &mut Window, cx: &mut Context<Self>) {
+    /// 打开一台主机：在中心区新开一个终端标签页，并记进“最近”。
+    /// 列表里双击是这条路，命令面板选中一台主机也是。
+    pub fn open_host(&mut self, host: &Host, window: &mut Window, cx: &mut Context<Self>) {
         self.select_host(host, cx);
 
         self.recent.retain(|id| id != &host.id);

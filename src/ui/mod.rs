@@ -10,6 +10,7 @@
 //! | [`dialogs`] | `*Dialog` | 盖在窗口中央、要用户答复的一层 |
 //! | [`cards`] | `*Card` | 列表或网格里代表一条数据的那一块 |
 //! | [`menus`] | `*Menu` | 点开之后浮在内容之上的一列动作 |
+//! | [`elements`] | `*Element` | 自己实现 [`gpui::Element`]，下到布局与绘制里的那一层 |
 //!
 //! 新增一类组件（抽屉、气泡……）就照这个样子新开一个目录，不要塞进
 //! 已有的目录里凑合 —— 目录名一旦对不上里面的东西，就没人知道该往哪儿找了。
@@ -20,6 +21,7 @@
 mod bars;
 mod cards;
 mod dialogs;
+mod elements;
 mod menus;
 mod panels;
 mod theme;
@@ -32,7 +34,8 @@ pub use workspace::Workspace;
 use gpui::{App, KeyBinding};
 use gpui_component::dock::{ClosePanel, ToggleZoom};
 
-use workspace::{ToggleBottomDock, ToggleRightDock, ToggleSidebar};
+use panels::{CopySelection, PasteClipboard};
+use workspace::{ToggleBottomDock, ToggleCommandPalette, ToggleRightDock, ToggleSidebar};
 
 /// 主修饰键：macOS 用 Command，其余平台用 Ctrl。
 #[cfg(target_os = "macos")]
@@ -44,10 +47,22 @@ const CMD: &str = "ctrl";
 pub fn init(cx: &mut App) {
     theme::appearance::init(cx);
     cx.bind_keys(vec![
+        KeyBinding::new(&format!("{CMD}-k"), ToggleCommandPalette, None),
         KeyBinding::new(&format!("{CMD}-b"), ToggleSidebar, None),
         KeyBinding::new(&format!("{CMD}-j"), ToggleBottomDock, None),
         KeyBinding::new(&format!("{CMD}-alt-b"), ToggleRightDock, None),
         KeyBinding::new(&format!("{CMD}-w"), ClosePanel, None),
         KeyBinding::new("shift-escape", ToggleZoom, None),
+        // 终端里的复制粘贴。`ctrl-c` / `ctrl-v` 在终端里是中断和控制字符，
+        // 不能拿来当复制粘贴，所以非 macOS 平台也走 `ctrl-shift-*`
+        // —— 各家终端都是这么让开的。
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-c", CopySelection, None),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-v", PasteClipboard, None),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-c", CopySelection, None),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-v", PasteClipboard, None),
     ]);
 }

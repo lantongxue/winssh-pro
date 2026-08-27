@@ -2,6 +2,8 @@
 
 mod assets;
 mod host;
+mod session;
+mod terminal;
 mod ui;
 
 use gpui::{AppContext as _, Bounds, WindowBounds, WindowKind, WindowOptions, px, size};

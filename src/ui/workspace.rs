@@ -1,7 +1,7 @@
 //! 主窗口外壳：标题栏 + 固定活动栏 + 侧边栏 + Dock 工作区。
 //!
-//! 外壳本身不放业务内容。左侧活动栏是稳定的全局导航，紧接着是可收起的侧边栏，
-//! 右边整块交给 [`DockArea`]：终端占据中心、事件日志在底部、主机信息与设置在右侧，
+//! 外壳本身不放业务内容。标题栏正中是命令中心，左侧活动栏是稳定的全局导航，
+//! 紧接着是可收起的侧边栏，右边整块交给 [`DockArea`]：终端占据中心、事件日志在底部、主机信息与设置在右侧，
 //! 可以拖拽、折叠与缩放。侧边栏不在 dock 系统内 —— 它的宽度归 `ResizableState`，
 //! 开合归 [`Workspace::sidebar_open`]，显示哪个视图归 [`Workspace::view`]。
 
@@ -13,13 +13,15 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme as _, ResizableState, Root, StyledExt as _, TitleBar, WindowExt as _,
-    dock::{DockArea, DockLayout, DockPlacement, DockSkin, panel_handle},
-    h_flex, h_resizable, resizable_panel,
+    dock::{DockArea, DockLayout, DockPlacement, DockSkin, PanelStyle, panel_handle},
+    h_flex, h_resizable,
+    kbd::Kbd,
+    resizable_panel,
 };
 
 use crate::ui::{
-    bars::{ActivityAction, ActivityBar},
-    dialogs::HostFormDialog,
+    bars::{ActivityAction, ActivityBar, CommandCenterBar},
+    dialogs::{CommandPaletteDialog, CommandPaletteEvent, HostFormDialog},
     panels::{EventLogPanel, HostInfoPanel, SettingsPanel, WelcomePanel},
     views::{HostExplorerEvent, HostExplorerView, PlaceholderView, SidebarView},
 };
@@ -27,6 +29,8 @@ use crate::ui::{
 actions!(
     winssh,
     [
+        /// 打开命令面板；已经开着就收起。
+        ToggleCommandPalette,
         /// 打开或收起左侧的侧边栏。
         ToggleSidebar,
         /// 打开或收起底部的事件日志。
@@ -40,6 +44,14 @@ actions!(
 const DOCK_ID: &str = "winssh-main-dock";
 const DOCK_VERSION: usize = 1;
 
+/// 标题栏左端让给窗口按钮的宽度：macOS 上是红绿灯占的那一段（与
+/// [`TitleBar`] 内部的留白同宽），其余平台的窗口按钮在右边，标题栏左端不留位置。
+/// 右侧补上同样的宽度，中间那一段才落在两侧 chrome 的正中。
+#[cfg(target_os = "macos")]
+const WINDOW_CONTROLS_INSET: gpui::Pixels = px(80.);
+#[cfg(not(target_os = "macos"))]
+const WINDOW_CONTROLS_INSET: gpui::Pixels = px(0.);
+
 const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
 const EVENT_LOG_HEIGHT: gpui::Pixels = px(180.);
 const HOST_INFO_WIDTH: gpui::Pixels = px(300.);
@@ -47,6 +59,9 @@ const HOST_INFO_WIDTH: gpui::Pixels = px(300.);
 pub struct Workspace {
     dock_area: Entity<DockArea>,
     host_explorer: Entity<HostExplorerView>,
+    /// 命令面板。它常驻在这里而不是每次现搭：面板的搜索状态归它自己，
+    /// 外壳只在打开时把当前的主机递过去。
+    command_palette: Entity<CommandPaletteDialog>,
     /// 侧边栏当前显示哪个视图，也就是活动栏上选中的那个条目。
     view: SidebarView,
     /// 侧边栏是否展开。收起时活动栏留在原处，右边整块让给 Dock。
@@ -58,6 +73,9 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (dock_area, skin) = DockSkin::dock_area(DOCK_ID, Some(DOCK_VERSION), window, cx);
+        // 一个面板的时候也画标签条。默认的 `Auto` 会把它换成一行标题 ——
+        // 那一行上没有标签，也就没有关闭按钮，只开着一条会话时就关不掉了。
+        skin.set_panel_style(PanelStyle::TabBar, cx);
         let resizable_state = cx.new(|_| ResizableState::default());
 
         let host_info = HostInfoPanel::new(window, cx);
@@ -80,6 +98,23 @@ impl Workspace {
                     format!("{}：“{}”还在开发中。", host.name, action.label()),
                     cx,
                 ),
+            },
+        )
+        .detach();
+
+        let command_palette = cx.new(|cx| CommandPaletteDialog::new(window, cx));
+        cx.subscribe_in(
+            &command_palette,
+            window,
+            |this, _, event: &CommandPaletteEvent, window, cx| match event {
+                CommandPaletteEvent::OpenHost(host) => this
+                    .host_explorer
+                    .update(cx, |explorer, cx| explorer.open_host(host, window, cx)),
+                CommandPaletteEvent::ShowView(view) => this.show_view(*view, cx),
+                CommandPaletteEvent::NewHost => {
+                    HostFormDialog::open(this.host_explorer.clone(), window, cx)
+                }
+                CommandPaletteEvent::Activity(action) => this.run_action(*action, window, cx),
             },
         )
         .detach();
@@ -128,6 +163,7 @@ impl Workspace {
         Self {
             dock_area,
             host_explorer,
+            command_palette,
             view: SidebarView::Hosts,
             sidebar_open: true,
             resizable_state,
@@ -159,9 +195,21 @@ impl Workspace {
             return;
         }
 
+        self.show_view(view, cx);
+    }
+
+    /// 显示某个侧边栏视图。和 [`Self::select_view`] 不同，选中当前视图不会收起 ——
+    /// 命令面板里挑的是“去这儿”，没有“再按一次”那层意思。
+    fn show_view(&mut self, view: SidebarView, cx: &mut Context<Self>) {
         self.view = view;
         self.sidebar_open = true;
         cx.notify();
+    }
+
+    /// 打开命令面板；已经开着就收起。条目按当前的主机现搭，面板不留旧的一份。
+    fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let hosts = self.host_explorer.read(cx).groups().to_vec();
+        CommandPaletteDialog::open(&self.command_palette, &hosts, window, cx);
     }
 
     /// 执行活动栏底部的全局动作。
@@ -172,6 +220,15 @@ impl Workspace {
             ActivityAction::Assistant => window.push_notification("AI 助手还在开发中。", cx),
             ActivityAction::QuickConnect => window.push_notification("快速连接还在开发中。", cx),
         }
+    }
+
+    fn on_toggle_command_palette(
+        &mut self,
+        _: &ToggleCommandPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_command_palette(window, cx);
     }
 
     fn on_toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
@@ -196,13 +253,32 @@ impl Workspace {
         self.toggle_dock(DockPlacement::Right, window, cx);
     }
 
-    fn render_title_bar(&self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        TitleBar::new().child(
-            h_flex()
-                .items_center()
-                .gap_2()
-                .child(div().text_sm().child("WinSSH Pro")),
-        )
+    /// 标题栏：左边应用名，正中命令中心，右边先空着。
+    ///
+    /// 两侧那两块都是 `flex_1`，剩下的宽度对半分，命令中心因此正好落在中间；
+    /// 右边虽然还没有内容，那一块也不能省 —— 它是对称的另一半，
+    /// 连同 [`WINDOW_CONTROLS_INSET`] 一起把左端让给窗口按钮的那段补回来。
+    fn render_title_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        TitleBar::new()
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .items_center()
+                    .gap_2()
+                    .child(div().flex_shrink_0().text_sm().child("WinSSH Pro")),
+            )
+            .child(
+                CommandCenterBar::new()
+                    .shortcut(Kbd::binding_for_action(&ToggleCommandPalette, None, window))
+                    .on_search(cx.listener(|this, _, window, cx| {
+                        this.open_command_palette(window, cx);
+                    }))
+                    .on_connect(cx.listener(|this, _, window, cx| {
+                        this.run_action(ActivityAction::QuickConnect, window, cx);
+                    })),
+            )
+            .child(h_flex().flex_1().min_w_0().pr(WINDOW_CONTROLS_INSET))
     }
 
     /// 侧边栏当前那个视图。只有主机视图有实现，其余三个走占位视图 ——
@@ -230,6 +306,7 @@ impl Render for Workspace {
             .v_flex()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .on_action(cx.listener(Self::on_toggle_command_palette))
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_bottom_dock))
             .on_action(cx.listener(Self::on_toggle_right_dock))

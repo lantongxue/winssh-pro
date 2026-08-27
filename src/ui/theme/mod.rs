@@ -4,8 +4,10 @@
 //!
 //! - [`appearance`]：深浅主题跟不跟随系统；
 //! - [`palette`]：主题给不出的品牌语义色与表面层级；
+//! - [`ansi`]：终端网格那一套 ANSI 配色；
 //! - [`icons`]：组件库图标集里缺的那几个。
 
+pub mod ansi;
 pub mod appearance;
 pub mod icons;
 pub mod palette;

@@ -15,5 +15,5 @@ mod welcome;
 pub use event_log::EventLogPanel;
 pub use host_info::HostInfoPanel;
 pub use settings::SettingsPanel;
-pub use terminal::TerminalPanel;
+pub use terminal::{CopySelection, PasteClipboard, TerminalPanel};
 pub use welcome::WelcomePanel;

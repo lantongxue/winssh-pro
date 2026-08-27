@@ -6,3 +6,7 @@
 	path = refs/gpui-component
 	url = https://github.com/longbridge/gpui-component
 	shallow = true
+[submodule "refs/alacritty"]
+	path = refs/alacritty
+	url = https://github.com/zed-industries/alacritty
+	shallow = true

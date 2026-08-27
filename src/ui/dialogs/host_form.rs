@@ -8,13 +8,14 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    div, prelude::FluentBuilder as _, px, rgb,
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, Hsla, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div, prelude::FluentBuilder as _, px, rgb,
 };
 use gpui_component::{
     ActiveTheme as _, Colorize as _, Icon, IndexPath, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
+    color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     h_flex,
     input::{Input, InputEvent, InputState},
     select::{Select, SelectEvent, SelectState},
@@ -46,9 +47,14 @@ const OS_PLATFORMS: [&str; 6] = [
 
 /// 徽章强调色的候选色板，取自设计稿。这是一个独立的展示概念，不复用
 /// [`palette`] 里那几个有语义的颜色（选中态、会话点、可达性……）。
+///
+/// 色板之外还可以用取色器自己挑一个，所以这七个是快捷选项，不是全集。
 const BADGE_COLORS: [u32; 7] = [
     0x38bdf8, 0x10b981, 0x8b5cf6, 0xf59e0b, 0xef4444, 0xec4899, 0x64748b,
 ];
+
+/// 色板上一个圆点的直径。
+const BADGE_SWATCH_SIZE: gpui::Pixels = px(22.);
 
 /// 标题行：图标 + 名称 + 副标题，对应设计稿的对话框头部。
 fn render_header(cx: &App) -> impl IntoElement {
@@ -144,7 +150,12 @@ pub struct HostFormDialog {
     password: Entity<InputState>,
     platform: Entity<SelectState<Vec<&'static str>>>,
     proxy_jump: Entity<SelectState<Vec<SharedString>>>,
-    color_ix: usize,
+    /// 当前的徽章强调色。存颜色本身而不是色板下标：色板和取色器是同一个值的
+    /// 两个入口，只有存成颜色，"选中的是哪一个"才有唯一答案。
+    badge_color: Hsla,
+    /// 取色器的状态。它只管自定义那一个颜色，色板点选不写回它 ——
+    /// 那样它就成了"上一次自己挑的颜色"，换回色板之后还找得回来。
+    badge_picker: Entity<ColorPickerState>,
     tag_input: Entity<InputState>,
     tags: Vec<SharedString>,
 }
@@ -272,6 +283,21 @@ impl HostFormDialog {
         )
         .detach();
 
+        // 取色器一开始是空的：方块留白就是"还没自己挑过颜色"，
+        // 当前用的是色板里的第一个。
+        let badge_picker = cx.new(|cx| ColorPickerState::new(window, cx));
+        cx.subscribe(
+            &badge_picker,
+            |this, _, event: &ColorPickerEvent, cx| match event {
+                ColorPickerEvent::Change(Some(color)) => {
+                    this.badge_color = *color;
+                    cx.notify();
+                }
+                ColorPickerEvent::Change(None) => {}
+            },
+        )
+        .detach();
+
         Self {
             name,
             group,
@@ -282,7 +308,8 @@ impl HostFormDialog {
             password,
             platform,
             proxy_jump,
-            color_ix: 0,
+            badge_color: rgb(BADGE_COLORS[0]).into(),
+            badge_picker,
             tag_input,
             tags: vec!["Linux".into(), "SSH".into()],
         }
@@ -437,24 +464,33 @@ impl HostFormDialog {
         )
     }
 
+    /// 徽章强调色：设计稿那七个色板，后面接一个取色器挑别的颜色。
+    ///
+    /// 选中态只画在当前那个颜色上：用了取色器，色板上的白圈就全灭，
+    /// 改回色板，取色器那一格的圈也跟着灭 —— 两处不会同时看着像选中。
     fn render_color_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let white: Hsla = rgb(0xffffffu32).into();
+        let ring = |selected: bool| if selected { white } else { white.opacity(0.) };
+        // 当前颜色不在色板里，就是从取色器来的。
+        let custom = !BADGE_COLORS
+            .iter()
+            .any(|hex| Hsla::from(rgb(*hex)) == self.badge_color);
+
         let swatches: Vec<_> = BADGE_COLORS
             .iter()
             .enumerate()
             .map(|(ix, hex)| {
-                let selected = ix == self.color_ix;
                 let color: Hsla = rgb(*hex).into();
                 div()
                     .id(("host-form-color", ix))
-                    .size(px(22.))
+                    .size(BADGE_SWATCH_SIZE)
                     .rounded_full()
                     .bg(color)
                     .cursor_pointer()
                     .border_2()
-                    .border_color(if selected { white } else { white.opacity(0.) })
+                    .border_color(ring(color == self.badge_color))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.color_ix = ix;
+                        this.badge_color = color;
                         cx.notify();
                     }))
                     .into_any_element()
@@ -465,7 +501,29 @@ impl HostFormDialog {
             .gap_1p5()
             .w_full()
             .child(field_label("徽章强调色", cx))
-            .child(h_flex().gap_2().items_center().children(swatches))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(h_flex().gap_2().items_center().children(swatches))
+                    .child(
+                        // 选中圈画在外面这一层：取色器那个方块自己的边框归组件管。
+                        // 弹层从右上角展开，不然 288 宽的面板会顶出对话框。
+                        div()
+                            .p_0p5()
+                            .rounded(cx.theme().radius)
+                            .border_2()
+                            .border_color(ring(custom))
+                            .text_xs()
+                            .text_color(palette::idle(cx))
+                            .child(
+                                ColorPicker::new(&self.badge_picker)
+                                    .small()
+                                    .anchor(Anchor::TopRight)
+                                    .label("自定义"),
+                            ),
+                    ),
+            )
     }
 
     fn render_tag_chip(
