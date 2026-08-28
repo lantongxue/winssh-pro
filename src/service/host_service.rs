@@ -14,7 +14,7 @@ use sea_orm::{
 
 use crate::{
     db::{self, entities::host, entities::host_group},
-    host::{Host, HostDraft, HostGroup},
+    host::{AuthMethod, Host, HostDraft, HostGroup},
     repository::HostRepository,
 };
 
@@ -99,18 +99,26 @@ impl HostService {
                         port: Set(draft.port),
                         platform: Set(draft.platform.clone()),
                         sort_order: Set(sort_order),
+                        auth_method: Set(draft.auth_method.as_str().to_owned()),
+                        password: Set(draft.password.clone()),
+                        key_path: Set(draft.key_path.clone()),
+                        jump_host_id: Set(draft.jump_host_id.clone()),
                     },
                 )
                 .await?;
             txn.commit().await?;
 
             Ok(Host {
-                id,
+                id: id.clone(),
                 name: draft.name.into(),
                 user: draft.user.into(),
                 hostname: draft.hostname.into(),
                 port: draft.port,
                 platform: draft.platform.into(),
+                auth_method: draft.auth_method,
+                password: draft.password.into(),
+                key_path: draft.key_path.into(),
+                jump_host_id: draft.jump_host_id.map(|value| value.into()),
             })
         })
         .await
@@ -131,12 +139,16 @@ impl HostService {
                     host::ActiveModel {
                         id: Set(id.clone()),
                         group_id: Set(group_id),
-                        name: Set(draft.name),
-                        user: Set(draft.user),
-                        hostname: Set(draft.hostname),
+                        name: Set(draft.name.clone()),
+                        user: Set(draft.user.clone()),
+                        hostname: Set(draft.hostname.clone()),
                         port: Set(draft.port),
-                        platform: Set(draft.platform),
+                        platform: Set(draft.platform.clone()),
                         sort_order: ActiveValue::NotSet,
+                        auth_method: Set(draft.auth_method.as_str().to_owned()),
+                        password: Set(draft.password.clone()),
+                        key_path: Set(draft.key_path.clone()),
+                        jump_host_id: Set(draft.jump_host_id.clone()),
                     },
                 )
                 .await;
@@ -210,6 +222,10 @@ impl HostService {
                         port: Set(source.port),
                         platform: Set(source.platform.clone()),
                         sort_order: Set(source.sort_order + 1),
+                        auth_method: Set(source.auth_method.clone()),
+                        password: Set(source.password.clone()),
+                        key_path: Set(source.key_path.clone()),
+                        jump_host_id: Set(source.jump_host_id.clone()),
                     },
                 )
                 .await?;
@@ -222,6 +238,10 @@ impl HostService {
                 hostname: source.hostname.into(),
                 port: source.port,
                 platform: source.platform.into(),
+                auth_method: crate::host::AuthMethod::from_str_or_default(&source.auth_method),
+                password: source.password.into(),
+                key_path: source.key_path.into(),
+                jump_host_id: source.jump_host_id.map(|value| value.into()),
             })
         })
         .await
@@ -274,6 +294,10 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                     hostname: host.hostname.into(),
                     port: host.port,
                     platform: host.platform.into(),
+                    auth_method: AuthMethod::from_str_or_default(&host.auth_method),
+                    password: host.password.into(),
+                    key_path: host.key_path.into(),
+                    jump_host_id: host.jump_host_id.map(|value| value.into()),
                 })
                 .collect(),
         })
@@ -317,6 +341,24 @@ mod tests {
             hostname: "10.0.0.1".into(),
             port: 22,
             platform: "Ubuntu / Debian Linux".into(),
+            auth_method: AuthMethod::Password,
+            password: String::new(),
+            key_path: String::new(),
+            jump_host_id: None,
+        }
+    }
+
+    fn draft_with_auth(name: &str, auth_method: AuthMethod, password: &str, key_path: &str) -> HostDraft {
+        HostDraft {
+            name: name.into(),
+            user: "root".into(),
+            hostname: "10.0.0.1".into(),
+            port: 22,
+            platform: "Ubuntu / Debian Linux".into(),
+            auth_method,
+            password: password.into(),
+            key_path: key_path.into(),
+            jump_host_id: None,
         }
     }
 
@@ -511,6 +553,35 @@ mod tests {
         assert!(id.starts_with("host-"));
         let id = next_host_id("web-01");
         assert!(id.starts_with("web01-"));
+    }
+
+    #[test]
+    fn auth_fields_are_persisted() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let draft = draft_with_auth("secure", AuthMethod::Password, "s3cr3t", "");
+            let host = service.insert_host("分组", draft).await.unwrap();
+            assert_eq!(host.auth_method, AuthMethod::Password);
+            assert_eq!(host.password.to_string(), "s3cr3t");
+            let groups = service.load_groups().await.unwrap();
+            let loaded = &groups[0].hosts[0];
+            assert_eq!(loaded.auth_method, AuthMethod::Password);
+            assert_eq!(loaded.password.to_string(), "s3cr3t");
+            let draft2 = draft_with_auth(
+                "secure2",
+                AuthMethod::PublicKey,
+                "",
+                "/home/user/.ssh/id_ed25519",
+            );
+            service.update_host(&host.id, "分组", draft2).await.unwrap();
+            let groups = service.load_groups().await.unwrap();
+            let loaded = &groups[0].hosts[0];
+            assert_eq!(loaded.auth_method, AuthMethod::PublicKey);
+            assert_eq!(
+                loaded.key_path.to_string(),
+                "/home/user/.ssh/id_ed25519"
+            );
+        });
     }
 
     /// 磁盘路径与内存库不同：文件要能建出来，关掉重开数据要还在。

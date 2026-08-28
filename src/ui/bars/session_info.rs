@@ -11,12 +11,12 @@
 //! 两个动作也只是把意图发回去。
 
 use gpui::{
-    App, ClickEvent, IntoElement, ParentElement as _, Pixels, RenderOnce, SharedString,
-    Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    App, ClickEvent, Hsla, IntoElement, ParentElement as _, Pixels, RenderOnce, SharedString,
+    Styled as _, Window, div, prelude::FluentBuilder as _, px, rgb,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
 };
 
@@ -42,6 +42,11 @@ pub struct SessionInfoBar {
     connected: bool,
     on_copy: Option<Handler>,
     on_clear: Option<Handler>,
+    on_tunnels: Option<Handler>,
+    on_sftp: Option<Handler>,
+    on_monitor: Option<Handler>,
+    monitor_active: bool,
+    tunnels_count: u32,
 }
 
 impl SessionInfoBar {
@@ -53,6 +58,11 @@ impl SessionInfoBar {
             connected: true,
             on_copy: None,
             on_clear: None,
+            on_tunnels: None,
+            on_sftp: None,
+            on_monitor: None,
+            monitor_active: false,
+            tunnels_count: 2,
         }
     }
 
@@ -78,6 +88,42 @@ impl SessionInfoBar {
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_clear = Some(Box::new(handler));
+        self
+    }
+
+    /// 右侧的 Tunnels 按钮（蓝色区域）。
+    pub fn on_tunnels(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_tunnels = Some(Box::new(handler));
+        self
+    }
+
+    /// 右侧的 SFTP 面板按钮。
+    pub fn on_sftp(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_sftp = Some(Box::new(handler));
+        self
+    }
+
+    /// 右侧的 Top Monitor 按钮，`active` 决定是否高亮为绿色。
+    pub fn on_monitor(
+        mut self,
+        active: bool,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.monitor_active = active;
+        self.on_monitor = Some(Box::new(handler));
+        self
+    }
+
+    /// Tunnels 角标数量，默认 2。
+    #[allow(dead_code)]
+    pub fn tunnels_count(mut self, count: u32) -> Self {
+        self.tunnels_count = count;
         self
     }
 }
@@ -138,6 +184,57 @@ impl RenderOnce for SessionInfoBar {
                 h_flex()
                     .flex_shrink_0()
                     .items_center()
+                    .gap_1()
+                    .child({
+                        let label = SharedString::from(format!("Tunnels {}", self.tunnels_count));
+                        Button::new("session-info-tunnels")
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(IconName::Network).with_size(ICON_SIZE))
+                            .label(label)
+                            .tooltip("Session Port Forwarding (Alt+P)")
+                            .when_some(self.on_tunnels, |this, handler| this.on_click(handler))
+                    })
+                    .child({
+                        Button::new("session-info-sftp")
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(AppIcon::FolderSync).with_size(ICON_SIZE))
+                            .label("SFTP Panel")
+                            .tooltip("Show Bottom SFTP Panel (Alt+F)")
+                            .when_some(self.on_sftp, |this, handler| this.on_click(handler))
+                    })
+                    .child({
+                        let green: Hsla = rgb(0x27C93F).into();
+                        let mut btn = Button::new("session-info-monitor")
+                            .xsmall()
+                            .icon(
+                                Icon::new(AppIcon::Activity)
+                                    .with_size(ICON_SIZE)
+                                    .text_color(green),
+                            )
+                            .label("Top Monitor")
+                            .tooltip(if self.monitor_active {
+                                "Hide Right Top Monitor (Alt+M)"
+                            } else {
+                                "Show Right Top Monitor (Alt+M)"
+                            });
+                        if self.monitor_active {
+                            btn = btn
+                                .custom(
+                                    ButtonCustomVariant::new(cx)
+                                        .color(green.opacity(0.15))
+                                        .foreground(green)
+                                        .hover(green.opacity(0.22))
+                                        .active(green.opacity(0.28)),
+                                )
+                                .border_1()
+                                .border_color(green.opacity(0.4));
+                        } else {
+                            btn = btn.ghost();
+                        }
+                        btn.when_some(self.on_monitor, |this, handler| this.on_click(handler))
+                    })
                     .child(
                         Button::new("session-info-copy")
                             .ghost()

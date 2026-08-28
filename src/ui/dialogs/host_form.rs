@@ -24,7 +24,7 @@ use gpui_component::{
 };
 
 use crate::{
-    host::{Host, HostDraft, HostGroup},
+    host::{AuthMethod, Host, HostDraft, HostGroup},
     service::HostService,
     ui::{
         theme::{AppIcon, palette},
@@ -290,27 +290,36 @@ impl HostFormDialog {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (name, group, hostname, port, username, platform_ix) = match editing {
-            Some((host, group)) => (
-                host.name.to_string(),
-                group.to_string(),
-                host.hostname.to_string(),
-                host.port.to_string(),
-                host.user.to_string(),
-                OS_PLATFORMS
-                    .iter()
-                    .position(|candidate| *candidate == host.platform.as_ref())
-                    .unwrap_or(0),
-            ),
-            None => (
-                String::new(),
-                "生产环境".to_string(),
-                String::new(),
-                "22".to_string(),
-                "root".to_string(),
-                0,
-            ),
-        };
+        let (name, group, hostname, port, username, platform_ix, auth_ix, password_default) =
+            match editing {
+                Some((host, group)) => (
+                    host.name.to_string(),
+                    group.to_string(),
+                    host.hostname.to_string(),
+                    host.port.to_string(),
+                    host.user.to_string(),
+                    OS_PLATFORMS
+                        .iter()
+                        .position(|candidate| *candidate == host.platform.as_ref())
+                        .unwrap_or(0),
+                    match host.auth_method {
+                        AuthMethod::Password => 0,
+                        AuthMethod::PublicKey => 1,
+                        AuthMethod::Agent => 2,
+                    },
+                    host.password.to_string(),
+                ),
+                None => (
+                    String::new(),
+                    "生产环境".to_string(),
+                    String::new(),
+                    "22".to_string(),
+                    "root".to_string(),
+                    0,
+                    0,
+                    String::new(),
+                ),
+            };
 
         let name = cx.new(|cx| {
             InputState::new(window, cx)
@@ -333,12 +342,18 @@ impl HostFormDialog {
             InputState::new(window, cx)
                 .placeholder("••••••••••••")
                 .masked(true)
+                .default_value(password_default)
         });
         let tag_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("添加标签(例如 AWS、生产环境)…"));
 
         let auth_type = cx.new(|cx| {
-            SelectState::new(AUTH_TYPES.to_vec(), Some(IndexPath::default()), window, cx)
+            SelectState::new(
+                AUTH_TYPES.to_vec(),
+                Some(IndexPath::new(auth_ix)),
+                window,
+                cx,
+            )
         });
         let platform = cx.new(|cx| {
             SelectState::new(
@@ -463,6 +478,18 @@ impl HostFormDialog {
             .copied()
             .unwrap_or(OS_PLATFORMS[0]);
 
+        let auth_label = self
+            .auth_type
+            .read(cx)
+            .selected_value()
+            .copied()
+            .unwrap_or(AUTH_TYPES[0]);
+        let auth_method = AuthMethod::from_label(auth_label);
+        let password = self.password.read(cx).value().trim().to_string();
+        // 密钥路径暂未设独立输入框，先留空，后续表单会为 `key` 认证补上路径选择
+        let key_path = String::new();
+        let jump_host_id: Option<String> = None;
+
         Ok((
             group.into(),
             HostDraft {
@@ -471,6 +498,10 @@ impl HostFormDialog {
                 hostname,
                 port,
                 platform: platform.to_string(),
+                auth_method,
+                password,
+                key_path,
+                jump_host_id,
             },
         ))
     }

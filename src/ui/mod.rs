@@ -34,8 +34,8 @@ pub use workspace::Workspace;
 use gpui::{App, KeyBinding};
 use gpui_component::dock::{ClosePanel, ToggleZoom};
 
-use panels::{CopySelection, PasteClipboard};
-use workspace::{ToggleBottomDock, ToggleCommandPalette, ToggleRightDock, ToggleSidebar};
+use panels::{BackTab, CopySelection, PasteClipboard, Tab, ToggleMonitor};
+use workspace::{ToggleCommandPalette, ToggleRightDock, ToggleSidebar};
 
 /// 主修饰键：macOS 用 Command，其余平台用 Ctrl。
 #[cfg(target_os = "macos")]
@@ -49,10 +49,15 @@ pub fn init(cx: &mut App) {
     cx.bind_keys(vec![
         KeyBinding::new(&format!("{CMD}-k"), ToggleCommandPalette, None),
         KeyBinding::new(&format!("{CMD}-b"), ToggleSidebar, None),
-        KeyBinding::new(&format!("{CMD}-j"), ToggleBottomDock, None),
         KeyBinding::new(&format!("{CMD}-alt-b"), ToggleRightDock, None),
         KeyBinding::new(&format!("{CMD}-w"), ClosePanel, None),
         KeyBinding::new("shift-escape", ToggleZoom, None),
+        // 终端内的 Tab / Shift-Tab：必须在 `Terminal` 上下文中显式绑定并消费，
+        // 否则会被 `Root` 的 `Tab`（焦点切换）抢走，终端永远收不到 `\x09` / `\x1b[Z`。
+        KeyBinding::new("tab", Tab, Some("Terminal")),
+        KeyBinding::new("shift-tab", BackTab, Some("Terminal")),
+        KeyBinding::new("alt-m", ToggleMonitor, Some("Terminal")),
+        KeyBinding::new("alt-t", ToggleMonitor, Some("Terminal")),
         // 终端里的复制粘贴。`ctrl-c` / `ctrl-v` 在终端里是中断和控制字符，
         // 不能拿来当复制粘贴，所以非 macOS 平台也走 `ctrl-shift-*`
         // —— 各家终端都是这么让开的。

@@ -30,7 +30,7 @@ use crate::{
         bars::ActivityAction,
         theme::{AppIcon, palette},
         views::SidebarView,
-        workspace::{ToggleBottomDock, ToggleRightDock, ToggleSidebar},
+        workspace::{ToggleRightDock, ToggleSidebar},
     },
 };
 
@@ -335,13 +335,6 @@ fn action_commands() -> Vec<PaletteCommand> {
                 .icon(IconName::PanelLeft)
                 .keywords(["sidebar", "panel"])
                 .action(Box::new(ToggleSidebar)),
-        ),
-        PaletteCommand::dispatching(
-            CommandItem::new()
-                .label("切换事件日志")
-                .icon(IconName::PanelBottom)
-                .keywords(["log", "event", "bottom"])
-                .action(Box::new(ToggleBottomDock)),
         ),
         PaletteCommand::dispatching(
             CommandItem::new()

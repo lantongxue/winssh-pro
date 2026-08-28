@@ -401,11 +401,6 @@ impl HostExplorerView {
             HostAction::EditConfig => self.edit_host(host, window, cx),
             HostAction::Duplicate => self.duplicate_host(host, window, cx),
             HostAction::Delete => self.confirm_delete(host, window, cx),
-            // 还没落地的几项如实说明，而不是让菜单点下去毫无反应。
-            action => window.push_notification(
-                format!("{}：“{}”还在开发中。", host.name, action.label()),
-                cx,
-            ),
         }
     }
 

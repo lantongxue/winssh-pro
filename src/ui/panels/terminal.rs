@@ -14,11 +14,10 @@
 //! 面板自己不解析任何字节，只做三件事：把按键送进去、把内容画出来、
 //! 把上下两条 chrome 拼上。
 //!
-//! **字节源现在是本机的一条 shell。** SSH 传输（russh）还没接上，所以开场
-//! 先在终端里说清楚这一点，而不是让界面假装连上了一台远端主机。接上之后
-//! 要改的只有 `TerminalPanel::connect` 那一个方法：把开 PTY 换成开 SSH 通道，
-//! 通道里读到的字节走 [`Emulator::write_output`]，解析、缓冲、渲染与这里的
-//! 版式都不用动。
+//! **字节源优先是远端 SSH 通道，回退到本机 shell。** `TerminalPanel::connect`
+//! 按 `Host` 经 `SshService` 建立 `russh` 连接，成功则用
+//! `Emulator::from_ssh` 承接通道字节，失败则回退到 `Emulator::spawn` 的本地
+//! PTY 并把错误写进终端，保证界面始终可用；解析、缓冲、渲染与版式都不用动。
 
 use gpui::{
     App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
@@ -27,10 +26,10 @@ use gpui::{
     SharedString, Styled as _, WeakEntity, Window, actions, div, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _,
+    ActiveTheme as _, Icon, IconName, ResizableState, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent, PanelId, TabGroup},
-    h_flex, v_flex,
+    h_flex, h_resizable, resizable_panel, v_flex,
 };
 
 use alacritty_terminal::selection::SelectionType;
@@ -42,6 +41,7 @@ use crate::{
     ui::{
         bars::{SessionInfoBar, SessionStatusBar},
         elements::{TerminalGridElement, point_at},
+        panels::{MonitorEvent, MonitorPanel},
         theme::palette,
     },
 };
@@ -53,6 +53,18 @@ actions!(
         CopySelection,
         /// 把剪贴板里的文本粘进终端。
         PasteClipboard,
+    ]
+);
+
+actions!(
+    terminal,
+    [
+        /// 终端内的 Tab（补全）—— 必须在 `Terminal` 上下文中捕获，避免被 `Root` 的 `Tab`（焦点切换）抢走。
+        Tab,
+        /// 终端内的 Shift-Tab（反向补全）。
+        BackTab,
+        /// 切换右侧监控面板（Alt+M）。
+        ToggleMonitor,
     ]
 );
 
@@ -70,6 +82,9 @@ const TAB_DOT_SIZE: gpui::Pixels = px(6.);
 const DOUBLE_CLICK: usize = 2;
 const TRIPLE_CLICK: usize = 3;
 
+/// 右侧监控面板的固定宽度。
+const MONITOR_WIDTH: gpui::Pixels = px(360.);
+
 pub struct TerminalPanel {
     host: Host,
     /// 状态栏中间那三个数字。连接层接上之后由那边推送。
@@ -85,63 +100,279 @@ pub struct TerminalPanel {
     /// 鼠标左键是否按着。按着才把移动当成拖选。
     selecting: bool,
     focus_handle: FocusHandle,
+    /// 右侧监控面板是否展开。
+    monitor_open: bool,
+    monitor_panel: Entity<MonitorPanel>,
+    /// 终端与监控面板之间的可拖拽分隔状态。
+    resizable_state: Entity<ResizableState>,
+    resizable_id: SharedString,
 }
 
 impl TerminalPanel {
-    pub fn new(host: Host, _: &mut Window, cx: &mut App) -> Entity<Self> {
+    pub fn new(host: Host, window: &mut Window, cx: &mut App) -> Entity<Self> {
         cx.new(|cx| {
+            let monitor_panel = MonitorPanel::new(host.clone(), window, cx);
+            let resizable_state = cx.new(|_| ResizableState::default());
+            let resizable_id =
+                SharedString::from(format!("terminal-monitor-{}", host.id));
             let mut this = Self {
                 telemetry: sample_telemetry(&host.id),
-                host,
+                host: host.clone(),
                 emulator: None,
                 error: None,
                 group: None,
                 grid: TerminalBounds::default(),
                 selecting: false,
                 focus_handle: cx.focus_handle(),
+                monitor_open: false,
+                monitor_panel: monitor_panel.clone(),
+                resizable_state,
+                resizable_id,
             };
-            this.connect(cx);
+            // 监听监控面板的事件：关闭与发送命令
+            cx.subscribe(&monitor_panel, |this: &mut Self, _, event: &MonitorEvent, cx| {
+                match event {
+                    MonitorEvent::Close => {
+                        this.monitor_open = false;
+                        cx.notify();
+                    }
+                    MonitorEvent::SendCommand(cmd) => {
+                        if let Some(emulator) = this.emulator.clone() {
+                            let cmd = cmd.clone();
+                            emulator.update(cx, |em, cx| {
+                                em.input(format!("{}\n", cmd).into_bytes(), cx)
+                            });
+                        }
+                    }
+                }
+            })
+            .detach();
+            this.connect(window, cx);
             this
         })
     }
 
-    /// 开出这条会话的字节源。
+    /// 直接在本机开一条登录 shell，不经过 SSH。
     ///
-    /// 现在是本机的一条登录 shell。SSH 传输接上之后换的就是这里 ——
-    /// 见文件头那段说明。
-    fn connect(&mut self, cx: &mut Context<Self>) {
-        let emulator = match Emulator::spawn(None, cx) {
-            Ok(emulator) => emulator,
-            Err(error) => {
-                self.error = Some(SharedString::from(format!("{error:#}")));
-                return;
-            }
-        };
+    /// 用于标题栏“本地 Shell”按钮。`Host` 仅用于展示（名字、地址、状态栏读数），
+    /// 字节源就是 [`crate::terminal::Emulator::spawn`] 的本机 PTY。
+    pub fn new_local(window: &mut Window, cx: &mut App) -> Entity<Self> {
+        cx.new(|cx| {
+            let counter = {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                static LOCAL_COUNTER: AtomicUsize = AtomicUsize::new(1);
+                LOCAL_COUNTER.fetch_add(1, Ordering::Relaxed)
+            };
+            let user = std::env::var("USER")
+                .or_else(|_| std::env::var("USERNAME"))
+                .unwrap_or_else(|_| "local".to_string());
+            let name: SharedString = if counter == 1 {
+                "本地 Shell".into()
+            } else {
+                SharedString::from(format!("本地 Shell {counter}"))
+            };
+            let host = Host {
+                id: SharedString::from(format!("local-{}", cx.entity_id())),
+                name: name.clone(),
+                user: SharedString::from(user),
+                hostname: SharedString::from("localhost"),
+                port: 22,
+                platform: SharedString::from("本机"),
+                auth_method: crate::host::AuthMethod::Password,
+                password: "".into(),
+                key_path: "".into(),
+                jump_host_id: None,
+            };
+            let banner = format!(
+                "\x1b[32m◆ {name}\x1b[0m（{}@{}）\r\n\x1b[90m本机 Shell 已就绪。\x1b[0m\r\n\r\n",
+                host.user, host.hostname
+            );
 
-        // 终端有新输出就重画一次面板：状态栏和信息栏都要跟着它变
-        // （当前目录来自窗口标题，连接状态来自子进程还在不在）。
-        cx.observe(&emulator, |_, _, cx| cx.notify()).detach();
-        cx.subscribe(&emulator, |_, _, event: &EmulatorEvent, cx| match event {
-            // 标题变了、子进程退了，两种都影响上下两条 chrome。
+            match crate::terminal::Emulator::spawn(None, cx) {
+                Ok(emulator) => {
+                    Self::attach_emulator(&emulator, cx);
+                    emulator.update(cx, |em, cx| {
+                        em.write_output(banner.as_bytes(), cx);
+                    });
+                    let monitor_panel = MonitorPanel::new(host.clone(), window, cx);
+                    let resizable_state = cx.new(|_| ResizableState::default());
+                    let resizable_id =
+                        SharedString::from(format!("terminal-monitor-{}", host.id));
+                    let this = Self {
+                        telemetry: sample_telemetry(&host.id),
+                        host,
+                        emulator: Some(emulator),
+                        error: None,
+                        group: None,
+                        grid: TerminalBounds::default(),
+                        selecting: false,
+                        focus_handle: cx.focus_handle(),
+                        monitor_open: false,
+                        monitor_panel: monitor_panel.clone(),
+                        resizable_state,
+                        resizable_id,
+                    };
+                    cx.subscribe(&monitor_panel, |this: &mut Self, _, event: &MonitorEvent, cx| {
+                        match event {
+                            MonitorEvent::Close => {
+                                this.monitor_open = false;
+                                cx.notify();
+                            }
+                            MonitorEvent::SendCommand(cmd) => {
+                                if let Some(emulator) = this.emulator.clone() {
+                                    let cmd = cmd.clone();
+                                    emulator.update(cx, |em, cx| {
+                                        em.input(format!("{}\n", cmd).into_bytes(), cx)
+                                    });
+                                }
+                            }
+                        }
+                    })
+                    .detach();
+                    this
+                }
+                Err(error) => {
+                    // 失败也需要一个 monitor_panel 占位，避免 Option
+                    let tmp_host = host.clone();
+                    let monitor_panel = MonitorPanel::new(tmp_host, window, cx);
+                    let resizable_state = cx.new(|_| ResizableState::default());
+                    let resizable_id =
+                        SharedString::from(format!("terminal-monitor-{}", host.id));
+                    let this = Self {
+                        telemetry: sample_telemetry(&host.id),
+                        host,
+                        emulator: None,
+                        error: Some(SharedString::from(format!(
+                            "本地 Shell 启动失败：{error:#}"
+                        ))),
+                        group: None,
+                        grid: TerminalBounds::default(),
+                        selecting: false,
+                        focus_handle: cx.focus_handle(),
+                        monitor_open: false,
+                        monitor_panel: monitor_panel.clone(),
+                        resizable_state,
+                        resizable_id,
+                    };
+                    cx.subscribe(&monitor_panel, |this: &mut Self, _, event: &MonitorEvent, cx| {
+                        match event {
+                            MonitorEvent::Close => {
+                                this.monitor_open = false;
+                                cx.notify();
+                            }
+                            MonitorEvent::SendCommand(cmd) => {
+                                if let Some(emulator) = this.emulator.clone() {
+                                    let cmd = cmd.clone();
+                                    emulator.update(cx, |em, cx| {
+                                        em.input(format!("{}\n", cmd).into_bytes(), cx)
+                                    });
+                                }
+                            }
+                        }
+                    })
+                    .detach();
+                    this
+                }
+            }
+        })
+    }
+
+    /// 开出这条会话的字节源：优先走 SSH，失败则回退到本机 shell。
+    ///
+    /// 闭环的关键是：`Host` → `SshService::connect` → `Emulator::from_ssh` →
+    /// 终端渲染。对终端来说，SSH 通道与本机 PTY 都是字节流，
+    /// 解析、缓冲与渲染都不用动。
+    fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let host = self.host.clone();
+        // 先给一个占位终端，立刻展示“正在连接”，避免空白期
+        let placeholder = crate::terminal::Emulator::new_empty(cx);
+        placeholder.update(cx, |em, cx| {
+            let banner = format!(
+                "\x1b[36m{}\x1b[0m（{}，{}）\r\n\x1b[90m正在通过 SSH 连接...\x1b[0m\r\n",
+                host.name,
+                host.address(),
+                host.platform
+            );
+            em.write_output(banner.as_bytes(), cx);
+        });
+        Self::attach_emulator(&placeholder, cx);
+        self.emulator = Some(placeholder.clone());
+        cx.notify();
+
+        let window_size = crate::ssh::WindowSize::new(80, 24, 640, 384);
+        cx.spawn_in(window, async move |this, cx| {
+            let service = crate::service::SshService::new();
+            let outcome = service.connect(&host, window_size).await;
+
+            this.update_in(cx, |this, window, cx| match outcome {
+                Ok(conn) => {
+                    // SSH 成功：用远端通道重建终端
+                    let emulator =
+                        crate::terminal::Emulator::from_ssh(conn.handle, conn.channel, cx);
+                    Self::attach_emulator(&emulator, cx);
+                    emulator.update(cx, |em, cx| {
+                        em.write_output(this.ssh_banner().as_bytes(), cx);
+                    });
+                    this.emulator = Some(emulator);
+                    this.error = None;
+                    this.telemetry = sample_telemetry(&this.host.id);
+                    cx.notify();
+                }
+                Err(error) => {
+                    // SSH 失败：把原因写进已有的占位终端，并回退到本机 shell
+                    placeholder.update(cx, |em, cx| {
+                        let msg = format!(
+                            "\r\n\x1b[31mSSH 连接失败：{error:#}\x1b[0m\r\n\x1b[33m已回退到本机 Shell（演示继续可用）\x1b[0m\r\n\x1b[90m提示：检查主机地址、端口、用户名与密码/密钥是否正确；远端需开启 SSH 服务。\x1b[0m\r\n\r\n"
+                        );
+                        em.write_output(msg.as_bytes(), cx);
+                    });
+                    // 同时尝试在占位终端之后再起一个本机 shell，保证用户仍可操作
+                    match crate::terminal::Emulator::spawn(None, cx) {
+                        Ok(local) => {
+                            Self::attach_emulator(&local, cx);
+                            // 把之前占位终端的内容搬过去？占位已在界面上，直接复用它并把本地 shell 的输出也喂过去
+                            // 简化：保留占位终端，仅将本地 shell 的边界同步，后续输入仍走占位终端的空传输（回显），
+                            // 不再切走。真正可用的本地 shell 需新开一个终端标签？此处仅提示。
+                            // 为保证可交互，改用本地终端替换：
+                            local.update(cx, |em, cx| {
+                                em.write_output(this.banner_fallback().as_bytes(), cx);
+                            });
+                            this.emulator = Some(local);
+                            this.error = None;
+                            cx.notify();
+                            window.push_notification(
+                                format!("SSH 连接 {} 失败，已回退到本机：{error:#}", host.name),
+                                cx,
+                            );
+                        }
+                        Err(local_err) => {
+                            // 本机也起不来，展示错误面板
+                            this.error = Some(
+                                SharedString::from(format!(
+                                    "SSH 失败：{error:#}；本机 Shell 也失败：{local_err:#}"
+                                )),
+                            );
+                            cx.notify();
+                        }
+                    }
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn attach_emulator(emulator: &Entity<Emulator>, cx: &mut Context<Self>) {
+        cx.observe(emulator, |_, _, cx| cx.notify()).detach();
+        cx.subscribe(emulator, |_, _, event: &EmulatorEvent, cx| match event {
             EmulatorEvent::TitleChanged | EmulatorEvent::Exited => cx.notify(),
-            // 响铃还没有落地的表现方式。放着不响，比响一声系统提示音好
-            // —— 那声音不在设计稿里，也没有开关可以关掉它。
             EmulatorEvent::Bell => {}
         })
         .detach();
-
-        emulator.update(cx, |emulator, cx| {
-            emulator.write_output(self.banner().as_bytes(), cx);
-        });
-        self.emulator = Some(emulator);
     }
 
-    /// 开场那几行。刻意把"这不是真的 SSH 连接"写在终端里而不是别处：
-    /// 界面上写一行小字太容易被划过去，而这一屏是用户一定会看的地方。
-    ///
-    /// 颜色用 SGR 转义序列而不是主题色 —— 这几行是终端的内容，
-    /// 和别的输出一样归 [`crate::ui::theme::ansi`] 那套配色管。
-    fn banner(&self) -> String {
+    /// SSH 成功后的开场白。
+    fn ssh_banner(&self) -> String {
         let Host {
             name,
             user,
@@ -150,12 +381,26 @@ impl TerminalPanel {
             platform,
             ..
         } = &self.host;
+        [
+            format!("\x1b[32m✓ 已连接到 {name}\x1b[0m（{user}@{hostname}:{port}，{platform}）\r\n"),
+            "\x1b[90m远端输出如下，输入直接送往对端。\x1b[0m\r\n\r\n".to_string(),
+        ]
+        .concat()
+    }
 
+    /// 回退到本机时的补充说明。
+    fn banner_fallback(&self) -> String {
+        let Host {
+            name,
+            user,
+            hostname,
+            port,
+            platform,
+            ..
+        } = &self.host;
         [
             format!("\x1b[36m{name}\x1b[0m（{user}@{hostname}:{port}，{platform}）\r\n"),
-            "\x1b[33mSSH 传输层还没接上，下面是本机的一条 shell。\x1b[0m\r\n".to_string(),
-            "\x1b[90m接入 russh 之后这里换成真正的远端连接，终端本身不会变。\x1b[0m\r\n\r\n"
-                .to_string(),
+            "\x1b[90m下面是本机的 Shell，SSH 通道未建立。\x1b[0m\r\n\r\n".to_string(),
         ]
         .concat()
     }
@@ -216,10 +461,27 @@ impl TerminalPanel {
 
         let handled = emulator.update(cx, |emulator, cx| emulator.key_down(&event.keystroke, cx));
         // 终端吃掉的按键不能再往上冒：不然 `ctrl-b` 之类的既进了终端，
-        // 又触发了窗口的快捷键。
+        // 又触发了窗口的快捷键。Tab / Shift-Tab 尤其需要拦住，否则会被 `Root` 的
+        // `Tab` / `TabPrev`（焦点切换）抢走，终端里就永远收不到 `\x09` / `\x1b[Z`。
         if handled {
             cx.stop_propagation();
         }
+    }
+
+    fn on_tab(&mut self, _: &Tab, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(emulator) = self.emulator.clone() else {
+            return;
+        };
+        emulator.update(cx, |emulator, cx| emulator.input(b"\x09".as_slice(), cx));
+        cx.stop_propagation();
+    }
+
+    fn on_back_tab(&mut self, _: &BackTab, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(emulator) = self.emulator.clone() else {
+            return;
+        };
+        emulator.update(cx, |emulator, cx| emulator.input(b"\x1b[Z".as_slice(), cx));
+        cx.stop_propagation();
     }
 
     fn on_scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -241,7 +503,10 @@ impl TerminalPanel {
         });
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // 点一下终端就把焦点收回来，否则焦点还在侧边栏或按钮上，Tab 会跑去切焦点而不是进终端
+        cx.focus_self(window);
+
         let Some(emulator) = self.emulator.clone() else {
             return;
         };
@@ -327,6 +592,20 @@ impl TerminalPanel {
         }
     }
 
+    fn toggle_monitor(&mut self, cx: &mut Context<Self>) {
+        self.monitor_open = !self.monitor_open;
+        cx.notify();
+    }
+
+    fn on_toggle_monitor(
+        &mut self,
+        _: &ToggleMonitor,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_monitor(cx);
+    }
+
     /// 终端网格那一块。开不出来的时候画的是失败原因 ——
     /// 空白一片的话，用户只知道"没反应"，不知道为什么。
     fn render_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -398,8 +677,10 @@ impl BasePanel for TerminalPanel {
         "TerminalPanel"
     }
 
-    fn on_added_to(&mut self, group: WeakEntity<TabGroup>, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_added_to(&mut self, group: WeakEntity<TabGroup>, window: &mut Window, cx: &mut Context<Self>) {
         self.group = Some(group);
+        // 新开的会话直接获得焦点，否则 Tab 会落在活动栏或其它按钮上
+        cx.focus_self(window);
         cx.notify();
     }
 }
@@ -456,14 +737,19 @@ impl Render for TerminalPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let connected = self.connected(cx);
         let terminal = self.render_terminal(window, cx);
+        let monitor_open = self.monitor_open;
 
         v_flex()
             .id("terminal-panel")
             .track_focus(&self.focus_handle)
+            .key_context("Terminal")
             .size_full()
             .bg(cx.theme().background)
             .on_action(cx.listener(Self::on_copy_selection))
             .on_action(cx.listener(Self::on_paste_clipboard))
+            .on_action(cx.listener(Self::on_tab))
+            .on_action(cx.listener(Self::on_back_tab))
+            .on_action(cx.listener(Self::on_toggle_monitor))
             // 按键挂在整个面板上而不是网格上：网格里没有可聚焦的东西，
             // 焦点落在面板这一层，按键也就在这一层收。
             .on_key_down(cx.listener(Self::on_key_down))
@@ -473,18 +759,59 @@ impl Render for TerminalPanel {
                     self.directory(cx),
                 )
                 .connected(connected)
+                .on_tunnels(|_, window, cx| {
+                    window.push_notification("端口转发面板还在开发中。", cx);
+                })
+                .on_sftp(|_, window, cx| {
+                    window.push_notification("SFTP 面板还在开发中。", cx);
+                })
+                .on_monitor(monitor_open, cx.listener(|this, _, _, cx| this.toggle_monitor(cx)))
                 .on_copy(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_all(cx)))
                 .on_clear(cx.listener(|this, _: &ClickEvent, _, cx| this.clear(cx))),
             )
-            .child(div().flex_1().min_h_0().child(terminal))
-            .child(
-                SessionStatusBar::new(
-                    self.host.name.clone(),
-                    SharedString::from(self.host.address()),
-                    self.telemetry,
-                )
-                .connected(connected)
-                .grid(self.grid.num_columns(), self.grid.num_lines()),
-            )
+            .child({
+                let terminal_view = v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .child(div().flex_1().min_h_0().child(terminal))
+                    .child(
+                        SessionStatusBar::new(
+                            self.host.name.clone(),
+                            SharedString::from(self.host.address()),
+                            self.telemetry,
+                        )
+                        .connected(connected)
+                        .grid(self.grid.num_columns(), self.grid.num_lines()),
+                    );
+                if monitor_open {
+                    div().flex_1().min_h_0().min_w_0().child(
+                        h_resizable(self.resizable_id.clone())
+                            .with_state(&self.resizable_state)
+                            .child(resizable_panel().child(terminal_view))
+                            .child(
+                                resizable_panel()
+                                    .size(MONITOR_WIDTH)
+                                    .size_range(px(280.)..px(700.))
+                                    .child(
+                                        div()
+                                            .size_full()
+                                            .overflow_hidden()
+                                            .border_l_1()
+                                            .border_color(cx.theme().border)
+                                            .child(self.monitor_panel.clone()),
+                                    ),
+                            ),
+                    )
+                } else {
+                    h_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .items_stretch()
+                        .child(terminal_view)
+                }
+                .into_any_element()
+            })
     }
 }

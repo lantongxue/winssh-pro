@@ -16,11 +16,18 @@ gpui-component-assets = { path = "refs/gpui-component/crates/assets", version = 
 # 移植的，API 必须对得上。和 gpui 一样落到本地检出，不走网络克隆。
 alacritty_terminal = { path = "refs/alacritty/alacritty_terminal", version = "0.26.1-dev" }
 futures = "0.3"
+async-trait = "0.1"
+log = "0.4"
+env_logger = "0.11"
+
+# SSH 传输：russh 是 Tokio 上的异步 SSH-2 客户端/服务端实现，aws-lc-rs 为默认加密后端。
+russh = { version = "0.63", default-features = false, features = ["aws-lc-rs", "rsa"] }
+ssh-key = { version = "0.7.0-rc.11", features = ["encryption"] }
 
 # 主机配置的数据层：SeaORM 负责 SQLite 的访问，sqlx 自带静态编译的 SQLite，
 # 不依赖系统安装的库；异步操作跑在应用级 tokio runtime 上（见 src/db/mod.rs）。
 sea-orm = { version = "2.0", features = ["sqlx-sqlite", "runtime-tokio", "macros"] }
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "fs"] }
 # 跨平台的应用数据目录（Windows 是 %APPDATA%，macOS 是 ~/Library/Application Support）。
 dirs = "6"
 

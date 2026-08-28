@@ -19,9 +19,8 @@ use sea_orm::sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sea_orm::{ConnectionTrait, DatabaseConnection, SqlxSqliteConnector};
 use tokio::runtime::Runtime;
 
-/// 与初版逐字相同的建表语句。`CREATE TABLE IF NOT EXISTS` 是幂等的，
-/// 每次启动都跑一遍；库文件已存在时原样保留。要改表结构时，往后追加
-/// 迁移语句，不动已有的这几行。
+/// 建表语句。`CREATE TABLE IF NOT EXISTS` 是幂等的，每次启动都跑一遍；
+/// 老用户的库文件已存在时原样保留，新字段通过 [`MIGRATIONS`] 补齐。
 const SCHEMA: [&str; 2] = [
     "CREATE TABLE IF NOT EXISTS host_groups (
         id         INTEGER PRIMARY KEY,
@@ -29,15 +28,28 @@ const SCHEMA: [&str; 2] = [
         sort_order INTEGER NOT NULL DEFAULT 0
     )",
     "CREATE TABLE IF NOT EXISTS hosts (
-        id         TEXT    PRIMARY KEY,
-        group_id   INTEGER NOT NULL REFERENCES host_groups(id) ON DELETE CASCADE,
-        name       TEXT    NOT NULL,
-        user       TEXT    NOT NULL,
-        hostname   TEXT    NOT NULL,
-        port       INTEGER NOT NULL DEFAULT 22,
-        platform   TEXT    NOT NULL DEFAULT '',
-        sort_order INTEGER NOT NULL DEFAULT 0
+        id           TEXT    PRIMARY KEY,
+        group_id     INTEGER NOT NULL REFERENCES host_groups(id) ON DELETE CASCADE,
+        name         TEXT    NOT NULL,
+        user         TEXT    NOT NULL,
+        hostname     TEXT    NOT NULL,
+        port         INTEGER NOT NULL DEFAULT 22,
+        platform     TEXT    NOT NULL DEFAULT '',
+        sort_order   INTEGER NOT NULL DEFAULT 0,
+        auth_method  TEXT    NOT NULL DEFAULT 'password',
+        password     TEXT    NOT NULL DEFAULT '',
+        key_path     TEXT    NOT NULL DEFAULT '',
+        jump_host_id TEXT
     )",
+];
+
+/// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
+/// 会报 `duplicate column name`，那是幂等的成功，不算错误。
+const MIGRATIONS: [&str; 4] = [
+    "ALTER TABLE hosts ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'password'",
+    "ALTER TABLE hosts ADD COLUMN password TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE hosts ADD COLUMN key_path TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE hosts ADD COLUMN jump_host_id TEXT",
 ];
 
 /// 数据层专用的 tokio runtime，进程生命周期内只建一次。
@@ -97,6 +109,16 @@ pub async fn connect(path: Option<&Path>) -> Result<DatabaseConnection> {
         conn.execute_unprepared(statement)
             .await
             .context("初始化主机配置表失败")?;
+    }
+    for migration in MIGRATIONS {
+        let result = conn.execute_unprepared(migration).await;
+        if let Err(error) = result {
+            let message = error.to_string();
+            // 已存在的列是幂等成功，不算错；其余错误才需要冒泡。
+            if !message.contains("duplicate column name") {
+                return Err(error).context("迁移主机配置表失败")?;
+            }
+        }
     }
     Ok(conn)
 }

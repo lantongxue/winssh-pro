@@ -3,9 +3,11 @@
 mod assets;
 mod db;
 mod host;
+mod monitor;
 mod repository;
 mod service;
 mod session;
+mod ssh;
 mod terminal;
 mod ui;
 

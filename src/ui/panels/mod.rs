@@ -6,14 +6,16 @@
 //! 命名约定：进 Dock 的才叫 `*Panel`；侧边栏里那些不进 Dock 的组件叫 `*View`，
 //! 放在 [`crate::ui::sidebar`]。
 
+#[allow(dead_code)]
 mod event_log;
 mod host_info;
+mod monitor;
 mod settings;
 mod terminal;
 mod welcome;
 
-pub use event_log::EventLogPanel;
 pub use host_info::HostInfoPanel;
+pub use monitor::{MonitorEvent, MonitorPanel};
 pub use settings::SettingsPanel;
-pub use terminal::{CopySelection, PasteClipboard, TerminalPanel};
+pub use terminal::{BackTab, CopySelection, PasteClipboard, Tab, TerminalPanel, ToggleMonitor};
 pub use welcome::WelcomePanel;

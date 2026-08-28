@@ -20,9 +20,10 @@
 //! [`Content`] 是给渲染用的快照，每批事件之后重取一次。渲染时不再回头锁
 //! `Term`：那把锁是 PTY 线程在用的，绘制一帧的时间足够让它堵在那里。
 //!
-//! 现在的字节源是本机的一条 shell（[`Shell`]）。SSH 传输接上以后换掉的是
-//! [`Emulator::spawn`] 里开 PTY 那几行，解析、缓冲与渲染都不用动 ——
-//! 对终端来说，SSH 通道和本机 PTY 都只是一条双向字节流。
+//! 字节源有两条：本机 PTY（`Emulator::spawn`）与远端 SSH 通道
+//! （`Emulator::from_ssh`）。两者在 `Transport` 枚举里二选一，解析、缓冲与渲染
+//! 都复用同一套：对终端来说，SSH 通道和本机 PTY 都只是一条双向字节流，
+//! 输入经 `Transport` 送往对端，输出经 `write_output` 喂回解析器。
 
 use std::{borrow::Cow, collections::HashMap, path::PathBuf, sync::Arc};
 
@@ -50,6 +51,9 @@ use gpui::{
 };
 
 use super::keys::to_esc_str;
+
+use crate::ssh::{SshHandler, spawn_bridge};
+use russh::{Channel, client::Handle, client::Msg as ClientMsg};
 
 /// 回卷缓冲保留多少行。10000 行是常见的默认值，也是 zed 的默认值。
 const SCROLL_HISTORY_LINES: usize = 10_000;
@@ -288,12 +292,18 @@ pub enum EmulatorEvent {
     Exited,
 }
 
-/// 一条 PTY 上的终端。
+/// 终端的字节源：要么是本机 PTY，要么是远端 SSH 通道。
+enum Transport {
+    Pty(Notifier),
+    Ssh(crate::ssh::SshBridge),
+    None,
+}
+
+/// 一条终端（PTY 或 SSH）。
 pub struct Emulator {
     /// 屏幕缓冲。PTY 线程与前台共用，所以在锁里。
     term: Arc<FairMutex<Term<EventProxy>>>,
-    /// 往子进程 stdin 写字节的那一头。
-    pty: Notifier,
+    transport: Transport,
     /// [`Emulator::write_output`] 用的解析器。它有跨调用的状态（一个转义序列
     /// 可能被切在两次写入之间），所以要留着，不能每次现建一个。
     parser: Processor,
@@ -303,6 +313,8 @@ pub struct Emulator {
     exited: bool,
     /// 事件泵。丢掉它就等于停掉这条会话的更新。
     _pump: Task<()>,
+    /// SSH 输出转发任务（GPUI 侧）。丢掉它就停掉远端到本地的字节流。
+    _ssh_forward: Option<Task<()>>,
 }
 
 impl Emulator {
@@ -311,9 +323,9 @@ impl Emulator {
     /// 失败的原因只有一个：PTY 开不出来（没有可用的 pty 设备、shell 不存在），
     /// 错误里带着系统给的原话。
     ///
-    /// SSH 传输接上之后这里会多一个开通道的入口，两者共用下面这一整套
-    /// 解析与缓冲 —— 对终端来说，SSH 通道和本机 PTY 都只是一条双向字节流，
-    /// 从通道里读到的字节走 [`Emulator::write_output`]。
+    /// SSH 通道由 [`Self::from_ssh`] 承接，两者共用下面这一整套解析与缓冲 ——
+    /// 对终端来说，SSH 通道和本机 PTY 都只是一条双向字节流，从通道里读到的字节走
+    /// [`Emulator::write_output`]。
     pub fn spawn(working_directory: Option<PathBuf>, cx: &mut App) -> Result<Entity<Self>> {
         let bounds = TerminalBounds::default();
         let (events_tx, events_rx) = mpsc::unbounded();
@@ -361,17 +373,98 @@ impl Emulator {
         Ok(cx.new(|cx| {
             let mut this = Self {
                 term,
-                pty,
+                transport: Transport::Pty(pty),
                 parser: Processor::new(),
                 bounds,
                 content: Content::default(),
                 title: None,
                 exited: false,
                 _pump: cx.spawn(async move |this, cx| pump(this, events_rx, cx).await),
+                _ssh_forward: None,
             };
             this.snapshot();
             this
         }))
+    }
+
+    /// 基于已建立的 SSH 通道创建一个终端。
+    ///
+    /// 与 [`Self::spawn`] 不同，这里没有 PTY 与子进程，字节源是 `channel`。
+    /// 调用方需已完成 `connect → authenticate → channel_open_session → request_pty → request_shell`，
+    /// 这里只负责把通道的双向字节流与 `Term` 黏合：输入经 `SshBridge::input_tx` 送往
+    /// `channel.data`，输出经 `channel.wait` 回到 `write_output`。
+    pub fn from_ssh(
+        handle: Handle<SshHandler>,
+        channel: Channel<ClientMsg>,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        let bounds = TerminalBounds::default();
+        let (events_tx, events_rx) = mpsc::unbounded();
+
+        let config = Config {
+            scrolling_history: SCROLL_HISTORY_LINES,
+            semantic_escape_chars: format!("{SEMANTIC_ESCAPE_CHARS}─"),
+            ..Config::default()
+        };
+        let term = Arc::new(FairMutex::new(Term::new(
+            config,
+            &bounds,
+            EventProxy(events_tx.clone()),
+        )));
+
+        let (bridge, output_rx) = spawn_bridge(handle, channel);
+
+        cx.new(|cx| {
+            let mut this = Self {
+                term,
+                transport: Transport::Ssh(bridge),
+                parser: Processor::new(),
+                bounds,
+                content: Content::default(),
+                title: None,
+                exited: false,
+                _pump: cx.spawn(async move |this, cx| pump(this, events_rx, cx).await),
+                _ssh_forward: None,
+            };
+            this.snapshot();
+            // SSH 输出转发：把远端字节喂回 `write_output`，复用解析与快照路径。
+            let forward = cx.spawn(async move |this, cx| {
+                ssh_pump(this, output_rx, cx).await;
+            });
+            this._ssh_forward = Some(forward);
+            this
+        })
+    }
+
+    /// 仅用于测试或无需通道的占位终端，不持有任何传输层。
+    pub fn new_empty(cx: &mut App) -> Entity<Self> {
+        let bounds = TerminalBounds::default();
+        let (events_tx, events_rx) = mpsc::unbounded();
+        let config = Config {
+            scrolling_history: SCROLL_HISTORY_LINES,
+            semantic_escape_chars: format!("{SEMANTIC_ESCAPE_CHARS}─"),
+            ..Config::default()
+        };
+        let term = Arc::new(FairMutex::new(Term::new(
+            config,
+            &bounds,
+            EventProxy(events_tx.clone()),
+        )));
+        cx.new(|cx| {
+            let mut this = Self {
+                term,
+                transport: Transport::None,
+                parser: Processor::new(),
+                bounds,
+                content: Content::default(),
+                title: None,
+                exited: false,
+                _pump: cx.spawn(async move |this, cx| pump(this, events_rx, cx).await),
+                _ssh_forward: None,
+            };
+            this.snapshot();
+            this
+        })
     }
 
     pub fn content(&self) -> &Content {
@@ -411,8 +504,17 @@ impl Emulator {
         }
 
         self.term.lock().resize(bounds);
-        // 发不出去只可能是事件循环已经退了，那时候子进程也没了，没人需要这个消息。
-        let _ = self.pty.0.send(Msg::Resize(bounds.window_size()));
+        match &self.transport {
+            Transport::Pty(pty) => {
+                // 发不出去只可能是事件循环已经退了，那时候子进程也没了，没人需要这个消息。
+                let _ = pty.0.send(Msg::Resize(bounds.window_size()));
+            }
+            Transport::Ssh(bridge) => {
+                let size = bounds.window_size();
+                let _ = bridge.window_tx.send((size.num_cols as u32, size.num_lines as u32));
+            }
+            Transport::None => {}
+        }
         self.snapshot();
     }
 
@@ -430,13 +532,33 @@ impl Emulator {
         self.refresh(cx);
     }
 
-    /// 往子进程写一段字节。
+    /// 往对端写一段字节：PTY 时走 PTY，SSH 时走通道。
     pub fn input(&mut self, bytes: impl Into<Cow<'static, [u8]>>, cx: &mut Context<Self>) {
         // 有输入就意味着用户在跟最新的输出打交道：跳回底部，并撤掉选中
         // —— 那一段的位置是按当前视图记的，滚过之后就不是原来那一段了。
         self.clear_selection();
         self.scroll(Scroll::Bottom, cx);
-        self.pty.notify(bytes);
+        let bytes: Cow<'static, [u8]> = bytes.into();
+        match &self.transport {
+            Transport::Pty(pty) => pty.notify(bytes),
+            Transport::Ssh(bridge) => {
+                let _ = bridge.input_tx.send(bytes.into_owned());
+            }
+            Transport::None => {
+                // 占位终端：直接回显，给用户一个"还没连上"的反馈
+                self.write_output(&bytes, cx);
+            }
+        }
+    }
+
+    fn send_bytes(&mut self, bytes: Vec<u8>) {
+        match &self.transport {
+            Transport::Pty(pty) => pty.notify(bytes),
+            Transport::Ssh(bridge) => {
+                let _ = bridge.input_tx.send(bytes);
+            }
+            Transport::None => {}
+        }
     }
 
     /// 一下按键。返回是否被终端吃掉了 —— 没吃掉的留给窗口的快捷键。
@@ -606,10 +728,10 @@ impl Emulator {
             }
             // 终端里的程序请求写回 stdin（比如 `\x1b[6n` 问光标位置），
             // 解析器已经把要回的内容算好了，照原样送回去。
-            AlacEvent::PtyWrite(text) => self.pty.notify(text.into_bytes()),
-            AlacEvent::TextAreaSizeRequest(format) => self
-                .pty
-                .notify(format(self.bounds.window_size()).into_bytes()),
+            AlacEvent::PtyWrite(text) => self.send_bytes(text.into_bytes()),
+            AlacEvent::TextAreaSizeRequest(format) => {
+                self.send_bytes(format(self.bounds.window_size()).into_bytes())
+            }
             // 剪贴板与颜色查询这两类请求还没有接。剩下的（光标闪烁开关）
             // 归渲染层管，这里没有它的状态。
             AlacEvent::ClipboardStore(..)
@@ -623,8 +745,10 @@ impl Emulator {
 impl Drop for Emulator {
     fn drop(&mut self) {
         // 让事件循环收摊：它会关掉 PTY，子进程随之收到 SIGHUP。
-        // 送不出去说明它已经自己退了。
-        let _ = self.pty.0.send(Msg::Shutdown);
+        // 送不出去说明它已经自己退了。SSH 通道则由 SshBridge 的 Drop abort 掉 I/O 任务。
+        if let Transport::Pty(pty) = &self.transport {
+            let _ = pty.0.send(Msg::Shutdown);
+        }
     }
 }
 
@@ -678,6 +802,23 @@ async fn pump(
 
         // 让出一次执行权。少了这一步，一条持续刷屏的命令会让上面的 `await`
         // 永远立刻就绪，这个循环就把前台线程整个占住，一帧也画不出来。
+        yield_now().await;
+    }
+}
+
+/// SSH 输出泵：把远端字节喂回 `Emulator::write_output`。
+async fn ssh_pump(
+    this: gpui::WeakEntity<Emulator>,
+    mut rx: crate::ssh::SshOutputReceiver,
+    cx: &mut gpui::AsyncApp,
+) {
+    while let Some(data) = rx.recv().await {
+        let outcome = this.update(cx, |this, cx| {
+            this.write_output(&data, cx);
+        });
+        if outcome.is_err() {
+            return;
+        }
         yield_now().await;
     }
 }

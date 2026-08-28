@@ -1,7 +1,7 @@
 //! 主窗口外壳：标题栏 + 固定活动栏 + 侧边栏 + Dock 工作区。
 //!
 //! 外壳本身不放业务内容。标题栏正中是命令中心，左侧活动栏是稳定的全局导航，
-//! 紧接着是可收起的侧边栏，右边整块交给 [`DockArea`]：终端占据中心、事件日志在底部、主机信息与设置在右侧，
+//! 紧接着是可收起的侧边栏，右边整块交给 [`DockArea`]：终端占据中心、主机信息与设置在右侧，
 //! 可以拖拽、折叠与缩放。侧边栏不在 dock 系统内 —— 它的宽度归 `ResizableState`，
 //! 开合归 [`Workspace::sidebar_open`]，显示哪个视图归 [`Workspace::view`]。
 
@@ -9,10 +9,13 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, Styled as _, Window, actions, div, prelude::FluentBuilder as _, px,
+    MouseButton, ParentElement as _, Render, Styled as _, Window, actions, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, ResizableState, Root, StyledExt as _, TitleBar, WindowExt as _,
+    ActiveTheme as _, Icon, ResizableState, Root, Sizable as _, StyledExt as _, TitleBar,
+    WindowExt as _,
+    button::{Button, ButtonVariants as _},
     dock::{DockArea, DockLayout, DockPlacement, DockSkin, PanelStyle, panel_handle},
     h_flex, h_resizable,
     kbd::Kbd,
@@ -23,7 +26,8 @@ use crate::service::HostService;
 use crate::ui::{
     bars::{ActivityAction, ActivityBar, CommandCenterBar},
     dialogs::{CommandPaletteDialog, CommandPaletteEvent},
-    panels::{EventLogPanel, HostInfoPanel, SettingsPanel, WelcomePanel},
+    panels::{HostInfoPanel, SettingsPanel, TerminalPanel, WelcomePanel},
+    theme::AppIcon,
     views::{HostExplorerEvent, HostExplorerView, PlaceholderView, SidebarView},
 };
 
@@ -34,16 +38,16 @@ actions!(
         ToggleCommandPalette,
         /// 打开或收起左侧的侧边栏。
         ToggleSidebar,
-        /// 打开或收起底部的事件日志。
-        ToggleBottomDock,
         /// 打开或收起右侧的主机信息与设置。
         ToggleRightDock,
+        /// 在中心区新开一个本地 Shell 终端。
+        OpenLocalShell,
     ]
 );
 
 /// Dock 布局的持久化标识与版本。改变默认布局时提升版本号。
 const DOCK_ID: &str = "winssh-main-dock";
-const DOCK_VERSION: usize = 1;
+const DOCK_VERSION: usize = 2;
 
 /// 标题栏左端让给窗口按钮的宽度：macOS 上是红绿灯占的那一段（与
 /// [`TitleBar`] 内部的留白同宽），其余平台的窗口按钮在右边，标题栏左端不留位置。
@@ -54,7 +58,6 @@ const WINDOW_CONTROLS_INSET: gpui::Pixels = px(80.);
 const WINDOW_CONTROLS_INSET: gpui::Pixels = px(0.);
 
 const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
-const EVENT_LOG_HEIGHT: gpui::Pixels = px(180.);
 const HOST_INFO_WIDTH: gpui::Pixels = px(300.);
 
 pub struct Workspace {
@@ -94,7 +97,6 @@ impl Workspace {
         let host_info = HostInfoPanel::new(window, cx);
         let settings = SettingsPanel::new(window, cx);
         let welcome = WelcomePanel::new(window, cx);
-        let event_log = EventLogPanel::new(window, cx);
         let host_explorer = cx.new(|cx| {
             HostExplorerView::new(
                 host_service.clone(),
@@ -144,12 +146,6 @@ impl Workspace {
             );
 
             area.set_dock(
-                DockPlacement::Bottom,
-                DockLayout::tabs().panel_view(panel_handle(event_log), cx),
-                window,
-                cx,
-            );
-            area.set_dock(
                 DockPlacement::Right,
                 DockLayout::tabs()
                     .panel_view(panel_handle(host_info), cx)
@@ -158,19 +154,12 @@ impl Workspace {
                 cx,
             );
 
-            for (placement, size) in [
-                (DockPlacement::Bottom, EVENT_LOG_HEIGHT),
-                (DockPlacement::Right, HOST_INFO_WIDTH),
-            ] {
-                area.set_dock_size(placement, size, window, cx);
-                area.set_dock_collapsible(placement, true, window, cx);
-            }
+            area.set_dock_size(DockPlacement::Right, HOST_INFO_WIDTH, window, cx);
+            area.set_dock_collapsible(DockPlacement::Right, true, window, cx);
 
-            // 打开窗口时先把空间让给主机列表与终端，日志和主机信息按需唤出。
-            for placement in [DockPlacement::Bottom, DockPlacement::Right] {
-                if area.is_dock_open(placement) {
-                    area.toggle_dock(placement, window, cx);
-                }
+            // 打开窗口时先把空间让给主机列表与终端，主机信息按需唤出。
+            if area.is_dock_open(DockPlacement::Right) {
+                area.toggle_dock(DockPlacement::Right, window, cx);
             }
         });
 
@@ -249,15 +238,6 @@ impl Workspace {
         self.toggle_sidebar(cx);
     }
 
-    fn on_toggle_bottom_dock(
-        &mut self,
-        _: &ToggleBottomDock,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle_dock(DockPlacement::Bottom, window, cx);
-    }
-
     fn on_toggle_right_dock(
         &mut self,
         _: &ToggleRightDock,
@@ -267,11 +247,26 @@ impl Workspace {
         self.toggle_dock(DockPlacement::Right, window, cx);
     }
 
-    /// 标题栏：左边应用名，正中命令中心，右边先空着。
+    fn open_local_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = TerminalPanel::new_local(window, cx);
+        _ = self.dock_area.update(cx, |area, cx| {
+            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+        });
+    }
+
+    fn on_open_local_shell(
+        &mut self,
+        _: &OpenLocalShell,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_local_shell(window, cx);
+    }
+
+    /// 标题栏：左边应用名，正中命令中心与本地 Shell，右侧留空补窗口按钮。
     ///
-    /// 两侧那两块都是 `flex_1`，剩下的宽度对半分，命令中心因此正好落在中间；
-    /// 右边虽然还没有内容，那一块也不能省 —— 它是对称的另一半，
-    /// 连同 [`WINDOW_CONTROLS_INSET`] 一起把左端让给窗口按钮的那段补回来。
+    /// 两侧 `flex_1` 把中间这组（搜索框＋本地 Shell）夹在正中，
+    /// 右侧 `WINDOW_CONTROLS_INSET` 把 macOS 红绿灯那段补回来，整体仍居中。
     fn render_title_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         TitleBar::new()
             .child(
@@ -283,11 +278,34 @@ impl Workspace {
                     .child(div().flex_shrink_0().text_sm().child("WinSSH Pro")),
             )
             .child(
-                CommandCenterBar::new()
-                    .shortcut(Kbd::binding_for_action(&ToggleCommandPalette, None, window))
-                    .on_search(cx.listener(|this, _, window, cx| {
-                        this.open_command_palette(window, cx);
-                    })),
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    // 标题栏空白处拖窗口，这一组是按钮，点下去不能顺手把窗口拖走。
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        CommandCenterBar::new()
+                            .shortcut(Kbd::binding_for_action(
+                                &ToggleCommandPalette,
+                                None,
+                                window,
+                            ))
+                            .on_search(cx.listener(|this, _, window, cx| {
+                                this.open_command_palette(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("title-bar-local-shell")
+                            .ghost()
+                            .small()
+                            .icon(Icon::new(AppIcon::Terminal))
+                            .label("本地 Shell")
+                            .tooltip("打开本地终端（本机 PTY）")
+                            .accessibility_id("打开本地 Shell")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_local_shell(window, cx);
+                            })),
+                    ),
             )
             .child(h_flex().flex_1().min_w_0().pr(WINDOW_CONTROLS_INSET))
     }
@@ -319,8 +337,8 @@ impl Render for Workspace {
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::on_toggle_command_palette))
             .on_action(cx.listener(Self::on_toggle_sidebar))
-            .on_action(cx.listener(Self::on_toggle_bottom_dock))
             .on_action(cx.listener(Self::on_toggle_right_dock))
+            .on_action(cx.listener(Self::on_open_local_shell))
             .child(self.render_title_bar(window, cx))
             .child(
                 // 活动栏宽度固定，不参与拖拽，所以它在 resizable 之外；

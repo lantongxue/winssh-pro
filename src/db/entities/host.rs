@@ -14,6 +14,18 @@ pub struct Model {
     pub port: u16,
     pub platform: String,
     pub sort_order: i64,
+    /// 认证方式：`password` / `key` / `agent`，默认 `password`。
+    #[sea_orm(default_value = "password")]
+    pub auth_method: String,
+    /// 密码（`password` 认证时有效），默认空。
+    #[sea_orm(default_value = "")]
+    pub password: String,
+    /// 私钥路径（`key` 认证时有效），默认空。
+    #[sea_orm(default_value = "")]
+    pub key_path: String,
+    /// 跳板机主机 id，空表示直连。
+    #[sea_orm(nullable)]
+    pub jump_host_id: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

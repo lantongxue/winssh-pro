@@ -9,6 +9,7 @@ use gpui_component::IconNamed;
 
 /// 设计稿用到、组件库没有提供的图标。全部取自 Lucide，与组件库同一套线条风格。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum AppIcon {
     /// 折线脉冲：资源监控。
     Activity,

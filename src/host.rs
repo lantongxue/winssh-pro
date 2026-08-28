@@ -6,6 +6,51 @@
 
 use gpui::SharedString;
 
+/// 认证方式。与表单里的 [`crate::ui::dialogs::host_form::AUTH_TYPES`] 对应，
+/// 落库时存为字符串，读回时按小写匹配：`password` / `key` / `agent`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AuthMethod {
+    #[default]
+    Password,
+    PublicKey,
+    Agent,
+}
+
+impl AuthMethod {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::PublicKey => "key",
+            Self::Agent => "agent",
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Password => "密码认证",
+            Self::PublicKey => "SSH 密钥对(私钥)",
+            Self::Agent => "SSH Agent 转发",
+        }
+    }
+
+    pub fn from_str_or_default(raw: &str) -> Self {
+        match raw.trim().to_lowercase().as_str() {
+            "key" | "publickey" | "privatekey" | "ssh 密钥对(私钥)" => Self::PublicKey,
+            "agent" | "ssh agent 转发" => Self::Agent,
+            _ => Self::Password,
+        }
+    }
+
+    pub fn from_label(label: &str) -> Self {
+        match label {
+            "SSH 密钥对(私钥)" => Self::PublicKey,
+            "SSH Agent 转发" => Self::Agent,
+            _ => Self::Password,
+        }
+    }
+}
+
 /// 一台主机的连接配置。
 #[derive(Clone, Debug)]
 pub struct Host {
@@ -18,6 +63,16 @@ pub struct Host {
     pub port: u16,
     /// 主机所属的操作系统标识，用于展示，例如 `Ubuntu 24.04`。
     pub platform: SharedString,
+    /// 认证方式，见 [`AuthMethod`]。
+    pub auth_method: AuthMethod,
+    /// 密码（`auth_method == Password` 时有效）。落库为明文，演示环境暂如此；
+    /// 生产应走系统钥匙串或加密存储。
+    pub password: SharedString,
+    /// 私钥路径（`auth_method == PublicKey` 时有效），例如 `~/.ssh/id_ed25519`。
+    pub key_path: SharedString,
+    /// 跳板机主机 id（`Some` 时经由该主机 ProxyJump）。
+    #[allow(dead_code)]
+    pub jump_host_id: Option<SharedString>,
 }
 
 impl Host {
@@ -54,6 +109,10 @@ pub struct HostDraft {
     pub port: u16,
     /// 主机所属的操作系统标识，用于展示。
     pub platform: String,
+    pub auth_method: AuthMethod,
+    pub password: String,
+    pub key_path: String,
+    pub jump_host_id: Option<String>,
 }
 
 /// 一台主机的运行时状态。

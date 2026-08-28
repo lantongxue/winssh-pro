@@ -31,9 +31,12 @@ use crate::{
     ui::theme::ansi::AnsiPalette,
 };
 
-/// 网格四周留的空。左边这一列空白同时是"点在第 0 列左半边"的落点，
-/// 拖选第一个字符时不至于要贴着面板边缘。
-const PADDING: Pixels = px(8.);
+/// 终端网格左右留空、上下贴边：上下 0 彻底消除与信息栏/状态栏的间距，
+/// 左边留 8px 使首列文字不贴着侧边栏边框（截图红框），右侧同样留空保持对称。
+/// 原四边 8px 会在上下各留出一条空隙，现仅保留水平方向。
+const PADDING_X: Pixels = px(8.);
+const PADDING_TOP: Pixels = px(0.);
+const PADDING_BOTTOM: Pixels = px(0.);
 
 /// 光标是竖条（`\x1b[5 q`）时它的粗细。
 const BAR_WIDTH: Pixels = px(2.);
@@ -260,15 +263,29 @@ impl Element for TerminalGridElement {
             // 字宽大约是字号的六成），总比这一帧画不出来好。
             .unwrap_or(font_size * 0.6);
 
+        // 可用区域扣除内边距后，行列数向下取整。直接用 `cell_width/line_height`
+        // 会因为容器高度不是行高的整数倍而留下余量，余量留在顶部或底部都会
+        // 形成一条与状态栏/信息栏之间的空隙（两张截图红框）。为彻底消除上下
+        // 间距，这里将格子尺寸拉伸到恰好填满容器：`adjusted_* = available / cols/rows`，
+        // 使 `cols*adjusted_cell_width == available_width` 且
+        // `rows*adjusted_line_height == available_height`，网格与上下
+        // 栏零间距对齐，拉伸量每格 <1px，视觉无感。
+        let available_width = (bounds.size.width - PADDING_X * 2.).max(cell_width);
+        let available_height = (bounds.size.height - PADDING_TOP - PADDING_BOTTOM).max(line_height);
+        let cols = (available_width / cell_width).floor().max(1.) as usize;
+        let rows = (available_height / line_height).floor().max(1.) as usize;
+        let adjusted_cell_width = available_width / cols as f32;
+        let adjusted_line_height = available_height / rows as f32;
+        let grid_origin = point(
+            bounds.origin.x + PADDING_X,
+            bounds.origin.y + PADDING_TOP,
+        );
         let grid_bounds = TerminalBounds::new(
-            line_height,
-            cell_width,
+            adjusted_line_height,
+            adjusted_cell_width,
             Bounds {
-                origin: bounds.origin + point(PADDING, PADDING),
-                size: size(
-                    (bounds.size.width - PADDING * 2.).max(cell_width),
-                    (bounds.size.height - PADDING * 2.).max(line_height),
-                ),
+                origin: grid_origin,
+                size: size(available_width, available_height),
             },
         );
 
@@ -293,9 +310,8 @@ impl Element for TerminalGridElement {
                     run.text.into(),
                     font_size,
                     &[run.style],
-                    // 逼着排版按格子对齐：连字与 emoji 的自然宽度和格子宽度
-                    // 对不上，不定死的话一行字会越排越偏。
-                    Some(cell_width),
+                    // 逼着排版按格子对齐：用拉伸后的格宽，使文字与网格列严格对齐
+                    Some(adjusted_cell_width),
                 );
                 (run.at, line)
             })

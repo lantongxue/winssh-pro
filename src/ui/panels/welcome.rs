@@ -15,17 +15,9 @@ use gpui_component::{
 
 /// 主快捷键提示。与 [`crate::ui::init`] 里注册的键位保持一致。
 #[cfg(target_os = "macos")]
-const SHORTCUTS: [(&str, &str); 3] = [
-    ("打开侧边栏", "cmd-b"),
-    ("打开事件日志", "cmd-j"),
-    ("打开主机信息", "cmd-alt-b"),
-];
+const SHORTCUTS: [(&str, &str); 2] = [("打开侧边栏", "cmd-b"), ("打开主机信息", "cmd-alt-b")];
 #[cfg(not(target_os = "macos"))]
-const SHORTCUTS: [(&str, &str); 3] = [
-    ("打开侧边栏", "ctrl-b"),
-    ("打开事件日志", "ctrl-j"),
-    ("打开主机信息", "ctrl-alt-b"),
-];
+const SHORTCUTS: [(&str, &str); 2] = [("打开侧边栏", "ctrl-b"), ("打开主机信息", "ctrl-alt-b")];
 
 pub struct WelcomePanel {
     focus_handle: FocusHandle,
