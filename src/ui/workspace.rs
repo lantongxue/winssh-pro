@@ -287,9 +287,6 @@ impl Workspace {
                     .shortcut(Kbd::binding_for_action(&ToggleCommandPalette, None, window))
                     .on_search(cx.listener(|this, _, window, cx| {
                         this.open_command_palette(window, cx);
-                    }))
-                    .on_connect(cx.listener(|this, _, window, cx| {
-                        this.run_action(ActivityAction::QuickConnect, window, cx);
                     })),
             )
             .child(h_flex().flex_1().min_w_0().pr(WINDOW_CONTROLS_INSET))

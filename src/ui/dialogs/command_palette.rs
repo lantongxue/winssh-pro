@@ -1,4 +1,10 @@
-//! 命令面板：标题栏那个搜索触发器（以及它的快捷键）打开的那一层。
+//! 命令面板：标题栏 [`crate::ui::bars::CommandCenterBar`]（看起来像输入框的按钮）
+//! 打开的那一层，严格按 `gpui-component` 文档「In a Dialog」模式实现。
+//!
+//! 触发器为 `Button` 样式组件（模拟输入框外观，`ButtonCustomVariant` 压色），
+//! 弹层按文档 In a Dialog 模式 window.open_dialog + dialog.content +
+//! Command::new + bordered(false) 等实现，详见
+//! <https://longbridge.github.io/gpui-component/docs/components/command>。
 //!
 //! 一个搜索框加一列命令，分三段：**主机**是设计稿里“搜索连接”的正题，回车就开终端；
 //! **视图**切换侧边栏显示哪一块；**动作**是新建主机、快速连接与几处开合。
@@ -31,9 +37,13 @@ use crate::{
 /// 面板宽度，取自设计稿。
 const PALETTE_WIDTH: Pixels = px(560.);
 
-/// 面板距窗口顶部的距离。比对话框默认的居中偏高：这一层是用来打字的，
-/// 顶上一点，眼睛和手都不用从标题栏那个入口跑太远。
-const PALETTE_MARGIN_TOP: Pixels = px(120.);
+/// 面板距窗口顶部的距离。直接盖住标题栏的搜索触发器，
+/// 类似 VSCode 的 Command Palette：展开时把背后的输入框遮住，
+/// 眼睛和手都不用从入口跑太远。
+/// 数值是相对内容区（`window_paddings` 内）的顶部偏移；`20px` 以内的
+/// 小值会让弹层上边缘压过触发器（触发器上沿约 `5px`），从而完全遮住它。
+/// 配合对话框自带的 `slide-down` 动画，看起来就是从顶部输入框长出来的。
+const PALETTE_MARGIN_TOP: Pixels = px(4.);
 
 /// 列表最多这么高，再多就滚动。
 const PALETTE_MAX_HEIGHT: Pixels = px(360.);
@@ -123,15 +133,19 @@ impl CommandPaletteDialog {
         let content = this.clone();
         window.open_dialog(cx, move |dialog, _, _| {
             let closed = content.clone();
+            let content_inner = content.clone();
             dialog
-                // 面板自己就是一整块内容：不要标题、不要关闭按钮，也不要外层留白，
-                // 搜索框和列表各自的边距由 Command 给。
+                // 按文档「In a Dialog」：`close_button(false) + p_0 + content(|c| c.child(Command))`
+                // `Command` 内部已有搜索框与列表的边距，对话框本身不再留白。
+                // `bordered(false)` 在 `render_command` 中设置，对话框的圆角与边框即为最终外框。
                 .close_button(false)
                 .p_0()
                 .w(PALETTE_WIDTH)
                 .margin_top(PALETTE_MARGIN_TOP)
-                .child(content.clone())
+                .content(move |content, _, _| content.child(content_inner.clone()))
                 // Esc 或点遮罩关掉的时候，面板自己并不知道；标记在这里同步回去。
+                // `Command` 的 `on_cancel` 会先清非空 query 再传播 `Cancel`，
+                // 真正的关闭由 `Dialog` 负责，此处仅同步 `open` 标记。
                 .on_close(move |_, _, cx| {
                     closed.update(cx, |this, _| this.open = false);
                 })
