@@ -148,15 +148,20 @@ impl HostFormDialog {
     /// 弹出对话框。`editing` 给出正在编辑的主机就进入编辑模式（字段预填、
     /// 提交改为更新）；否则是新建。表单自己不碰数据库，校验通过后经由
     /// [`HostService`] 异步落库，再由 [`HostExplorerView`] 收尾。
+    ///
+    /// 跳板机候选要用到分组，但这里不从 `host_explorer` 里读：这个方法多半是在
+    /// 主机视图自己的回调里调起来的（卡片菜单里的“编辑”就是），那时候它正被
+    /// 租出去，再 `read` 一次就是同一个实体被借两次 —— gpui 直接 panic。
+    /// 所以分组由调用方交进来，`host_explorer` 只留着给落库之后的收尾用。
     pub fn open(
         service: HostService,
         host_explorer: Entity<HostExplorerView>,
+        groups: &[HostGroup],
         editing: Option<EditedHost>,
         window: &mut Window,
         cx: &mut App,
     ) {
-        let groups = host_explorer.read(cx).groups().to_vec();
-        let form = cx.new(|cx| Self::new(&groups, editing.as_ref(), window, cx));
+        let form = cx.new(|cx| Self::new(groups, editing.as_ref(), window, cx));
 
         window.open_dialog(cx, move |dialog, _window, cx| {
             let editing = editing.clone();

@@ -409,6 +409,20 @@ impl HostExplorerView {
         }
     }
 
+    /// 新建一台主机：空表单，提交后由 [`Self::host_created`] 收尾。
+    /// 分组从自己的快照里取着交给表单 —— 见 [`HostFormDialog::open`]。
+    pub fn new_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let groups = self.groups.clone();
+        HostFormDialog::open(
+            self.service.clone(),
+            cx.entity(),
+            &groups,
+            None,
+            window,
+            cx,
+        );
+    }
+
     /// 编辑一台主机：表单对话框按现有配置预填，提交后由 [`Self::host_updated`]
     /// 收尾。分组名从自己的快照里取 —— 它不在 [`Host`] 上。
     fn edit_host(&mut self, host: &Host, window: &mut Window, cx: &mut Context<Self>) {
@@ -416,9 +430,11 @@ impl HostExplorerView {
             return;
         };
         let group = group.name.clone();
+        let groups = self.groups.clone();
         HostFormDialog::open(
             self.service.clone(),
             cx.entity(),
+            &groups,
             Some((host.clone(), group)),
             window,
             cx,

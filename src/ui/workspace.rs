@@ -22,7 +22,7 @@ use gpui_component::{
 use crate::service::HostService;
 use crate::ui::{
     bars::{ActivityAction, ActivityBar, CommandCenterBar},
-    dialogs::{CommandPaletteDialog, CommandPaletteEvent, HostFormDialog},
+    dialogs::{CommandPaletteDialog, CommandPaletteEvent},
     panels::{EventLogPanel, HostInfoPanel, SettingsPanel, WelcomePanel},
     views::{HostExplorerEvent, HostExplorerView, PlaceholderView, SidebarView},
 };
@@ -58,8 +58,6 @@ const EVENT_LOG_HEIGHT: gpui::Pixels = px(180.);
 const HOST_INFO_WIDTH: gpui::Pixels = px(300.);
 
 pub struct Workspace {
-    /// 主机服务。新建/编辑对话框从这里落库，主机视图从这里读列表。
-    host_service: HostService,
     dock_area: Entity<DockArea>,
     host_explorer: Entity<HostExplorerView>,
     /// 命令面板。它常驻在这里而不是每次现搭：面板的搜索状态归它自己，
@@ -111,13 +109,9 @@ impl Workspace {
             window,
             |this, _, event: &HostExplorerEvent, window, cx| match event {
                 HostExplorerEvent::Collapse => this.toggle_sidebar(cx),
-                HostExplorerEvent::NewHost => HostFormDialog::open(
-                    this.host_service.clone(),
-                    this.host_explorer.clone(),
-                    None,
-                    window,
-                    cx,
-                ),
+                HostExplorerEvent::NewHost => this
+                    .host_explorer
+                    .update(cx, |explorer, cx| explorer.new_host(window, cx)),
             },
         )
         .detach();
@@ -131,13 +125,9 @@ impl Workspace {
                     .host_explorer
                     .update(cx, |explorer, cx| explorer.open_host(host, window, cx)),
                 CommandPaletteEvent::ShowView(view) => this.show_view(*view, cx),
-                CommandPaletteEvent::NewHost => HostFormDialog::open(
-                    this.host_service.clone(),
-                    this.host_explorer.clone(),
-                    None,
-                    window,
-                    cx,
-                ),
+                CommandPaletteEvent::NewHost => this
+                    .host_explorer
+                    .update(cx, |explorer, cx| explorer.new_host(window, cx)),
                 CommandPaletteEvent::Activity(action) => this.run_action(*action, window, cx),
             },
         )
@@ -185,7 +175,6 @@ impl Workspace {
         });
 
         Self {
-            host_service,
             dock_area,
             host_explorer,
             command_palette,
