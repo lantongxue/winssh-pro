@@ -1,11 +1,12 @@
-//! 新建主机对话框：按设计稿采集连接地址、认证方式、跳板机与标签。
+//! 新建/编辑主机对话框：按设计稿采集连接地址、认证方式、跳板机与标签。
 //!
 //! 主机模型（[`crate::host::Host`]）只描述连接配置本身，认证凭据、跳板机路由
 //! 属于后续连接层——这里仍然按设计稿把它们画出来，交互也接得上，但提交时只把
-//! 模型认下的字段（名称、地址、用户名、端口、平台）交给 [`HostExplorerView`]；
+//! 模型认下的字段（名称、地址、用户名、端口、平台）交给 [`HostService`] 落库；
 //! 密码、密钥选择与跳板机选择先留在界面上，等连接层落地后再接线。
-
-use std::time::{SystemTime, UNIX_EPOCH};
+//!
+//! 提交之后去哪儿由“新建还是编辑”决定，收尾则归 [`HostExplorerView`]：
+//! 新建完跳到目标分组并选中新主机，编辑完刷新列表与右侧的信息面板。
 
 use gpui::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, Hsla, InteractiveElement as _,
@@ -23,7 +24,8 @@ use gpui_component::{
 };
 
 use crate::{
-    host::{Host, HostGroup},
+    host::{Host, HostDraft, HostGroup},
+    service::HostService,
     ui::{
         theme::{AppIcon, palette},
         views::HostExplorerView,
@@ -34,8 +36,7 @@ use crate::{
 const AUTH_TYPES: [&str; 3] = ["密码认证", "SSH 密钥对(私钥)", "SSH Agent 转发"];
 
 /// 目标操作系统。名字沿用发行版本身的名称，不译——`platform_tag()` 取的是这里的
-/// 第一个词，和 [`crate::host::sample_host_groups`] 里手填的 `"Ubuntu 24.04"` 之类
-/// 保持同一种风格。
+/// 第一个词，和数据库里存的主机平台保持同一种风格。
 const OS_PLATFORMS: [&str; 6] = [
     "Ubuntu / Debian Linux",
     "CentOS / RedHat / Rocky",
@@ -57,7 +58,7 @@ const BADGE_COLORS: [u32; 7] = [
 const BADGE_SWATCH_SIZE: gpui::Pixels = px(22.);
 
 /// 标题行：图标 + 名称 + 副标题，对应设计稿的对话框头部。
-fn render_header(cx: &App) -> impl IntoElement {
+fn render_header(title: &'static str, subtitle: &'static str, cx: &App) -> impl IntoElement {
     h_flex()
         .items_center()
         .gap(px(10.))
@@ -77,12 +78,12 @@ fn render_header(cx: &App) -> impl IntoElement {
         .child(
             v_flex()
                 .gap(px(2.))
-                .child(div().text_sm().font_semibold().child("新建主机"))
+                .child(div().text_sm().font_semibold().child(title))
                 .child(
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child("配置连接信息、认证方式、跳板机与标签"),
+                        .child(subtitle),
                 ),
         )
 }
@@ -118,27 +119,10 @@ fn two_field_row(
         .child(div().flex_grow(right_grow).min_w_0().child(right))
 }
 
-/// 依据主机名生成一个不会跟已有主机撞车的 id。真正的仓储落地后，
-/// id 分配应该交给那一层，这里只是先把界面撑起来。
-fn next_host_id(name: &str) -> SharedString {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or_default();
+/// 正在编辑的那台主机，连同它现在所属的分组。`None` 就是新建。
+type EditedHost = (Host, SharedString);
 
-    let mut slug: String = name
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .flat_map(|c| c.to_lowercase())
-        .collect();
-    if slug.is_empty() {
-        slug.push_str("host");
-    }
-
-    format!("{slug}-{nanos}").into()
-}
-
-/// 新建主机对话框。这个类型是对话框的正文（所有采集字段的状态），
+/// 新建/编辑主机对话框。这个类型是对话框的正文（所有采集字段的状态），
 /// 外壳（宽度、标题、底部按钮）由 [`HostFormDialog::open`] 现搭。
 pub struct HostFormDialog {
     name: Entity<InputState>,
@@ -161,12 +145,22 @@ pub struct HostFormDialog {
 }
 
 impl HostFormDialog {
-    /// 弹出新建主机对话框。`host_explorer` 是提交后实际落地新主机的地方。
-    pub fn open(host_explorer: Entity<HostExplorerView>, window: &mut Window, cx: &mut App) {
+    /// 弹出对话框。`editing` 给出正在编辑的主机就进入编辑模式（字段预填、
+    /// 提交改为更新）；否则是新建。表单自己不碰数据库，校验通过后经由
+    /// [`HostService`] 异步落库，再由 [`HostExplorerView`] 收尾。
+    pub fn open(
+        service: HostService,
+        host_explorer: Entity<HostExplorerView>,
+        editing: Option<EditedHost>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let groups = host_explorer.read(cx).groups().to_vec();
-        let form = cx.new(|cx| Self::new(&groups, window, cx));
+        let form = cx.new(|cx| Self::new(&groups, editing.as_ref(), window, cx));
 
         window.open_dialog(cx, move |dialog, _window, cx| {
+            let editing = editing.clone();
+            let is_editing = editing.is_some();
             let blue = palette::blue();
             let submit_variant = ButtonCustomVariant::new(cx)
                 .color(blue)
@@ -175,11 +169,20 @@ impl HostFormDialog {
                 .active(blue.darken(0.08));
 
             let submit_form = form.clone();
+            let submit_service = service.clone();
             let submit_host_explorer = host_explorer.clone();
 
             dialog
                 .w(px(560.))
-                .title(render_header(cx))
+                .title(render_header(
+                    if is_editing { "编辑主机" } else { "新建主机" },
+                    if is_editing {
+                        "修改连接信息、认证方式、跳板机与标签"
+                    } else {
+                        "配置连接信息、认证方式、跳板机与标签"
+                    },
+                    cx,
+                ))
                 .child(form.clone())
                 .footer(
                     div()
@@ -203,24 +206,72 @@ impl HostFormDialog {
                                         .custom(submit_variant)
                                         .bg(blue)
                                         .rounded(cx.theme().radius)
-                                        .label("创建主机")
+                                        .label(if is_editing { "保存修改" } else { "创建主机" })
                                         .on_click(move |_, window, cx| {
                                             let outcome = submit_form
-                                                .update(cx, |state, cx| state.build_host(cx));
-                                            match outcome {
-                                                Ok((group, host)) => {
-                                                    submit_host_explorer.update(
-                                                        cx,
-                                                        |explorer, cx| {
-                                                            explorer.add_host(group, host, cx)
-                                                        },
-                                                    );
-                                                    window.close_dialog(cx);
-                                                }
+                                                .update(cx, |state, cx| state.build_draft(cx));
+                                            let (group, draft) = match outcome {
+                                                Ok((group, draft)) => (group, draft),
                                                 Err(message) => {
-                                                    window.push_notification(message, cx)
+                                                    window.push_notification(message, cx);
+                                                    return;
                                                 }
-                                            }
+                                            };
+
+                                            // 落库是异步的：校验通过就把活儿派出去，
+                                            // 成功关对话框并让主机视图收尾，失败弹通知
+                                            // 留在表单上改。
+                                            let service = submit_service.clone();
+                                            let host_explorer = submit_host_explorer.clone();
+                                            let editing = editing.clone();
+                                            window
+                                                .spawn(cx, async move |cx| {
+                                                    let outcome = match &editing {
+                                                        None => service
+                                                            .insert_host(&group, draft)
+                                                            .await
+                                                            .map(|host| (group, host)),
+                                                        Some((host, _)) => service
+                                                            .update_host(&host.id, &group, draft)
+                                                            .await
+                                                            .map(|_| {
+                                                                (group.clone(), host.clone())
+                                                            }),
+                                                    };
+
+                                                    let saved = outcome.is_ok();
+                                                    host_explorer
+                                                        .update_in(
+                                                            cx,
+                                                            |explorer, window, cx| match outcome {
+                                                                Ok((group, host)) => match editing
+                                                                {
+                                                                    None => explorer.host_created(
+                                                                        host, group, window, cx,
+                                                                    ),
+                                                                    Some(_) => explorer
+                                                                        .host_updated(
+                                                                            host, window, cx,
+                                                                        ),
+                                                                },
+                                                                Err(error) => window
+                                                                    .push_notification(
+                                                                        format!(
+                                                                            "保存主机失败：{error:#}"
+                                                                        ),
+                                                                        cx,
+                                                                    ),
+                                                            },
+                                                        )
+                                                        .ok();
+                                                    if saved {
+                                                        cx.update(|window, cx| {
+                                                            window.close_dialog(cx)
+                                                        })
+                                                        .ok();
+                                                    }
+                                                })
+                                                .detach();
                                         }),
                                 ),
                         ),
@@ -228,13 +279,51 @@ impl HostFormDialog {
         });
     }
 
-    fn new(groups: &[HostGroup], window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let name = cx.new(|cx| InputState::new(window, cx).placeholder("例如 US-East K8s 主节点"));
-        let group = cx.new(|cx| InputState::new(window, cx).default_value("生产环境"));
-        let hostname =
-            cx.new(|cx| InputState::new(window, cx).placeholder("192.168.1.100 或 example.com"));
-        let port = cx.new(|cx| InputState::new(window, cx).default_value("22"));
-        let username = cx.new(|cx| InputState::new(window, cx).default_value("root"));
+    fn new(
+        groups: &[HostGroup],
+        editing: Option<&EditedHost>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let (name, group, hostname, port, username, platform_ix) = match editing {
+            Some((host, group)) => (
+                host.name.to_string(),
+                group.to_string(),
+                host.hostname.to_string(),
+                host.port.to_string(),
+                host.user.to_string(),
+                OS_PLATFORMS
+                    .iter()
+                    .position(|candidate| *candidate == host.platform.as_ref())
+                    .unwrap_or(0),
+            ),
+            None => (
+                String::new(),
+                "生产环境".to_string(),
+                String::new(),
+                "22".to_string(),
+                "root".to_string(),
+                0,
+            ),
+        };
+
+        let name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("例如 US-East K8s 主节点")
+                .default_value(name)
+        });
+        let group = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("例如 生产环境")
+                .default_value(group)
+        });
+        let hostname = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("192.168.1.100 或 example.com")
+                .default_value(hostname)
+        });
+        let port = cx.new(|cx| InputState::new(window, cx).default_value(port));
+        let username = cx.new(|cx| InputState::new(window, cx).default_value(username));
         let password = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("••••••••••••")
@@ -249,7 +338,7 @@ impl HostFormDialog {
         let platform = cx.new(|cx| {
             SelectState::new(
                 OS_PLATFORMS.to_vec(),
-                Some(IndexPath::default()),
+                Some(IndexPath::new(platform_ix)),
                 window,
                 cx,
             )
@@ -336,9 +425,10 @@ impl HostFormDialog {
         }
     }
 
-    /// 校验必填项并组装一台 [`Host`]。认证凭据、跳板机选择目前无处可去——
-    /// 它们不属于连接配置模型，等连接层落地后再决定怎么接。
-    fn build_host(&self, cx: &App) -> Result<(SharedString, Host), SharedString> {
+    /// 校验必填项并组装一份待入库的 [`HostDraft`]。id 归仓储层分配，
+    /// 这里不碰；认证凭据、跳板机选择目前无处可去——它们不属于连接配置模型，
+    /// 等连接层落地后再决定怎么接。
+    fn build_draft(&self, cx: &App) -> Result<(SharedString, HostDraft), SharedString> {
         let name = self.name.read(cx).value().trim().to_string();
         let hostname = self.hostname.read(cx).value().trim().to_string();
         let username = self.username.read(cx).value().trim().to_string();
@@ -370,13 +460,12 @@ impl HostFormDialog {
 
         Ok((
             group.into(),
-            Host {
-                id: next_host_id(&name),
-                name: name.into(),
-                user: username.into(),
-                hostname: hostname.into(),
+            HostDraft {
+                name,
+                user: username,
+                hostname,
                 port,
-                platform: platform.into(),
+                platform: platform.to_string(),
             },
         ))
     }

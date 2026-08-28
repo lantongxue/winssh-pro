@@ -19,6 +19,7 @@ use gpui_component::{
     resizable_panel,
 };
 
+use crate::service::HostService;
 use crate::ui::{
     bars::{ActivityAction, ActivityBar, CommandCenterBar},
     dialogs::{CommandPaletteDialog, CommandPaletteEvent, HostFormDialog},
@@ -57,6 +58,8 @@ const EVENT_LOG_HEIGHT: gpui::Pixels = px(180.);
 const HOST_INFO_WIDTH: gpui::Pixels = px(300.);
 
 pub struct Workspace {
+    /// 主机服务。新建/编辑对话框从这里落库，主机视图从这里读列表。
+    host_service: HostService,
     dock_area: Entity<DockArea>,
     host_explorer: Entity<HostExplorerView>,
     /// 命令面板。它常驻在这里而不是每次现搭：面板的搜索状态归它自己，
@@ -78,24 +81,41 @@ impl Workspace {
         skin.set_panel_style(PanelStyle::TabBar, cx);
         let resizable_state = cx.new(|_| ResizableState::default());
 
+        // 主机服务先于一切要读它的界面打开。打不开就退回内存库：应用照常可用，
+        // 但得等界面装配完（通知层就位）再告诉用户改动不会留存。
+        let host_service = HostService::open();
+        if !host_service.is_persistent() {
+            cx.defer_in(window, |_, window, cx| {
+                window.push_notification(
+                    "主机配置库打开失败，本次的改动只在当前会话里生效。",
+                    cx,
+                );
+            });
+        }
+
         let host_info = HostInfoPanel::new(window, cx);
         let settings = SettingsPanel::new(window, cx);
         let welcome = WelcomePanel::new(window, cx);
         let event_log = EventLogPanel::new(window, cx);
-        let host_explorer = cx
-            .new(|cx| HostExplorerView::new(dock_area.downgrade(), host_info.clone(), window, cx));
+        let host_explorer = cx.new(|cx| {
+            HostExplorerView::new(
+                host_service.clone(),
+                dock_area.downgrade(),
+                host_info.clone(),
+                window,
+                cx,
+            )
+        });
         cx.subscribe_in(
             &host_explorer,
             window,
             |this, _, event: &HostExplorerEvent, window, cx| match event {
                 HostExplorerEvent::Collapse => this.toggle_sidebar(cx),
-                HostExplorerEvent::NewHost => {
-                    HostFormDialog::open(this.host_explorer.clone(), window, cx)
-                }
-                // 菜单里除了「打开终端」，其余几项的功能还没有落地。
-                // 先如实说明是哪一项，而不是让菜单点下去毫无反应。
-                HostExplorerEvent::HostAction { host, action } => window.push_notification(
-                    format!("{}：“{}”还在开发中。", host.name, action.label()),
+                HostExplorerEvent::NewHost => HostFormDialog::open(
+                    this.host_service.clone(),
+                    this.host_explorer.clone(),
+                    None,
+                    window,
                     cx,
                 ),
             },
@@ -111,9 +131,13 @@ impl Workspace {
                     .host_explorer
                     .update(cx, |explorer, cx| explorer.open_host(host, window, cx)),
                 CommandPaletteEvent::ShowView(view) => this.show_view(*view, cx),
-                CommandPaletteEvent::NewHost => {
-                    HostFormDialog::open(this.host_explorer.clone(), window, cx)
-                }
+                CommandPaletteEvent::NewHost => HostFormDialog::open(
+                    this.host_service.clone(),
+                    this.host_explorer.clone(),
+                    None,
+                    window,
+                    cx,
+                ),
                 CommandPaletteEvent::Activity(action) => this.run_action(*action, window, cx),
             },
         )
@@ -161,6 +185,7 @@ impl Workspace {
         });
 
         Self {
+            host_service,
             dock_area,
             host_explorer,
             command_palette,

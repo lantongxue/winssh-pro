@@ -29,8 +29,9 @@ use gpui::{
 };
 use gpui_component::{
     ActiveTheme as _, Colorize as _, Icon, IconName, Sizable as _, StyledExt as _,
-    VirtualListScrollHandle,
-    button::{Button, ButtonCustomVariant, ButtonVariants as _},
+    VirtualListScrollHandle, WindowExt as _,
+    button::{Button, ButtonCustomVariant, ButtonVariants as _, ButtonVariant},
+    dialog::DialogButtonProps,
     dock::{DockArea, DockPlacement, panel_handle},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -42,12 +43,14 @@ use gpui_component::{
 
 use super::{GUTTER, ICON_SIZE, SidebarView, collapse_button, view_header};
 use crate::{
-    host::{Host, HostGroup, HostStatus, sample_host_groups, sample_host_statuses},
+    host::{Host, HostGroup, HostStatus},
+    service::HostService,
     ui::{
         cards::{HOST_CARD_HEIGHT, HostCard},
+        dialogs::HostFormDialog,
         menus::HostAction,
         panels::{HostInfoPanel, TerminalPanel},
-        theme::palette,
+        theme::{AppIcon, palette},
     },
 };
 
@@ -87,6 +90,9 @@ const CHIP_GAP: Pixels = px(6.);
 
 /// 拖拽时那条插入位置线的粗细。
 const DROP_LINE: Pixels = px(2.);
+
+/// 分组行这一片悬停区域的名字：行里悬停才显形的删除按钮靠它跟上级行关联。
+const GROUP_ROW_GROUP: &str = "host-explorer-group-row";
 
 /// 分组头在被拖着的主机悬在上面时的底色。品牌蓝压到很淡：它说的是
 /// “松手就落这儿”，不该盖过分组头本身的字。
@@ -184,22 +190,23 @@ enum HostFilter {
     Group(SharedString),
 }
 
-/// 视图往外发的请求。它不知道窗口是怎么布局的，也没有主机仓储，
-/// 所以“收起”和“新建”都只把意图发出去，由宿主决定怎么做。
+/// 视图往外发的请求。列表自己能办的（增删改、开终端、拖排序）都在视图里办完了，
+/// 剩下这两件是纯布局意图：收起整个侧边栏、打开新建对话框由宿主代劳。
 #[derive(Clone, Debug)]
 pub enum HostExplorerEvent {
     /// 收起整个侧边栏。
     Collapse,
     /// 新建一台主机。
     NewHost,
-    /// 用户在某台主机的菜单里选了一项，而这一项不是列表自己能办的事 ——
-    /// 编辑要开对话框、删除要先问一句，这些都归宿主。
-    HostAction { host: Host, action: HostAction },
 }
 
 pub struct HostExplorerView {
+    /// 主机服务的入口。列表里的 `groups` 只是数据库的一份快照，
+    /// 所有写操作都先经服务层落库，再由 [`Self::reload`] 把快照换回来。
+    service: HostService,
     groups: Vec<HostGroup>,
-    /// 每台主机的运行时状态。连接层接上之后由那边推送，现在是示例值。
+    /// 每台主机的运行时状态。连接层还没接上，开机是空表：
+    /// 打开过终端的主机会在这里点亮会话点。
     statuses: HashMap<SharedString, HostStatus>,
     /// 最近打开过的主机，最新的在前。
     recent: Vec<SharedString>,
@@ -228,6 +235,7 @@ pub struct HostExplorerView {
 
 impl HostExplorerView {
     pub fn new(
+        service: HostService,
         dock_area: WeakEntity<DockArea>,
         host_info: Entity<HostInfoPanel>,
         window: &mut Window,
@@ -238,16 +246,14 @@ impl HostExplorerView {
         cx.subscribe(&search, |this, _, _: &InputEvent, cx| this.rebuild_rows(cx))
             .detach();
 
-        // 设计稿里分组默认是收起的：先给一份紧凑的总览，展开哪一组交给用户。
-        let groups = sample_host_groups();
-        let collapsed = groups.iter().map(|group| group.name.clone()).collect();
-
+        // 数据库是正本，第一份快照由下面的异步加载取回来。开机先给一份空表。
         let mut this = Self {
-            groups,
-            statuses: sample_host_statuses(),
+            service,
+            groups: Vec::new(),
+            statuses: HashMap::new(),
             recent: Vec::new(),
             filter: HostFilter::All,
-            collapsed,
+            collapsed: HashSet::new(),
             selected: None,
             dragging: None,
             drop_target: None,
@@ -261,6 +267,7 @@ impl HostExplorerView {
             focus_handle: cx.focus_handle(),
         };
         this.rebuild_rows(cx);
+        this.load_initially(window, cx);
         this
     }
 
@@ -269,22 +276,71 @@ impl HostExplorerView {
         &self.groups
     }
 
-    /// 把一台新主机加入指定分组，分组不存在就新建一个。
-    /// 随后跳到那个分组并选中新主机，让"新建"这个操作有看得见的结果。
-    pub fn add_host(&mut self, group: SharedString, host: Host, cx: &mut Context<Self>) {
-        if let Some(existing) = self.groups.iter_mut().find(|g| g.name == group) {
-            existing.hosts.push(host.clone());
-        } else {
-            self.groups.push(HostGroup {
-                name: group.clone(),
-                hosts: vec![host.clone()],
-            });
-        }
+    /// 开机后的第一份快照。设计稿里分组默认收起：数据到齐时把所有分组
+    /// 收起来，先给一份紧凑的总览，展开哪一组交给用户；之后的 [`Self::reload`]
+    /// 保持用户自己的展开选择，不再碰 `collapsed`。
+    fn load_initially(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let service = self.service.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let groups = service.load_groups().await.unwrap_or_default();
+            this.update_in(cx, |this, _, cx| {
+                this.groups = groups;
+                this.collapsed = this.groups.iter().map(|group| group.name.clone()).collect();
+                this.rebuild_rows(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
 
+    /// 从服务层重读分组与主机，刷新列表。所有写操作完成后都走这里 ——
+    /// 界面自己不改数据，数据库才是正本。
+    fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let service = self.service.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let groups = service.load_groups().await;
+            this.update_in(cx, |this, window, cx| match groups {
+                Ok(groups) => {
+                    this.groups = groups;
+                    this.rebuild_rows(cx);
+                }
+                Err(error) => {
+                    window.push_notification(format!("读取主机配置失败：{error:#}"), cx)
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// 新建落库之后的收尾：重读列表，跳到目标分组并选中新主机，
+    /// 让“新建”这个操作有看得见的结果。
+    pub fn host_created(
+        &mut self,
+        host: Host,
+        group: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.reload(window, cx);
         self.collapsed.remove(&group);
         self.filter = HostFilter::Group(group);
         self.select_host(&host, cx);
-        self.rebuild_rows(cx);
+    }
+
+    /// 编辑落库之后的收尾：重读列表，右侧的信息面板跟上新值。
+    pub fn host_updated(&mut self, host: Host, window: &mut Window, cx: &mut Context<Self>) {
+        self.reload(window, cx);
+        self.select_host(&host, cx);
+    }
+
+    /// 删除落库之后的收尾：选中与信息面板还指着它的话先清掉，再重读列表。
+    pub fn host_deleted(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected.as_ref() == Some(id) {
+            self.selected = None;
+            self.host_info.update(cx, HostInfoPanel::clear);
+        }
+        self.reload(window, cx);
     }
 
     fn set_filter(&mut self, filter: HostFilter, cx: &mut Context<Self>) {
@@ -331,8 +387,8 @@ impl HostExplorerView {
         self.rebuild_rows(cx);
     }
 
-    /// 卡片菜单里选中的那一项。开会话是这个视图自己的事（它连着 Dock），
-    /// 其余的往外发 —— 视图没有主机仓储，也没有开对话框的位置。
+    /// 卡片菜单里选中的那一项。开会话是这个视图自己的事（它连着 Dock）；
+    /// 增删改也是 —— 服务层就在手上，编辑开对话框、删除先问一句都在这里办。
     fn run_host_action(
         &mut self,
         action: HostAction,
@@ -342,11 +398,143 @@ impl HostExplorerView {
     ) {
         match action {
             HostAction::OpenTerminal => self.open_host(host, window, cx),
-            action => cx.emit(HostExplorerEvent::HostAction {
-                host: host.clone(),
-                action,
-            }),
+            HostAction::EditConfig => self.edit_host(host, window, cx),
+            HostAction::Duplicate => self.duplicate_host(host, window, cx),
+            HostAction::Delete => self.confirm_delete(host, window, cx),
+            // 还没落地的几项如实说明，而不是让菜单点下去毫无反应。
+            action => window.push_notification(
+                format!("{}：“{}”还在开发中。", host.name, action.label()),
+                cx,
+            ),
         }
+    }
+
+    /// 编辑一台主机：表单对话框按现有配置预填，提交后由 [`Self::host_updated`]
+    /// 收尾。分组名从自己的快照里取 —— 它不在 [`Host`] 上。
+    fn edit_host(&mut self, host: &Host, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((group, _)) = self.host(&host.id) else {
+            return;
+        };
+        let group = group.name.clone();
+        HostFormDialog::open(
+            self.service.clone(),
+            cx.entity(),
+            Some((host.clone(), group)),
+            window,
+            cx,
+        );
+    }
+
+    /// 照着一台主机再建一台：服务层里复制一份，选中那份副本。
+    fn duplicate_host(&mut self, host: &Host, window: &mut Window, cx: &mut Context<Self>) {
+        let service = self.service.clone();
+        let id = host.id.clone();
+        let name = host.name.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = service.duplicate_host(&id).await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(copy) => {
+                    this.reload(window, cx);
+                    this.select_host(&copy, cx);
+                }
+                Err(error) => {
+                    window.push_notification(format!("复制“{name}”失败：{error:#}"), cx)
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// 删除前问一句。确认框是 gpui-component 现成的 [`AlertDialog`]，
+    /// 会丢东西的动作配危险色的按钮。
+    fn confirm_delete(&mut self, host: &Host, window: &mut Window, cx: &mut Context<Self>) {
+        let service = self.service.clone();
+        let explorer = cx.weak_entity();
+        let id = host.id.clone();
+        let name = host.name.clone();
+
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            // 外壳闭包是 `Fn`，弹一次搭一次：捕获的工作对象在这里各自复制一份，
+            // 才能挪进“删除”那个会消费它们的回调里。
+            let service = service.clone();
+            let explorer = explorer.clone();
+            let id = id.clone();
+            alert
+                .title("删除主机")
+                .description(SharedString::from(format!(
+                    "确定要删除“{name}”吗？删除后无法恢复。"
+                )))
+                .confirm()
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("删除")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("取消")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, window, cx| {
+                    let service = service.clone();
+                    let explorer = explorer.clone();
+                    let id = id.clone();
+                    // 删除是异步的：确认框先收起，删完再刷新列表，失败弹通知。
+                    window
+                        .spawn(cx, async move |cx| {
+                            let result = service.delete_host(&id).await;
+                            explorer
+                                .update_in(cx, |explorer, window, cx| match result {
+                                    Ok(()) => explorer.host_deleted(&id, window, cx),
+                                    Err(error) => window.push_notification(
+                                        format!("删除主机失败：{error:#}"),
+                                        cx,
+                                    ),
+                                })
+                                .ok();
+                        })
+                        .detach();
+                    // 返回真：确认框收起，无论删没删成 —— 删不成已经有通知了。
+                    true
+                })
+        });
+    }
+
+    /// 删除一个分组。组里还有主机时不动手：先把话说明白，主机挪走或删掉之后
+    /// 分组才删得掉 —— 删分组不该连主机一起带走。空分组交给服务层删。
+    fn delete_group(&mut self, name: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(group) = self.groups.iter().find(|group| &group.name == name) else {
+            return;
+        };
+        if !group.hosts.is_empty() {
+            window.push_notification(
+                format!(
+                    "分组“{name}”下还有 {} 台主机，请先移出或删除这些主机，再删除分组。",
+                    group.hosts.len()
+                ),
+                cx,
+            );
+            return;
+        }
+
+        let service = self.service.clone();
+        let name = name.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = service.delete_group(&name).await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(()) => {
+                    // 正看着这一组的话先回到“全部”：分组没了，它的筛选片也跟着没了。
+                    if matches!(&this.filter, HostFilter::Group(selected) if selected == &name) {
+                        this.filter = HostFilter::All;
+                    }
+                    this.collapsed.remove(&name);
+                    this.reload(window, cx);
+                }
+                Err(error) => {
+                    window.push_notification(format!("删除分组失败：{error:#}"), cx)
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// 拖拽经过某一行时记下落点。
@@ -391,8 +579,15 @@ impl HostExplorerView {
     }
 
     /// 把一台主机移到落点：跨分组就是“移动到那个分组”，同分组就是排序。
-    /// 顺序改的是 [`HostGroup::hosts`] 本身，所以拖完的结果就是数据的样子。
-    fn move_host(&mut self, id: &SharedString, target: &DropTarget, cx: &mut Context<Self>) {
+    /// 顺序先改 [`HostGroup::hosts`] 本身（拖完的结果就是数据的样子），
+    /// 再整体写回服务层 —— 下一次启动还是这个样子。
+    fn move_host(
+        &mut self,
+        id: &SharedString,
+        target: &DropTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.dragging = None;
         self.drop_target = None;
 
@@ -416,7 +611,23 @@ impl HostExplorerView {
         // 落进一个收起的分组就把它展开：不然这台主机看着像是被拖没了。
         let name = self.groups[to_group].name.clone();
         self.collapsed.remove(&name);
+
+        // 顺序先落在内存里（拖完的结果就是数据的样子），再异步写回服务层；
+        // 写不回去就把正本重读回来，别让内存和数据库各执一词。
+        let service = self.service.clone();
+        let layout = self.groups.clone();
         self.rebuild_rows(cx);
+        cx.spawn_in(window, async move |this, cx| {
+            if let Err(error) = service.persist_layout(&layout).await {
+                let message = format!("保存主机顺序失败：{error:#}");
+                this.update_in(cx, |this, window, cx| {
+                    window.push_notification(message, cx);
+                    this.reload(window, cx);
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     /// 一台主机现在待在哪儿：(分组下标, 组内下标)。
@@ -669,7 +880,8 @@ impl HostExplorerView {
     /// 下面那道缝留在外层容器里 —— 悬停底色因此不会贴上第一张卡片。
     ///
     /// 它同时是“移动到这个分组”的落点：拖一台主机悬在上面，整行染成淡蓝，
-    /// 松手就落到这个分组的末尾。
+    /// 松手就落到这个分组的末尾。行尾还有一个悬停才显形的删除按钮
+    /// （[`Self::render_group_delete`]），和开合互不打架。
     fn render_group_row(
         &self,
         ix: usize,
@@ -686,6 +898,7 @@ impl HostExplorerView {
             .h(GROUP_ROW_HEIGHT)
             .px(GUTTER)
             .rounded(cx.theme().radius)
+            .group(GROUP_ROW_GROUP)
             .child(
                 h_flex()
                     .w_full()
@@ -732,15 +945,16 @@ impl HostExplorerView {
                             .text_xs()
                             .text_color(palette::idle(cx))
                             .child(SharedString::from(count.to_string())),
-                    ),
+                    )
+                    .child(self.render_group_delete(&toggled, cx)),
             )
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_group(&toggled, cx)))
             // 悬停高亮交给 `drag_over`，落点不用记在状态里：分组头只有“落进来”
             // 这一种落法，不像卡片还要分上半张和下半张。
             .drag_over::<DraggedHost>(|style, _, _, _| style.bg(drop_tint()))
-            .on_drop(cx.listener(move |this, dragged: &DraggedHost, _, cx| {
+            .on_drop(cx.listener(move |this, dragged: &DraggedHost, window, cx| {
                 let id = dragged.host.id.clone();
-                this.move_host(&id, &DropTarget::GroupEnd(dropped.clone()), cx);
+                this.move_host(&id, &DropTarget::GroupEnd(dropped.clone()), window, cx);
             }));
 
         div()
@@ -748,6 +962,29 @@ impl HostExplorerView {
             .h(group_row_height())
             .pb(GROUP_ROW_GAP)
             .child(row)
+    }
+
+    /// 分组行尾的删除按钮：悬停在这一行上才显形。平时隐着但占着位 ——
+    /// 计数不会因为它的出现左右挪，隐着的时候也点不到（`invisible` 的元素
+    /// 不参与命中测试），不会有人在看似空白的地方误触删除。
+    fn render_group_delete(&self, name: &SharedString, cx: &mut Context<Self>) -> Button {
+        let deleted = name.clone();
+
+        Button::new(SharedString::from(format!(
+            "host-explorer-group-delete:{name}"
+        )))
+        .ghost()
+        .xsmall()
+        .icon(Icon::new(AppIcon::Trash).text_color(cx.theme().danger))
+        .tooltip("删除分组")
+        .accessibility_id("删除分组")
+        .invisible()
+        .group_hover(GROUP_ROW_GROUP, |style| style.visible())
+        .on_click(cx.listener(move |this, _, window, cx| {
+            // 这一击只删分组，不再冒泡成分组头上的开合。
+            cx.stop_propagation();
+            this.delete_group(&deleted, window, cx);
+        }))
     }
 
     /// 一台主机：卡片本身由 [`HostCard`] 负责，这里只管它在列表里的位置 ——
@@ -803,7 +1040,7 @@ impl HostExplorerView {
                         this.track_drop(&tracked, event, cx);
                     },
                 ))
-                .on_drop(cx.listener(move |this, dragged: &DraggedHost, _, cx| {
+                .on_drop(cx.listener(move |this, dragged: &DraggedHost, window, cx| {
                     // 落点是拖拽移动时记下的。万一一次移动事件都没赶上，
                     // 就按“插到这张卡片前面”办 —— 指针正停在它上面。
                     let target = this.drop_target.clone().unwrap_or(DropTarget::Host {
@@ -811,7 +1048,7 @@ impl HostExplorerView {
                         after: false,
                     });
                     let id = dragged.host.id.clone();
-                    this.move_host(&id, &target, cx);
+                    this.move_host(&id, &target, window, cx);
                 }))
             })
             .children(self.render_drop_line(&host.id, cx))

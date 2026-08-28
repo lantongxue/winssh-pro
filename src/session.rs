@@ -35,12 +35,9 @@ impl SessionTelemetry {
     }
 }
 
-/// 示例读数，按主机 id 索引。
-///
-/// 连接层接上之后整个函数会被那边替换掉 —— 和
-/// [`crate::host::sample_host_statuses`] 一样，界面先照着真实的形状画，
-/// 才看得清连接层需要提供什么。这里刻意混了几种情况：闲着的、忙的、
-/// 内存快满的，状态栏那几档配色都能看到。
+/// 示例读数，按主机 id 挑一档。连接层接上之后整个函数会被那边替换掉 ——
+/// 界面先照着真实的形状画，才看得清连接层需要提供什么。这里刻意混了几种
+/// 情况：闲着的、忙的、内存快满的，状态栏那几档配色都能看到。
 pub fn sample_telemetry(host_id: &SharedString) -> SessionTelemetry {
     let (latency_ms, cpu_percent, load_average, memory_used_gb, memory_total_gb) =
         match host_id.as_ref() {

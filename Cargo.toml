@@ -17,6 +17,13 @@ gpui-component-assets = { path = "refs/gpui-component/crates/assets", version = 
 alacritty_terminal = { path = "refs/alacritty/alacritty_terminal", version = "0.26.1-dev" }
 futures = "0.3"
 
+# 主机配置的数据层：SeaORM 负责 SQLite 的访问，sqlx 自带静态编译的 SQLite，
+# 不依赖系统安装的库；异步操作跑在应用级 tokio runtime 上（见 src/db/mod.rs）。
+sea-orm = { version = "2.0", features = ["sqlx-sqlite", "runtime-tokio", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+# 跨平台的应用数据目录（Windows 是 %APPDATA%，macOS 是 ~/Library/Application Support）。
+dirs = "6"
+
 # The reference checkouts under `refs/` are the sources of truth for both the
 # GPUI runtime and the component library, so the git coordinates above resolve
 # to the local trees instead of the network.

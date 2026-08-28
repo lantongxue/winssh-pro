@@ -1,0 +1,546 @@
+//! 主机服务：分组与主机的增删改查、排序与复制，以及它们背后的业务规则。
+//!
+//! 约定与初版一致：数据库是正本，界面持有快照；错误一律 [`anyhow::Result`]
+//! 抛给调用方（有窗口在手的地方）决定要不要弹通知。方法都是 `async` 的，
+//! 真正的库操作经由 [`crate::db::run`] 跑在数据层 runtime 上，gpui 线程
+//! 只负责等结果。
+
+use anyhow::{Context as _, Result, anyhow, ensure};
+use gpui::SharedString;
+use sea_orm::{
+    ActiveValue::{self, Set},
+    ConnectionTrait, DatabaseConnection, DbErr, TransactionTrait,
+};
+
+use crate::{
+    db::{self, entities::host, entities::host_group},
+    host::{Host, HostDraft, HostGroup},
+    repository::HostRepository,
+};
+
+/// 主机与分组的业务入口。廉价克隆：界面各处各拿一份，共享同一条连接。
+#[derive(Clone)]
+pub struct HostService {
+    repo: HostRepository,
+    db: DatabaseConnection,
+    /// 数据库是否落在磁盘上。退回内存库时为假。
+    persistent: bool,
+}
+
+impl HostService {
+    /// 打开（必要时创建）用户数据目录下的主机库。
+    /// 打不开就退回内存库，应用照常可用，只是改动不留存。
+    ///
+    /// 同步是因为它只在开窗前调用一次；一次性阻塞换组装简单。
+    pub fn open() -> Self {
+        Self::open_on_disk().unwrap_or_else(|_| {
+            db::runtime()
+                .block_on(Self::in_memory())
+                .expect("初始化内存数据库失败")
+        })
+    }
+
+    /// 数据库是否真的写在磁盘上。
+    pub fn is_persistent(&self) -> bool {
+        self.persistent
+    }
+
+    fn open_on_disk() -> Result<Self> {
+        let dir = dirs::data_dir()
+            .context("找不到用户数据目录")?
+            .join("winssh-pro");
+        std::fs::create_dir_all(&dir).context("创建应用数据目录失败")?;
+        let db = db::connect_blocking(Some(&dir.join("winssh-pro.db")))?;
+        Ok(Self {
+            repo: HostRepository,
+            db,
+            persistent: true,
+        })
+    }
+
+    /// 内存库：测试与磁盘库打不开时的退路。
+    async fn in_memory() -> Result<Self> {
+        let db = db::connect(None).await?;
+        Ok(Self {
+            repo: HostRepository,
+            db,
+            persistent: false,
+        })
+    }
+
+    /// 全部分组及其主机，按用户排出来的顺序返回。
+    pub async fn load_groups(&self) -> Result<Vec<HostGroup>> {
+        let this = self.clone();
+        db::run(async move {
+            let groups = this.repo.load_groups(&this.db).await?;
+            Ok(stitch(groups))
+        })
+        .await
+    }
+
+    /// 新增一台主机，id 由这里分配，插到所在分组的末尾。返回带 id 的完整记录。
+    pub async fn insert_host(&self, group: &str, draft: HostDraft) -> Result<Host> {
+        let this = self.clone();
+        let group = group.to_owned();
+        db::run(async move {
+            let txn = this.db.begin().await?;
+            let group_id = this.ensure_group(&txn, &group).await?;
+            let id = next_host_id(&draft.name);
+            let sort_order = this.repo.max_host_sort_in_group(&txn, group_id).await? + 1;
+            this.repo
+                .insert_host(
+                    &txn,
+                    host::ActiveModel {
+                        id: Set(id.to_string()),
+                        group_id: Set(group_id),
+                        name: Set(draft.name.clone()),
+                        user: Set(draft.user.clone()),
+                        hostname: Set(draft.hostname.clone()),
+                        port: Set(draft.port),
+                        platform: Set(draft.platform.clone()),
+                        sort_order: Set(sort_order),
+                    },
+                )
+                .await?;
+            txn.commit().await?;
+
+            Ok(Host {
+                id,
+                name: draft.name.into(),
+                user: draft.user.into(),
+                hostname: draft.hostname.into(),
+                port: draft.port,
+                platform: draft.platform.into(),
+            })
+        })
+        .await
+    }
+
+    /// 更新一台主机的配置，分组可以一起改走。列表顺序不归表单管，不动。
+    pub async fn update_host(&self, id: &str, group: &str, draft: HostDraft) -> Result<()> {
+        let this = self.clone();
+        let id = id.to_owned();
+        let group = group.to_owned();
+        db::run(async move {
+            let txn = this.db.begin().await?;
+            let group_id = this.ensure_group(&txn, &group).await?;
+            let updated = this
+                .repo
+                .update_host(
+                    &txn,
+                    host::ActiveModel {
+                        id: Set(id.clone()),
+                        group_id: Set(group_id),
+                        name: Set(draft.name),
+                        user: Set(draft.user),
+                        hostname: Set(draft.hostname),
+                        port: Set(draft.port),
+                        platform: Set(draft.platform),
+                        sort_order: ActiveValue::NotSet,
+                    },
+                )
+                .await;
+            txn.commit().await?;
+            match updated {
+                Ok(()) => Ok(()),
+                Err(DbErr::RecordNotFound(_)) => Err(anyhow!("主机 {id} 不存在")),
+                Err(error) => Err(error.into()),
+            }
+        })
+        .await
+    }
+
+    /// 删除一台主机。
+    pub async fn delete_host(&self, id: &str) -> Result<()> {
+        let this = self.clone();
+        let id = id.to_owned();
+        db::run(async move {
+            if !this.repo.delete_host(&this.db, &id).await? {
+                return Err(anyhow!("主机 {id} 不存在"));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// 删除一个分组。组里还挂着主机时拒绝：删分组不该连主机一起带走，
+    /// 调用方得先把主机挪走。分组本来就不存在就当删过了。
+    pub async fn delete_group(&self, name: &str) -> Result<()> {
+        let this = self.clone();
+        let name = name.to_owned();
+        db::run(async move {
+            let Some(group) = this.repo.find_group(&this.db, &name).await? else {
+                return Ok(());
+            };
+            let host_count = this.repo.count_hosts_in_group(&this.db, group.id).await?;
+            ensure!(host_count == 0, "分组“{name}”下还有 {host_count} 台主机");
+            this.repo.delete_group(&this.db, group.id).await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 照一台主机复制一份，名字加“副本”，插在原主机的正后方。
+    pub async fn duplicate_host(&self, id: &str) -> Result<Host> {
+        let this = self.clone();
+        let id = id.to_owned();
+        db::run(async move {
+            let source = this
+                .repo
+                .find_host(&this.db, &id)
+                .await?
+                .ok_or_else(|| anyhow!("主机 {id} 不存在"))?;
+
+            let new_id = next_host_id(&source.name);
+            let new_name = format!("{} 副本", source.name);
+            let txn = this.db.begin().await?;
+            // 原主机后面的整体往后挪一位，副本正好插进空出来的位置。
+            this.repo
+                .shift_host_sort_orders(&txn, source.group_id, source.sort_order)
+                .await?;
+            this.repo
+                .insert_host(
+                    &txn,
+                    host::ActiveModel {
+                        id: Set(new_id.to_string()),
+                        group_id: Set(source.group_id),
+                        name: Set(new_name.clone()),
+                        user: Set(source.user.clone()),
+                        hostname: Set(source.hostname.clone()),
+                        port: Set(source.port),
+                        platform: Set(source.platform.clone()),
+                        sort_order: Set(source.sort_order + 1),
+                    },
+                )
+                .await?;
+            txn.commit().await?;
+
+            Ok(Host {
+                id: new_id,
+                name: new_name.into(),
+                user: source.user.into(),
+                hostname: source.hostname.into(),
+                port: source.port,
+                platform: source.platform.into(),
+            })
+        })
+        .await
+    }
+
+    /// 把界面里拖出来的顺序写回数据库：每个分组落在哪个分组、排在第几位。
+    /// 数据量就是侧边栏里那几十行，整体重写一次比算增量便宜，也省得算错。
+    pub async fn persist_layout(&self, groups: &[HostGroup]) -> Result<()> {
+        let this = self.clone();
+        let groups = groups.to_vec();
+        db::run(async move {
+            let txn = this.db.begin().await?;
+            for group in &groups {
+                let group_id = this.ensure_group(&txn, &group.name).await?;
+                for (ix, host) in group.hosts.iter().enumerate() {
+                    this.repo
+                        .update_host_position(&txn, &host.id, group_id, ix as i64 + 1)
+                        .await?;
+                }
+            }
+            txn.commit().await?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// 按名字取回分组 id，没有就建一个，排到现有分组的末尾。
+    async fn ensure_group(&self, conn: &impl ConnectionTrait, name: &str) -> Result<i64> {
+        if let Some(group) = self.repo.find_group(conn, name).await? {
+            return Ok(group.id);
+        }
+        let sort_order = self.repo.max_group_sort_order(conn).await? + 1;
+        let group = self.repo.insert_group(conn, name, sort_order).await?;
+        Ok(group.id)
+    }
+}
+
+/// 两表查询结果拼回 [`HostGroup`]：分组带着各自的主机，顺序照旧。
+fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<HostGroup> {
+    groups_with_hosts
+        .into_iter()
+        .map(|(group, hosts)| HostGroup {
+            name: group.name.into(),
+            hosts: hosts
+                .into_iter()
+                .map(|host| Host {
+                    id: host.id.into(),
+                    name: host.name.into(),
+                    user: host.user.into(),
+                    hostname: host.hostname.into(),
+                    port: host.port,
+                    platform: host.platform.into(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// 依据主机名生成一个不跟已有主机撞车的 id：
+/// 名字里的 ASCII 字母数字做前缀（中文等非 ASCII 字符不进 id），时间戳兜底。
+fn next_host_id(name: &str) -> SharedString {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+
+    let mut slug: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+    if slug.is_empty() {
+        slug.push_str("host");
+    }
+
+    format!("{slug}-{nanos}").into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 每个测试起一座独立的内存库；连接是池里那唯一一条，
+    /// 测试之间互不可见。
+    async fn service() -> HostService {
+        HostService::in_memory().await.unwrap()
+    }
+
+    fn draft(name: &str) -> HostDraft {
+        HostDraft {
+            name: name.into(),
+            user: "root".into(),
+            hostname: "10.0.0.1".into(),
+            port: 22,
+            platform: "Ubuntu / Debian Linux".into(),
+        }
+    }
+
+    fn names(group: &HostGroup) -> Vec<String> {
+        group
+            .hosts
+            .iter()
+            .map(|host| host.name.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn insert_assigns_id_and_groups() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("生产环境", draft("web-01")).await.unwrap();
+            assert!(!host.id.is_empty());
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].name, "生产环境");
+            assert_eq!(names(&groups[0]), vec!["web-01".to_string()]);
+        });
+    }
+
+    #[test]
+    fn update_moves_host_between_groups() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("旧分组", draft("web-01")).await.unwrap();
+
+            service
+                .update_host(&host.id, "新分组", draft("web-01-renamed"))
+                .await
+                .unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups.len(), 2);
+            // 原分组还在（组不随最后一台主机删掉），但主机已经搬走了。
+            let old_group = groups.iter().find(|group| group.name == "旧分组").unwrap();
+            assert!(old_group.hosts.is_empty());
+            let new_group = groups.iter().find(|group| group.name == "新分组").unwrap();
+            assert_eq!(names(new_group), vec!["web-01-renamed".to_string()]);
+        });
+    }
+
+    #[test]
+    fn update_missing_host_fails() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            assert!(service
+                .update_host("nope", "分组", draft("x"))
+                .await
+                .is_err());
+            assert!(service.delete_host("nope").await.is_err());
+        });
+    }
+
+    #[test]
+    fn delete_removes_host() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+
+            service.delete_host(&host.id).await.unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups.len(), 1);
+            assert!(groups[0].hosts.is_empty());
+        });
+    }
+
+    #[test]
+    fn delete_group_removes_empty_group() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            service.delete_host(&host.id).await.unwrap();
+
+            service.delete_group("分组").await.unwrap();
+
+            assert!(service.load_groups().await.unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn delete_group_with_hosts_is_refused() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            service.insert_host("分组", draft("web-01")).await.unwrap();
+
+            assert!(service.delete_group("分组").await.is_err());
+
+            // 组和组里的主机都原样还在。
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(names(&groups[0]), vec!["web-01".to_string()]);
+        });
+    }
+
+    #[test]
+    fn delete_unknown_group_is_noop() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            service.delete_group("没有的分组").await.unwrap();
+        });
+    }
+
+    #[test]
+    fn duplicate_inserts_copy_right_after_source() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let first = service.insert_host("分组", draft("web-01")).await.unwrap();
+            let second = service.insert_host("分组", draft("web-02")).await.unwrap();
+
+            let copy = service.duplicate_host(&first.id).await.unwrap();
+            assert_eq!(copy.name, "web-01 副本");
+            assert_ne!(copy.id, first.id);
+            assert_ne!(copy.id, second.id);
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(
+                names(&groups[0]),
+                vec![
+                    "web-01".to_string(),
+                    "web-01 副本".to_string(),
+                    "web-02".to_string()
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn persist_layout_reorders_and_moves() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let alpha = service.insert_host("甲组", draft("alpha")).await.unwrap();
+            service.insert_host("甲组", draft("beta")).await.unwrap();
+
+            // 把 beta 挪到最前，再把 alpha 拖进乙组，整体写回。
+            let mut groups = service.load_groups().await.unwrap();
+            groups[0].hosts.reverse();
+            service.persist_layout(&groups).await.unwrap();
+            service.insert_host("乙组", draft("gamma")).await.unwrap();
+            let mut groups = service.load_groups().await.unwrap();
+            let alpha = groups[0]
+                .hosts
+                .iter()
+                .find(|host| host.id == alpha.id)
+                .unwrap()
+                .clone();
+            groups[0].hosts.retain(|host| host.id != alpha.id);
+            groups[1].hosts.push(alpha);
+            service.persist_layout(&groups).await.unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].name, "甲组");
+            assert_eq!(names(&groups[0]), vec!["beta".to_string()]);
+            assert_eq!(groups[1].name, "乙组");
+            assert_eq!(names(&groups[1]), vec!["gamma".to_string(), "alpha".to_string()]);
+        });
+    }
+
+    #[test]
+    fn persist_layout_keeps_empty_group() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            service.delete_host(&host.id).await.unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            service.persist_layout(&groups).await.unwrap();
+
+            assert_eq!(service.load_groups().await.unwrap().len(), 1);
+        });
+    }
+
+    #[test]
+    fn group_names_are_reused_not_duplicated() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            service.insert_host("分组", draft("web-01")).await.unwrap();
+            service.insert_host("分组", draft("web-02")).await.unwrap();
+
+            assert_eq!(service.load_groups().await.unwrap().len(), 1);
+        });
+    }
+
+    #[test]
+    fn next_host_id_survives_cjk_names() {
+        // 中文主机名里没有字母数字可留，id 落到兜底前缀，且不会是空的。
+        let id = next_host_id("生产环境-数据库");
+        assert!(id.starts_with("host-"));
+        let id = next_host_id("web-01");
+        assert!(id.starts_with("web01-"));
+    }
+
+    /// 磁盘路径与内存库不同：文件要能建出来，关掉重开数据要还在。
+    /// 建表语句与旧版逐字相同，老用户的库文件走的就是这条路径。
+    #[test]
+    fn disk_file_roundtrip() {
+        db::runtime().block_on(async {
+            let dir = std::env::temp_dir().join(format!("winssh-pro-disk-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("winssh-pro.db");
+
+            let db = db::connect(Some(&path)).await.unwrap();
+            let service = HostService {
+                repo: HostRepository,
+                db,
+                persistent: true,
+            };
+            service.insert_host("分组", draft("web-01")).await.unwrap();
+            drop(service);
+
+            let db = db::connect(Some(&path)).await.unwrap();
+            let service = HostService {
+                repo: HostRepository,
+                db,
+                persistent: true,
+            };
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(names(&groups[0]), vec!["web-01".to_string()]);
+
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+}

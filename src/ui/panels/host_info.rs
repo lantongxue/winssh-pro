@@ -31,6 +31,12 @@ impl HostInfoPanel {
         cx.notify();
     }
 
+    /// 面板不再描述任何主机 —— 比如当前选中的那台刚被删掉了。
+    pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.host = None;
+        cx.notify();
+    }
+
     fn render_row(&self, label: &'static str, value: SharedString, cx: &App) -> impl IntoElement {
         h_flex()
             .w_full()

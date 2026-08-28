@@ -15,8 +15,7 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 - 组件化优先原则
 - 原生高性能原则
 - 内存安全原则
-- gpui-component 是优先级最高的组件库，zed 只做代码参考
-- 任何功能组件的实现必须阅读【参考代码】章节提到的代码库，从里面找可以复用的组件/模块，避免重复造轮子
+- 任何UI界面的实现必须阅读【参考代码】章节提到的代码库，从里面找可以复用的组件/模块，避免重复造轮子，非UI界面的需求不用参考
 - 不同的 UI 组件代码需要分类存放，比如弹窗类、面板类、菜单类等等，需要建立对应的类型目录存放组件代码
 
 ## 命名规范
@@ -51,6 +50,18 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 
 界面之外的领域层直接放在 `src/` 下，不进 `src/ui/`：
 `host.rs`（主机配置）、`session.rs`（会话读数）、`terminal/`（终端内核）。
+
+数据访问走三层，UI 只认最上面那层：
+
+| 层 | 目录 | 职责 |
+| --- | --- | --- |
+| `src/service/` | `*Service` | 业务逻辑与领域模型转换，UI 拿数据的唯一入口（`HostService`） |
+| `src/repository/` | `*Repository` | 数据仓，纯数据访问，不掺业务规则（`HostRepository`） |
+| `src/db/` | — | SeaORM 连接、应用级 tokio runtime 与实体定义（`db/entities/`） |
+
+规矩：**UI 层一律通过服务层读写数据**，禁止直接触达 SeaORM 或 SQL；
+SeaORM 的异步操作跑在 `db::run` 桥接的应用级 tokio runtime 上，
+错误以 `anyhow::Result` 抛给调用方决定要不要弹通知。
 
 一个文件只放一个组件，文件名与它导出的主类型对应：
 `host_explorer.rs` → `HostExplorerView`，`event_log.rs` → `EventLogPanel`，
