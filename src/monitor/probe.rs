@@ -94,17 +94,22 @@ pub fn script(options: &ProbeOptions) -> String {
     script.push_str(BODY);
 
     if options.top_processes > 0 {
+        // `$top` 先收全量、按 CPU 排好序。截断只发生在回传的那份列表上：
+        // Metrics 的"高负载前 10"、Procs 预览那几十条。真正的总数走 `$total`，
+        // 单独回传一段 `##proccount`，标签上的 "Procs (N)" 要用它而不是截断后的
+        // 列表长度 —— 否则切走 Processes 那一页、下一轮采集接了 `head`，标签就
+        // 卡在 40 上了。`ALL_PROCESSES`（进程管理那一页）本来就不截断。
         script.push_str(PROC_HEAD);
         script.push_str(PROC_AWK);
-        // 排序总留着（Metrics 的"高负载前 10"和 Procs 的默认排序都靠它）；
-        // 只有要截断时才接 `head`，`ALL_PROCESSES` 表示进程管理页要全部进程。
-        script.push_str(" | sort -k2,2nr");
+        script.push_str(" | sort -k2,2nr)\n");
+        script.push_str(PROC_COUNT_OPEN);
         if options.top_processes != ALL_PROCESSES {
-            script.push_str(" | head -n ");
+            script.push_str("top=$(printf '%s\\n' \"$top\" | head -n ");
             script.push_str(&options.top_processes.to_string());
+            script.push_str(")\n");
         }
-        script.push_str(")\n");
         script.push_str(PROC_TAIL);
+        script.push_str(PROC_COUNT_EMIT);
     }
 
     if options.docker {
@@ -215,6 +220,14 @@ pids=$(printf '%s\\n' \"$top\" | cut -f1 | tr '\\n' ' ')
 ps -eo pid=,user=,args= 2>/dev/null | awk -v list=\"$pids\" 'BEGIN { n = split(list, a, \" \"); for (i = 1; i <= n; i++) keep[a[i]] = 1 } keep[$1]'
 ";
 
+/// 在截断之前，先数一下全量列表里到底有多少进程。`grep -c .` 数的是非空行，
+/// 恰好等于 `$top` 的条数（`printf` 补的那个换行不产生额外非空行）。
+const PROC_COUNT_OPEN: &str = "total=$(printf '%s\\n' \"$top\" | grep -c .)\n";
+
+/// 真正的进程总数单独一段，放在进程段之后 —— 每一段读到下一个 `##` 为止，
+/// 段落之间的先后不影响解析。
+const PROC_COUNT_EMIT: &str = "echo '##proccount'\necho \"$total\"\n";
+
 /// 容器。`docker` 不在或当前用户没进 `docker` 组时两段都是空的，面板显示
 /// "没有容器" —— 这与"有 docker 但没跑容器"看起来一样，但对面板要表达的
 /// "这台机器上没有能管的容器"是同一件事。
@@ -246,6 +259,15 @@ mod tests {
         assert!(script.contains("p2=$(cat /proc/[0-9]*/stat"));
         assert!(script.contains("sleep 0.3"));
         assert!(script.contains(&format!("head -n {TOP_PROCESSES}")));
+        // 总数在截断之前用全量 `$top` 数出来，单独一段回传。
+        assert!(
+            script.contains("echo '##proccount'"),
+            "要回传真正的进程总数"
+        );
+        assert!(
+            script.find("grep -c .").unwrap() < script.find("head -n").unwrap(),
+            "总数得在 head 截断之前算"
+        );
     }
 
     #[test]

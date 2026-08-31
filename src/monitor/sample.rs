@@ -98,6 +98,10 @@ pub struct ProbeSample {
     pub net: NetTotals,
     pub disk: Option<DiskUsage>,
     pub processes: Vec<ProcessItem>,
+    /// 主机上真正的进程总数。进程列表常被截断（非 Procs 页只回传前
+    /// [`super::probe::TOP_PROCESSES`] 条），所以标签不能拿 `processes.len()`
+    /// 充数 —— 那个数会随当前在哪一页忽大忽小。轻量采集不采进程，是 `None`。
+    pub process_total: Option<usize>,
     pub containers: Vec<DockerContainerItem>,
     /// 这次采集问过 docker 没有。面板收起或不在 Docker 那一页时不问（`docker
     /// stats` 要一秒上下），那时候"没有容器"与"没问过"必须分得开。
@@ -164,6 +168,7 @@ pub fn parse_probe(stdout: &str) -> Result<ProbeSample> {
             "disk" => sample.disk = parse_df(body),
             "proc" => processes = parse_proc(body),
             "ps" => users = parse_ps(body),
+            "proccount" => sample.process_total = body.trim().parse::<usize>().ok(),
             "docker" => {
                 sample.docker_sampled = true;
                 containers = parse_docker_ps(body);
@@ -503,6 +508,7 @@ mod tests {
         "##ps\n",
         "   1420 root     /usr/bin/kubelet --config=/var/lib/kubelet/config.yaml\n",
         "   1980 root     etcd --advertise-client-urls=https://10.0.0.1:2379\n",
+        "##proccount\n234\n",
         "##docker\n",
         "c8f921a4aaaa\tk8s_api\tregistry.k8s.io/kube-apiserver:v1.30.2\trunning\t6443/tcp\t14 days\n",
         "d00dcafe0001\tstopped_one\talpine:3\texited\t\t2 hours\n",
@@ -520,6 +526,9 @@ mod tests {
         assert!((sample.uptime_secs - 1000.).abs() < 1e-6);
         assert_eq!(sample.load, [0.82, 0.94, 1.15]);
         assert_eq!(sample.cpu_cores, 2);
+        // 进程总数来自 `##proccount`，和被截断后回传的进程列表长度是两回事。
+        assert_eq!(sample.process_total, Some(234));
+        assert_eq!(sample.processes.len(), 2);
 
         // 窗口内：总计 +72 节拍，空闲 +32，忙 40/72。
         let busy = CpuTimes::busy_percent(sample.cpu, sample.cpu_after.expect("窗口末尾的采样"))
@@ -630,6 +639,7 @@ mod tests {
         assert!(sample.cpu_after.is_none());
         assert_eq!(sample.window_secs, 0.);
         assert!(sample.processes.is_empty());
+        assert_eq!(sample.process_total, None, "轻量采集不采进程，也没有总数");
         assert!(sample.disk.is_none());
         assert!(
             !sample.docker_sampled,

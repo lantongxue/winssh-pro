@@ -575,10 +575,14 @@ impl MonitorPanel {
         let active = self.active_tab;
         // 只取 Tab 名要的那两个计数。别在这儿 clone 整份遥测 —— 那是一次
         // 四十条进程加容器的深拷贝，而这个函数每帧都跑。
-        let counts = self
-            .telemetry
-            .as_ref()
-            .map(|t| (t.processes.len(), t.docker_sampled.then_some(t.containers.len())));
+        // 进程数用真正的总数（`##proccount`），不是截断后回传的那份列表长度：
+        // 后者会跟着当前所在页在 40 与全量之间跳，把标签卡在 40 上误导人。
+        let counts = self.telemetry.as_ref().map(|t| {
+            (
+                t.process_total.unwrap_or(t.processes.len()),
+                t.docker_sampled.then_some(t.containers.len()),
+            )
+        });
         h_flex()
             .w_full()
             .items_center()
@@ -962,7 +966,9 @@ impl MonitorPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let processes = telemetry.processes.iter().take(10).cloned().collect::<Vec<_>>();
-        let total = telemetry.processes.len();
+        // "View All" 后面那个数是主机上真正的进程总数，不是截断后这份预览的长度
+        // —— 点进 Procs 页看到的是全量，这里的数要和它以及标签一致。
+        let total = telemetry.process_total.unwrap_or(telemetry.processes.len());
         v_flex()
             .rounded(cx.theme().radius)
             .bg(cx.theme().background)

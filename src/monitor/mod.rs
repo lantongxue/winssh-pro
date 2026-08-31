@@ -124,6 +124,9 @@ pub struct MonitorTelemetry {
     /// 这次采集的往返耗时，毫秒。状态栏的 RTT 用它。
     pub latency_ms: u32,
     pub processes: Vec<ProcessItem>,
+    /// 主机上真正的进程总数。`processes` 常被截断，标签上的计数要用这个而不是
+    /// `processes.len()`。轻量采集没有，是 `None`。
+    pub process_total: Option<usize>,
     pub containers: Vec<DockerContainerItem>,
     /// 这次采集问过 docker 没有。没问过的时候界面说"还没采"，而不是"没有容器"。
     pub docker_sampled: bool,
@@ -245,6 +248,7 @@ mod tests {
             load_avg: [0.; 3],
             latency_ms: 0,
             processes: Vec::new(),
+            process_total: None,
             containers: Vec::new(),
             docker_sampled: false,
         };

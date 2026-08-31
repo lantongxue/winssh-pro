@@ -101,6 +101,7 @@ impl MonitorCollector {
             load_avg: sample.load,
             latency_ms,
             processes: sample.processes,
+            process_total: sample.process_total,
             containers: sample.containers,
             docker_sampled: sample.docker_sampled,
         }
@@ -212,6 +213,7 @@ mod tests {
             net,
             disk: None,
             processes: Vec::new(),
+            process_total: None,
             containers: Vec::new(),
             docker_sampled: false,
         }
