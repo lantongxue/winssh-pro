@@ -10,3 +10,7 @@
 	path = refs/alacritty
 	url = https://github.com/zed-industries/alacritty
 	shallow = true
+[submodule "refs/tty7"]
+	path = refs/tty7
+	url = https://github.com/l0ng-ai/tty7
+	shallow = true
