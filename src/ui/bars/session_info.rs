@@ -46,6 +46,7 @@ pub struct SessionInfoBar {
     on_sftp: Option<Handler>,
     on_monitor: Option<Handler>,
     monitor_active: bool,
+    sftp_active: bool,
     tunnels_count: u32,
 }
 
@@ -62,6 +63,7 @@ impl SessionInfoBar {
             on_sftp: None,
             on_monitor: None,
             monitor_active: false,
+            sftp_active: false,
             tunnels_count: 2,
         }
     }
@@ -106,6 +108,12 @@ impl SessionInfoBar {
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_sftp = Some(Box::new(handler));
+        self
+    }
+
+    /// SFTP 按钮是不是按下状态（这一栏展开着）。
+    pub fn sftp_active(mut self, active: bool) -> Self {
+        self.sftp_active = active;
         self
     }
 
@@ -196,13 +204,40 @@ impl RenderOnce for SessionInfoBar {
                             .when_some(self.on_tunnels, |this, handler| this.on_click(handler))
                     })
                     .child({
-                        Button::new("session-info-sftp")
-                            .ghost()
+                        // 展开时整颗按钮点亮：这一栏就贴在下面，亮着的是"下面那栏开着"
+                        // 这件事，不是"这里有个按钮"。
+                        let tone = palette::teal();
+                        let mut btn = Button::new("session-info-sftp")
                             .xsmall()
-                            .icon(Icon::new(AppIcon::FolderSync).with_size(ICON_SIZE))
+                            .icon(
+                                Icon::new(AppIcon::FolderSync)
+                                    .with_size(ICON_SIZE)
+                                    .text_color(if self.sftp_active {
+                                        tone
+                                    } else {
+                                        palette::idle(cx)
+                                    }),
+                            )
                             .label("SFTP Panel")
-                            .tooltip("Show Bottom SFTP Panel (Alt+F)")
-                            .when_some(self.on_sftp, |this, handler| this.on_click(handler))
+                            .tooltip(if self.sftp_active {
+                                "Hide Bottom SFTP Panel (Alt+F)"
+                            } else {
+                                "Show Bottom SFTP Panel (Alt+F)"
+                            });
+                        btn = if self.sftp_active {
+                            btn.custom(
+                                ButtonCustomVariant::new(cx)
+                                    .color(tone.opacity(0.15))
+                                    .foreground(tone)
+                                    .hover(tone.opacity(0.22))
+                                    .active(tone.opacity(0.28)),
+                            )
+                            .border_1()
+                            .border_color(tone.opacity(0.4))
+                        } else {
+                            btn.ghost()
+                        };
+                        btn.when_some(self.on_sftp, |this, handler| this.on_click(handler))
                     })
                     .child({
                         let green: Hsla = rgb(0x27C93F).into();

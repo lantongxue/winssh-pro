@@ -348,7 +348,12 @@ mod tests {
         }
     }
 
-    fn draft_with_auth(name: &str, auth_method: AuthMethod, password: &str, key_path: &str) -> HostDraft {
+    fn draft_with_auth(
+        name: &str,
+        auth_method: AuthMethod,
+        password: &str,
+        key_path: &str,
+    ) -> HostDraft {
         HostDraft {
             name: name.into(),
             user: "root".into(),
@@ -374,7 +379,10 @@ mod tests {
     fn insert_assigns_id_and_groups() {
         db::runtime().block_on(async {
             let service = service().await;
-            let host = service.insert_host("生产环境", draft("web-01")).await.unwrap();
+            let host = service
+                .insert_host("生产环境", draft("web-01"))
+                .await
+                .unwrap();
             assert!(!host.id.is_empty());
 
             let groups = service.load_groups().await.unwrap();
@@ -388,7 +396,10 @@ mod tests {
     fn update_moves_host_between_groups() {
         db::runtime().block_on(async {
             let service = service().await;
-            let host = service.insert_host("旧分组", draft("web-01")).await.unwrap();
+            let host = service
+                .insert_host("旧分组", draft("web-01"))
+                .await
+                .unwrap();
 
             service
                 .update_host(&host.id, "新分组", draft("web-01-renamed"))
@@ -409,10 +420,12 @@ mod tests {
     fn update_missing_host_fails() {
         db::runtime().block_on(async {
             let service = service().await;
-            assert!(service
-                .update_host("nope", "分组", draft("x"))
-                .await
-                .is_err());
+            assert!(
+                service
+                    .update_host("nope", "分组", draft("x"))
+                    .await
+                    .is_err()
+            );
             assert!(service.delete_host("nope").await.is_err());
         });
     }
@@ -517,7 +530,10 @@ mod tests {
             assert_eq!(groups[0].name, "甲组");
             assert_eq!(names(&groups[0]), vec!["beta".to_string()]);
             assert_eq!(groups[1].name, "乙组");
-            assert_eq!(names(&groups[1]), vec!["gamma".to_string(), "alpha".to_string()]);
+            assert_eq!(
+                names(&groups[1]),
+                vec!["gamma".to_string(), "alpha".to_string()]
+            );
         });
     }
 
@@ -577,10 +593,7 @@ mod tests {
             let groups = service.load_groups().await.unwrap();
             let loaded = &groups[0].hosts[0];
             assert_eq!(loaded.auth_method, AuthMethod::PublicKey);
-            assert_eq!(
-                loaded.key_path.to_string(),
-                "/home/user/.ssh/id_ed25519"
-            );
+            assert_eq!(loaded.key_path.to_string(), "/home/user/.ssh/id_ed25519");
         });
     }
 
@@ -589,7 +602,8 @@ mod tests {
     #[test]
     fn disk_file_roundtrip() {
         db::runtime().block_on(async {
-            let dir = std::env::temp_dir().join(format!("winssh-pro-disk-test-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("winssh-pro-disk-test-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("winssh-pro.db");
 

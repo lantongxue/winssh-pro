@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use crate::{host::Host, ssh::WindowSize, ssh::SshConnection};
+use crate::{host::Host, ssh::SshConnection, ssh::WindowSize};
 
 /// SSH 连接的业务入口。无状态，廉价克隆。
 #[derive(Clone, Default, Debug)]

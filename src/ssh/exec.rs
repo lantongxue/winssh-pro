@@ -162,6 +162,8 @@ pub(crate) mod fake {
         pub script: Arc<Mutex<Vec<u8>>>,
         /// `exec` 请求里的命令行。
         pub command: Arc<Mutex<Vec<u8>>>,
+        /// `subsystem` 请求里要的名字。
+        pub subsystem: Arc<Mutex<Vec<u8>>>,
     }
 
     impl Seen {
@@ -171,6 +173,10 @@ pub(crate) mod fake {
 
         pub(crate) fn command(&self) -> String {
             String::from_utf8_lossy(&self.command.lock().unwrap()).into_owned()
+        }
+
+        pub(crate) fn subsystem(&self) -> String {
+            String::from_utf8_lossy(&self.subsystem.lock().unwrap()).into_owned()
         }
     }
 
@@ -216,6 +222,23 @@ pub(crate) mod fake {
         ) -> Result<(), Self::Error> {
             self.seen.command.lock().unwrap().extend_from_slice(command);
             session.channel_success(channel)?;
+            Ok(())
+        }
+
+        /// 这台假的不提供 SFTP 子系统 —— 正好是真实环境里 `sshd_config` 没配
+        /// `Subsystem sftp` 时客户端看到的那一句 `CHANNEL_FAILURE`。
+        async fn subsystem_request(
+            &mut self,
+            channel: ChannelId,
+            name: &str,
+            session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            self.seen
+                .subsystem
+                .lock()
+                .unwrap()
+                .extend_from_slice(name.as_bytes());
+            session.channel_failure(channel)?;
             Ok(())
         }
 

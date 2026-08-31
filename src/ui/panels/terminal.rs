@@ -22,15 +22,16 @@
 use gpui::{
     App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement as _, Render, ScrollDelta, ScrollWheelEvent,
-    SharedString, Styled as _, WeakEntity, Window, actions, div, px,
+    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, ScrollDelta,
+    ScrollWheelEvent, SharedString, Styled as _, WeakEntity, Window, actions, div, px,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, ResizableState, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent, PanelId, TabGroup},
-    h_flex, h_resizable, resizable_panel, v_flex,
+    h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
 };
+use std::sync::Arc;
 
 use alacritty_terminal::selection::SelectionType;
 
@@ -41,7 +42,7 @@ use crate::{
     ui::{
         bars::{SessionInfoBar, SessionStatusBar},
         elements::{TerminalGridElement, point_at},
-        panels::{MonitorEvent, MonitorPanel},
+        panels::{MonitorEvent, MonitorPanel, SftpPanel, SftpPanelEvent},
         theme::palette,
     },
 };
@@ -65,6 +66,8 @@ actions!(
         BackTab,
         /// 切换右侧监控面板（Alt+M）。
         ToggleMonitor,
+        /// 切换底部 SFTP 栏（Alt+F）。
+        ToggleSftp,
     ]
 );
 
@@ -84,6 +87,12 @@ const TRIPLE_CLICK: usize = 3;
 
 /// 右侧监控面板的固定宽度。
 const MONITOR_WIDTH: gpui::Pixels = px(360.);
+
+/// 底部 SFTP 栏展开时的初始高度，以及能拖到多高/多矮。展开时给到三行的目录加一条
+/// 队列（原型是 h-20 那一档），拖拽范围则由"还能看见一两行"到"半屏"。
+const SFTP_HEIGHT: Pixels = px(300.);
+const SFTP_MIN_HEIGHT: Pixels = px(120.);
+const SFTP_MAX_HEIGHT: Pixels = px(560.);
 
 pub struct TerminalPanel {
     host: Host,
@@ -107,6 +116,14 @@ pub struct TerminalPanel {
     /// 终端与监控面板之间的可拖拽分隔状态。
     resizable_state: Entity<ResizableState>,
     resizable_id: SharedString,
+    /// 底部 SFTP 栏。它和监控面板一样是这一栏终端自己的子面板，不进 Dock。
+    sftp_open: bool,
+    sftp_panel: Entity<SftpPanel>,
+    sftp_resizable_state: Entity<ResizableState>,
+    sftp_resizable_id: SharedString,
+    /// 这条会话的 SSH 句柄。SFTP 走的是同一条连接上另开的子系统通道，
+    /// "重试"也要拿它再来一次，所以留一份。
+    ssh_handle: Option<Arc<russh::client::Handle<crate::ssh::SshHandler>>>,
 }
 
 impl TerminalPanel {
@@ -114,8 +131,8 @@ impl TerminalPanel {
         cx.new(|cx| {
             let monitor_panel = MonitorPanel::new(host.clone(), window, cx);
             let resizable_state = cx.new(|_| ResizableState::default());
-            let resizable_id =
-                SharedString::from(format!("terminal-monitor-{}", host.id));
+            let resizable_id = SharedString::from(format!("terminal-monitor-{}", host.id));
+            let sftp_panel = SftpPanel::new(host.clone(), window, cx);
             let mut this = Self {
                 telemetry: None,
                 host: host.clone(),
@@ -129,8 +146,14 @@ impl TerminalPanel {
                 monitor_panel: monitor_panel.clone(),
                 resizable_state,
                 resizable_id,
+                sftp_open: false,
+                sftp_panel: sftp_panel.clone(),
+                sftp_resizable_state: cx.new(|_| ResizableState::default()),
+                sftp_resizable_id: SharedString::from(format!("terminal-sftp-{}", host.id)),
+                ssh_handle: None,
             };
             Self::subscribe_monitor(&monitor_panel, cx);
+            Self::subscribe_sftp(&sftp_panel, window, cx);
             this.connect(window, cx);
             this
         })
@@ -160,6 +183,42 @@ impl TerminalPanel {
             },
         )
         .detach();
+    }
+
+    /// 底部 SFTP 栏的四件事：关掉自己、把命令送进终端、要一个新高度、通道没了要重来。
+    ///
+    /// 它不碰传输也不碰目录：那些都在面板里。宿主只负责布局（这一栏多高、开不开）
+    /// 和它自己要不到两样东西 —— 用户的终端，和那条 SSH 连接。
+    fn subscribe_sftp(sftp_panel: &Entity<SftpPanel>, window: &mut Window, cx: &mut Context<Self>) {
+        cx.subscribe_in(
+            sftp_panel,
+            window,
+            |this: &mut Self, _, event: &SftpPanelEvent, window, cx| match event {
+                SftpPanelEvent::Close => this.set_sftp_open(false, window, cx),
+                SftpPanelEvent::SendCommand(cmd) => this.send_line(cmd.as_str(), cx),
+                SftpPanelEvent::SetHeight(height) => {
+                    // 面板自己不知道多高，也不该知道：它只说"给我这一档"，
+                    // 剩下的是分隔条那一侧的事（超范围会被夹住）。
+                    let state = this.sftp_resizable_state.clone();
+                    state.update(cx, |state, cx| state.resize_panel(1, *height, window, cx));
+                }
+                SftpPanelEvent::Reconnect => {
+                    if let Some(handle) = this.ssh_handle.clone() {
+                        this.open_sftp(handle, window, cx);
+                    }
+                }
+            },
+        )
+        .detach();
+    }
+
+    /// 往用户那条终端里打一行命令并回车。
+    fn send_line(&self, cmd: &str, cx: &mut App) {
+        let Some(emulator) = self.emulator.clone() else {
+            return;
+        };
+        let cmd = cmd.to_owned();
+        emulator.update(cx, |em, cx| em.input(format!("{cmd}\n").into_bytes(), cx));
     }
 
     /// 直接在本机开一条登录 shell，不经过 SSH。
@@ -205,9 +264,11 @@ impl TerminalPanel {
                         em.write_output(banner.as_bytes(), cx);
                     });
                     let monitor_panel = MonitorPanel::new(host.clone(), window, cx);
+                    let sftp_panel = SftpPanel::new(host.clone(), window, cx);
+                    let sftp_resizable_id =
+                        SharedString::from(format!("terminal-sftp-{}", host.id));
                     let resizable_state = cx.new(|_| ResizableState::default());
-                    let resizable_id =
-                        SharedString::from(format!("terminal-monitor-{}", host.id));
+                    let resizable_id = SharedString::from(format!("terminal-monitor-{}", host.id));
                     let this = Self {
                         // 本机 Shell 没有对端可采：监控面板会说明这件事，
                         // 状态栏那几个数字保持"还不知道"。
@@ -223,17 +284,25 @@ impl TerminalPanel {
                         monitor_panel: monitor_panel.clone(),
                         resizable_state,
                         resizable_id,
+                        sftp_open: false,
+                        sftp_panel: sftp_panel.clone(),
+                        sftp_resizable_state: cx.new(|_| ResizableState::default()),
+                        sftp_resizable_id,
+                        ssh_handle: None,
                     };
                     Self::subscribe_monitor(&monitor_panel, cx);
+                    Self::subscribe_sftp(&sftp_panel, window, cx);
                     this
                 }
                 Err(error) => {
                     // 失败也需要一个 monitor_panel 占位，避免 Option
                     let tmp_host = host.clone();
                     let monitor_panel = MonitorPanel::new(tmp_host, window, cx);
+                    let sftp_panel = SftpPanel::new(host.clone(), window, cx);
+                    let sftp_resizable_id =
+                        SharedString::from(format!("terminal-sftp-{}", host.id));
                     let resizable_state = cx.new(|_| ResizableState::default());
-                    let resizable_id =
-                        SharedString::from(format!("terminal-monitor-{}", host.id));
+                    let resizable_id = SharedString::from(format!("terminal-monitor-{}", host.id));
                     let this = Self {
                         telemetry: None,
                         host,
@@ -249,8 +318,14 @@ impl TerminalPanel {
                         monitor_panel: monitor_panel.clone(),
                         resizable_state,
                         resizable_id,
+                        sftp_open: false,
+                        sftp_panel: sftp_panel.clone(),
+                        sftp_resizable_state: cx.new(|_| ResizableState::default()),
+                        sftp_resizable_id,
+                        ssh_handle: None,
                     };
                     Self::subscribe_monitor(&monitor_panel, cx);
+                    Self::subscribe_sftp(&sftp_panel, window, cx);
                     this
                 }
             }
@@ -288,6 +363,8 @@ impl TerminalPanel {
                 Ok(conn) => {
                     // SSH 成功：用远端通道重建终端，并把同一条连接交给监控采集。
                     // 采集另开通道（见 `crate::ssh::exec`），不碰终端这一条。
+                    let ssh_handle = conn.handle.clone();
+                    this.ssh_handle = Some(ssh_handle.clone());
                     let service =
                         crate::service::MonitorService::new(conn.handle.clone());
                     let emulator =
@@ -303,6 +380,9 @@ impl TerminalPanel {
                         monitor.attach(service, cx);
                         monitor.set_expanded(expanded, cx);
                     });
+                    // SFTP 通道与终端不同一条：连上就开，用户什么时候展开这一栏都用得着，
+                    // 而它失败的原因（对端没配 sftp-server）也该早点拿到。
+                    this.open_sftp(ssh_handle, window, cx);
                     cx.notify();
                 }
                 Err(error) => {
@@ -512,7 +592,12 @@ impl TerminalPanel {
         });
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // 点一下终端就把焦点收回来，否则焦点还在侧边栏或按钮上，Tab 会跑去切焦点而不是进终端
         cx.focus_self(window);
 
@@ -563,7 +648,12 @@ impl TerminalPanel {
         point_at(position, &self.grid, emulator.read(cx).content())
     }
 
-    fn on_copy_selection(&mut self, _: &CopySelection, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_copy_selection(
+        &mut self,
+        _: &CopySelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.terminal_is_focused(window) {
             return;
         }
@@ -577,7 +667,12 @@ impl TerminalPanel {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
-    fn on_paste_clipboard(&mut self, _: &PasteClipboard, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_paste_clipboard(
+        &mut self,
+        _: &PasteClipboard,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.terminal_is_focused(window) {
             return;
         }
@@ -609,6 +704,54 @@ impl TerminalPanel {
 
     fn toggle_monitor(&mut self, cx: &mut Context<Self>) {
         self.set_monitor_open(!self.monitor_open, cx);
+    }
+
+    /// 在同一条 SSH 连接上开一条 SFTP 子系统通道，交给底部那一栏。
+    ///
+    /// 开不起来不算这一栏的失败，而是它的一个状态：面板拿着原因画自己的空状态，
+    /// 那里有一颗"重试"按钮，走的还是这个函数。
+    fn open_sftp(
+        &mut self,
+        handle: Arc<russh::client::Handle<crate::ssh::SshHandler>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let panel = self.sftp_panel.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let outcome = crate::service::SftpService::connect(handle).await;
+            let _ = panel.update_in(cx, |this, window, cx| match outcome {
+                Ok(service) => this.attach(Some(service), None, window, cx),
+                Err(error) => this.attach(
+                    None,
+                    Some(SharedString::from(format!("{error:#}"))),
+                    window,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    /// 展开或收起底部这一栏。收起不取消在跑的传输 —— 队列里的东西该继续搬完。
+    fn set_sftp_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sftp_open == open {
+            return;
+        }
+        self.sftp_open = open;
+        self.sftp_panel
+            .update(cx, |panel, cx| panel.set_open(open, window, cx));
+        cx.notify();
+    }
+
+    fn toggle_sftp(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_sftp_open(!self.sftp_open, window, cx);
+    }
+
+    fn on_toggle_sftp(&mut self, _: &ToggleSftp, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.terminal_is_focused(window) {
+            return;
+        }
+        self.toggle_sftp(window, cx);
     }
 
     /// 展开或收起右侧监控面板。
@@ -708,7 +851,12 @@ impl BasePanel for TerminalPanel {
         "TerminalPanel"
     }
 
-    fn on_added_to(&mut self, group: WeakEntity<TabGroup>, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_added_to(
+        &mut self,
+        group: WeakEntity<TabGroup>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.group = Some(group);
         // 新开的会话直接获得焦点，否则 Tab 会落在活动栏或其它按钮上
         cx.focus_self(window);
@@ -781,6 +929,7 @@ impl Render for TerminalPanel {
             .on_action(cx.listener(Self::on_tab))
             .on_action(cx.listener(Self::on_back_tab))
             .on_action(cx.listener(Self::on_toggle_monitor))
+            .on_action(cx.listener(Self::on_toggle_sftp))
             // 按键挂在整个面板上而不是网格上：网格里没有可聚焦的东西，
             // 焦点落在面板这一层，按键也就在这一层收。
             .on_key_down(cx.listener(Self::on_key_down))
@@ -793,10 +942,14 @@ impl Render for TerminalPanel {
                 .on_tunnels(|_, window, cx| {
                     window.push_notification("端口转发面板还在开发中。", cx);
                 })
-                .on_sftp(|_, window, cx| {
-                    window.push_notification("SFTP 面板还在开发中。", cx);
-                })
-                .on_monitor(monitor_open, cx.listener(|this, _, _, cx| this.toggle_monitor(cx)))
+                .sftp_active(self.sftp_open)
+                .on_sftp(cx.listener(|this, _, window, cx| {
+                    this.toggle_sftp(window, cx);
+                }))
+                .on_monitor(
+                    monitor_open,
+                    cx.listener(|this, _, _, cx| this.toggle_monitor(cx)),
+                )
                 .on_copy(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_all(cx)))
                 .on_clear(cx.listener(|this, _: &ClickEvent, _, cx| this.clear(cx))),
             )
@@ -815,25 +968,30 @@ impl Render for TerminalPanel {
                         .connected(connected)
                         .grid(self.grid.num_columns(), self.grid.num_lines()),
                     );
-                if monitor_open {
-                    div().flex_1().min_h_0().min_w_0().child(
-                        h_resizable(self.resizable_id.clone())
-                            .with_state(&self.resizable_state)
-                            .child(resizable_panel().child(terminal_view))
-                            .child(
-                                resizable_panel()
-                                    .size(MONITOR_WIDTH)
-                                    .size_range(px(280.)..px(700.))
-                                    .child(
-                                        div()
-                                            .size_full()
-                                            .overflow_hidden()
-                                            .border_l_1()
-                                            .border_color(cx.theme().border)
-                                            .child(self.monitor_panel.clone()),
-                                    ),
-                            ),
-                    )
+                let body = if monitor_open {
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .child(
+                            h_resizable(self.resizable_id.clone())
+                                .with_state(&self.resizable_state)
+                                .child(resizable_panel().child(terminal_view))
+                                .child(
+                                    resizable_panel()
+                                        .size(MONITOR_WIDTH)
+                                        .size_range(px(280.)..px(700.))
+                                        .child(
+                                            div()
+                                                .size_full()
+                                                .overflow_hidden()
+                                                .border_l_1()
+                                                .border_color(cx.theme().border)
+                                                .child(self.monitor_panel.clone()),
+                                        ),
+                                ),
+                        )
+                        .into_any_element()
                 } else {
                     h_flex()
                         .flex_1()
@@ -841,8 +999,50 @@ impl Render for TerminalPanel {
                         .min_w_0()
                         .items_stretch()
                         .child(terminal_view)
+                        .into_any_element()
+                };
+                if self.sftp_open {
+                    // 底部这一栏的高度是拖出来的，所以走 `v_resizable`；面板那边只需要知道
+                    // 现在多高（它按高度决定"展开/压扁"那颗按钮给哪一档），以及终端此刻
+                    // 在哪个目录（开着"跟随"时它就顺手翻过去）。
+                    let height = self
+                        .sftp_resizable_state
+                        .read(cx)
+                        .sizes()
+                        .last()
+                        .copied()
+                        .unwrap_or(SFTP_HEIGHT);
+                    let cwd = self.directory(cx);
+                    self.sftp_panel.update(cx, |panel, cx| {
+                        panel.set_height(height);
+                        panel.set_terminal_cwd(cwd.as_str(), window, cx);
+                    });
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .child(
+                            v_resizable(self.sftp_resizable_id.clone())
+                                .with_state(&self.sftp_resizable_state)
+                                .child(resizable_panel().child(body))
+                                .child(
+                                    resizable_panel()
+                                        .size(SFTP_HEIGHT)
+                                        .size_range(SFTP_MIN_HEIGHT..SFTP_MAX_HEIGHT)
+                                        .child(
+                                            div()
+                                                .size_full()
+                                                .overflow_hidden()
+                                                .border_t_1()
+                                                .border_color(cx.theme().border)
+                                                .child(self.sftp_panel.clone()),
+                                        ),
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    body
                 }
-                .into_any_element()
             })
     }
 }

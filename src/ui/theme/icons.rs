@@ -13,14 +13,30 @@ use gpui_component::IconNamed;
 pub enum AppIcon {
     /// 折线脉冲：资源监控。
     Activity,
-    /// `</>`：命令片段。
+    /// 打包箱：`.tar.gz`、`.zip` 这类归档。
+    Archive,
+    /// 一分为二的方框：双栏布局。
+    Columns2,
+    /// `</>`：命令片段，也是源码文件的类型图标。
     CodeXml,
+    /// 向下箭头入盘：下载到本地。
+    Download,
+    /// 带加号的文件：新建远端文件。
+    FilePlus,
+    /// 带加号的文件夹：新建目录。
+    FolderPlus,
     /// 带同步箭头的文件夹：SFTP 传输。
     FolderSync,
+    /// 屋顶加门：远端家目录。组件库没有 home 那个图标。
+    Home,
     /// 圆头钥匙：密钥与凭据。
     KeyRound,
+    /// 开盖的笔记本：本地那一栏。
+    Laptop,
     /// 铅笔：编辑已有的东西。
     Pencil,
+    /// 首尾相接的两个箭头：重新列一次。组件库的 `Reload` 不存在，`LoaderCircle` 是转圈。
+    RefreshCw,
     /// 双层机架：主机与会话。
     Server,
     /// 星芒：AI 助手。
@@ -29,6 +45,8 @@ pub enum AppIcon {
     Terminal,
     /// 垃圾桶：删除。组件库的 `Delete` 是退格键那个图标，不是桶。
     Trash,
+    /// 向上箭头出盘：上传到远端。
+    Upload,
     /// 闪电：快速连接这类即时动作。
     Zap,
 }
@@ -37,14 +55,23 @@ impl IconNamed for AppIcon {
     fn path(self) -> SharedString {
         match self {
             Self::Activity => "icons/activity.svg",
+            Self::Archive => "icons/archive.svg",
+            Self::Columns2 => "icons/columns-2.svg",
             Self::CodeXml => "icons/code-xml.svg",
+            Self::Download => "icons/download.svg",
+            Self::FilePlus => "icons/file-plus.svg",
+            Self::FolderPlus => "icons/folder-plus.svg",
             Self::FolderSync => "icons/folder-sync.svg",
+            Self::Home => "icons/home.svg",
             Self::KeyRound => "icons/key-round.svg",
+            Self::Laptop => "icons/laptop.svg",
             Self::Pencil => "icons/pencil.svg",
+            Self::RefreshCw => "icons/refresh-cw.svg",
             Self::Server => "icons/server.svg",
             Self::Sparkles => "icons/sparkles.svg",
             Self::Terminal => "icons/terminal.svg",
             Self::Trash => "icons/trash-2.svg",
+            Self::Upload => "icons/upload.svg",
             Self::Zap => "icons/zap.svg",
         }
         .into()

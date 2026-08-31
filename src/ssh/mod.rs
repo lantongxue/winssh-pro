@@ -9,19 +9,22 @@
 //! GPUI (write_output) ◀──output_rx─── Tokio bridge ◀──channel.wait ── sshd
 //! ```
 //!
-//! 终端那条通道之外还有第二类用法：[`exec`] 在同一条连接上另开通道跑一次性
-//! 命令（监控采集、`kill`、`docker`），互不干扰 —— 所以
-//! [`SshConnection::handle`] 是 [`std::sync::Arc`] 共享的。
+//! 终端那条通道之外还有两类用法：[`exec`] 在同一条连接上另开通道跑一次性
+//! 命令（监控采集、`kill`、`docker`），[`sftp`] 再开一条走 SFTP 子系统
+//! （文件面板）。互不干扰 —— 所以 [`SshConnection::handle`] 是
+//! [`std::sync::Arc`] 共享的。
 
 pub mod bridge;
 pub mod client;
 pub mod connection;
 pub mod exec;
+pub mod sftp;
 
 pub use bridge::{SshBridge, SshOutputReceiver, spawn_bridge};
 pub use client::SshHandler;
 pub use connection::{SshConnection, WindowSize};
 pub use exec::exec_script;
+pub use sftp::open_session as open_sftp_session;
 
 use anyhow::Result;
 

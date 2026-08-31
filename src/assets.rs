@@ -21,20 +21,49 @@ const OWNED: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/activity.svg"),
     ),
     (
+        "icons/archive.svg",
+        include_bytes!("../assets/icons/archive.svg"),
+    ),
+    (
         "icons/code-xml.svg",
         include_bytes!("../assets/icons/code-xml.svg"),
+    ),
+    (
+        "icons/columns-2.svg",
+        include_bytes!("../assets/icons/columns-2.svg"),
+    ),
+    (
+        "icons/download.svg",
+        include_bytes!("../assets/icons/download.svg"),
+    ),
+    (
+        "icons/file-plus.svg",
+        include_bytes!("../assets/icons/file-plus.svg"),
+    ),
+    (
+        "icons/folder-plus.svg",
+        include_bytes!("../assets/icons/folder-plus.svg"),
     ),
     (
         "icons/folder-sync.svg",
         include_bytes!("../assets/icons/folder-sync.svg"),
     ),
+    ("icons/home.svg", include_bytes!("../assets/icons/home.svg")),
     (
         "icons/key-round.svg",
         include_bytes!("../assets/icons/key-round.svg"),
     ),
     (
+        "icons/laptop.svg",
+        include_bytes!("../assets/icons/laptop.svg"),
+    ),
+    (
         "icons/pencil.svg",
         include_bytes!("../assets/icons/pencil.svg"),
+    ),
+    (
+        "icons/refresh-cw.svg",
+        include_bytes!("../assets/icons/refresh-cw.svg"),
     ),
     (
         "icons/server.svg",
@@ -51,6 +80,10 @@ const OWNED: &[(&str, &[u8])] = &[
     (
         "icons/trash-2.svg",
         include_bytes!("../assets/icons/trash-2.svg"),
+    ),
+    (
+        "icons/upload.svg",
+        include_bytes!("../assets/icons/upload.svg"),
     ),
     ("icons/zap.svg", include_bytes!("../assets/icons/zap.svg")),
 ];

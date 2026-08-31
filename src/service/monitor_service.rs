@@ -86,7 +86,10 @@ impl MonitorService {
         // 自家开销。剩下的仍然含远端读 `/proc` 的时间，所以它是"采集往返"，
         // 比纯网络 RTT 略大。
         let window = Duration::from_secs_f64(sample.window_secs.clamp(0., 5.));
-        let latency_ms = elapsed.saturating_sub(window).as_millis().min(u32::MAX as u128) as u32;
+        let latency_ms = elapsed
+            .saturating_sub(window)
+            .as_millis()
+            .min(u32::MAX as u128) as u32;
 
         let mut collector = self
             .collector
@@ -241,7 +244,10 @@ mod tests {
         crate::db::runtime().block_on(async {
             let (handle, seen) = crate::ssh::exec::fake::connect("", "", true).await;
             let service = MonitorService::new(handle);
-            service.kill_process(4321, false).await.expect("kill 应成功");
+            service
+                .kill_process(4321, false)
+                .await
+                .expect("kill 应成功");
             assert_eq!(seen.script(), "kill -15 4321");
         });
     }

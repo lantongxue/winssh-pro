@@ -10,6 +10,12 @@
 
 mod command_palette;
 mod host_form;
+mod sftp_chmod;
+mod sftp_editor;
+mod sftp_form;
 
 pub use command_palette::{CommandPaletteDialog, CommandPaletteEvent};
 pub use host_form::HostFormDialog;
+pub use sftp_chmod::{ChmodHandler, SftpChmodDialog};
+pub use sftp_editor::{SftpEditorDialog, SavedHandler as SftpSavedHandler};
+pub use sftp_form::{SftpFormDialog, SftpFormKind, SftpNameHandler};

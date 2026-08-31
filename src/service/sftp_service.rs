@@ -1,0 +1,988 @@
+//! SFTP 服务：底部文件面板拿数据的唯一入口。
+//!
+//! 一条会话一个实例，握着 [`crate::ssh::sftp`] 开出来的那条子系统通道
+//! （与终端、监控采集共用同一条 SSH 连接）。界面因此不知道 `russh-sftp`、
+//! SFTP 包与 `FileAttributes` 的存在，只会要 [`FileEntry`]、丢传输任务。
+//!
+//! 四条口径值得写下来：
+//!
+//! - **只报对端说过的话**。列目录缺什么字段（多数服务器不在 `readdir` 里给属主名）
+//!   就留 `None`，由领域层显示成 `—` 或数字 uid，不猜。
+//! - **传输先落到 `.part` 再改名**。中断、取消、对端报错都不能留下一个看着完整
+//!   的半成品文件 —— 那比失败更难发现。
+//! - **进度是分块报的**，一次一个事件；界面按事件更新那一行，不需要自己掐时间。
+//! - **错误是一句人话，并且带上对端的原话**。`Permission denied` 是 sshd 说的，
+//!   比我们能写的任何转述都准。
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
+
+use anyhow::{Context as _, Result, anyhow, bail};
+use russh::client::Handle;
+use russh_sftp::client::SftpSession;
+use russh_sftp::client::error::Error as SftpError;
+use russh_sftp::protocol::{FileAttributes, FileType, StatusCode};
+use tokio::fs::File as TokioFile;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+use crate::{
+    sftp::{FileEntry, FileKind, TransferDirection, path},
+    ssh::{SshHandler, open_sftp_session},
+};
+
+/// 一次搬运的块大小。SFTP 包上限一般是 32 KiB（`limits@openssh.com` 会自己收小），
+/// 比它大的读请求会被对端截短，所以再大也只是白占内存。
+const CHUNK: usize = 32 * 1024;
+
+/// 编辑远端文本文件的大小上限。超过就当二进制文件处理（提示先下载到本地打开），
+/// 把 200 MB 的日志读进一个输入框是给自己找麻烦。
+pub const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
+
+/// 一条会话的 SFTP 入口。廉价克隆（两个 `Arc`），可以直接搬进后台任务。
+#[derive(Clone)]
+pub struct SftpService {
+    session: Arc<SftpSession>,
+    /// 远端家目录，第一次要的时候问一次就存下来（`realpath .`）。
+    home: Arc<Mutex<Option<String>>>,
+}
+
+/// 面板发起一次传输时要给的东西。
+#[derive(Clone, Debug)]
+pub struct TransferJob {
+    /// 队列里的那一行用它对齐进度事件。
+    pub id: u64,
+    pub direction: TransferDirection,
+    /// 本地路径。上传时它是源（文件或目录），下载时是目标文件本身。
+    pub local: PathBuf,
+    /// 远端目标：上传时是目标目录（名字取本地的 basename），下载时是那个文件本身。
+    pub remote: String,
+}
+
+/// 传输任务发回界面的事件。
+#[derive(Debug)]
+pub enum TransferEvent {
+    /// 已搬字节数。`total` 以任务实际算出来的为准（目录上传的总数是走出来的）。
+    Progress {
+        id: u64,
+        transferred: u64,
+        total: u64,
+    },
+    /// 结束了。`error` 为空即成功；取消也是一条 `error`，文案就是"已取消"。
+    Done { id: u64, error: Option<String> },
+}
+
+/// 一次传输的把手。丢掉它不会打断传输，所以要显式 [`Self::cancel`]；
+/// 面板关掉时统一取消，不留"界面没了还在偷偷写盘"的任务。
+pub struct TransferHandle {
+    cancel: CancellationToken,
+    join: JoinHandle<()>,
+}
+
+impl TransferHandle {
+    /// 让任务在下一块之前停下。半截的 `.part` 留在原地，名字已经说明它是什么。
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.join.is_finished()
+    }
+}
+
+impl SftpService {
+    /// 在已认证的连接上开一条 SFTP 会话。
+    ///
+    /// 这一步是真要等网络的：对端没配 `Subsystem sftp` 时会失败，
+    /// 错误里带着原因（见 [`crate::ssh::sftp`]），界面原样通知即可。
+    pub async fn connect(handle: Arc<Handle<SshHandler>>) -> Result<Self> {
+        let session = crate::db::run(async move { open_sftp_session(&handle).await })
+            .await
+            .context("建立 SFTP 会话失败")?;
+        Ok(Self {
+            session,
+            home: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    /// 远端家目录。SFTP 子系统的当前工作目录就是登录用户的家目录，
+    /// `realpath .` 问一次就够了，之后缓存。
+    pub async fn home(&self) -> Result<String> {
+        if let Some(known) = self.cached_home() {
+            return Ok(known);
+        }
+        let session = self.session.clone();
+        let resolved = crate::db::run(async move { session.canonicalize(".").await })
+            .await
+            .map_err(|error| remote("查询远端家目录", error))?;
+        let normalized = path::normalize(&resolved);
+        *self.home.lock().map_err(|_| anyhow!("家目录缓存已损坏"))? = Some(normalized.clone());
+        Ok(normalized)
+    }
+
+    fn cached_home(&self) -> Option<String> {
+        self.home.lock().ok().and_then(|cached| cached.clone())
+    }
+
+    /// 把用户敲进路径框的东西变成一个能用的绝对路径：展开 `~`，再让对端
+    /// `realpath` 解析软链接与相对写法。
+    ///
+    /// 解析失败（目录不存在、没权限进去）时退回本地词法折叠的结果 ——
+    /// 界面接下来要去 `list`，那里的错误更具体（"不存在"到底是谁说的）。
+    pub async fn resolve(&self, raw: &str) -> String {
+        let expanded = path::expand_tilde(raw.trim(), self.cached_home().as_deref());
+        if expanded.is_empty() {
+            return expanded;
+        }
+        let session = self.session.clone();
+        let fallback = expanded.clone();
+        let resolved = crate::db::run(async move { session.canonicalize(expanded).await }).await;
+        match resolved {
+            Ok(real) => path::normalize(&real),
+            Err(_) => path::normalize(&fallback),
+        }
+    }
+
+    /// 列一个目录。排序与过滤都不在这里 —— 那是界面每次显示前的加工，
+    /// 服务只负责"对端认为这个目录里有什么"。
+    pub async fn list(&self, dir: &str) -> Result<Vec<FileEntry>> {
+        let dir = path::normalize(dir);
+        let session = self.session.clone();
+        let label = dir.clone();
+        let entries = crate::db::run(async move { session.read_dir(dir).await })
+            .await
+            .map_err(|error| remote(&format!("读取目录 {label}"), error))?;
+
+        Ok(entries
+            .into_iter()
+            .map(|entry| entry_of(&entry.file_name(), &entry.path(), &entry.metadata()))
+            .collect())
+    }
+
+    /// 存不存在。只有 `NoSuchFile` 算不存在，其余错误照旧冒泡 ——
+    /// "没权限 stat" 不等于 "没有这个文件"。
+    pub async fn exists(&self, target: &str) -> Result<bool> {
+        let target = path::normalize(target);
+        let session = self.session.clone();
+        crate::db::run(async move { session.try_exists(target).await })
+            .await
+            .map_err(|error| remote("检查路径", error))
+    }
+
+    /// 新建目录。
+    pub async fn create_dir(&self, target: &str) -> Result<()> {
+        let target = path::normalize(target);
+        let session = self.session.clone();
+        let label = target.clone();
+        crate::db::run(async move { session.create_dir(target).await })
+            .await
+            .map_err(|error| remote(&format!("创建目录 {label}"), error))
+    }
+
+    /// 新建空文件。已存在就报错，不清空别人的东西。
+    pub async fn create_file(&self, target: &str) -> Result<()> {
+        let target = path::normalize(target);
+        if self.exists(&target).await.unwrap_or(false) {
+            bail!("{target} 已经存在");
+        }
+        let session = self.session.clone();
+        let path_for_error = target.clone();
+        crate::db::run(async move {
+            let file = session.create(target).await?;
+            // `close` 会等到句柄真的被对端关掉；drop 是把错误咽下去。
+            file.close()
+                .await
+                .map_err(|error| SftpError::IO(error.to_string()))
+        })
+        .await
+        .map_err(|error| remote(&format!("创建文件 {path_for_error}"), error))
+    }
+
+    /// 删一个条目。目录用 `rmdir`：非空会被对端拒绝，那是实话 ——
+    /// 我们不在背后替你递归删掉别人的东西。
+    pub async fn remove(&self, entry: &FileEntry) -> Result<()> {
+        let target = entry.path.to_string();
+        let is_dir = entry.kind == FileKind::Dir;
+        let session = self.session.clone();
+        let label = target.clone();
+        crate::db::run(async move {
+            if is_dir {
+                session.remove_dir(target).await
+            } else {
+                session.remove_file(target).await
+            }
+        })
+        .await
+        .map_err(|error| remote(&format!("删除 {label}"), error))
+    }
+
+    /// 重命名（给绝对路径时就是移动）。
+    ///
+    /// **不会顶掉同名条目**：这一版协议里的 `SSH_FXP_RENAME` 就是裸的一次
+    /// `rename(2)`（报文中没有覆盖标志，也没有走 `posix-rename@openssh.com`
+    /// 扩展），目标已经存在时对端直接回失败。要不要覆盖是调用方的判断 ——
+    /// 一次上传覆盖一份旧文件和改名撞上一个同名条目，是两件不同的事。
+    pub async fn rename(&self, from: &str, to: &str) -> Result<()> {
+        let (from, to) = (path::normalize(from), path::normalize(to));
+        let session = self.session.clone();
+        let (from_label, to_label) = (from.clone(), to.clone());
+        crate::db::run(async move { session.rename(from, to).await })
+            .await
+            .map_err(|error| remote(&format!("把 {from_label} 改名为 {to_label}"), error))
+    }
+
+    /// 改权限。`octal` 是 `0o644` 这种只含权限位的数。
+    pub async fn set_mode(&self, target: &str, octal: u32) -> Result<()> {
+        let target = path::normalize(target);
+        check_mode(octal)?;
+        let session = self.session.clone();
+        let label = target.clone();
+        crate::db::run(async move {
+            // `flags` 由哪些字段给出了自动推出来：只填 permissions，就只改权限，
+            // 不会顺手把大小和时间写成 0。
+            let attrs = FileAttributes {
+                permissions: Some(octal),
+                ..Default::default()
+            };
+            session.set_metadata(target, attrs).await
+        })
+        .await
+        .map_err(|error| remote(&format!("修改 {label} 的权限"), error))
+    }
+
+    /// 读一个远端文本文件，交给编辑对话框。
+    pub async fn read_text(&self, target: &str) -> Result<String> {
+        let target = path::normalize(target);
+        let session = self.session.clone();
+        let limit = MAX_TEXT_BYTES;
+        let label = target.clone();
+        let bytes = crate::db::run(async move {
+            let attrs = session.metadata(target.clone()).await?;
+            if attrs.size.unwrap_or(0) > limit {
+                return Err(SftpError::UnexpectedBehavior(format!(
+                    "文件 {} 字节，超过可编辑的上限",
+                    attrs.size.unwrap_or(0)
+                )));
+            }
+            session.read(target).await
+        })
+        .await
+        .map_err(|error| remote(&format!("读取 {label}"), error))?;
+
+        String::from_utf8(bytes).map_err(|_| anyhow!("{label} 不是 UTF-8 文本，不能在这里编辑"))
+    }
+
+    /// 保存远端文本文件（整篇覆盖）。
+    pub async fn write_text(&self, target: &str, content: &str) -> Result<()> {
+        let target = path::normalize(target);
+        let bytes = content.as_bytes().to_vec();
+        let session = self.session.clone();
+        let label = target.clone();
+        crate::db::run(async move {
+            let mut file = session.create(&target).await?;
+            file.write_all(&bytes).await?;
+            // `close` 会等在途的写请求确认完；直接 drop 是把错误咽下去。
+            file.close()
+                .await
+                .map_err(|error| SftpError::IO(error.to_string()))
+        })
+        .await
+        .map_err(|error| remote(&format!("保存 {label}"), error))
+    }
+
+    /// 派一个下载到本地的任务。
+    ///
+    /// 传输都跑在数据层那个 tokio runtime 上：SFTP 的读写要 reactor，而派任务的
+    /// 线程是 gpui 的前台（[`crate::ssh::bridge`] 里是同样的处理）。
+    pub fn spawn_download(
+        &self,
+        job: TransferJob,
+        progress: UnboundedSender<TransferEvent>,
+    ) -> TransferHandle {
+        let session = self.session.clone();
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task_progress = progress.clone();
+        let id = job.id;
+
+        let join = crate::db::runtime().spawn(async move {
+            let outcome = download(&session, &job, &task_cancel, &task_progress).await;
+            report_done(&progress, id, outcome, task_cancel.is_cancelled());
+        });
+
+        TransferHandle { cancel, join }
+    }
+
+    /// 派一个上传（本地文件或整棵目录树）到远端的任务。
+    pub fn spawn_upload(
+        &self,
+        job: TransferJob,
+        progress: UnboundedSender<TransferEvent>,
+    ) -> TransferHandle {
+        let session = self.session.clone();
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task_progress = progress.clone();
+        let id = job.id;
+
+        let join = crate::db::runtime().spawn(async move {
+            let outcome = upload(&session, &job, &task_cancel, &task_progress).await;
+            report_done(&progress, id, outcome, task_cancel.is_cancelled());
+        });
+
+        TransferHandle { cancel, join }
+    }
+}
+
+/// 传输结束：把结果说成一个事件。取消不是失败，界面上是另一种颜色。
+fn report_done(
+    progress: &UnboundedSender<TransferEvent>,
+    id: u64,
+    outcome: Result<()>,
+    canceled: bool,
+) {
+    let error = match outcome {
+        Ok(()) => None,
+        Err(error) => Some(if canceled {
+            "已取消".to_owned()
+        } else {
+            error.to_string()
+        }),
+    };
+    let _ = progress.send(TransferEvent::Done { id, error });
+}
+
+/// 只接受权限位（`0o7777` 以内）。类型位混进来多半是调用方忘了掩码，
+/// 将错就错会把 `0o100644` 存成 `0o0644` 之外的怪东西。
+fn check_mode(octal: u32) -> Result<()> {
+    if octal > 0o7777 {
+        bail!("权限只能是八进制 0000~7777，收到 {octal:o}");
+    }
+    Ok(())
+}
+
+/// 远端 → 本地。先写 `.<name>.part`，成功后改名落到最终名字上。
+async fn download(
+    session: &Arc<SftpSession>,
+    job: &TransferJob,
+    cancel: &CancellationToken,
+    progress: &UnboundedSender<TransferEvent>,
+) -> Result<()> {
+    let remote_path = path::normalize(&job.remote);
+    let local = job.local.clone();
+    if let Some(parent) = local.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("创建本地目录 {} 失败", parent.display()))?;
+    }
+    let temp = part_path(&local);
+
+    let mut source = session
+        .open(&remote_path)
+        .await
+        .map_err(|error| remote(&format!("打开远端文件 {remote_path}"), error))?;
+    let attrs = source
+        .metadata()
+        .await
+        .map_err(|error| remote(&format!("查看远端文件 {remote_path}"), error))?;
+    let total = attrs.size.unwrap_or(0);
+
+    let mut sink = TokioFile::create(&temp)
+        .await
+        .with_context(|| format!("创建本地临时文件 {} 失败", temp.display()))?;
+
+    let moved = pump(&mut source, &mut sink, total, job.id, 0, &cancel, &progress).await?;
+    if total > 0 && moved < total {
+        bail!("下载不完整：{} / {} 字节", moved, total);
+    }
+
+    // 落盘顺序：写完 → 关（等在途写确认）→ 改名。名字就是"完成"的标志。
+    sink.shutdown().await.context("写入本地临时文件失败")?;
+    drop(sink);
+    source
+        .close()
+        .await
+        .map_err(|error| remote("关闭远端文件", SftpError::IO(error.to_string())))?;
+    replace_with(&temp, &local)?;
+
+    // 远端权限顺手带到本地：下载一个脚本，可执行位不该在搬运路上丢了。
+    // Windows 上只有只读/可读写两档，跳过比硬凑一个假的强。
+    #[cfg(unix)]
+    if let Some(mode) = attrs.permissions {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&local, std::fs::Permissions::from_mode(mode & 0o7777))
+            .with_context(|| format!("设置 {} 的权限失败", local.display()))?;
+    }
+
+    Ok(())
+}
+
+/// 本地 → 远端。`job.remote` 是目标目录；单文件写 `<dir>/<basename>`，
+/// 目录则整棵树照搬（远端目录不存在就建，已存在就并进去）。
+async fn upload(
+    session: &Arc<SftpSession>,
+    job: &TransferJob,
+    cancel: &CancellationToken,
+    progress: &UnboundedSender<TransferEvent>,
+) -> Result<()> {
+    let plan = plan_upload(&job.local, &path::normalize(&job.remote))?;
+    let total = plan.total_bytes();
+
+    // 先把骨架搭出来再搬字节：中途失败时界面上多出来的空目录是本来就要建的，
+    // 不会被人误读成"这次上传留下了一半形状"。
+    for dir in &plan.dirs {
+        ensure_dir(session, dir).await?;
+    }
+
+    // 一个目录上传在界面上是**一条**进度条：分母是整棵树，偏移是前面已经搬完的。
+    let mut moved = 0u64;
+    for file in &plan.files {
+        if cancel.is_cancelled() {
+            bail!("已取消");
+        }
+        let mut source = TokioFile::open(&file.local)
+            .await
+            .with_context(|| format!("打开本地文件 {} 失败", file.local.display()))?;
+        let temp = part_path_str(&file.remote);
+        let mut sink = session
+            .create(&temp)
+            .await
+            .map_err(|error| remote(&format!("创建远端临时文件 {temp}"), error))?;
+
+        let pumped = pump(
+            &mut source,
+            &mut sink,
+            total,
+            job.id,
+            moved,
+            cancel,
+            progress,
+        )
+        .await?;
+        moved += pumped;
+
+        sink.close()
+            .await
+            .map_err(|error| remote("关闭远端临时文件", SftpError::IO(error.to_string())))?;
+        // 上传是要顶掉旧文件的（用户挑了同一个名字再传一次），而协议的 rename
+        // 不覆盖，所以落到 `rename_into_place` 里去处理这件事。
+        rename_into_place(session, &temp, &file.remote)
+            .await
+            .map_err(|error| remote(&format!("落下 {}", file.remote), error))?;
+    }
+    Ok(())
+}
+
+/// 让 `from` 变成 `to`，把同名的旧文件顶掉。
+///
+/// 先直接试一次改名：目标不存在（绝大多数情况）时这就够了，而且是原子的。
+/// 失败了再看是什么挡在那儿 —— 只有当它是个能删的东西（普通文件、软链接）才
+/// 删掉重演一次。撞上目录就保留对端原本的报错：把别人的目录连根删了来放这个
+/// 文件，不是任何人点"上传"时想要的结果。
+///
+/// 删与改名之间有个空档，中间断了这个条目就暂时没了。取舍是拿它换"重传同一个
+/// 文件不用先去手删一遍"——`SSH_FXP_RENAME` 这一版报文里没有覆盖标志，没有
+/// 第三条路可走。
+async fn rename_into_place(
+    session: &Arc<SftpSession>,
+    from: &str,
+    to: &str,
+) -> Result<(), SftpError> {
+    let Err(first) = session.rename(from, to).await else {
+        return Ok(());
+    };
+    // 这里用 `metadata`（会跟着软链接走）而不是 `lstat`：`foo -> /etc` 这种，
+    // 顶掉一个指向目录的链接跟顶掉一个目录差不多危险，让它留在原地报错。
+    let replaceable = session
+        .metadata(to)
+        .await
+        .is_ok_and(|attrs| matches!(attrs.file_type(), FileType::File | FileType::Symlink));
+    if !replaceable {
+        // 目标根本不存在（那是别的原因失败的）、是个目录、或者问不出来：
+        // 把对端第一次说的话原样交回去，不在背后删任何东西。
+        return Err(first);
+    }
+    session.remove_file(to).await?;
+    session.rename(from, to).await
+}
+
+/// 让远端有这一个目录：已经有就当是并进去。`create_dir` 对已存在会回一个错误，
+/// 那不该打断一次重传的上传。
+async fn ensure_dir(session: &Arc<SftpSession>, target: &str) -> Result<()> {
+    if session
+        .try_exists(target)
+        .await
+        .map_err(|error| remote(&format!("检查远端目录 {target}"), error))?
+    {
+        return Ok(());
+    }
+    session
+        .create_dir(target)
+        .await
+        .map_err(|error| remote(&format!("创建远端目录 {target}"), error))
+}
+
+/// 一次目录树上传摊平出来的计划。
+#[derive(Default)]
+struct UploadPlan {
+    /// 要建的远端目录，外层在前。
+    dirs: Vec<String>,
+    files: Vec<UploadFile>,
+}
+
+struct UploadFile {
+    local: PathBuf,
+    remote: String,
+    size: u64,
+}
+
+impl UploadPlan {
+    /// 进度条的分母。它就是计划里这些文件的字节数之和，所以和实际会搬过去的字节
+    /// 一定对得上 —— 不会出现"卡在 99%"的那种分母。
+    fn total_bytes(&self) -> u64 {
+        self.files.iter().map(|file| file.size).sum()
+    }
+}
+
+/// 把一棵本地树摊平成计划。
+///
+/// 用显式队列而不是递归：`async fn` 自己调自己要装箱（递归的未来大小未知），
+/// 而一棵很深的树也不该把任务的栈吃掉。
+///
+/// 顶层是用户自己挑的，跟着软链接走一步没问题；树**里面**的目录软链接一律按文件
+/// 处理（搬它指向的内容，不进去）—— 一个指回上层的链接，跟着走就是无限循环。
+fn plan_upload(local: &Path, remote_dir: &str) -> Result<UploadPlan> {
+    let mut plan = UploadPlan::default();
+    let root = remote_for(local, remote_dir)?;
+
+    if !local.is_dir() {
+        plan.files.push(upload_file(local, &root)?);
+        return Ok(plan);
+    }
+
+    plan.dirs.push(root.clone());
+    let mut pending = std::collections::VecDeque::from([(local.to_path_buf(), root)]);
+    while let Some((dir, parent)) = pending.pop_front() {
+        for child in sorted_children(&dir)? {
+            let target = remote_for(&child, &parent)?;
+            if is_plain_dir(&child) {
+                plan.dirs.push(target.clone());
+                pending.push_back((child, target));
+            } else {
+                plan.files.push(upload_file(&child, &target)?);
+            }
+        }
+    }
+    Ok(plan)
+}
+
+/// 同一个名字挂到 `remote_dir` 底下。
+fn remote_for(local: &Path, remote_dir: &str) -> Result<String> {
+    let name = local
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("文件名无法转成字符串：{}", local.display()))?;
+    Ok(path::join(remote_dir, name))
+}
+
+/// 一个目录里的条目：文件在前、目录在后，各自按名字。顺序稳定，人才看得出传到哪了。
+fn sorted_children(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut children: Vec<PathBuf> = std::fs::read_dir(dir)
+        .with_context(|| format!("读取本地目录 {} 失败", dir.display()))?
+        .filter_map(|item| item.ok().map(|item| item.path()))
+        .collect();
+    children.sort_by_key(|child| {
+        (
+            is_plain_dir(child),
+            child.file_name().unwrap_or_default().to_owned(),
+        )
+    });
+    Ok(children)
+}
+
+/// 真目录（不是指过来的软链接）。
+fn is_plain_dir(path: &Path) -> bool {
+    path.symlink_metadata()
+        .is_ok_and(|metadata| metadata.is_dir())
+}
+
+fn upload_file(local: &Path, remote: &str) -> Result<UploadFile> {
+    let metadata =
+        std::fs::metadata(local).with_context(|| format!("读取 {} 的信息失败", local.display()))?;
+    Ok(UploadFile {
+        local: local.to_path_buf(),
+        remote: remote.to_owned(),
+        size: metadata.len(),
+    })
+}
+
+/// 一块一块地搬，每搬完一块报一次进度；取消令牌一响就在块与块之间停下。
+///
+/// 读写两端都是泛型：远端是 [`russh_sftp::client::fs::File`]，本地是
+/// [`tokio::fs::File`]，两边都只要求 `AsyncRead`/`AsyncWrite`。
+/// `offset` 是给进度的起点偏移（目录树里前面那些文件已经搬了多少）。
+async fn pump<R, W>(
+    read: &mut R,
+    write: &mut W,
+    total: u64,
+    id: u64,
+    offset: u64,
+    cancel: &CancellationToken,
+    progress: &UnboundedSender<TransferEvent>,
+) -> Result<u64>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buffer = vec![0u8; CHUNK];
+    let mut moved = 0u64;
+
+    loop {
+        let Some(result) = cancel.run_until_cancelled(read.read(&mut buffer)).await else {
+            bail!("已取消");
+        };
+        let read_len = result.context("读取数据失败")?;
+        if read_len == 0 {
+            break;
+        }
+
+        let Some(result) = cancel
+            .run_until_cancelled(write.write_all(&buffer[..read_len]))
+            .await
+        else {
+            bail!("已取消");
+        };
+        result.context("写入数据失败")?;
+
+        moved += read_len as u64;
+        let _ = progress.send(TransferEvent::Progress {
+            id,
+            transferred: offset + moved,
+            total,
+        });
+    }
+
+    Ok(moved)
+}
+
+/// 用 `from` 顶掉 `to`：本地这边先删同名再改名（`rename` 在 Windows 上不覆盖）。
+fn replace_with(from: &Path, to: &Path) -> Result<()> {
+    if to.exists() {
+        std::fs::remove_file(to).with_context(|| format!("覆盖本地文件 {} 失败", to.display()))?;
+    }
+    std::fs::rename(from, to)
+        .with_context(|| format!("把 {} 落成 {} 失败", from.display(), to.display()))
+}
+
+/// 本地临时名：`.` 开头，列目录时不挡道，中途死了也一眼看得出它是什么。
+fn part_path(local: &Path) -> PathBuf {
+    let name = local
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "download".to_owned());
+    local.with_file_name(format!(".{name}.part"))
+}
+
+fn part_path_str(remote: &str) -> String {
+    let name = path::file_name(remote);
+    let directory = path::parent(remote);
+    match directory.as_str() {
+        "" | "." => format!(".{name}.part"),
+        directory => path::join(directory, &format!(".{name}.part")),
+    }
+}
+
+/// 把 `russh-sftp` 的错误说成一句人话：`{做什么}失败：{对端原话}`。
+fn remote(action: &str, error: SftpError) -> anyhow::Error {
+    let (message, hint) = match &error {
+        // 对端在 Status 包里给的就是它自己的解释，别拿我们的猜测替换它。
+        SftpError::Status(status) => (
+            status.error_message.clone(),
+            match status.status_code {
+                StatusCode::NoSuchFile => "（远端说这个路径不存在）",
+                StatusCode::PermissionDenied => "（权限不够）",
+                StatusCode::OpUnsupported => "（远端不支持这个操作）",
+                StatusCode::ConnectionLost | StatusCode::NoConnection => "（SFTP 通道断了）",
+                // 其余码（Failure、BadMessage…）服务器自己在 error_message 里讲了，
+                // 不再追加转述 —— 这一层的口径是只报对端说过的话。
+                _ => "",
+            },
+        ),
+        other => (other.to_string(), ""),
+    };
+    anyhow!("{action} 失败：{message}{hint}")
+}
+
+/// [`FileAttributes`] → 我们的一行。对端没给的字段一律留 `None`。
+fn entry_of(name: &str, target: &str, attrs: &FileAttributes) -> FileEntry {
+    FileEntry {
+        name: name.to_owned().into(),
+        path: target.to_owned().into(),
+        kind: match attrs.file_type() {
+            FileType::Dir => FileKind::Dir,
+            FileType::File => FileKind::File,
+            FileType::Symlink => FileKind::Symlink,
+            FileType::Other => FileKind::Special,
+        },
+        size: attrs.size.unwrap_or(0),
+        mode: attrs.permissions,
+        uid: attrs.uid,
+        owner: attrs.user.as_deref().map(Into::into),
+        modified: attrs
+            .mtime
+            .map(|secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs as u64)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attrs() -> FileAttributes {
+        FileAttributes {
+            size: Some(4096),
+            uid: Some(0),
+            user: None,
+            gid: Some(0),
+            group: None,
+            permissions: Some(0o100644),
+            atime: Some(1_600_000_000),
+            mtime: Some(1_600_000_000),
+        }
+    }
+
+    #[test]
+    fn attributes_map_across_without_inventing_anything() {
+        let entry = entry_of("app.log", "/var/log/app.log", &attrs());
+        assert_eq!(entry.name, "app.log");
+        assert_eq!(entry.path, "/var/log/app.log");
+        assert_eq!(entry.kind, FileKind::File);
+        assert_eq!(entry.size, 4096);
+        assert_eq!(entry.octal_mode(), Some(0o644));
+        assert_eq!(entry.owner_label(), "0", "服务器没给名字就报数字 uid");
+        assert_eq!(
+            entry.modified,
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000))
+        );
+
+        let mut bare = attrs();
+        bare.permissions = Some(0o40755);
+        bare.size = None;
+        bare.mtime = None;
+        bare.user = Some("root".into());
+        let dir = entry_of("log", "/var/log", &bare);
+        assert_eq!(dir.kind, FileKind::Dir);
+        assert_eq!(dir.owner_label(), "root", "给了名字就用名字");
+        assert_eq!(dir.modified, None, "对端没给时间，这里就是没有");
+    }
+
+    #[test]
+    fn server_words_survive_the_translation() {
+        let error = SftpError::Status(russh_sftp::protocol::Status {
+            id: 1,
+            status_code: StatusCode::PermissionDenied,
+            error_message: "Permission denied".into(),
+            language_tag: "en".into(),
+        });
+        let message = format!("{}", remote("读取目录 /root", error));
+        assert!(
+            message.starts_with("读取目录 /root 失败"),
+            "要说是哪件事：{message}"
+        );
+        assert!(
+            message.contains("Permission denied"),
+            "要留下对端原话：{message}"
+        );
+        assert!(message.contains("权限不够"), "要补一句人话：{message}");
+
+        let timeout = SftpError::Timeout;
+        assert!(
+            format!("{}", remote("列目录", timeout)).contains("Timeout"),
+            "本地错误也要能看懂"
+        );
+    }
+
+    #[test]
+    fn chmod_stays_inside_the_permission_bits() {
+        check_mode(0o644).expect("常规权限");
+        check_mode(0o4755).expect("setuid 也在 4 位八进制里");
+        let error = check_mode(0o100644).expect_err("类型位不该被当成权限接受");
+        assert!(format!("{error}").contains("0000~7777"), "实际：{error}");
+    }
+
+    #[test]
+    fn temp_names_stay_in_their_directory_and_hide() {
+        assert_eq!(
+            part_path(Path::new("/tmp/downloads/tool.sh")),
+            PathBuf::from("/tmp/downloads/.tool.sh.part")
+        );
+        assert_eq!(part_path_str("/var/log/app.log"), "/var/log/.app.log.part");
+        assert_eq!(part_path_str("/app.log"), "/.app.log.part");
+        assert_eq!(part_path_str("app.log"), ".app.log.part");
+    }
+
+    #[test]
+    fn a_tree_upload_is_planned_flat_and_adds_up() {
+        let root = temp_dir("plan");
+        let nested = root.join("pkg/a");
+        std::fs::create_dir_all(&nested).expect("建临时目录");
+        std::fs::write(nested.join("one"), vec![7u8; 100]).expect("写 one");
+        std::fs::write(root.join("two"), vec![7u8; 8]).expect("写 two");
+
+        let plan = plan_upload(&root, "/dst").expect("摊平一棵树");
+        assert_eq!(plan.total_bytes(), 108, "分母 = 计划里这些文件的字节数");
+        assert_eq!(plan.dirs.len(), 3, "顶层目录自己也要建：root、pkg、pkg/a");
+        assert!(
+            plan.dirs[2].ends_with("/pkg/a"),
+            "外层在前：{:?}",
+            plan.dirs
+        );
+        assert!(
+            plan.files[0].remote.ends_with("/two"),
+            "同层的文件按名字排在进目录之前：{:?}",
+            plan.files
+                .iter()
+                .map(|f| f.remote.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(plan.files[1].size, 100);
+
+        let single = plan_upload(&root.join("two"), "/dst").expect("单个文件");
+        assert!(single.dirs.is_empty(), "上传一个文件不该顺手建目录");
+        assert_eq!(single.files[0].remote, format!("/dst/two"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 指回上层的软链接：跟着目录走就是一次不收尾的遍历，得停。
+    #[cfg(unix)]
+    #[test]
+    fn a_self_referring_link_does_not_blow_up_the_walk() {
+        let root = temp_dir("loop");
+        std::fs::create_dir_all(root.join("keep")).expect("建临时目录");
+        std::fs::write(root.join("keep/f"), b"hi").expect("写文件");
+        std::os::unix::fs::symlink(&root, root.join("self")).expect("造一个自指链接");
+
+        let plan = plan_upload(&root, "/dst").expect("计划要算得完");
+        assert!(
+            plan.dirs.iter().all(|dir| !dir.ends_with("/self")),
+            "树里的目录软链接不该被当成目录进去：{:?}",
+            plan.dirs
+        );
+        assert_eq!(plan.files.len(), 2, "keep/f 和 self（按它指向的内容搬）");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn pump_moves_every_byte_and_reports_each_chunk() {
+        crate::db::runtime().block_on(async {
+            let payload: Vec<u8> = (0..(CHUNK as u64 * 2 + 5)).map(|i| i as u8).collect();
+            let total = payload.len() as u64;
+            let mut source = std::io::Cursor::new(payload.clone());
+            let mut sink: Vec<u8> = Vec::new();
+
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let cancel = CancellationToken::new();
+            let moved = pump(&mut source, &mut sink, total, 7, 0, &cancel, &tx)
+                .await
+                .expect("搬运应成功");
+
+            assert_eq!(moved, total);
+            assert_eq!(sink, payload, "字节要一个不差、按原样过去");
+
+            // 先收掉发送端：管子只要还有一头活着，`recv` 就永远不会说"没有了"。
+            drop(tx);
+            let mut events = Vec::new();
+            while let Some(event) = rx.recv().await {
+                match event {
+                    TransferEvent::Progress {
+                        id,
+                        transferred,
+                        total: reported,
+                    } => {
+                        assert_eq!(id, 7);
+                        assert_eq!(reported, total);
+                        events.push(transferred);
+                    }
+                    TransferEvent::Done { .. } => {}
+                }
+            }
+            assert!(events.len() >= 3, "应当是一块一块报上来的：{events:?}");
+            assert_eq!(events.last(), Some(&total), "最后一次要说搬完了");
+            assert!(
+                events.windows(2).all(|pair| pair[0] < pair[1]),
+                "进度不倒退"
+            );
+        });
+    }
+
+    #[test]
+    fn pump_offsets_progress_so_a_tree_shows_one_bar() {
+        crate::db::runtime().block_on(async {
+            let mut source = std::io::Cursor::new(vec![1u8; 10]);
+            let mut sink: Vec<u8> = Vec::new();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let cancel = CancellationToken::new();
+
+            pump(&mut source, &mut sink, 100, 1, 40, &cancel, &tx)
+                .await
+                .expect("搬 10 个");
+
+            match rx.recv().await {
+                Some(TransferEvent::Progress {
+                    transferred, total, ..
+                }) => {
+                    assert_eq!((transferred, total), (50, 100), "偏移要加进去");
+                }
+                other => panic!("只该有一个进度事件：{other:?}"),
+            }
+            assert!(rx.try_recv().is_err());
+        });
+    }
+
+    #[test]
+    fn a_cancelled_token_stops_between_chunks() {
+        crate::db::runtime().block_on(async {
+            let mut source = std::io::Cursor::new(vec![0u8; CHUNK * 4]);
+            let mut sink: Vec<u8> = Vec::new();
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let cancel = CancellationToken::new();
+            cancel.cancel();
+
+            let error = pump(&mut source, &mut sink, 100, 1, 0, &cancel, &tx)
+                .await
+                .expect_err("取消了就不算成功");
+            assert_eq!(error.to_string(), "已取消");
+            assert!(sink.is_empty(), "一块都不该写下去");
+        });
+    }
+
+    #[test]
+    fn replace_with_lands_the_temp_file() {
+        let root = temp_dir("replace");
+        std::fs::create_dir_all(&root).expect("建目录");
+        let temp = root.join(".payload.part");
+        let final_path = root.join("payload");
+        // 已经有一个同名文件：下载要覆盖它，不是失败。
+        std::fs::write(&final_path, b"old").expect("写旧文件");
+        std::fs::write(&temp, b"new").expect("写临时文件");
+
+        replace_with(&temp, &final_path).expect("应能落盘");
+        assert_eq!(std::fs::read(&final_path).unwrap(), b"new");
+        assert!(!temp.exists(), "中间那份不该留着");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "winssh-pro-sftp-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("t")
+        ))
+    }
+}

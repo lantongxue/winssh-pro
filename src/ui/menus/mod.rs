@@ -5,5 +5,7 @@
 //! 全部交给 [`gpui_component::menu`]。
 
 mod host_menu;
+mod sftp_entry_menu;
 
 pub use host_menu::{HostAction, HostActionHandler, HostMenu};
+pub use sftp_entry_menu::{SftpEntryAction, SftpEntryActionHandler, SftpEntryMenu};

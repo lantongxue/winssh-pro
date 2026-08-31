@@ -34,7 +34,7 @@ pub use workspace::Workspace;
 use gpui::{App, KeyBinding};
 use gpui_component::dock::{ClosePanel, ToggleZoom};
 
-use panels::{BackTab, CopySelection, PasteClipboard, Tab, ToggleMonitor};
+use panels::{BackTab, CopySelection, PasteClipboard, Tab, ToggleMonitor, ToggleSftp};
 use workspace::{ToggleCommandPalette, ToggleRightDock, ToggleSidebar};
 
 /// 主修饰键：macOS 用 Command，其余平台用 Ctrl。
@@ -58,6 +58,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-tab", BackTab, Some("Terminal")),
         KeyBinding::new("alt-m", ToggleMonitor, Some("Terminal")),
         KeyBinding::new("alt-t", ToggleMonitor, Some("Terminal")),
+        KeyBinding::new("alt-f", ToggleSftp, Some("Terminal")),
         // 终端里的复制粘贴。`ctrl-c` / `ctrl-v` 在终端里是中断和控制字符，
         // 不能拿来当复制粘贴，所以非 macOS 平台也走 `ctrl-shift-*`
         // —— 各家终端都是这么让开的。

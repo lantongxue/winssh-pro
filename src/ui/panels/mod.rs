@@ -11,11 +11,15 @@ mod event_log;
 mod host_info;
 mod monitor;
 mod settings;
+mod sftp;
 mod terminal;
 mod welcome;
 
 pub use host_info::HostInfoPanel;
 pub use monitor::{MonitorEvent, MonitorPanel};
 pub use settings::SettingsPanel;
-pub use terminal::{BackTab, CopySelection, PasteClipboard, Tab, TerminalPanel, ToggleMonitor};
+pub use sftp::{SftpPanel, SftpPanelEvent};
+pub use terminal::{
+    BackTab, CopySelection, PasteClipboard, Tab, TerminalPanel, ToggleMonitor, ToggleSftp,
+};
 pub use welcome::WelcomePanel;
