@@ -1014,6 +1014,9 @@ impl MonitorPanel {
                     let pid = p.pid;
                     let command = p.command.clone();
                     h_flex()
+                        .id(SharedString::from(format!("top-proc-row-{pid}")))
+                        // 悬停高亮整行，和 Procs 页一致。
+                        .hover(|style| style.bg(palette::surface(cx)))
                         .px_2()
                         .py(px(6.))
                         .items_center()
