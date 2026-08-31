@@ -515,7 +515,8 @@ impl Emulator {
             }
             Transport::None => {}
         }
-        self.snapshot();
+        // 不在这儿重取快照：这个方法只被元素的 prepaint 调用，紧接着 prepaint
+        // 就会 `snapshot` 一次。这里再取一遍是把同一屏拷两次。
     }
 
     /// 把一段字节直接喂给解析器，当成是对端发过来的输出。
@@ -677,18 +678,29 @@ impl Emulator {
         self.term.lock().selection = None;
     }
 
-    /// 一批事件处理完之后：重取快照并重画。
+    /// 一批事件处理完之后请求重画。
+    ///
+    /// **这里不再重取快照。** 取快照（`snapshot`）是把整屏格子拷一遍的活，过去
+    /// 挂在每个事件批次上 —— SSH 那条路径甚至是每收一个数据包一次，而它比屏幕
+    /// 真正重绘的次数勤得多。现在它跟着 `cx.notify()` 一起交给 GPUI：GPUI 把一帧
+    /// 内所有 notify 合并成一次重绘（对齐 vsync），快照就在那一次重绘的 prepaint
+    /// 里取。于是"拷整屏"从按输入速率降到了按帧速率，且每帧最多一次。
+    /// 屏幕内容本身就在 `Term` 里，快照只是它给渲染用的一份缓存。
     fn refresh(&mut self, cx: &mut Context<Self>) {
-        self.snapshot();
         cx.notify();
     }
 
-    /// 从 `Term` 里取一份渲染用的快照。
-    fn snapshot(&mut self) {
+    /// 从 `Term` 里取一份渲染用的快照。由元素的 prepaint 每帧调一次。
+    pub(crate) fn snapshot(&mut self) {
         let term = self.term.lock();
         let content = term.renderable_content();
 
-        let mut cells = Vec::with_capacity(content.display_iter.size_hint().0);
+        // 复用上帧那串格子的容量：`mem::take` 拿回来、清空、再装满，屏幕尺寸
+        // 不变时整段重绘一次堆分配都不发生。过去每批现开一个
+        // `Vec::with_capacity`，是刷屏时最稳定的一笔分配开销。
+        let mut cells = std::mem::take(&mut self.content.cells);
+        cells.clear();
+        cells.reserve(content.display_iter.size_hint().0);
         cells.extend(content.display_iter.map(|cell| GridCell {
             point: GridPoint::from_alacritty(cell.point),
             cell: cell.cell.clone(),

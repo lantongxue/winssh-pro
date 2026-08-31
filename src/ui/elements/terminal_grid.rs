@@ -17,6 +17,8 @@
 //! （见 [`crate::ui::panels::TerminalPanel`]），元素只管画。
 //! [`point_at`] 是它们唯一需要的换算：指针位置落在哪个格子上。
 
+use std::time::Instant;
+
 use gpui::{
     App, Bounds, Element, ElementId, Entity, Font, FontFeatures, FontStyle, FontWeight,
     GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, ShapedLine,
@@ -27,7 +29,7 @@ use gpui::{
 use alacritty_terminal::vte::ansi::CursorShape;
 
 use crate::{
-    terminal::{Content, Emulator, GridCell, GridPoint, TerminalBounds, is_default_background},
+    terminal::{Content, Emulator, GridCell, GridPoint, TerminalBounds, fps, is_default_background},
     ui::theme::ansi::AnsiPalette,
 };
 
@@ -47,6 +49,23 @@ const UNDERLINE_THICKNESS: Pixels = px(1.);
 /// 暗色（SGR 2）把前景压到几成。跟着 alacritty 的观感走。
 const DIM_ALPHA: f32 = 0.7;
 
+/// 决定一段文字长什么样的几个开关。每格都算一次，所以它必须是几个可以
+/// 直接比相等的小字段 —— 不能是 `TextRun`：那玩意儿带 `Font`（内含 `Vec`
+/// 的 fallback、`Arc`），每格 clone 一次是刷屏时除快照外最大的一笔拷贝。
+/// 真正交给排版的 `TextRun` 只在"一段收尾"时按这个 key 现造一个。
+///
+/// 在同一个基础 `font` 下，这个 key 相等 ⟺ 造出来的 `TextRun` 相等，
+/// 所以用它判断能不能并段，和用 `TextRun` 判断完全等价。
+#[derive(PartialEq)]
+struct StyleKey {
+    color: Hsla,
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    undercurl: bool,
+    strike: bool,
+}
+
 /// 一段连续的文字：同一行、同一套字形与颜色，紧挨着的若干格。
 struct Run {
     /// 这一段第一个字符落在第几行第几列。
@@ -55,32 +74,28 @@ struct Run {
     /// 这一段占了几格。宽字符占两格、零宽字符不占格，
     /// 所以它和 `text` 的长度不是一回事。
     cells: usize,
-    style: TextRun,
+    key: StyleKey,
 }
 
 impl Run {
-    fn new(at: GridPoint, character: char, style: TextRun) -> Self {
+    fn new(at: GridPoint, character: char, key: StyleKey) -> Self {
         Self {
             at,
             text: String::from(character),
             cells: 1,
-            style,
+            key,
         }
     }
 
     /// 这个格子能不能接在这一段后面：字形一致，而且位置正好是下一格。
-    fn accepts(&self, at: GridPoint, style: &TextRun) -> bool {
+    fn accepts(&self, at: GridPoint, key: &StyleKey) -> bool {
         self.at.line == at.line
             && self.at.column + self.cells == at.column
-            && self.style.font == style.font
-            && self.style.color == style.color
-            && self.style.underline == style.underline
-            && self.style.strikethrough == style.strikethrough
+            && &self.key == key
     }
 
     fn push(&mut self, character: char, counts_cell: bool) {
         self.text.push(character);
-        self.style.len += character.len_utf8();
         if counts_cell {
             self.cells += 1;
         }
@@ -100,6 +115,9 @@ pub struct GridLayout {
     regions: Vec<Region>,
     lines: Vec<(GridPoint, ShapedLine)>,
     cursor: Option<Cursor>,
+    /// 度量关掉时是 `None`，一次 `Instant::now()` 都不取（dev 默认开着，release
+    /// 需 `WINSSH_FPS`）。开着时从 prepaint 记到 paint 末，量的就是这一帧网格的真实成本。
+    painted_at: Option<Instant>,
 }
 
 /// 光标画成的那一块。
@@ -125,11 +143,7 @@ impl TerminalGridElement {
     ///
     /// 两串分开是因为它们的绘制单位不一样：底色是矩形，能横跨若干格合成一块；
     /// 文字要交给排版系统，一段里的字形必须一致。
-    fn layout_cells(
-        content: &Content,
-        palette: &AnsiPalette,
-        font: &Font,
-    ) -> (Vec<Region>, Vec<Run>) {
+    fn layout_cells(content: &Content, palette: &AnsiPalette) -> (Vec<Region>, Vec<Run>) {
         let mut regions: Vec<Region> = Vec::new();
         let mut runs: Vec<Run> = Vec::new();
         // 攒在手里还没收尾的那一段。
@@ -182,12 +196,12 @@ impl TerminalGridElement {
                 continue;
             }
 
-            let style = cell_style(cell, font, foreground);
+            let key = cell_style(cell, foreground);
             match &mut open {
-                Some(run) if run.accepts(at, &style) => run.push(cell.character(), true),
+                Some(run) if run.accepts(at, &key) => run.push(cell.character(), true),
                 _ => {
                     runs.extend(open.take());
-                    open = Some(Run::new(at, cell.character(), style));
+                    open = Some(Run::new(at, cell.character(), key));
                 }
             }
 
@@ -289,27 +303,34 @@ impl Element for TerminalGridElement {
             },
         );
 
-        // 先按量出来的尺寸把网格调好，再读快照 —— 顺序反了的话这一帧画的
+        // 先按量出来的尺寸把网格调好，再取快照 —— 顺序反了的话这一帧画的
         // 是上一个尺寸的内容，拖动窗口时会看到字被裁掉一截。
         //
-        // `resize` 刻意不请求重画，不然它和 prepaint 会互相触发，
-        // 成了一个停不下来的循环。
-        self.emulator
-            .update(cx, |emulator, _| emulator.resize(grid_bounds));
+        // 快照以前挂在事件泵的 `refresh` 里，每来一批字节就深拷整屏一次；现在
+        // 挪到这儿，一帧只取一次。`resize` 也刻意不发 `cx.notify()`，不然它和
+        // prepaint 会互相触发，成了一个停不下来的循环。
+        self.emulator.update(cx, |emulator, _| {
+            emulator.resize(grid_bounds);
+            emulator.snapshot();
+        });
 
         let palette = AnsiPalette::new(cx);
         // 借着读，不复制。一屏是几千个格子，每帧克隆一份纯属白费 ——
         // 排版只往前扫一遍，扫完就不再需要它了。
         let content = self.emulator.read(cx).content();
-        let (regions, runs) = Self::layout_cells(content, &palette, &font);
+        let (regions, runs) = Self::layout_cells(content, &palette);
         let cursor = cursor(content, &grid_bounds, &palette, self.focused);
         let lines = runs
             .into_iter()
             .map(|run| {
+                let len = run.text.len();
+                let mut style = build_text_run(&run.key, &font);
+                // `TextRun.len` 是这段的字节数，排版靠它切字符串。
+                style.len = len;
                 let line = window.text_system().shape_line(
                     run.text.into(),
                     font_size,
-                    &[run.style],
+                    std::slice::from_ref(&style),
                     // 逼着排版按格子对齐：用拉伸后的格宽，使文字与网格列严格对齐
                     Some(adjusted_cell_width),
                 );
@@ -322,6 +343,9 @@ impl Element for TerminalGridElement {
             regions,
             lines,
             cursor,
+            // 从这一帧 prepaint 起算，到 paint 收尾。中间是取快照、切段、
+            // 排版、画四边形这一整摊本帧的实际开销。
+            painted_at: fps::enabled().then(Instant::now),
         }
     }
 
@@ -377,6 +401,12 @@ impl Element for TerminalGridElement {
         {
             window.paint_quad(fill(cursor.bounds, cursor.color));
         }
+
+        // 收尾计时。`painted_at` 只有开了 `WINSSH_FPS` 才是 `Some`，
+        // 平时这一句是一次 `Option` 判空，几乎无成本。
+        if let Some(start) = layout.painted_at {
+            fps::record(start.elapsed());
+        }
     }
 }
 
@@ -419,31 +449,45 @@ fn cell_colors(cell: &GridCell, palette: &AnsiPalette, selected: bool) -> (Hsla,
     (foreground, background)
 }
 
-/// 一个格子的字形：粗、斜、下划线、删除线。
-fn cell_style(cell: &GridCell, font: &Font, foreground: Hsla) -> TextRun {
-    TextRun {
-        len: cell.character().len_utf8(),
+/// 一个格子的字形开关：粗、斜、下划线、删除线。每格算一次，只读几个 bit，
+/// 不碰字体、不建 `TextRun`。
+fn cell_style(cell: &GridCell, foreground: Hsla) -> StyleKey {
+    StyleKey {
         color: foreground,
+        bold: cell.is_bold(),
+        italic: cell.is_italic(),
+        underline: cell.has_underline(),
+        undercurl: cell.has_undercurl(),
+        strike: cell.has_strikeout(),
+    }
+}
+
+/// 把一段的 `StyleKey` 落成排版要的 `TextRun`。一帧里每段各造一次，
+/// 而不是每格一次 —— 这里是那个昂贵的 `font.clone()` 唯一发生的地方。
+fn build_text_run(key: &StyleKey, font: &Font) -> TextRun {
+    TextRun {
+        len: 0,
+        color: key.color,
         // 底色不走排版：一行里连续同色的格子已经合成一块矩形画掉了。
         background_color: None,
         font: Font {
-            weight: match cell.is_bold() {
+            weight: match key.bold {
                 true => FontWeight::BOLD,
                 false => font.weight,
             },
-            style: match cell.is_italic() {
+            style: match key.italic {
                 true => FontStyle::Italic,
                 false => FontStyle::Normal,
             },
             ..font.clone()
         },
-        underline: cell.has_underline().then(|| UnderlineStyle {
-            color: Some(foreground),
+        underline: key.underline.then(|| UnderlineStyle {
+            color: Some(key.color),
             thickness: UNDERLINE_THICKNESS,
-            wavy: cell.has_undercurl(),
+            wavy: key.undercurl,
         }),
-        strikethrough: cell.has_strikeout().then_some(StrikethroughStyle {
-            color: Some(foreground),
+        strikethrough: key.strike.then_some(StrikethroughStyle {
+            color: Some(key.color),
             thickness: UNDERLINE_THICKNESS,
         }),
     }

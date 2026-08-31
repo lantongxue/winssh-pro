@@ -45,6 +45,12 @@ aws-lc-rs = { version = "1.16.2", features = ["prebuilt-nasm"] }
 [dev-dependencies]
 rand = "0.10"
 
+# 依赖全部按发布级优化编译。gpui 与 alacritty_terminal 是每一帧真正在跑的代码，
+# dev 默认的 opt-level=0 会让它们慢出一个数量级 —— 界面卡、CPU 占用高，多半就是
+# 这个，而不是逻辑本身。自己的 crate 仍留 opt-level=0，断点和调试信息不受影响。
+[profile.dev.package."*"]
+opt-level = 3
+
 # The reference checkouts under `refs/` are the sources of truth for both the
 # GPUI runtime and the component library, so the git coordinates above resolve
 # to the local trees instead of the network.
