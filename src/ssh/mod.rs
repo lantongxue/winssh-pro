@@ -8,14 +8,20 @@
 //! GPUI (Emulator::input) ──input_tx──▶ Tokio bridge ──channel.data──▶ sshd
 //! GPUI (write_output) ◀──output_rx─── Tokio bridge ◀──channel.wait ── sshd
 //! ```
+//!
+//! 终端那条通道之外还有第二类用法：[`exec`] 在同一条连接上另开通道跑一次性
+//! 命令（监控采集、`kill`、`docker`），互不干扰 —— 所以
+//! [`SshConnection::handle`] 是 [`std::sync::Arc`] 共享的。
 
 pub mod bridge;
 pub mod client;
 pub mod connection;
+pub mod exec;
 
 pub use bridge::{SshBridge, SshOutputReceiver, spawn_bridge};
 pub use client::SshHandler;
 pub use connection::{SshConnection, WindowSize};
+pub use exec::exec_script;
 
 use anyhow::Result;
 

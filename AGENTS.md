@@ -49,13 +49,14 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 和 `src/ui/workspace.rs`（把上面这些拼起来的窗口外壳）。
 
 界面之外的领域层直接放在 `src/` 下，不进 `src/ui/`：
-`host.rs`（主机配置）、`session.rs`（会话读数）、`terminal/`（终端内核）。
+`host.rs`（主机配置）、`session.rs`（会话读数）、`terminal/`（终端内核）、
+`monitor/`（对端资源采集：采集脚本、解析、速率累加）。
 
 数据访问走三层，UI 只认最上面那层：
 
 | 层 | 目录 | 职责 |
 | --- | --- | --- |
-| `src/service/` | `*Service` | 业务逻辑与领域模型转换，UI 拿数据的唯一入口（`HostService`） |
+| `src/service/` | `*Service` | 业务逻辑与领域模型转换，UI 拿数据的唯一入口（`HostService`、`MonitorService`） |
 | `src/repository/` | `*Repository` | 数据仓，纯数据访问，不掺业务规则（`HostRepository`） |
 | `src/db/` | — | SeaORM 连接、应用级 tokio runtime 与实体定义（`db/entities/`） |
 

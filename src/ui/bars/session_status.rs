@@ -11,9 +11,10 @@
 //! 和上沿的 [`super::SessionInfoBar`] 分工：那一条答的是"我是谁"，不会变；
 //! 这一条答的是"现在怎么样"，一直在变。所以身份放上面，读数放下面。
 //!
-//! 中间那三个数字来自 [`crate::session::SessionTelemetry`]，目前是示例值。
-//! 左边的 RTT 同理。两边不做假装的加载动画 —— 数字要么是真的，
-//! 要么是明确标出来的示例值。
+//! 中间那三个数字与左边的 RTT 都来自 [`crate::session::SessionTelemetry`] ——
+//! 右侧监控面板每次采集顺带带回来的那一份（见
+//! [`crate::service::MonitorService`]）。第一次采到之前是 `None`，那几格显示
+//! 破折号：数字要么是真的，要么明确说"还不知道"，不拿 0 顶上。
 
 use gpui::{
     App, Hsla, IntoElement, ParentElement as _, Pixels, RenderOnce, SharedString, Styled as _,
@@ -52,7 +53,8 @@ const BAD_MS: u32 = 200;
 pub struct SessionStatusBar {
     host: SharedString,
     address: SharedString,
-    telemetry: SessionTelemetry,
+    /// 对端的读数。还没采到第一次时是 `None`。
+    telemetry: Option<SessionTelemetry>,
     connected: bool,
     /// 网格的列数与行数。这是终端自己量出来的，不是示例值。
     grid: (usize, usize),
@@ -62,7 +64,7 @@ impl SessionStatusBar {
     pub fn new(
         host: impl Into<SharedString>,
         address: impl Into<SharedString>,
-        telemetry: SessionTelemetry,
+        telemetry: Option<SessionTelemetry>,
     ) -> Self {
         Self {
             host: host.into(),
@@ -111,7 +113,7 @@ impl RenderOnce for SessionStatusBar {
 impl SessionStatusBar {
     /// 左段：这条连接通不通、连到哪儿。
     fn render_connection(&self, cx: &App) -> impl IntoElement {
-        let latency = self.telemetry.latency_ms;
+        let latency = self.telemetry.map(|telemetry| telemetry.latency_ms);
 
         h_flex()
             .min_w_0()
@@ -147,7 +149,8 @@ impl SessionStatusBar {
                     .child(badge("SSH-2.0", cx)),
             )
             // 连接断了就不报 RTT：那是上一次探测留下的数字，此刻已经不成立了。
-            .when(self.connected, |this| {
+            // 还没采到第一次同理 —— 那一格干脆不出现，而不是显示 0ms。
+            .when_some(latency.filter(|_| self.connected), |this, latency| {
                 this.child(
                     h_flex()
                         .flex_shrink_0()
@@ -170,9 +173,40 @@ impl SessionStatusBar {
             .child(div().min_w_0().truncate().child(self.address.clone()))
     }
 
-    /// 中段：对端那台机器忙不忙。
+    /// 中段：对端那台机器忙不忙。还没采到读数时三格都是破折号 —— 这一条的意思
+    /// 是"现在怎么样"，不知道就说不知道。
     fn render_load(&self, cx: &App) -> impl IntoElement {
-        let telemetry = self.telemetry;
+        let Some(telemetry) = self.telemetry else {
+            return h_flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap_3()
+                .text_color(palette::idle(cx))
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_1p5()
+                        .child(
+                            Icon::new(IconName::Cpu)
+                                .with_size(ICON_SIZE)
+                                .text_color(palette::idle(cx)),
+                        )
+                        .child("CPU: —"),
+                )
+                .child(h_flex().items_center().gap_1().child("Load: —"))
+                .child(
+                    h_flex()
+                        .items_center()
+                        .gap_1p5()
+                        .child(
+                            Icon::new(IconName::MemoryStick)
+                                .with_size(ICON_SIZE)
+                                .text_color(palette::idle(cx)),
+                        )
+                        .child("Mem: —"),
+                );
+        };
+
         let cpu = telemetry.cpu_percent;
         let memory = telemetry.memory_percent();
         let [one, five, fifteen] = telemetry.load_average;

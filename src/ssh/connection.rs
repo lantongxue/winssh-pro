@@ -19,8 +19,13 @@ use crate::host::Host;
 use super::client::SshHandler;
 
 /// 一次已认证的 SSH 会话：`Handle` 管连接，`Channel` 管这条交互式 Shell。
+///
+/// `handle` 用 [`Arc`] 共享，因为一条连接上不只有终端那条通道：右侧监控面板要
+/// 在同一条连接上另开 `session` 通道跑采集命令（见 [`super::exec`]），
+/// 两边都得能 `channel_open_session`。SSH 本来就是多路复用的，共享句柄是它
+/// 原本的用法，不是绕过什么限制。
 pub struct SshConnection {
-    pub handle: Handle<SshHandler>,
+    pub handle: Arc<Handle<SshHandler>>,
     pub channel: Channel<ClientMsg>,
 }
 
@@ -67,7 +72,10 @@ impl SshConnection {
             .await
             .context("请求远端 Shell 失败")?;
 
-        Ok(Self { handle, channel })
+        Ok(Self {
+            handle: Arc::new(handle),
+            channel,
+        })
     }
 
     /// 通知远端 PTY 尺寸变化。

@@ -11,6 +11,8 @@
 //!
 //! 窗口尺寸变化同理走 `window_tx`。
 
+use std::sync::Arc;
+
 use russh::{Channel, ChannelMsg, client::Handle, client::Msg as ClientMsg};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -42,7 +44,7 @@ pub type SshOutputReceiver = UnboundedReceiver<Vec<u8>>;
 /// 应用级 `tokio` runtime（`crate::db::runtime`），而不是 `tokio::spawn`
 ///（后者在 GPUI 上下文中会 panic：`there is no reactor running`）。
 pub fn spawn_bridge(
-    handle: Handle<SshHandler>,
+    handle: Arc<Handle<SshHandler>>,
     channel: Channel<ClientMsg>,
 ) -> (SshBridge, SshOutputReceiver) {
     let (input_tx, input_rx) = unbounded_channel::<Vec<u8>>();
@@ -62,7 +64,7 @@ pub fn spawn_bridge(
 }
 
 async fn bridge_task(
-    handle: Handle<SshHandler>,
+    handle: Arc<Handle<SshHandler>>,
     mut channel: Channel<ClientMsg>,
     output_tx: SshOutputSender,
     mut input_rx: UnboundedReceiver<Vec<u8>>,

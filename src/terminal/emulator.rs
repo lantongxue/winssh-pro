@@ -394,7 +394,7 @@ impl Emulator {
     /// 这里只负责把通道的双向字节流与 `Term` 黏合：输入经 `SshBridge::input_tx` 送往
     /// `channel.data`，输出经 `channel.wait` 回到 `write_output`。
     pub fn from_ssh(
-        handle: Handle<SshHandler>,
+        handle: Arc<Handle<SshHandler>>,
         channel: Channel<ClientMsg>,
         cx: &mut App,
     ) -> Entity<Self> {

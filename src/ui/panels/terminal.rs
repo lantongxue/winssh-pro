@@ -36,7 +36,7 @@ use alacritty_terminal::selection::SelectionType;
 
 use crate::{
     host::Host,
-    session::{SessionTelemetry, sample_telemetry},
+    session::SessionTelemetry,
     terminal::{Emulator, EmulatorEvent, GridPoint, TerminalBounds},
     ui::{
         bars::{SessionInfoBar, SessionStatusBar},
@@ -87,8 +87,9 @@ const MONITOR_WIDTH: gpui::Pixels = px(360.);
 
 pub struct TerminalPanel {
     host: Host,
-    /// 状态栏中间那三个数字。连接层接上之后由那边推送。
-    telemetry: SessionTelemetry,
+    /// 状态栏中间那三个数字。来自监控面板的采集（[`MonitorEvent::Reading`]），
+    /// 第一次采到之前是 `None`，状态栏显示破折号而不是 0。
+    telemetry: Option<SessionTelemetry>,
     /// 这条会话的终端。开不出来时是 `None`，[`Self::error`] 说明原因。
     emulator: Option<Entity<Emulator>>,
     error: Option<SharedString>,
@@ -116,7 +117,7 @@ impl TerminalPanel {
             let resizable_id =
                 SharedString::from(format!("terminal-monitor-{}", host.id));
             let mut this = Self {
-                telemetry: sample_telemetry(&host.id),
+                telemetry: None,
                 host: host.clone(),
                 emulator: None,
                 error: None,
@@ -129,27 +130,36 @@ impl TerminalPanel {
                 resizable_state,
                 resizable_id,
             };
-            // 监听监控面板的事件：关闭与发送命令
-            cx.subscribe(&monitor_panel, |this: &mut Self, _, event: &MonitorEvent, cx| {
-                match event {
-                    MonitorEvent::Close => {
-                        this.monitor_open = false;
-                        cx.notify();
-                    }
-                    MonitorEvent::SendCommand(cmd) => {
-                        if let Some(emulator) = this.emulator.clone() {
-                            let cmd = cmd.clone();
-                            emulator.update(cx, |em, cx| {
-                                em.input(format!("{}\n", cmd).into_bytes(), cx)
-                            });
-                        }
-                    }
-                }
-            })
-            .detach();
+            Self::subscribe_monitor(&monitor_panel, cx);
             this.connect(window, cx);
             this
         })
+    }
+
+    /// 监控面板的三件事：关掉自己、把诊断命令送进终端、报一份新读数。
+    ///
+    /// 读数走事件而不是让状态栏自己去采：那是同一次采集里已经带回来的数字，
+    /// 为三个数再往对端跑一趟没有道理。
+    fn subscribe_monitor(monitor_panel: &Entity<MonitorPanel>, cx: &mut Context<Self>) {
+        cx.subscribe(
+            monitor_panel,
+            |this: &mut Self, _, event: &MonitorEvent, cx| match event {
+                MonitorEvent::Close => {
+                    this.set_monitor_open(false, cx);
+                }
+                MonitorEvent::Reading(telemetry) => {
+                    this.telemetry = Some(*telemetry);
+                    cx.notify();
+                }
+                MonitorEvent::SendCommand(cmd) => {
+                    if let Some(emulator) = this.emulator.clone() {
+                        let cmd = cmd.clone();
+                        emulator.update(cx, |em, cx| em.input(format!("{cmd}\n").into_bytes(), cx));
+                    }
+                }
+            },
+        )
+        .detach();
     }
 
     /// 直接在本机开一条登录 shell，不经过 SSH。
@@ -199,7 +209,9 @@ impl TerminalPanel {
                     let resizable_id =
                         SharedString::from(format!("terminal-monitor-{}", host.id));
                     let this = Self {
-                        telemetry: sample_telemetry(&host.id),
+                        // 本机 Shell 没有对端可采：监控面板会说明这件事，
+                        // 状态栏那几个数字保持"还不知道"。
+                        telemetry: None,
                         host,
                         emulator: Some(emulator),
                         error: None,
@@ -212,23 +224,7 @@ impl TerminalPanel {
                         resizable_state,
                         resizable_id,
                     };
-                    cx.subscribe(&monitor_panel, |this: &mut Self, _, event: &MonitorEvent, cx| {
-                        match event {
-                            MonitorEvent::Close => {
-                                this.monitor_open = false;
-                                cx.notify();
-                            }
-                            MonitorEvent::SendCommand(cmd) => {
-                                if let Some(emulator) = this.emulator.clone() {
-                                    let cmd = cmd.clone();
-                                    emulator.update(cx, |em, cx| {
-                                        em.input(format!("{}\n", cmd).into_bytes(), cx)
-                                    });
-                                }
-                            }
-                        }
-                    })
-                    .detach();
+                    Self::subscribe_monitor(&monitor_panel, cx);
                     this
                 }
                 Err(error) => {
@@ -239,7 +235,7 @@ impl TerminalPanel {
                     let resizable_id =
                         SharedString::from(format!("terminal-monitor-{}", host.id));
                     let this = Self {
-                        telemetry: sample_telemetry(&host.id),
+                        telemetry: None,
                         host,
                         emulator: None,
                         error: Some(SharedString::from(format!(
@@ -254,23 +250,7 @@ impl TerminalPanel {
                         resizable_state,
                         resizable_id,
                     };
-                    cx.subscribe(&monitor_panel, |this: &mut Self, _, event: &MonitorEvent, cx| {
-                        match event {
-                            MonitorEvent::Close => {
-                                this.monitor_open = false;
-                                cx.notify();
-                            }
-                            MonitorEvent::SendCommand(cmd) => {
-                                if let Some(emulator) = this.emulator.clone() {
-                                    let cmd = cmd.clone();
-                                    emulator.update(cx, |em, cx| {
-                                        em.input(format!("{}\n", cmd).into_bytes(), cx)
-                                    });
-                                }
-                            }
-                        }
-                    })
-                    .detach();
+                    Self::subscribe_monitor(&monitor_panel, cx);
                     this
                 }
             }
@@ -306,7 +286,10 @@ impl TerminalPanel {
 
             this.update_in(cx, |this, window, cx| match outcome {
                 Ok(conn) => {
-                    // SSH 成功：用远端通道重建终端
+                    // SSH 成功：用远端通道重建终端，并把同一条连接交给监控采集。
+                    // 采集另开通道（见 `crate::ssh::exec`），不碰终端这一条。
+                    let service =
+                        crate::service::MonitorService::new(conn.handle.clone());
                     let emulator =
                         crate::terminal::Emulator::from_ssh(conn.handle, conn.channel, cx);
                     Self::attach_emulator(&emulator, cx);
@@ -315,7 +298,11 @@ impl TerminalPanel {
                     });
                     this.emulator = Some(emulator);
                     this.error = None;
-                    this.telemetry = sample_telemetry(&this.host.id);
+                    let expanded = this.monitor_open;
+                    this.monitor_panel.update(cx, |monitor, cx| {
+                        monitor.attach(service, cx);
+                        monitor.set_expanded(expanded, cx);
+                    });
                     cx.notify();
                 }
                 Err(error) => {
@@ -593,7 +580,20 @@ impl TerminalPanel {
     }
 
     fn toggle_monitor(&mut self, cx: &mut Context<Self>) {
-        self.monitor_open = !self.monitor_open;
+        self.set_monitor_open(!self.monitor_open, cx);
+    }
+
+    /// 展开或收起右侧监控面板。
+    ///
+    /// 收起之后采集不停 —— 状态栏中间那三个数字一直看得见，而它们来自同一次
+    /// 采集。面板只是换成轻量脚本（不采进程列表），见 `MonitorPanel::set_expanded`。
+    fn set_monitor_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.monitor_open == open {
+            return;
+        }
+        self.monitor_open = open;
+        self.monitor_panel
+            .update(cx, |monitor, cx| monitor.set_expanded(open, cx));
         cx.notify();
     }
 

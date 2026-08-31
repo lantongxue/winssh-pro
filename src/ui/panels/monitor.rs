@@ -5,27 +5,56 @@
 //! 内容区按当前 Tab 渲染不同的卡片与列表。
 //!
 //! 它不是一个 Dock `Panel`，而是每个终端会话自己持有的一块侧栏，生命周期跟着
-//! `TerminalPanel` 走。数据来自 `crate::monitor::MonitorTelemetry`，目前是示例值
-//! （`sample_monitor_telemetry`），连接层接上后替换为真实采集。
+//! `TerminalPanel` 走。
+//!
+//! **数字全部来自对端**：`TerminalPanel` 的 SSH 连接建好之后把一个
+//! [`MonitorService`] 交过来（[`MonitorPanel::attach`]），这里就开一条轮询任务，
+//! 每隔几秒采一次（[`crate::monitor::probe`] 的脚本读 `/proc`），采不到就把
+//! 原因显示出来。没有会话（本地 Shell、还没连上）时显示空状态，不编数字。
+//!
+//! 轮询在面板收起时也继续，但用的是轻量脚本 —— 终端下沿的状态栏要那几个数，
+//! 而它一直看得见；进程列表与容器只在真的显示着的时候才采。
+
+use std::{rc::Rc, time::Duration};
 
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
-    rgb, Hsla,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
+    Size, StatefulInteractiveElement as _, Styled as _, Task, Window, div,
+    prelude::FluentBuilder as _, px, rgb, size,
 };
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
+    VirtualListScrollHandle,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    h_flex,
     input::{Input, InputEvent, InputState},
+    scroll::{ScrollableElement as _, ScrollbarAxis},
+    v_flex, v_virtual_list,
 };
 
 use crate::{
     host::Host,
-    monitor::{ContainerStatus, MonitorTelemetry, diag_commands, sample_monitor_telemetry},
+    monitor::{MonitorTelemetry, ProbeOptions, ProcessItem, diag_commands, probe::TOP_PROCESSES},
+    service::{ContainerAction, MonitorService},
+    session::SessionTelemetry,
     ui::theme::{AppIcon, palette},
 };
+
+/// 面板展开时的采集间隔。再快远端的开销就开始明显（每次要读一遍全部
+/// `/proc/[pid]/stat`），再慢曲线就不像"实时"了。
+const ACTIVE_INTERVAL: Duration = Duration::from_secs(3);
+
+/// 面板收起时的采集间隔。这时只为状态栏那三个数字，采得起但不必勤。
+const IDLE_INTERVAL: Duration = Duration::from_secs(8);
+
+/// 采集失败之后隔多久再试。比正常间隔长一点：对端正忙或者刚断，
+/// 立刻重试只是再堵一次。
+const RETRY_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Procs 页每一行的高度。虚拟列表按这个数算滚动范围与可见区间，所以行必须
+/// **真的**是这么高 —— 对不上就会错行。一行是 `text_xs` 加上下各 6px 内边距。
+const PROCESS_ROW_HEIGHT: Pixels = px(28.);
 
 /// 监控面板的四个子 Tab。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,12 +66,21 @@ pub enum MonitorTab {
 }
 
 impl MonitorTab {
-    fn label(&self, telemetry: &MonitorTelemetry) -> SharedString {
-        match self {
-            Self::Metrics => "Metrics".into(),
-            Self::Processes => SharedString::from(format!("Procs ({})", telemetry.processes.len())),
-            Self::Docker => SharedString::from(format!("Docker ({})", telemetry.containers.len())),
-            Self::Diagnostics => "Diag".into(),
+    /// 计数只在真的采到了之后才写 —— `Procs (0)` 和"还不知道有几个"是两回事。
+    /// `counts` 是 `(进程数, 容器数)`，后者在这次没问 docker 时是 `None`。
+    fn label(&self, counts: Option<(usize, Option<usize>)>) -> SharedString {
+        match (self, counts) {
+            (Self::Metrics, _) => "Metrics".into(),
+            (Self::Processes, Some((processes, _))) => {
+                SharedString::from(format!("Procs ({processes})"))
+            }
+            (Self::Processes, None) => "Procs".into(),
+            // 没问过 docker 的那几次不写计数：那不是"0 个容器"。
+            (Self::Docker, Some((_, Some(containers)))) => {
+                SharedString::from(format!("Docker ({containers})"))
+            }
+            (Self::Docker, _) => "Docker".into(),
+            (Self::Diagnostics, _) => "Diag".into(),
         }
     }
 
@@ -56,136 +94,271 @@ impl MonitorTab {
     }
 }
 
-/// 对外事件：诊断命令需要送回终端。
+/// 对外事件。
 #[derive(Clone, Debug)]
 pub enum MonitorEvent {
+    /// 诊断命令要送进用户那条终端，让输出看得见、翻得回去。
     SendCommand(SharedString),
+    /// 采到一份新读数。终端下沿的状态栏跟着它更新，不另开一次采集。
+    Reading(SessionTelemetry),
     Close,
 }
 
 /// 贴在终端右侧的那一块监控侧栏。
 pub struct MonitorPanel {
     host: Host,
-    telemetry: MonitorTelemetry,
+    /// 采集入口。`None` 表示这条会话没有可采的对端（本地 Shell，或 SSH 还没连上）。
+    service: Option<MonitorService>,
+    /// 最近一次成功的读数。没采到过就是 `None`，界面显示空状态而不是 0。
+    telemetry: Option<MonitorTelemetry>,
+    /// 最近一次失败的原因。已经有读数时它只是头部下面的一条提示，
+    /// 旧读数继续显示 —— 断一次网不该把画面清空。
+    error: Option<SharedString>,
+    /// 面板是不是展开着。宿主 [`crate::ui::panels::TerminalPanel`] 告诉它。
+    expanded: bool,
+    /// 有一次采集正在路上。
+    polling: bool,
     active_tab: MonitorTab,
     process_search: Entity<InputState>,
     sort_by_cpu: bool,
+    /// Procs 页此刻要显示的那些行：按当前筛选与排序算好的。
+    ///
+    /// 不在 render 里现算：那一步要为每一行做三次 `to_lowercase`（各自一次分配）
+    /// 再排一遍序，而它只在读数、筛选词或排序方式变化时才会变 —— 一秒六十帧地
+    /// 重算同一个结果没有道理。虚拟列表的渲染回调也需要能按下标直接取行。
+    process_view: Vec<ProcessItem>,
+    /// 虚拟列表要的行高表，长度与 [`Self::process_view`] 一致。行高固定，所以
+    /// 它只是一串相同的值；`Rc` 是那个组件的接口要求。
+    process_sizes: Rc<Vec<Size<Pixels>>>,
+    process_scroll: VirtualListScrollHandle,
     focus_handle: FocusHandle,
+    /// 轮询任务。丢掉它就停止采集（面板销毁时自然发生）。
+    poll: Option<Task<()>>,
 }
 
 impl MonitorPanel {
     pub fn new(host: Host, window: &mut Window, cx: &mut App) -> Entity<Self> {
-        let telemetry = sample_monitor_telemetry(&host.id);
         let process_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter PID, user, cmd..."));
-        let panel = cx.new(|cx| {
-            let mut this = Self {
-                host: host.clone(),
-                telemetry,
-                active_tab: MonitorTab::Metrics,
-                process_search: process_search.clone(),
-                sort_by_cpu: true,
-                focus_handle: cx.focus_handle(),
-            };
-            // 搜索变化就重绘
-            cx.subscribe(&process_search, |_this: &mut Self, _, _: &InputEvent, cx| {
+        cx.new(|cx| {
+            // 筛选词变了就重算一次要显示的行，而不是每帧重算。
+            cx.subscribe(&process_search, |this: &mut Self, _, _: &InputEvent, cx| {
+                this.rebuild_process_view(cx);
                 cx.notify();
             })
             .detach();
-            this.start_jitter(window, cx);
-            this
-        });
-        panel
-    }
-
-    /// 宿主终端切换了主机时更新。
-    #[allow(dead_code)]
-    pub fn set_host(&mut self, host: Host, window: &mut Window, cx: &mut Context<Self>) {
-        self.host = host.clone();
-        self.telemetry = sample_monitor_telemetry(&host.id);
-        self.active_tab = MonitorTab::Metrics;
-        // 重置搜索
-        self.process_search.update(cx, |input, cx| {
-            input.set_value("", window, cx);
-        });
-        self.start_jitter(window, cx);
-        cx.notify();
-    }
-
-    fn start_jitter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 每 1.8s 抖一点：CPU 与网络像原型里那样脉动
-        let jitter_host = self.host.id.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            loop {
-                // 睡 1.8s
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(1800))
-                    .await;
-                let should_continue = this
-                    .update_in(cx, |this, _, _cx| {
-                        // 只有 Metrics 那个 telemetry 在动，其它不动
-                        let jitter = (rand_jitter() - 0.5) * 4.5;
-                        let new_cpu = (this.telemetry.cpu_percent + jitter).clamp(4., 96.);
-                        this.telemetry.cpu_percent = (new_cpu * 10.).round() / 10.;
-                        // sparkline 右移一位
-                        let mut hist = this.telemetry.cpu_history.clone();
-                        if hist.len() >= 12 {
-                            hist.remove(0);
-                        }
-                        hist.push(this.telemetry.cpu_percent);
-                        this.telemetry.cpu_history = hist;
-                        this.telemetry.net_in_kbps =
-                            (this.telemetry.net_in_kbps + (rand_jitter() - 0.5) * 60.).max(10.);
-                        this.telemetry.net_out_kbps =
-                            (this.telemetry.net_out_kbps + (rand_jitter() - 0.5) * 120.).max(20.);
-                        // 避免 unrelated host 的旧定时器继续改（host 已切换时上面 set_host 会重建，但旧定时器仍跑）
-                        // 这里用 host id 判断：如果 host 已变，不再抖（下一次 set_host 会重开一个）
-                        this.host.id == jitter_host
-                    })
-                    .unwrap_or(false);
-                if !should_continue {
-                    break;
-                }
-                // 刷新界面
-                _ = this.update_in(cx, |_, _, cx| cx.notify());
+            Self {
+                host,
+                service: None,
+                telemetry: None,
+                error: None,
+                expanded: false,
+                polling: false,
+                active_tab: MonitorTab::Metrics,
+                process_search,
+                sort_by_cpu: true,
+                process_view: Vec::new(),
+                process_sizes: Rc::new(Vec::new()),
+                process_scroll: VirtualListScrollHandle::new(),
+                focus_handle: cx.focus_handle(),
+                poll: None,
             }
         })
-        .detach();
     }
 
-    fn kill_process(&mut self, pid: u32, cx: &mut Context<Self>) {
-        self.telemetry.processes.retain(|p| p.pid != pid);
-        cx.emit(MonitorEvent::SendCommand(SharedString::from(format!("kill -9 {pid}"))));
+    /// 会话的 SSH 连接建好了：接上采集入口并立刻开始轮询。
+    ///
+    /// 重连会再调一次，这时旧的轮询任务连同它记的累计值一起丢掉 —— 换了连接，
+    /// 之前那台机器的计数器不能拿来相减。
+    pub fn attach(&mut self, service: MonitorService, cx: &mut Context<Self>) {
+        self.service = Some(service);
+        self.error = None;
+        self.telemetry = None;
+        self.rebuild_process_view(cx);
+        self.start_polling(cx);
         cx.notify();
     }
 
-    fn container_action(&mut self, id: &SharedString, action: &str, cx: &mut Context<Self>) {
-        for c in &mut self.telemetry.containers {
-            if &c.id == id {
-                match action {
-                    "restart" => c.status = ContainerStatus::Running,
-                    "stop" => c.status = ContainerStatus::Exited,
-                    "start" => c.status = ContainerStatus::Running,
-                    _ => {}
-                }
+    /// 面板展开或收起。展开的那一下立刻采一次，不然要等一个轮询周期才有内容。
+    pub fn set_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
+        if self.expanded == expanded {
+            return;
+        }
+        self.expanded = expanded;
+        if expanded && self.service.is_some() {
+            self.start_polling(cx);
+        }
+        cx.notify();
+    }
+
+    /// 这一次要采什么：面板收起时只要状态栏那几个数，Docker 那一页展开时才连
+    /// 容器一起采（`docker stats` 要一秒上下）。
+    fn probe_options(&self) -> ProbeOptions {
+        match (self.expanded, self.active_tab) {
+            (false, _) => ProbeOptions::light(),
+            (true, MonitorTab::Docker) => ProbeOptions::with_docker(),
+            (true, _) => ProbeOptions::full(),
+        }
+    }
+
+    fn interval(&self) -> Duration {
+        match (self.error.is_some(), self.expanded) {
+            (true, _) => RETRY_INTERVAL,
+            (false, true) => ACTIVE_INTERVAL,
+            (false, false) => IDLE_INTERVAL,
+        }
+    }
+
+    /// 开一条轮询任务：采一次 → 等一个间隔 → 再采。
+    ///
+    /// 每一轮都重新问一次 `probe_options`，所以切到 Docker 那一页、或者把面板
+    /// 收起来，下一轮就自动换成对应的脚本。赋值给 `self.poll` 会丢掉上一条任务
+    /// （`Task` 的 `Drop` 就是取消），所以重复调用不会攒出好几条在跑。
+    fn start_polling(&mut self, cx: &mut Context<Self>) {
+        self.poll = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let Ok(Some((service, options))) = this.update(cx, |this, cx| {
+                    this.polling = true;
+                    cx.notify();
+                    let options = this.probe_options();
+                    this.service.clone().map(|service| (service, options))
+                }) else {
+                    return;
+                };
+
+                let outcome = service.poll(options).await;
+
+                let Ok(interval) = this.update(cx, |this, cx| {
+                    this.apply(outcome, cx);
+                    this.interval()
+                }) else {
+                    return;
+                };
+
+                cx.background_executor().timer(interval).await;
+            }
+        }));
+    }
+
+    /// 收下一次采集的结果。
+    fn apply(&mut self, outcome: anyhow::Result<MonitorTelemetry>, cx: &mut Context<Self>) {
+        self.polling = false;
+        match outcome {
+            Ok(telemetry) => {
+                cx.emit(MonitorEvent::Reading(SessionTelemetry::from(&telemetry)));
+                self.telemetry = Some(telemetry);
+                self.error = None;
+                self.rebuild_process_view(cx);
+            }
+            Err(error) => {
+                self.error = Some(SharedString::from(format!("{error:#}")));
             }
         }
         cx.notify();
     }
 
-    fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.telemetry = sample_monitor_telemetry(&self.host.id);
-        // 清空搜索
-        self.process_search.update(cx, |input, cx| {
-            input.set_value("", window, cx);
-        });
+    /// 重算 Procs 页要显示的那些行。
+    ///
+    /// 三件事一次做完：按筛选词过滤、按当前那一列排序、把行高表跟着调整长度。
+    /// 调用点是"输入变了 / 排序变了 / 来了新读数"这三处，render 里只读结果。
+    fn rebuild_process_view(&mut self, cx: &App) {
+        let query = self.process_search.read(cx).value().trim().to_lowercase();
+        let mut rows: Vec<ProcessItem> = self
+            .telemetry
+            .iter()
+            .flat_map(|telemetry| telemetry.processes.iter())
+            .filter(|process| matches_query(process, &query))
+            .cloned()
+            .collect();
+
+        // NaN 排序会 panic，`total_cmp` 是全序 —— 采集算出来的百分比理论上不会是
+        // NaN，但排序不该建立在"理论上"之上。
+        match self.sort_by_cpu {
+            true => rows.sort_by(|a, b| b.cpu.total_cmp(&a.cpu)),
+            false => rows.sort_by(|a, b| b.mem.total_cmp(&a.mem)),
+        }
+
+        if rows.len() != self.process_sizes.len() {
+            self.process_sizes = Rc::new(vec![size(px(0.), PROCESS_ROW_HEIGHT); rows.len()]);
+        }
+        self.process_view = rows;
+    }
+
+    fn set_sort_by_cpu(&mut self, by_cpu: bool, cx: &mut Context<Self>) {
+        if self.sort_by_cpu == by_cpu {
+            return;
+        }
+        self.sort_by_cpu = by_cpu;
+        self.rebuild_process_view(cx);
         cx.notify();
+    }
+
+    /// 立刻重采一次（刷新按钮、动作完成之后）。
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.service.is_some() {
+            self.start_polling(cx);
+        }
+    }
+
+    /// 结束一个远端进程。
+    ///
+    /// 默认送 `SIGTERM`，和 `top` 的 `k` 一样 —— 让进程有机会自己收摊。
+    /// 成没成由对端说，所以不先把那一行从列表里抹掉：抹掉之后如果 `kill` 其实
+    /// 失败了（没权限），界面就在骗人。等下一次采集，进程还在就还在。
+    fn kill_process(&mut self, pid: u32, cx: &mut Context<Self>) {
+        let Some(service) = self.service.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let outcome = service.kill_process(pid, false).await;
+            _ = this.update(cx, |this, cx| {
+                match outcome {
+                    Ok(()) => this.error = None,
+                    Err(error) => {
+                        this.error = Some(SharedString::from(format!("kill {pid} 失败：{error:#}")))
+                    }
+                }
+                this.refresh(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn container_action(&mut self, id: SharedString, action: ContainerAction, cx: &mut Context<Self>) {
+        let Some(service) = self.service.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let outcome = service.container_action(&id, action).await;
+            _ = this.update(cx, |this, cx| {
+                match outcome {
+                    Ok(()) => this.error = None,
+                    Err(error) => {
+                        this.error =
+                            Some(SharedString::from(format!("docker {id} 操作失败：{error:#}")))
+                    }
+                }
+                this.refresh(cx);
+            });
+        })
+        .detach();
     }
 
     // ----- 渲染分块 -----
 
+    /// 头部那个活力点的颜色，就是这块面板的状态：绿 = 有新读数，
+    /// 红 = 采集失败，灰 = 还没有对端可采。
+    fn status_color(&self, cx: &App) -> Hsla {
+        match (&self.service, &self.error) {
+            (None, _) => palette::idle(cx),
+            (Some(_), Some(_)) => cx.theme().danger,
+            (Some(_), None) => palette::green(),
+        }
+    }
+
     fn render_header(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let host = self.host.clone();
+        let color = self.status_color(cx);
+        let latency = self.telemetry.as_ref().map(|t| t.latency_ms);
         h_flex()
             .h(px(32.))
             .w_full()
@@ -201,17 +374,11 @@ impl MonitorPanel {
                     .min_w_0()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .size(px(8.))
-                            .rounded_full()
-                            .bg(rgb(0x27C93F))
-                            .flex_shrink_0(),
-                    )
+                    .child(div().size(px(8.)).rounded_full().bg(color).flex_shrink_0())
                     .child(
                         Icon::new(AppIcon::Activity)
                             .with_size(px(14.))
-                            .text_color(rgb(0x27C93F)),
+                            .text_color(color),
                     )
                     .child(
                         div()
@@ -223,30 +390,110 @@ impl MonitorPanel {
                             .text_color(cx.theme().foreground)
                             .child(SharedString::from(format!(
                                 "{} ({})",
-                                host.name, host.hostname
+                                self.host.name, self.host.hostname
                             ))),
                     ),
             )
             .child(
-                h_flex().gap_1().child(
-                    Button::new("monitor-refresh")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Redo2)
-                        .tooltip("Refresh Metrics")
-                        .on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx))),
-                ).child(
-                    Button::new("monitor-close")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Close)
-                        .tooltip("Hide Right Top Monitor (Alt+M)")
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(MonitorEvent::Close))),
-                ),
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    // 采集往返。它比纯网络 RTT 略大（含远端读 /proc 的时间），
+                    // 但它说的正是"这块面板的数字有多新"。
+                    .children(latency.map(|latency| {
+                        div()
+                            .text_xs()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_color(palette::idle(cx))
+                            .child(SharedString::from(format!("{latency}ms")))
+                    }))
+                    .child(
+                        Button::new("monitor-refresh")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Redo2)
+                            // 采集在路上的时候按不动：再按一下只会把正在跑的那次
+                            // 掐掉重开，等的时间反而更长。
+                            .disabled(self.service.is_none() || self.polling)
+                            .tooltip("立刻重新采集")
+                            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                    )
+                    .child(
+                        Button::new("monitor-close")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .tooltip("收起监控面板（Alt+M）")
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(MonitorEvent::Close))),
+                    ),
             )
     }
 
-    fn render_banner(&self, cx: &App) -> impl IntoElement {
+    /// 采集失败时头部下面那一条。旧读数继续留在下面 —— 断一次不该清空画面，
+    /// 但也不能不说。
+    fn render_error(&self, error: &SharedString, cx: &App) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .items_start()
+            .gap_1p5()
+            .px_3()
+            .py(px(4.))
+            .bg(cx.theme().danger.opacity(0.12))
+            .border_b_1()
+            .border_color(cx.theme().danger.opacity(0.3))
+            .text_xs()
+            .text_color(cx.theme().danger)
+            .child(
+                Icon::new(IconName::TriangleAlert)
+                    .with_size(px(12.))
+                    .flex_shrink_0(),
+            )
+            .child(div().min_w_0().child(error.clone()))
+    }
+
+    /// 还没有读数时的正文：说清楚在等什么，不画空的仪表。
+    fn render_empty(&self, cx: &App) -> impl IntoElement {
+        let (title, detail) = match (&self.service, &self.error) {
+            (None, _) => (
+                "这条会话没有可采的对端",
+                "监控读的是远端的 /proc。SSH 连上之后这里会自动开始采集；本地 Shell 没有对端。",
+            ),
+            (Some(_), Some(_)) => (
+                "采集失败",
+                "上面那条是对端给的原因。修好之后按刷新，或者等下一次自动重试。",
+            ),
+            (Some(_), None) => ("正在采集…", "第一次采集要跑一段采样窗口，稍等一下。"),
+        };
+
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .p_6()
+            .child(
+                Icon::new(AppIcon::Activity)
+                    .with_size(px(24.))
+                    .text_color(palette::idle(cx)),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .font_semibold()
+                    .text_color(cx.theme().foreground)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .max_w(px(280.))
+                    .text_xs()
+                    .text_center()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(detail),
+            )
+    }
+
+    fn render_banner(&self, telemetry: &MonitorTelemetry, cx: &App) -> impl IntoElement {
         h_flex()
             .w_full()
             .items_center()
@@ -261,7 +508,7 @@ impl MonitorPanel {
             .child(
                 div()
                     .text_color(cx.theme().foreground)
-                    .child(SharedString::from(format!("Uptime: {}", self.telemetry.uptime))),
+                    .child(SharedString::from(format!("Uptime: {}", telemetry.uptime))),
             )
             .child(
                 h_flex()
@@ -274,9 +521,7 @@ impl MonitorPanel {
                             .font_semibold()
                             .child(SharedString::from(format!(
                                 "{:.2} {:.2} {:.2}",
-                                self.telemetry.load_avg[0],
-                                self.telemetry.load_avg[1],
-                                self.telemetry.load_avg[2]
+                                telemetry.load_avg[0], telemetry.load_avg[1], telemetry.load_avg[2]
                             ))),
                     ),
             )
@@ -284,7 +529,12 @@ impl MonitorPanel {
 
     fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active_tab;
-        let telemetry = self.telemetry.clone();
+        // 只取 Tab 名要的那两个计数。别在这儿 clone 整份遥测 —— 那是一次
+        // 四十条进程加容器的深拷贝，而这个函数每帧都跑。
+        let counts = self
+            .telemetry
+            .as_ref()
+            .map(|t| (t.processes.len(), t.docker_sampled.then_some(t.containers.len())));
         h_flex()
             .w_full()
             .items_center()
@@ -305,7 +555,7 @@ impl MonitorPanel {
                 .enumerate()
                 .map(|(ix, tab)| {
                     let is_active = tab == active;
-                    let label = tab.label(&telemetry);
+                    let label = tab.label(counts);
                     let icon = tab.icon();
                     div()
                         .id(SharedString::from(format!("monitor-tab-{ix}")))
@@ -339,15 +589,26 @@ impl MonitorPanel {
                         }))
                         .child(div().font_medium().child(label))
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.active_tab == tab {
+                                return;
+                            }
                             this.active_tab = tab;
+                            // Docker 那一页要的东西上一次没采（`docker stats` 慢，
+                            // 不显示就不采），所以切过去要立刻补一次。
+                            if tab == MonitorTab::Docker {
+                                this.refresh(cx);
+                            }
                             cx.notify();
                         }))
                 }),
             )
     }
 
-    fn render_metrics(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let telemetry = &self.telemetry;
+    fn render_metrics(
+        &self,
+        telemetry: &MonitorTelemetry,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let mem_percent = telemetry.memory_percent().round() as i32;
         let disk_percent = telemetry.disk_percent().round() as i32;
 
@@ -361,22 +622,22 @@ impl MonitorPanel {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(self.render_cpu_card(cx))
-                            .child(self.render_ram_card(mem_percent, cx)),
+                            .child(self.render_cpu_card(telemetry, cx))
+                            .child(self.render_ram_card(telemetry, mem_percent, cx)),
                     )
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(self.render_disk_card(disk_percent, cx))
-                            .child(self.render_network_card(cx)),
+                            .child(self.render_disk_card(telemetry, disk_percent, cx))
+                            .child(self.render_network_card(telemetry, cx)),
                     ),
             )
-            .child(self.render_top_processes(cx))
+            .child(self.render_top_processes(telemetry, cx))
     }
 
-    fn render_cpu_card(&self, cx: &App) -> impl IntoElement {
-        let cpu = self.telemetry.cpu_percent;
-        let history = self.telemetry.cpu_history.clone();
+    fn render_cpu_card(&self, telemetry: &MonitorTelemetry, cx: &App) -> impl IntoElement {
+        let cpu = telemetry.cpu_percent;
+        let history = telemetry.cpu_history.clone();
         v_flex()
             .flex_1()
             .gap_1()
@@ -433,8 +694,12 @@ impl MonitorPanel {
             )
     }
 
-    fn render_ram_card(&self, mem_percent: i32, cx: &App) -> impl IntoElement {
-        let t = &self.telemetry;
+    fn render_ram_card(
+        &self,
+        t: &MonitorTelemetry,
+        mem_percent: i32,
+        cx: &App,
+    ) -> impl IntoElement {
         v_flex()
             .flex_1()
             .gap_1()
@@ -495,8 +760,12 @@ impl MonitorPanel {
             )
     }
 
-    fn render_disk_card(&self, disk_percent: i32, cx: &App) -> impl IntoElement {
-        let t = &self.telemetry;
+    fn render_disk_card(
+        &self,
+        t: &MonitorTelemetry,
+        disk_percent: i32,
+        cx: &App,
+    ) -> impl IntoElement {
         v_flex()
             .flex_1()
             .gap_1()
@@ -557,8 +826,7 @@ impl MonitorPanel {
             )
     }
 
-    fn render_network_card(&self, cx: &App) -> impl IntoElement {
-        let t = &self.telemetry;
+    fn render_network_card(&self, t: &MonitorTelemetry, cx: &App) -> impl IntoElement {
         v_flex()
             .flex_1()
             .gap_1()
@@ -620,9 +888,13 @@ impl MonitorPanel {
             )
     }
 
-    fn render_top_processes(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let processes = self.telemetry.processes.iter().take(4).cloned().collect::<Vec<_>>();
-        let total = self.telemetry.processes.len();
+    fn render_top_processes(
+        &self,
+        telemetry: &MonitorTelemetry,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let processes = telemetry.processes.iter().take(4).cloned().collect::<Vec<_>>();
+        let total = telemetry.processes.len();
         v_flex()
             .rounded(cx.theme().radius)
             .bg(cx.theme().background)
@@ -744,7 +1016,7 @@ impl MonitorPanel {
                                             .ghost()
                                             .xsmall()
                                             .icon(Icon::new(AppIcon::Trash).with_size(px(12.)))
-                                            .tooltip(SharedString::from(format!("Kill PID {pid}")))
+                                            .tooltip(SharedString::from(format!("kill -15 {pid}")))
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.kill_process(pid, cx);
                                             })),
@@ -754,162 +1026,211 @@ impl MonitorPanel {
             )
     }
 
-    fn render_processes_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let query = self.process_search.read(cx).value().trim().to_lowercase();
-        let mut filtered: Vec<_> = self
-            .telemetry
-            .processes
-            .iter()
-            .filter(|p| {
-                query.is_empty()
-                    || p.command.to_lowercase().contains(&query)
-                    || p.user.to_lowercase().contains(&query)
-                    || p.pid.to_string().contains(&query)
-            })
-            .cloned()
-            .collect();
-        if self.sort_by_cpu {
-            filtered.sort_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap());
-        } else {
-            filtered.sort_by(|a, b| b.mem.partial_cmp(&a.mem).unwrap());
-        }
+    /// Procs 页：筛选/排序条 + 一条虚拟列表。
+    ///
+    /// 列表只画看得见的那几行。一次采集最多回传 [`TOP_PROCESSES`] 条，
+    /// 但这一页是会话开着就一直在的 chrome，每帧构造四十行元素（每行十来个 div、
+    /// 几个 `format!`、一个按钮）纯属白烧 —— 虚拟列表把它压到可见的那七八行。
+    fn render_processes_tab(
+        &self,
+        telemetry: &MonitorTelemetry,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let rows = self.process_view.len();
+        let truncated = telemetry.processes.len() >= TOP_PROCESSES;
+        let nothing_matched = match (telemetry.processes.is_empty(), self.polling) {
+            // 刚展开面板的那一两秒：上一次是轻量采集，本来就没要进程列表。
+            (true, true) => "正在采集进程列表…",
+            (true, false) => "这次采集没有拿到进程列表",
+            (false, _) => "没有匹配的进程",
+        };
 
         v_flex()
+            .size_full()
+            .min_h_0()
             .gap_2()
             .p_2()
+            .child(self.render_process_toolbar(cx))
             .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(Input::new(&self.process_search).cleanable(true).small()),
-                    )
-                    .child(
-                        // sort pills
-                        h_flex()
-                            .gap_1()
-                            .p(px(2.))
-                            .rounded(cx.theme().radius)
-                            .bg(cx.theme().sidebar)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .child({
-                                let cpu_selected = self.sort_by_cpu;
-                                Button::new("sort-cpu")
-                                    .small()
-                                    .label("CPU")
-                                    .when(cpu_selected, |b| b.primary())
-                                    .when(!cpu_selected, |b| b.ghost())
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.sort_by_cpu = true;
-                                        cx.notify();
-                                    }))
-                            })
-                            .child({
-                                let mem_selected = !self.sort_by_cpu;
-                                Button::new("sort-mem")
-                                    .small()
-                                    .label("MEM")
-                                    .when(mem_selected, |b| b.primary())
-                                    .when(!mem_selected, |b| b.ghost())
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.sort_by_cpu = false;
-                                        cx.notify();
-                                    }))
-                            }),
-                    ),
-            )
-            .child(
-                v_flex()
+                div()
+                    .flex_1()
+                    .min_h_0()
                     .rounded(cx.theme().radius)
                     .bg(cx.theme().background)
                     .border_1()
                     .border_color(cx.theme().border)
-                    .when(filtered.is_empty(), |this| {
-                        this.child(
-                            div()
-                                .p_4()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child("No matching processes found"),
-                        )
-                    })
-                    .when(!filtered.is_empty(), |this| {
-                        this.children(filtered.into_iter().map(|p| {
-                            let pid = p.pid;
-                            h_flex()
-                                .px_2()
-                                .py(px(6.))
-                                .items_center()
-                                .justify_between()
-                                .border_b_1()
-                                .border_color(cx.theme().border.opacity(0.5))
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .min_w_0()
-                                        .items_center()
-                                        .text_xs()
-                                        .font_family(cx.theme().mono_font_family.clone())
-                                        .child(
-                                            div()
-                                                .font_bold()
-                                                .text_color(rgb(0x569CD6))
-                                                .child(SharedString::from(pid.to_string())),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(SharedString::from(format!("({})", p.user))),
-                                        )
-                                        .child(
-                                            div()
-                                                .truncate()
-                                                .max_w(px(160.))
-                                                .text_color(cx.theme().foreground)
-                                                .child(p.command.clone()),
-                                        ),
+                    // 行是方角的，滚到边上不能盖住这一圈圆角。
+                    .overflow_hidden()
+                    .child(match rows {
+                        0 => div()
+                            .p_4()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(nothing_matched)
+                            .into_any_element(),
+                        _ => v_flex()
+                            .id("monitor-procs")
+                            .relative()
+                            .size_full()
+                            .child(
+                                v_virtual_list(
+                                    cx.entity().clone(),
+                                    "monitor-procs-rows",
+                                    self.process_sizes.clone(),
+                                    |this, visible, _, cx| {
+                                        visible.map(|ix| this.render_process_row(ix, cx)).collect()
+                                    },
                                 )
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .items_center()
-                                        .flex_shrink_0()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .font_bold()
-                                                .font_family(cx.theme().mono_font_family.clone())
-                                                .text_color(rgb(0x569CD6))
-                                                .child(SharedString::from(format!("{:.1}%", p.cpu))),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .font_family(cx.theme().mono_font_family.clone())
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(SharedString::from(format!("{:.1}%", p.mem))),
-                                        )
-                                        .child(
-                                            Button::new(SharedString::from(format!("kill-{pid}")))
-                                                .ghost()
-                                                .xsmall()
-                                                .icon(Icon::new(AppIcon::Trash).with_size(px(12.)))
-                                                .tooltip(SharedString::from(format!("Kill PID {pid}")))
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.kill_process(pid, cx);
-                                                })),
-                                        ),
-                                )
-                        }))
+                                .track_scroll(&self.process_scroll),
+                            )
+                            .scrollbar(&self.process_scroll, ScrollbarAxis::Vertical)
+                            .into_any_element(),
                     }),
+            )
+            // 采集在远端就按 CPU 排序截断了，回传的从来不是全部进程。说清楚这件事
+            // ——「View All」很容易被当成"这台机器上就这些进程"。
+            .when(truncated, |this| {
+                this.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_center()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(format!(
+                            "只列出 CPU 占用最高的 {TOP_PROCESSES} 个进程"
+                        ))),
+                )
+            })
+    }
+
+    /// 筛选框与那两个排序片。
+    fn render_process_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let by_cpu = self.sort_by_cpu;
+        h_flex()
+            .flex_shrink_0()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .flex_1()
+                    .child(Input::new(&self.process_search).cleanable(true).small()),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .p(px(2.))
+                    .rounded(cx.theme().radius)
+                    .bg(cx.theme().sidebar)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        Button::new("sort-cpu")
+                            .small()
+                            .label("CPU")
+                            .when(by_cpu, |button| button.primary())
+                            .when(!by_cpu, |button| button.ghost())
+                            .on_click(cx.listener(|this, _, _, cx| this.set_sort_by_cpu(true, cx))),
+                    )
+                    .child(
+                        Button::new("sort-mem")
+                            .small()
+                            .label("MEM")
+                            .when(!by_cpu, |button| button.primary())
+                            .when(by_cpu, |button| button.ghost())
+                            .on_click(cx.listener(|this, _, _, cx| this.set_sort_by_cpu(false, cx))),
+                    ),
             )
     }
 
-    fn render_docker_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let containers = self.telemetry.containers.clone();
+    /// Procs 页的一行。高度必须正好是 [`PROCESS_ROW_HEIGHT`]：虚拟列表按那个数
+    /// 排版，行自己长高了就会和滚动位置错开。
+    fn render_process_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(process) = self.process_view.get(ix) else {
+            return div().h(PROCESS_ROW_HEIGHT).into_any_element();
+        };
+        let pid = process.pid;
+
+        div().h(PROCESS_ROW_HEIGHT).child(
+            h_flex()
+                .size_full()
+                .px_2()
+                .items_center()
+                .justify_between()
+                .border_b_1()
+                .border_color(cx.theme().border.opacity(0.5))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .min_w_0()
+                        .items_center()
+                        .text_xs()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .child(
+                            div()
+                                .font_bold()
+                                .text_color(rgb(0x569CD6))
+                                .child(SharedString::from(pid.to_string())),
+                        )
+                        .child(
+                            div()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SharedString::from(format!("({})", process.user))),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .max_w(px(160.))
+                                .text_color(cx.theme().foreground)
+                                .child(process.command.clone()),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .flex_shrink_0()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_bold()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_color(rgb(0x569CD6))
+                                .child(SharedString::from(format!("{:.1}%", process.cpu))),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SharedString::from(format!("{:.1}%", process.mem))),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("kill-{pid}")))
+                                .ghost()
+                                .xsmall()
+                                .icon(Icon::new(AppIcon::Trash).with_size(px(12.)))
+                                .tooltip(SharedString::from(format!("kill -15 {pid}")))
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.kill_process(pid, cx)),
+                                ),
+                        ),
+                ),
+        )
+        .into_any_element()
+    }
+
+    fn render_docker_tab(
+        &self,
+        telemetry: &MonitorTelemetry,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let containers = &telemetry.containers;
+        // "没问过 docker" 与 "问过，没有容器" 要说成两句话。切到这一页会立刻补采
+        // 一次（见 `render_tabs`），所以第一句只会出现一两秒。
+        let empty_note = match telemetry.docker_sampled {
+            true => "这台主机上没有 docker，或者没有容器",
+            false => "正在采集容器…",
+        };
         v_flex()
             .gap_2()
             .p_2()
@@ -924,12 +1245,12 @@ impl MonitorPanel {
                         .text_sm()
                         .text_center()
                         .text_color(cx.theme().muted_foreground)
-                        .child("No active Docker daemon or containers on this host"),
+                        .child(empty_note),
                 )
             })
             .when(!containers.is_empty(), |this| {
-                this.children(containers.into_iter().map(|c| {
-                    let is_running = c.status == ContainerStatus::Running;
+                this.children(containers.iter().map(|c| {
+                    let is_running = c.status.is_running();
                     let id = c.id.clone();
                     let id2 = c.id.clone();
                     v_flex()
@@ -1001,6 +1322,19 @@ impl MonitorPanel {
                         .child(
                             h_flex()
                                 .justify_between()
+                                .gap_2()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(SharedString::from(format!("Ports: {}", c.ports))),
+                                )
+                                .child(div().flex_shrink_0().child(c.created.clone())),
+                        )
+                        .child(
+                            h_flex()
+                                .justify_between()
                                 .items_center()
                                 .pt_1()
                                 .border_t_1()
@@ -1020,9 +1354,13 @@ impl MonitorPanel {
                                                 .ghost()
                                                 .xsmall()
                                                 .icon(IconName::Redo2)
-                                                .tooltip("Restart Container")
+                                                .tooltip("docker restart")
                                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.container_action(&id, "restart", cx);
+                                                    this.container_action(
+                                                        id.clone(),
+                                                        ContainerAction::Restart,
+                                                        cx,
+                                                    );
                                                 })),
                                         )
                                         .child(
@@ -1035,13 +1373,16 @@ impl MonitorPanel {
                                                     IconName::Play
                                                 })
                                                 .tooltip(if is_running {
-                                                    "Stop Container"
+                                                    "docker stop"
                                                 } else {
-                                                    "Start Container"
+                                                    "docker start"
                                                 })
                                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                                    let act = if is_running { "stop" } else { "start" };
-                                                    this.container_action(&id2, act, cx);
+                                                    let action = match is_running {
+                                                        true => ContainerAction::Stop,
+                                                        false => ContainerAction::Start,
+                                                    };
+                                                    this.container_action(id2.clone(), action, cx);
                                                 })),
                                         ),
                                 ),
@@ -1061,7 +1402,7 @@ impl MonitorPanel {
                     .text_color(cx.theme().muted_foreground)
                     .child("Execute live diagnostic commands in active terminal session:"),
             )
-            .children(commands.into_iter().enumerate().map(|(ix, diag)| {
+            .children(commands.iter().enumerate().map(|(ix, diag)| {
                 let cmd = diag.cmd.clone();
                 h_flex()
                     .id(SharedString::from(format!("diag-{ix}")))
@@ -1116,36 +1457,92 @@ impl Focusable for MonitorPanel {
 impl Render for MonitorPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tab = self.active_tab;
+        // 采到过读数就照着画，一次没采到过就只画头部与空状态 ——
+        // 没有数字的仪表盘比空白更容易被当成"这台机器闲着"。
+        let telemetry = self.telemetry.as_ref();
+
         v_flex()
             .id("monitor-panel")
             .size_full()
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
             .child(self.render_header(window, cx))
-            .child(self.render_banner(cx))
+            .children(
+                self.error
+                    .as_ref()
+                    .map(|error| self.render_error(error, cx).into_any_element()),
+            )
+            .children(telemetry.map(|t| self.render_banner(t, cx).into_any_element()))
+            // Tab 条一直在：Diag 那一页是一串固定命令，不依赖采集，本地会话与
+            // 还没采到读数的时候也该点得动。
             .child(self.render_tabs(cx))
-            .child(
-                v_flex()
+            .child(match (tab, telemetry) {
+                // Procs 页自己就是一条虚拟列表，滚动归它自己管。外面再套一层
+                // `overflow_y_scroll` 会给它一个无限高的可用空间，虚拟化就失效了
+                // —— 那时候它会把全部行都画出来。
+                (MonitorTab::Processes, Some(t)) => div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.render_processes_tab(t, cx))
+                    .into_any_element(),
+                (tab, telemetry) => v_flex()
                     .id("monitor-scroll")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .bg(cx.theme().background.opacity(0.0))
-                    .child(match tab {
-                        MonitorTab::Metrics => self.render_metrics(cx).into_any_element(),
-                        MonitorTab::Processes => self.render_processes_tab(cx).into_any_element(),
-                        MonitorTab::Docker => self.render_docker_tab(cx).into_any_element(),
-                        MonitorTab::Diagnostics => self.render_diag_tab(cx).into_any_element(),
-                    }),
-            )
+                    .child(match (tab, telemetry) {
+                        (MonitorTab::Diagnostics, _) => self.render_diag_tab(cx).into_any_element(),
+                        (_, None) => self.render_empty(cx).into_any_element(),
+                        (MonitorTab::Metrics, Some(t)) => {
+                            self.render_metrics(t, cx).into_any_element()
+                        }
+                        (MonitorTab::Docker, Some(t)) => {
+                            self.render_docker_tab(t, cx).into_any_element()
+                        }
+                        // 上面那条分支已经接走了。
+                        (MonitorTab::Processes, Some(_)) => gpui::Empty.into_any_element(),
+                    })
+                    .into_any_element(),
+            })
     }
 }
 
-fn rand_jitter() -> f32 {
-    // 简单的伪随机，基于系统时间的纳秒取余，避免引入 rand crate
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(12345);
-    ((nanos % 1000) as f32) / 1000.0
+/// 这一行进程配不配得上当前的筛选词。空词一律通过。
+///
+/// 只比小写：命令行里大小写混着写很常见（`AI-Agent.Worker`），用户敲
+/// `worker` 也该找得到。
+fn matches_query(process: &ProcessItem, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    process.command.to_lowercase().contains(query)
+        || process.user.to_lowercase().contains(query)
+        || process.pid.to_string().contains(query)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn process(pid: u32, user: &str, command: &str) -> ProcessItem {
+        ProcessItem {
+            pid,
+            user: user.into(),
+            cpu: 1.,
+            mem: 2.,
+            command: command.into(),
+            state: "S".into(),
+        }
+    }
+
+    #[test]
+    fn filter_matches_pid_user_and_command_case_insensitively() {
+        let item = process(1420, "root", "AI-Agent.Worker.0");
+
+        assert!(matches_query(&item, ""), "空筛选词全通过");
+        assert!(matches_query(&item, "worker"), "命令行不分大小写");
+        assert!(matches_query(&item, "root"));
+        assert!(matches_query(&item, "142"), "pid 按子串匹配");
+        assert!(!matches_query(&item, "postgres"));
+    }
 }

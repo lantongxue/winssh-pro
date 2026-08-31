@@ -1,0 +1,249 @@
+//! 采集脚本：一次 `exec` 就把右侧监控面板要的所有读数取回来。
+//!
+//! 数据源是 `/proc`，不是 `top`。`top` 的输出格式随 procps 版本、locale 与
+//! busybox 实现而变，拿它当接口迟早会碎；`/proc/stat`、`/proc/meminfo`、
+//! `/proc/[pid]/stat` 是内核 ABI，十几年没动过。
+//!
+//! **CPU 占用必须是两次采样之差**：`/proc` 里的都是开机以来的累计值，单次快照
+//! 只能算出"开机至今的平均值"，那和"现在忙不忙"是两回事。所以脚本自己在远端
+//! 采两次、间隔 0.3 秒，把窗口内的差值算出来 —— 这也正是 `top` 干的事
+//! （`top` 的第一帧同样只有累计值，所以它默认要跑第二帧）。进程列表在远端就
+//! 按 CPU 排好序、截断到前 N 条，回传的字节数与主机上有多少进程无关。
+//!
+//! 面板收起来的时候用 [`ProbeOptions::light`]：省掉那 0.3 秒的采样窗口与进程
+//! 列表，只取状态栏要的那几个数，一次往返几百字节。
+//!
+//! 段落用 `##name` 分隔，解析在 [`super::sample`]。两边必须同时改。
+
+/// 一次采集要取哪些东西。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProbeOptions {
+    /// 进程列表要前多少条，0 表示不采（省掉远端的采样窗口）。
+    pub top_processes: usize,
+    /// 是否连 Docker 容器一起采。`docker stats` 要一秒上下，只在 Docker 那一
+    /// 页真的显示着的时候才值得付这个代价。
+    pub docker: bool,
+}
+
+/// 面板收起来时：只要状态栏那几个数。
+impl ProbeOptions {
+    pub const fn light() -> Self {
+        Self {
+            top_processes: 0,
+            docker: false,
+        }
+    }
+
+    /// 面板展开时：带进程列表。
+    pub const fn full() -> Self {
+        Self {
+            top_processes: TOP_PROCESSES,
+            docker: false,
+        }
+    }
+
+    /// Docker 那一页展开时：进程列表加容器。
+    pub const fn with_docker() -> Self {
+        Self {
+            top_processes: TOP_PROCESSES,
+            docker: true,
+        }
+    }
+}
+
+/// 进程列表默认取前多少条。面板的 Metrics 页只显示 4 条，Procs 页显示全部并
+/// 支持过滤，40 条足够翻，也不至于让一次采集变成几十 KB。
+pub const TOP_PROCESSES: usize = 40;
+
+/// 远端采样窗口的长度。太短则 CPU 百分比抖得没法读，太长则每次采集都要等它。
+const WINDOW: &str = "0.3";
+
+/// 段落标记。解析端按它切块，改一处必须改两处。
+pub const SECTION_PREFIX: &str = "##";
+/// 段落内部的第二段分隔（同一段里的两次采样）。
+pub const SPLIT: &str = "@@";
+pub const SECTION_END: &str = "end";
+
+/// 拼出这次采集的 POSIX sh 脚本。
+pub fn script(options: &ProbeOptions) -> String {
+    let mut script = String::with_capacity(2048);
+    script.push_str(PRELUDE);
+
+    if options.top_processes > 0 {
+        script.push_str(WINDOW_OPEN);
+        script.push_str("sleep ");
+        script.push_str(WINDOW);
+        script.push_str(WINDOW_CLOSE);
+    }
+
+    script.push_str(BODY);
+
+    if options.top_processes > 0 {
+        script.push_str(PROC_HEAD);
+        script.push_str(PROC_AWK);
+        script.push_str(" | sort -k2,2nr | head -n ");
+        script.push_str(&options.top_processes.to_string());
+        script.push_str(")\n");
+        script.push_str(PROC_TAIL);
+    }
+
+    if options.docker {
+        script.push_str(DOCKER);
+    }
+
+    script.push_str("echo '");
+    script.push_str(SECTION_PREFIX);
+    script.push_str(SECTION_END);
+    script.push_str("'\n");
+    script
+}
+
+/// 环境与常量。`LC_ALL=C` 是为了小数点是 `.`、月份名是英文 —— 解析端按固定
+/// 格式读，不能跟着对端的 locale 变。`PATH` 补齐是因为非交互 sh 拿到的 PATH
+/// 可能不含 `/usr/sbin`，`df`、`ps` 在有些发行版上就在那儿。
+const PRELUDE: &str = "\
+LC_ALL=C
+export LC_ALL
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH
+export PATH
+hz=$(getconf CLK_TCK 2>/dev/null)
+case \"$hz\" in ''|*[!0-9]*) hz=100 ;; esac
+pg=$(getconf PAGESIZE 2>/dev/null)
+case \"$pg\" in ''|*[!0-9]*) pg=4096 ;; esac
+pgkb=$((pg / 1024))
+u1=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)
+c1=$(grep '^cpu' /proc/stat 2>/dev/null)
+";
+
+/// 采样窗口的前半：先把所有进程的累计 CPU 时间抓下来。
+const WINDOW_OPEN: &str = "\
+p1=$(cat /proc/[0-9]*/stat 2>/dev/null)
+";
+
+/// 采样窗口的后半。`sleep 0.3` 不是 POSIX 必须支持的小数秒，不认就退回整秒
+/// —— 窗口实际有多长由 `/proc/uptime` 的两次读数说了算，退化了也算得对。
+const WINDOW_CLOSE: &str = " 2>/dev/null || sleep 1
+p2=$(cat /proc/[0-9]*/stat 2>/dev/null)
+u2=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)
+c2=$(grep '^cpu' /proc/stat 2>/dev/null)
+";
+
+/// 不依赖采样窗口的那些读数。`##cpu` 段里 `@@` 之后是窗口末尾的那次采样，
+/// 轻量采集时那里是空的，由解析端退回"与上一次采集比"。
+const BODY: &str = "\
+echo '##hz'
+echo \"$hz $pgkb\"
+echo '##window'
+echo \"$u1 ${u2:-$u1}\"
+echo '##uptime'
+cat /proc/uptime 2>/dev/null
+echo '##load'
+cat /proc/loadavg 2>/dev/null
+echo '##cpu'
+echo \"$c1\"
+echo '@@'
+echo \"$c2\"
+echo '##mem'
+grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached|SwapTotal|SwapFree):' /proc/meminfo 2>/dev/null
+echo '##net'
+cat /proc/net/dev 2>/dev/null
+echo '##disk'
+df -kP / 2>/dev/null
+";
+
+const PROC_HEAD: &str = "\
+echo '##proc'
+top=$(printf '%s\\n@@\\n%s\\n' \"$p1\" \"$p2\" | ";
+
+/// 窗口内的 CPU 差值。`/proc/[pid]/stat` 的第 2 个字段是 `(comm)`，进程名里
+/// 可以有空格甚至括号，所以不能按空白切 —— 先找到**最后**一个 `)`，它后面才是
+/// 定长字段：state 是第 3 个、utime 第 14、stime 第 15、rss 第 24。
+const PROC_AWK: &str = "awk -v hz=\"$hz\" -v pgkb=\"$pgkb\" -v u1=\"$u1\" -v u2=\"${u2:-$u1}\" '\
+BEGIN { dt = u2 - u1; if (dt <= 0.02) dt = 0.3 }
+$0 == \"@@\" { pass = 2; next }
+NF < 20 { next }
+{
+  pid = $1
+  o = index($0, \"(\")
+  p = 0
+  while ((k = index(substr($0, p + 1), \")\")) > 0) p += k
+  if (o < 1 || p <= o) next
+  name = substr($0, o + 1, p - o - 1)
+  n = split(substr($0, p + 2), f, \" \")
+  if (n < 22) next
+  t = f[12] + f[13]
+  if (pass == 2) { t2[pid] = t; st[pid] = f[1]; rs[pid] = f[22]; nm[pid] = name }
+  else t1[pid] = t
+}
+END {
+  for (pid in t2) {
+    base = (pid in t1) ? t1[pid] : t2[pid]
+    d = t2[pid] - base
+    if (d < 0) d = 0
+    printf \"%s\\t%.1f\\t%s\\t%d\\t%s\\n\", pid, d * 100 / (hz * dt), st[pid], rs[pid] * pgkb, nm[pid]
+  }
+}'";
+
+/// 用户名与完整命令行只对上面选出来的那几十个进程查，`ps` 的输出在远端就按
+/// pid 过滤掉，回传的还是那几十行。内存百分比不问 `ps`：`/proc` 段已经给了
+/// rss，除以 `MemTotal` 算出来的是同一个数。`ps` 不在（或不认 `-e`）时这一段
+/// 是空的，解析端退回 `/proc` 里的进程名。
+const PROC_TAIL: &str = "\
+printf '%s\\n' \"$top\"
+echo '##ps'
+pids=$(printf '%s\\n' \"$top\" | cut -f1 | tr '\\n' ' ')
+ps -eo pid=,user=,args= 2>/dev/null | awk -v list=\"$pids\" 'BEGIN { n = split(list, a, \" \"); for (i = 1; i <= n; i++) keep[a[i]] = 1 } keep[$1]'
+";
+
+/// 容器。`docker` 不在或当前用户没进 `docker` 组时两段都是空的，面板显示
+/// "没有容器" —— 这与"有 docker 但没跑容器"看起来一样，但对面板要表达的
+/// "这台机器上没有能管的容器"是同一件事。
+const DOCKER: &str = "\
+echo '##docker'
+command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.ID}}\\t{{.Names}}\\t{{.Image}}\\t{{.State}}\\t{{.Ports}}\\t{{.RunningFor}}' 2>/dev/null
+echo '##dockerstats'
+command -v docker >/dev/null 2>&1 && docker stats --no-stream --format '{{.ID}}\\t{{.CPUPerc}}\\t{{.MemUsage}}' 2>/dev/null
+";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn light_script_has_no_sampling_window() {
+        let script = script(&ProbeOptions::light());
+        assert!(!script.contains("sleep"), "轻量采集不该有采样窗口");
+        assert!(!script.contains("##proc"), "轻量采集不该带进程列表");
+        assert!(!script.contains("##docker"), "轻量采集不该带容器");
+        assert!(script.contains("##load"), "状态栏要的负载必须在");
+        assert!(script.trim_end().ends_with("echo '##end'"));
+    }
+
+    #[test]
+    fn full_script_samples_twice_and_limits_processes() {
+        let script = script(&ProbeOptions::full());
+        assert!(script.contains("p1=$(cat /proc/[0-9]*/stat"));
+        assert!(script.contains("p2=$(cat /proc/[0-9]*/stat"));
+        assert!(script.contains("sleep 0.3"));
+        assert!(script.contains(&format!("head -n {TOP_PROCESSES}")));
+    }
+
+    #[test]
+    fn docker_script_asks_for_containers_and_stats() {
+        let script = script(&ProbeOptions::with_docker());
+        assert!(script.contains("docker ps -a"));
+        assert!(script.contains("docker stats --no-stream"));
+    }
+
+    /// 脚本整体是单引号里嵌 awk 程序拼出来的，awk 里再出现单引号就会把外层
+    /// 的引号提前闭合。这条断言把那种改动挡在编译测试里。
+    #[test]
+    fn awk_program_has_no_single_quote_inside() {
+        let inner = PROC_AWK
+            .strip_prefix("awk -v hz=\"$hz\" -v pgkb=\"$pgkb\" -v u1=\"$u1\" -v u2=\"${u2:-$u1}\" '")
+            .expect("PROC_AWK 的开头变了");
+        let body = inner.strip_suffix('\'').expect("PROC_AWK 的结尾变了");
+        assert!(!body.contains('\''), "awk 程序体里不能有单引号");
+    }
+}
+
