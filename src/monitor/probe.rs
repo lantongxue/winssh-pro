@@ -8,7 +8,9 @@
 //! 只能算出"开机至今的平均值"，那和"现在忙不忙"是两回事。所以脚本自己在远端
 //! 采两次、间隔 0.3 秒，把窗口内的差值算出来 —— 这也正是 `top` 干的事
 //! （`top` 的第一帧同样只有累计值，所以它默认要跑第二帧）。进程列表在远端就
-//! 按 CPU 排好序、截断到前 N 条，回传的字节数与主机上有多少进程无关。
+//! 按 CPU 排好序；Metrics 用的默认档位截断到前 N 条，回传的字节数与主机上有
+//! 多少进程无关，进程管理那一页则显式要全部（[`ProbeOptions::all_processes`]，
+//! 只排序不截断）。
 //!
 //! 面板收起来的时候用 [`ProbeOptions::light`]：省掉那 0.3 秒的采样窗口与进程
 //! 列表，只取状态栏要的那几个数，一次往返几百字节。
@@ -18,12 +20,16 @@
 /// 一次采集要取哪些东西。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProbeOptions {
-    /// 进程列表要前多少条，0 表示不采（省掉远端的采样窗口）。
+    /// 进程列表要前多少条，0 表示不采（省掉远端的采样窗口），
+    /// [`ALL_PROCESSES`] 表示不截断、回传全部进程（Procs 那一页用）。
     pub top_processes: usize,
     /// 是否连 Docker 容器一起采。`docker stats` 要一秒上下，只在 Docker 那一
     /// 页真的显示着的时候才值得付这个代价。
     pub docker: bool,
 }
+
+/// 进程列表不截断的哨兵值：进程管理那一页要看到主机上所有进程。
+pub const ALL_PROCESSES: usize = usize::MAX;
 
 /// 面板收起来时：只要状态栏那几个数。
 impl ProbeOptions {
@@ -42,6 +48,14 @@ impl ProbeOptions {
         }
     }
 
+    /// 进程管理那一页展开时：回传全部进程，按 CPU 排序但不截断。
+    pub const fn all_processes() -> Self {
+        Self {
+            top_processes: ALL_PROCESSES,
+            docker: false,
+        }
+    }
+
     /// Docker 那一页展开时：进程列表加容器。
     pub const fn with_docker() -> Self {
         Self {
@@ -51,8 +65,9 @@ impl ProbeOptions {
     }
 }
 
-/// 进程列表默认取前多少条。面板的 Metrics 页只显示 4 条，Procs 页显示全部并
-/// 支持过滤，40 条足够翻，也不至于让一次采集变成几十 KB。
+/// 进程列表默认取前多少条。Metrics 页显示 CPU 最高的 10 条，40 条留着给
+/// "View All" 的预览，也不至于让一次采集变成几十 KB。进程管理那一页要看到
+/// 全部进程，走 [`ProbeOptions::all_processes`]（不截断）。
 pub const TOP_PROCESSES: usize = 40;
 
 /// 远端采样窗口的长度。太短则 CPU 百分比抖得没法读，太长则每次采集都要等它。
@@ -81,8 +96,13 @@ pub fn script(options: &ProbeOptions) -> String {
     if options.top_processes > 0 {
         script.push_str(PROC_HEAD);
         script.push_str(PROC_AWK);
-        script.push_str(" | sort -k2,2nr | head -n ");
-        script.push_str(&options.top_processes.to_string());
+        // 排序总留着（Metrics 的"高负载前 10"和 Procs 的默认排序都靠它）；
+        // 只有要截断时才接 `head`，`ALL_PROCESSES` 表示进程管理页要全部进程。
+        script.push_str(" | sort -k2,2nr");
+        if options.top_processes != ALL_PROCESSES {
+            script.push_str(" | head -n ");
+            script.push_str(&options.top_processes.to_string());
+        }
         script.push_str(")\n");
         script.push_str(PROC_TAIL);
     }
@@ -226,6 +246,14 @@ mod tests {
         assert!(script.contains("p2=$(cat /proc/[0-9]*/stat"));
         assert!(script.contains("sleep 0.3"));
         assert!(script.contains(&format!("head -n {TOP_PROCESSES}")));
+    }
+
+    #[test]
+    fn all_processes_script_sorts_but_does_not_truncate() {
+        let script = script(&ProbeOptions::all_processes());
+        assert!(script.contains("p1=$(cat /proc/[0-9]*/stat"), "仍要采样窗口");
+        assert!(script.contains("sort -k2,2nr"), "仍要按 CPU 排序");
+        assert!(!script.contains("head -n"), "全部进程不截断");
     }
 
     #[test]

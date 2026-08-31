@@ -20,13 +20,15 @@ use std::{rc::Rc, time::Duration};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
     InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
-    Size, StatefulInteractiveElement as _, Styled as _, Task, Window, div,
-    prelude::FluentBuilder as _, px, rgb, size,
+    Size, StatefulInteractiveElement as _, Styled as _, Task, Window, div, linear_color_stop,
+    linear_gradient, prelude::FluentBuilder as _, px, rgb, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
-    VirtualListScrollHandle,
-    button::{Button, ButtonVariants as _},
+    VirtualListScrollHandle, WindowExt as _,
+    button::{Button, ButtonVariant, ButtonVariants as _},
+    chart::AreaChart,
+    dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputEvent, InputState},
     scroll::{ScrollableElement as _, ScrollbarAxis},
@@ -35,7 +37,7 @@ use gpui_component::{
 
 use crate::{
     host::Host,
-    monitor::{MonitorTelemetry, ProbeOptions, ProcessItem, diag_commands, probe::TOP_PROCESSES},
+    monitor::{MonitorTelemetry, ProbeOptions, ProcessItem, diag_commands},
     service::{ContainerAction, MonitorService},
     session::SessionTelemetry,
     ui::theme::{AppIcon, palette},
@@ -197,6 +199,8 @@ impl MonitorPanel {
         match (self.expanded, self.active_tab) {
             (false, _) => ProbeOptions::light(),
             (true, MonitorTab::Docker) => ProbeOptions::with_docker(),
+            // 进程管理那一页要看到主机上所有进程，采一份不截断的列表。
+            (true, MonitorTab::Processes) => ProbeOptions::all_processes(),
             (true, _) => ProbeOptions::full(),
         }
     }
@@ -298,6 +302,46 @@ impl MonitorPanel {
         if self.service.is_some() {
             self.start_polling(cx);
         }
+    }
+
+    /// 结束进程前先弹一个确认框。丢东西的动作（`kill`）配危险色的按钮，
+    /// 用户点"结束进程"才真的调 [`MonitorPanel::kill_process`]。
+    ///
+    /// 面板自己可能在这个框还开着的时候被销毁，所以捕获的是它的 `Entity`
+    /// 弱引用式句柄，确认时 `update` 一下：拿不到就当没这回事，不 panic。
+    fn confirm_kill(
+        &mut self,
+        pid: u32,
+        command: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let panel = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let panel = panel.clone();
+            alert
+                .title("结束进程")
+                .description(SharedString::from(format!(
+                    "确定要结束进程 “{command}”（PID {pid}）吗？将向对端发送 SIGTERM（kill -15）。"
+                )))
+                .confirm()
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("结束进程")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("取消")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _, cx| {
+                    // 只有确认才动手。面板还在就把这次 kill 交回给 kill_process，
+                    // 它自己去发信号并安排重采。
+                    panel
+                        .update(cx, |this, cx| this.kill_process(pid, cx))
+                        .ok();
+                    // 返回真：确认框收起。
+                    true
+                })
+        });
     }
 
     /// 结束一个远端进程。
@@ -593,9 +637,10 @@ impl MonitorPanel {
                                 return;
                             }
                             this.active_tab = tab;
-                            // Docker 那一页要的东西上一次没采（`docker stats` 慢，
-                            // 不显示就不采），所以切过去要立刻补一次。
-                            if tab == MonitorTab::Docker {
+                            // 有些页要的东西上一次没采全：Docker 的容器（`docker
+                            // stats` 慢，不显示就不采），Procs 的全部进程（默认档位
+                            // 截断到前 N 条）。切过去立刻补采一次，不然要等下个周期。
+                            if matches!(tab, MonitorTab::Docker | MonitorTab::Processes) {
                                 this.refresh(cx);
                             }
                             cx.notify();
@@ -637,7 +682,19 @@ impl MonitorPanel {
 
     fn render_cpu_card(&self, telemetry: &MonitorTelemetry, cx: &App) -> impl IntoElement {
         let cpu = telemetry.cpu_percent;
-        let history = telemetry.cpu_history.clone();
+        let blue = rgb(0x569CD6);
+        // `AreaChart` 画的是一串带标签的读数：把 CPU 历史按下标配上采样序号，
+        // 数值转成 `f64`（[`gpui_component::chart::AreaChart`] 的 Y 轴只接受 f64）。
+        // 序号只用来当 x 轴的刻度键，卡片里不显示轴线，所以它不会露出来。
+        let history: Vec<HistoryPoint> = telemetry
+            .cpu_history
+            .iter()
+            .enumerate()
+            .map(|(ix, val)| HistoryPoint {
+                label: ix.to_string().into(),
+                value: *val as f64,
+            })
+            .collect();
         v_flex()
             .flex_1()
             .gap_1()
@@ -657,40 +714,36 @@ impl MonitorPanel {
                             .items_center()
                             .text_color(cx.theme().foreground)
                             .font_semibold()
-                            .child(Icon::new(IconName::Cpu).with_size(px(14.)).text_color(rgb(0x569CD6)))
+                            .child(Icon::new(IconName::Cpu).with_size(px(14.)).text_color(blue))
                             .child("CPU Usage"),
                     )
                     .child(
                         div()
                             .font_family(cx.theme().mono_font_family.clone())
                             .font_bold()
-                            .text_color(rgb(0x569CD6))
+                            .text_color(blue)
                             .child(SharedString::from(format!("{cpu:.1}%"))),
                     ),
             )
             .child(
-                // sparkline bars
-                h_flex()
-                    .h(px(24.))
-                    .gap(px(2.))
-                    .items_end()
-                    .pt(px(4.))
-                    .children(history.into_iter().map(|val| {
-                        let h = val.clamp(4., 100.);
-                        let color = if val > 80. {
-                            rgb(0xFF5F56)
-                        } else if val > 50. {
-                            rgb(0xFFBD2E)
-                        } else {
-                            rgb(0x569CD6)
-                        };
-                        div()
-                            .flex_1()
-                            .h(gpui::relative(h / 100.))
-                            .min_h(px(4.))
-                            .rounded_t(px(2.))
-                            .bg(color)
-                    })),
+                // CPU 历史曲线：面积图。没有轴线、没有网格，收成一条和原来
+                // sparkline 等高的紧凑曲线，塞在这块 2x2 小卡片里。
+                div()
+                    .w_full()
+                    .h(px(40.))
+                    .child(
+                        AreaChart::new(history)
+                            .x(|sample| sample.label.clone())
+                            .y(|sample| sample.value)
+                            .stroke(blue)
+                            .fill(linear_gradient(
+                                0.,
+                                linear_color_stop(blue.opacity(0.45), 1.),
+                                linear_color_stop(blue.opacity(0.02), 0.),
+                            ))
+                            .x_axis(false)
+                            .grid(false),
+                    ),
             )
     }
 
@@ -700,6 +753,17 @@ impl MonitorPanel {
         mem_percent: i32,
         cx: &App,
     ) -> impl IntoElement {
+        let teal = rgb(0x4EC9B0);
+        // RAM 历史曲线，和 CPU 卡片一样按下标配序号、数值转 f64。
+        let history: Vec<HistoryPoint> = t
+            .memory_history
+            .iter()
+            .enumerate()
+            .map(|(ix, val)| HistoryPoint {
+                label: ix.to_string().into(),
+                value: *val as f64,
+            })
+            .collect();
         v_flex()
             .flex_1()
             .gap_1()
@@ -722,7 +786,7 @@ impl MonitorPanel {
                             .child(
                                 Icon::new(IconName::MemoryStick)
                                     .with_size(px(14.))
-                                    .text_color(rgb(0x4EC9B0)),
+                                    .text_color(teal),
                             )
                             .child("RAM Usage"),
                     )
@@ -730,33 +794,37 @@ impl MonitorPanel {
                         div()
                             .font_family(cx.theme().mono_font_family.clone())
                             .font_bold()
-                            .text_color(rgb(0x4EC9B0))
+                            .text_color(teal)
                             .child(SharedString::from(format!("{mem_percent}%"))),
                     ),
             )
             .child(
-                v_flex().gap_1().mt_1().child(
-                    div()
-                        .w_full()
-                        .h(px(6.))
-                        .rounded_full()
-                        .bg(cx.theme().sidebar_accent.opacity(0.5))
-                        .child(
-                            div()
-                                .h_full()
-                                .w(gpui::relative(mem_percent as f32 / 100.))
-                                .rounded_full()
-                                .bg(rgb(0x4EC9B0)),
-                        ),
-                ).child(
-                    h_flex()
-                        .justify_between()
-                        .text_xs()
-                        .font_family(cx.theme().mono_font_family.clone())
-                        .text_color(cx.theme().muted_foreground)
-                        .child(SharedString::from(format!("{:.1} GB", t.memory_used_gb)))
-                        .child(SharedString::from(format!("{:.0} GB", t.memory_total_gb))),
-                ),
+                // 面积图版本的历史曲线，收成和 CPU 卡片等高的紧凑形态。
+                div()
+                    .w_full()
+                    .h(px(40.))
+                    .child(
+                        AreaChart::new(history)
+                            .x(|sample| sample.label.clone())
+                            .y(|sample| sample.value)
+                            .stroke(teal)
+                            .fill(linear_gradient(
+                                0.,
+                                linear_color_stop(teal.opacity(0.45), 1.),
+                                linear_color_stop(teal.opacity(0.02), 0.),
+                            ))
+                            .x_axis(false)
+                            .grid(false),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .justify_between()
+                    .text_xs()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_color(cx.theme().muted_foreground)
+                    .child(SharedString::from(format!("{:.1} GB", t.memory_used_gb)))
+                    .child(SharedString::from(format!("{:.0} GB", t.memory_total_gb))),
             )
     }
 
@@ -893,7 +961,7 @@ impl MonitorPanel {
         telemetry: &MonitorTelemetry,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let processes = telemetry.processes.iter().take(4).cloned().collect::<Vec<_>>();
+        let processes = telemetry.processes.iter().take(10).cloned().collect::<Vec<_>>();
         let total = telemetry.processes.len();
         v_flex()
             .rounded(cx.theme().radius)
@@ -938,6 +1006,7 @@ impl MonitorPanel {
             .child(
                 v_flex().children(processes.into_iter().map(|p| {
                     let pid = p.pid;
+                    let command = p.command.clone();
                     h_flex()
                         .px_2()
                         .py(px(6.))
@@ -1017,8 +1086,8 @@ impl MonitorPanel {
                                             .xsmall()
                                             .icon(Icon::new(AppIcon::Trash).with_size(px(12.)))
                                             .tooltip(SharedString::from(format!("kill -15 {pid}")))
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.kill_process(pid, cx);
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.confirm_kill(pid, command.clone(), window, cx);
                                             })),
                                     ),
                             )
@@ -1028,16 +1097,16 @@ impl MonitorPanel {
 
     /// Procs 页：筛选/排序条 + 一条虚拟列表。
     ///
-    /// 列表只画看得见的那几行。一次采集最多回传 [`TOP_PROCESSES`] 条，
-    /// 但这一页是会话开着就一直在的 chrome，每帧构造四十行元素（每行十来个 div、
-    /// 几个 `format!`、一个按钮）纯属白烧 —— 虚拟列表把它压到可见的那七八行。
+    /// 这一页采的是全部进程（[`ProbeOptions::all_processes`]，只排序不截断），
+    /// 所以列表可能有几百行。列表只画看得见的那几行：这一页是会话开着就一直
+    /// 在的 chrome，每帧构造几百行元素（每行十来个 div、几个 `format!`、一个
+    /// 按钮）纯属白烧 —— 虚拟列表把它压到可见的那七八行。
     fn render_processes_tab(
         &self,
         telemetry: &MonitorTelemetry,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let rows = self.process_view.len();
-        let truncated = telemetry.processes.len() >= TOP_PROCESSES;
         let nothing_matched = match (telemetry.processes.is_empty(), self.polling) {
             // 刚展开面板的那一两秒：上一次是轻量采集，本来就没要进程列表。
             (true, true) => "正在采集进程列表…",
@@ -1087,20 +1156,6 @@ impl MonitorPanel {
                             .into_any_element(),
                     }),
             )
-            // 采集在远端就按 CPU 排序截断了，回传的从来不是全部进程。说清楚这件事
-            // ——「View All」很容易被当成"这台机器上就这些进程"。
-            .when(truncated, |this| {
-                this.child(
-                    div()
-                        .flex_shrink_0()
-                        .text_xs()
-                        .text_center()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(SharedString::from(format!(
-                            "只列出 CPU 占用最高的 {TOP_PROCESSES} 个进程"
-                        ))),
-                )
-            })
     }
 
     /// 筛选框与那两个排序片。
@@ -1149,74 +1204,80 @@ impl MonitorPanel {
             return div().h(PROCESS_ROW_HEIGHT).into_any_element();
         };
         let pid = process.pid;
+        let command = process.command.clone();
 
-        div().h(PROCESS_ROW_HEIGHT).child(
-            h_flex()
-                .size_full()
-                .px_2()
-                .items_center()
-                .justify_between()
-                .border_b_1()
-                .border_color(cx.theme().border.opacity(0.5))
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .min_w_0()
-                        .items_center()
-                        .text_xs()
-                        .font_family(cx.theme().mono_font_family.clone())
-                        .child(
-                            div()
-                                .font_bold()
-                                .text_color(rgb(0x569CD6))
-                                .child(SharedString::from(pid.to_string())),
-                        )
-                        .child(
-                            div()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(SharedString::from(format!("({})", process.user))),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .max_w(px(160.))
-                                .text_color(cx.theme().foreground)
-                                .child(process.command.clone()),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .flex_shrink_0()
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_bold()
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .text_color(rgb(0x569CD6))
-                                .child(SharedString::from(format!("{:.1}%", process.cpu))),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .text_color(cx.theme().muted_foreground)
-                                .child(SharedString::from(format!("{:.1}%", process.mem))),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!("kill-{pid}")))
-                                .ghost()
-                                .xsmall()
-                                .icon(Icon::new(AppIcon::Trash).with_size(px(12.)))
-                                .tooltip(SharedString::from(format!("kill -15 {pid}")))
-                                .on_click(
-                                    cx.listener(move |this, _, _, cx| this.kill_process(pid, cx)),
-                                ),
-                        ),
-                ),
-        )
-        .into_any_element()
+        div()
+            .id(SharedString::from(format!("proc-row-{pid}")))
+            .h(PROCESS_ROW_HEIGHT)
+            // 悬停高亮整行：告诉用户这一条是当前盯着的那一行。
+            .hover(|style| style.bg(palette::surface(cx)))
+            .child(
+                h_flex()
+                    .size_full()
+                    .px_2()
+                    .items_center()
+                    .justify_between()
+                    .border_b_1()
+                    .border_color(cx.theme().border.opacity(0.5))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .min_w_0()
+                            .items_center()
+                            .text_xs()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(
+                                div()
+                                    .font_bold()
+                                    .text_color(rgb(0x569CD6))
+                                    .child(SharedString::from(pid.to_string())),
+                            )
+                            .child(
+                                div()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(SharedString::from(format!("({})", process.user))),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .max_w(px(160.))
+                                    .text_color(cx.theme().foreground)
+                                    .child(command.clone()),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .flex_shrink_0()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_bold()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_color(rgb(0x569CD6))
+                                    .child(SharedString::from(format!("{:.1}%", process.cpu))),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(SharedString::from(format!("{:.1}%", process.mem))),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("kill-{pid}")))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(AppIcon::Trash).with_size(px(12.)))
+                                    .tooltip(SharedString::from(format!("kill -15 {pid}")))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.confirm_kill(pid, command.clone(), window, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn render_docker_tab(
@@ -1505,6 +1566,15 @@ impl Render for MonitorPanel {
                     .into_any_element(),
             })
     }
+}
+
+/// 历史曲线里的一个采样点，喂给 [`AreaChart`] 用（CPU 与 RAM 卡片共用）。
+///
+/// `label` 是采样的序号（只当 x 轴的刻度键，卡片里不显示），`value` 是那一
+/// 次的占用百分比 —— 图表库的 Y 轴只接受 `f64`，所以从 `f32` 转过来。
+struct HistoryPoint {
+    label: SharedString,
+    value: f64,
 }
 
 /// 这一行进程配不配得上当前的筛选词。空词一律通过。

@@ -37,6 +37,8 @@ struct Previous {
 pub struct MonitorCollector {
     previous: Option<Previous>,
     cpu_history: VecDeque<f32>,
+    /// 最近 [`HISTORY_LEN`] 个点的内存占用百分比，喂给 RAM 卡片里的面积图。
+    mem_history: VecDeque<f32>,
     /// 最近一个算得出来的 CPU 占用。第一次轻量采集拿不到（没有可比的前一次），
     /// 那时候显示上一个值而不是 0 —— 0 是"闲着"，不是"不知道"。
     last_cpu: f32,
@@ -47,6 +49,7 @@ impl MonitorCollector {
         Self {
             previous: None,
             cpu_history: VecDeque::with_capacity(HISTORY_LEN),
+            mem_history: VecDeque::with_capacity(HISTORY_LEN),
             last_cpu: 0.,
         }
     }
@@ -62,10 +65,20 @@ impl MonitorCollector {
         {
             self.previous = None;
             self.cpu_history.clear();
+            self.mem_history.clear();
         }
 
         let cpu_percent = self.cpu_percent(&sample);
         let (net_in_kbps, net_out_kbps) = self.net_rates(&sample);
+        // 内存占用没有累计值的概念，这一次就能算：used/total，和遥测里那个
+        // `memory_percent()` 同一个式子。总量算不出来（0）就当 0，不塞进历史。
+        let mem_percent = if sample.mem.total_kb > 0 {
+            (sample.mem.used_kb() as f64 / sample.mem.total_kb as f64 * 100.).clamp(0., 100.)
+                as f32
+        } else {
+            0.
+        };
+        push_history(&mut self.mem_history, mem_percent);
 
         self.previous = Some(Previous {
             uptime_secs: sample.uptime_secs,
@@ -77,6 +90,7 @@ impl MonitorCollector {
         MonitorTelemetry {
             cpu_percent,
             cpu_history: self.cpu_history.iter().copied().collect(),
+            memory_history: self.mem_history.iter().copied().collect(),
             memory_used_gb: gigabytes(sample.mem.used_kb()),
             memory_total_gb: gigabytes(sample.mem.total_kb),
             disk_used_gb: gigabytes(disk.used_kb),
@@ -107,10 +121,7 @@ impl MonitorCollector {
         };
         let percent = (percent * 10.).round() / 10.;
         self.last_cpu = percent;
-        if self.cpu_history.len() >= HISTORY_LEN {
-            self.cpu_history.pop_front();
-        }
-        self.cpu_history.push_back(percent);
+        push_history(&mut self.cpu_history, percent);
         percent
     }
 
@@ -129,6 +140,15 @@ impl MonitorCollector {
             rate_kbps(previous.net.tx_bytes, sample.net.tx_bytes, elapsed),
         )
     }
+}
+
+/// 往一条 sparkline 历史里追加点，超过 [`HISTORY_LEN`] 就把最老的挤出去。
+/// CPU 与内存两条曲线共用这一份淘汰逻辑。
+fn push_history(history: &mut VecDeque<f32>, value: f32) {
+    if history.len() >= HISTORY_LEN {
+        history.pop_front();
+    }
+    history.push_back(value);
 }
 
 /// 每秒多少 KiB。计数器回绕（32 位内核上几个 GB 就绕一圈）时返回 0，

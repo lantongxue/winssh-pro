@@ -108,6 +108,10 @@ pub struct MonitorTelemetry {
     pub cpu_percent: f32,
     /// 最近 [`collector::HISTORY_LEN`] 个点的 CPU sparkline，用于卡片顶部的迷你条。
     pub cpu_history: Vec<f32>,
+    /// 最近 [`collector::HISTORY_LEN`] 个点的内存占用百分比，喂给 RAM 卡片里的
+    /// [`AreaChart`](gpui_component::chart::AreaChart)。内存不像 CPU 需要采样窗口，
+    /// 每次采集都直接算得出来，所以这条历史每个轮询周期都长一格。
+    pub memory_history: Vec<f32>,
     pub memory_used_gb: f32,
     pub memory_total_gb: f32,
     pub disk_used_gb: f32,
@@ -230,6 +234,7 @@ mod tests {
         let telemetry = MonitorTelemetry {
             cpu_percent: 0.,
             cpu_history: Vec::new(),
+            memory_history: Vec::new(),
             memory_used_gb: 1.,
             memory_total_gb: 0.,
             disk_used_gb: 1.,
