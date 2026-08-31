@@ -441,7 +441,23 @@ impl TerminalPanel {
             .is_some_and(|emulator| !emulator.read(cx).exited())
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    /// 焦点是否确实落在终端自己身上。
+    ///
+    /// 面板根 div 同时挂着 `on_key_down` 和一批 `key_context("Terminal")` 的
+    /// action，而监控面板（含进程搜索框）就嵌在这个 div 里面。GPUI 的按键派发
+    /// 会从聚焦节点往上遍历祖先，所以焦点在搜索框里时这些处理器照样收到按键，
+    /// 字符于是既进了搜索框又发给了远端 shell。这里用 `is_focused`（焦点就是这个
+    /// handle）而不是 `contains_focused`（焦点在同一棵子树里）—— 搜索框也在子树里，
+    /// 后者会误判为 true。
+    #[inline]
+    fn terminal_is_focused(&self, window: &Window) -> bool {
+        self.focus_handle.is_focused(window)
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.terminal_is_focused(window) {
+            return;
+        }
         let Some(emulator) = self.emulator.clone() else {
             return;
         };
@@ -455,7 +471,10 @@ impl TerminalPanel {
         }
     }
 
-    fn on_tab(&mut self, _: &Tab, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_tab(&mut self, _: &Tab, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.terminal_is_focused(window) {
+            return;
+        }
         let Some(emulator) = self.emulator.clone() else {
             return;
         };
@@ -463,7 +482,10 @@ impl TerminalPanel {
         cx.stop_propagation();
     }
 
-    fn on_back_tab(&mut self, _: &BackTab, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_back_tab(&mut self, _: &BackTab, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.terminal_is_focused(window) {
+            return;
+        }
         let Some(emulator) = self.emulator.clone() else {
             return;
         };
@@ -541,7 +563,10 @@ impl TerminalPanel {
         point_at(position, &self.grid, emulator.read(cx).content())
     }
 
-    fn on_copy_selection(&mut self, _: &CopySelection, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_copy_selection(&mut self, _: &CopySelection, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.terminal_is_focused(window) {
+            return;
+        }
         let Some(text) = self
             .emulator
             .as_ref()
@@ -552,7 +577,10 @@ impl TerminalPanel {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
-    fn on_paste_clipboard(&mut self, _: &PasteClipboard, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_paste_clipboard(&mut self, _: &PasteClipboard, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.terminal_is_focused(window) {
+            return;
+        }
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
@@ -600,9 +628,12 @@ impl TerminalPanel {
     fn on_toggle_monitor(
         &mut self,
         _: &ToggleMonitor,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.terminal_is_focused(window) {
+            return;
+        }
         self.toggle_monitor(cx);
     }
 
@@ -638,7 +669,7 @@ impl TerminalPanel {
         // 元素在 prepaint 里才量得出真实尺寸，所以这里读的是上一帧的结果
         // —— 差一帧对这两个用处都没有影响。
         self.grid = emulator.read(cx).bounds();
-        let focused = self.focus_handle.contains_focused(window, cx);
+        let focused = self.terminal_is_focused(window);
 
         // 字体在这里定，元素照着量格子。取主题的等宽字体而不是写死
         // `"monospace"` —— 那不是任何一个平台上真实存在的字体族名，
