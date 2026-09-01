@@ -28,7 +28,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
     time::SystemTime,
 };
@@ -57,6 +57,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::ui::{
     dialogs::{ChmodHandler, SftpChmodDialog, SftpEditorDialog, SftpFormDialog, SftpSavedHandler},
+    menus::{LocalEntryAction, LocalEntryActionHandler, LocalEntryMenu},
     menus::{SftpEntryAction, SftpEntryActionHandler, SftpEntryMenu},
     theme::AppIcon,
 };
@@ -96,13 +97,13 @@ const HEIGHT_COMPACT: Pixels = px(200.);
 const HEIGHT_TALL: Pixels = px(420.);
 const HEIGHT_SPLIT: Pixels = px(350.);
 
-/// 双栏时本地栏的初始宽度（原型给的是 40%，这里取一个常见窗口下接近它的定值）。
-/// 拖过中间那根线之后比例就归 [`ResizableState`] 记了 —— 之后窗口缩放按比例走，
-/// 这里只是第一眼的样子。
-const LOCAL_PANE_WIDTH: Pixels = px(400.);
+/// 双栏时两栏都不给固定初值：`h_resizable` 让没设 `size` 的分栏各拿 `flex_grow_1`，
+/// 于是默认把面板宽度对半分（本地栏、远端栏各 50%）。拖过中间那根线之后比例就归
+/// [`ResizableState`] 记了 —— 之后窗口缩放按比例走。
 /// 两栏各自能压到的下限：名字列之外还有几列定宽的，再窄就只能裁掉内容了。
+/// 本地栏下限按“名称 + 大小 + 完整修改时间”三列的最小说法给，压到这儿也不会再裁年份。
 /// 远端那栏列多，下限也高 —— 它是主栏，不该被本地栏挤到没法看。
-const LOCAL_PANE_MIN: Pixels = px(240.);
+const LOCAL_PANE_MIN: Pixels = px(260.);
 const REMOTE_PANE_MIN: Pixels = px(380.);
 
 /// 同时进行的传输数。
@@ -112,7 +113,9 @@ const MAX_ACTIVE_TRANSFERS: usize = 2;
 const SIZE_WIDTH: Pixels = px(74.);
 const PERM_WIDTH: Pixels = px(78.);
 const OWNER_WIDTH: Pixels = px(62.);
-const MODIFIED_WIDTH: Pixels = px(92.);
+/// 修改时间要放得下 `2026-06-10 21:54` 这串绝对时间（等宽字体 16 字符）。
+/// 再窄就会因为右对齐 + truncate 把年份左半边裁掉、看着像被“大小”列盖住。
+const MODIFIED_WIDTH: Pixels = px(118.);
 const ACTION_WIDTH: Pixels = px(58.);
 const PROGRESS_WIDTH: Pixels = px(110.);
 const SPEED_WIDTH: Pixels = px(78.);
@@ -1055,17 +1058,12 @@ impl SftpPanel {
         cx.notify();
     }
 
-    fn selected_remote_entry(&self) -> Option<&FileEntry> {
-        let path = self.selected_remote.as_ref()?;
-        self.remote.view.iter().find(|entry| &entry.path == path)
-    }
-
     fn selected_local_entry(&self) -> Option<&FileEntry> {
         let path = self.selected_local.as_ref()?;
         self.local.view.iter().find(|entry| &entry.path == path)
     }
 
-    /// 右键菜单与动作栏共用的分发：菜单只报"要干什么"，怎么做在这儿。
+    /// 右键菜单（以及行内悬停按钮）共用的分发：菜单只报"要干什么"，怎么做在这儿。
     fn on_entry_action(
         &mut self,
         entry: &FileEntry,
@@ -1105,6 +1103,125 @@ impl SftpPanel {
                 this.on_entry_action(entry, action, window, cx)
             });
         })
+    }
+
+    /// 本地右键菜单的分发：只报"要干什么"，怎么做在这儿。与 [`Self::on_entry_action`]
+    /// 同一套结构，只是动作是本地这一侧的。
+    fn on_local_action(
+        &mut self,
+        entry: &FileEntry,
+        action: &LocalEntryAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            LocalEntryAction::Upload => {
+                self.upload_paths(vec![PathBuf::from(entry.path.as_str())], cx);
+            }
+            LocalEntryAction::OpenWithDefault => self.open_local_with_default(entry, window, cx),
+            LocalEntryAction::OpenFolder => {
+                self.list_local(PathBuf::from(entry.path.as_str()), window, cx);
+            }
+            LocalEntryAction::CopyPath => self.copy_path(entry.path.as_str(), cx),
+            LocalEntryAction::Refresh => {
+                let dir = self.local_dir.clone();
+                self.list_local(dir, window, cx);
+            }
+            LocalEntryAction::Delete => self.delete_local_entry(entry, window, cx),
+        }
+    }
+
+    /// 本地菜单要的回调。同 [`Self::entry_handler`]：菜单活在弹层里，只能拿 weak 引用回头找。
+    fn local_handler(&self, cx: &mut Context<Self>) -> LocalEntryActionHandler {
+        let panel = cx.entity().downgrade();
+        Rc::new(move |entry: &FileEntry, action, window, app| {
+            let Some(entity) = panel.upgrade() else {
+                return;
+            };
+            entity.update(app, |this, cx| {
+                this.on_local_action(entry, action, window, cx)
+            });
+        })
+    }
+
+    /// 用系统默认程序打开一个本地条目。成不成由操作系统说了算，这里只把它的话带回来。
+    fn open_local_with_default(
+        &self,
+        entry: &FileEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = LocalFileService::open_with_default(Path::new(entry.path.as_str())) {
+            window.push_notification(format!("{error:#}"), cx);
+        }
+    }
+
+    /// 删一个本地条目。这一步不可逆，且删的是本机文件 —— 所以先确认一次，且不在背后
+    /// 递归删非空目录（[`LocalFileService::remove`] 会让 `std::fs` 把这句原话报回来）。
+    fn delete_local_entry(&mut self, entry: &FileEntry, window: &mut Window, cx: &mut Context<Self>) {
+        let victim = entry.clone();
+        let name = victim.name.to_string();
+        let panel = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let panel = panel.clone();
+            let victim = victim.clone();
+            let name = name.clone();
+            alert
+                .title(if victim.kind.is_dir() {
+                    "删除这个本地目录？"
+                } else {
+                    "删除这个本地文件？"
+                })
+                .description(format!(
+                    "{name} 会从你的电脑上删掉。这一步不可逆，也不进回收站；\
+                     目录非空时会失败，我们不在背后替你递归删。"
+                ))
+                .button_props(
+                    gpui_component::dialog::DialogButtonProps::default()
+                        .ok_text("删除")
+                        .ok_variant(gpui_component::button::ButtonVariant::Danger)
+                        .cancel_text("取消")
+                        .show_cancel(true),
+                )
+                .confirm()
+                .on_ok(move |_, window, app| {
+                    if let Some(entity) = panel.upgrade() {
+                        entity.update(app, |this, cx| {
+                            let target = PathBuf::from(victim.path.as_str());
+                            let done = format!("已删除 {name}");
+                            this.run_local(LocalFileService::remove(target), done, window, cx);
+                        });
+                    }
+                    true
+                })
+        });
+    }
+
+    /// [`Self::run`] 的本地版：跑完 → 报一句 → 重列本地这一栏。
+    fn run_local(
+        &mut self,
+        work: impl std::future::Future<Output = anyhow::Result<()>> + 'static,
+        done: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let done = done.into();
+        let dir = self.local_dir.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = work.await;
+            _ = this.update_in(cx, |this, window, cx| match outcome {
+                Ok(()) => {
+                    window.push_notification(done, cx);
+                    this.list_local(dir, window, cx);
+                }
+                Err(error) => {
+                    window.push_notification(format!("{error:#}"), cx);
+                    this.local.error = Some(SharedString::from(format!("{error:#}")));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 }
 
@@ -1218,11 +1335,12 @@ impl SftpPanel {
         // id 带上主机：两个会话分屏摆在一屏上时，各自的分栏状态互不串线
         // （同 `TerminalPanel` 里 monitor / sftp 那两个的做法）。
         let group_id = SharedString::from(format!("sftp-panes-{}", self.host.id));
+        // 两栏都不给 initial_size：这样各自拿到 flex_grow_1，把面板宽度对半分 ——
+        // 默认就是本地栏、远端栏各占 50%。拖中间那根线之后比例归 ResizableState 记。
         h_resizable(group_id)
             .with_state(&self.resizable_state)
             .child(
                 resizable_panel()
-                    .size(LOCAL_PANE_WIDTH)
                     .size_range(LOCAL_PANE_MIN..Pixels::MAX)
                     .child(self.render_local_pane(cx)),
             )
@@ -1548,7 +1666,8 @@ impl SftpPanel {
             .disabled(disabled)
     }
 
-    /// 左半：本地工作站。上传的源头，只能看不能删（删本机文件不是这里该干的事）。
+    /// 左半：本地工作站。上传的源头；右键一栏也能打开、进目录、复制路径、删除。
+    /// 删除会先弹确认，且不递归删非空目录 —— 动的是用户本机上的文件，处处保守。
     /// 宽度不在这里定 —— 它撑满所在的 `resizable_panel`，分界线拖到哪儿它就多宽。
     fn render_local_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.selected_local_entry().cloned();
@@ -1937,6 +2056,8 @@ impl SftpPanel {
         };
         let selected = self.selected_local.as_ref() == Some(&entry.path);
         let clicked = entry.clone();
+        let menu_for = entry.clone();
+        let menu = self.local_handler(cx);
         let now = SystemTime::now();
 
         h_flex()
@@ -1976,6 +2097,7 @@ impl SftpPanel {
                     this.select(&clicked, true, cx);
                 }
             }))
+            .context_menu(LocalEntryMenu::items(menu_for, menu))
             .into_any_element()
     }
 
@@ -2070,9 +2192,9 @@ impl SftpPanel {
             .into_any_element()
     }
 
-    /// 底下一条：选中了什么就能对它做什么，没选中就是两句用法提示。
+    /// 底下一条：一句用法提示，加右边的传输队列开关。
+    /// 选中条目能做的动作都收在行右键菜单里，这里不再重复摆一排按钮。
     fn render_action_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let selected = self.selected_remote_entry().cloned();
         let active = self.active_transfers();
         h_flex()
             .id("sftp-panel-action-bar")
@@ -2084,15 +2206,13 @@ impl SftpPanel {
             .border_t_1()
             .border_color(cx.theme().border)
             .bg(palette::recessed(cx))
-            .child(match &selected {
-                Some(entry) => self.render_selection_chips(entry, cx).into_any_element(),
-                None => div()
+            .child(
+                div()
                     .text_xs()
                     .text_color(palette::idle(cx))
                     .truncate()
-                    .child("双击文件即可打开编辑；把本机文件拖到右栏就是往这一格上传。")
-                    .into_any_element(),
-            })
+                    .child("双击文件即可打开编辑；把本机文件拖到右栏就是往这一格上传；右键一行看更多操作。"),
+            )
             .child(div().flex_1().min_w_0())
             .child(
                 Button::new("sftp-panel-transfers")
@@ -2116,102 +2236,6 @@ impl SftpPanel {
                         cx.notify();
                     })),
             )
-    }
-
-    /// 选中一条之后能立刻做的几件事。和右键菜单同一套动作，只是少了几项。
-    fn render_selection_chips(
-        &self,
-        entry: &FileEntry,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let panel = cx.entity().downgrade();
-        let target = entry.clone();
-        let chip = |id: &'static str,
-                    icon: Icon,
-                    label: &'static str,
-                    action: SftpEntryAction,
-                    danger: bool,
-                    cx: &App|
-         -> Button {
-            let target = target.clone();
-            let panel = panel.clone();
-            Button::new(id)
-                .ghost()
-                .xsmall()
-                .flex_shrink_0()
-                .icon(icon.with_size(px(12.)))
-                .label(label)
-                .when(danger, |button| button.text_color(cx.theme().danger))
-                .on_click(move |_, window, app| {
-                    let Some(entity) = panel.upgrade() else {
-                        return;
-                    };
-                    entity.update(app, |this, cx| {
-                        this.on_entry_action(&target, &action, window, cx)
-                    });
-                })
-        };
-
-        h_flex()
-            .id("sftp-panel-selection")
-            .items_center()
-            .gap_1()
-            .min_w_0()
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_xs()
-                    .text_color(palette::idle(cx))
-                    .child("已选中："),
-            )
-            .child(
-                div()
-                    .max_w(px(180.))
-                    .truncate()
-                    .text_xs()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .child(entry.name.clone()),
-            )
-            .child(chip(
-                "sftp-panel-chip-download",
-                Icon::new(AppIcon::Download).text_color(palette::teal()),
-                "下载",
-                SftpEntryAction::Download,
-                false,
-                cx,
-            ))
-            .child(chip(
-                "sftp-panel-chip-edit",
-                Icon::new(AppIcon::Pencil).text_color(palette::sky()),
-                "编辑",
-                SftpEntryAction::Edit,
-                false,
-                cx,
-            ))
-            .child(chip(
-                "sftp-panel-chip-rename",
-                Icon::new(AppIcon::Pencil).text_color(palette::magenta()),
-                "重命名",
-                SftpEntryAction::Rename,
-                false,
-                cx,
-            ))
-            .child(chip(
-                "sftp-panel-chip-chmod",
-                Icon::new(AppIcon::KeyRound).text_color(palette::sky()),
-                "权限",
-                SftpEntryAction::Chmod,
-                false,
-                cx,
-            ))
-            .child(chip(
-                "sftp-panel-chip-delete",
-                Icon::new(AppIcon::Trash),
-                "删除",
-                SftpEntryAction::Delete,
-                true,
-                cx,
-            ))
     }
 
     /// 传输队列抽屉。

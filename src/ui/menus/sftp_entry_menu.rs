@@ -9,13 +9,11 @@
 //! 关掉都归它。这里只声明有哪些项、长什么样、点下去往外报哪一个
 //! [`SftpEntryAction`]。项按条目的类型取舍：目录没有"编辑"和"下载"（一个目录
 //! 不是一次 GET 的事，要搬它得走上传那套目录树），文件没有"进目录"。
-//!
-//! 顶部那一行是条目名，不可点：九个项里，人先要确认"我右键点的是哪个"。
 
 use std::rc::Rc;
 
 use gpui::{
-    App, Context, Hsla, ParentElement as _, Pixels, SharedString, Styled as _, Window, div, px,
+    App, Context, Hsla, ParentElement as _, Pixels, Styled as _, Window, div, px,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName,
@@ -157,9 +155,7 @@ impl SftpEntryMenu {
             SftpEntryAction::ALL
                 .iter()
                 .filter(|action| action.applies_to(&entry))
-                .fold(
-                    menu.min_w(MENU_MIN_WIDTH).item(header(&entry.name)),
-                    |menu, action| {
+                .fold(menu.min_w(MENU_MIN_WIDTH), |menu, action| {
                         let item = action.menu_item(&entry, &on_action, cx);
                         // 删除自己一段，前面补一条分隔线。
                         if *action == SftpEntryAction::Delete {
@@ -171,15 +167,4 @@ impl SftpEntryMenu {
                 )
         }
     }
-}
-
-/// 顶部那行条目名：不可点，只说明这次右键点的是谁。
-fn header(name: &SharedString) -> PopupMenuItem {
-    let name = name.clone();
-    PopupMenuItem::element(move |_, _| {
-        div()
-            .text_color(palette::teal())
-            .truncate()
-            .child(name.clone())
-    })
 }

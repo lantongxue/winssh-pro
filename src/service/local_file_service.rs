@@ -50,6 +50,77 @@ impl LocalFileService {
         }
         Err(anyhow::anyhow!("{} 不是一个本地目录", path.display()))
     }
+
+    /// 用系统的默认程序打开一个本地条目（文件走关联程序，目录交给文件管理器）。
+    ///
+    /// 这一步交给操作系统，不解释内容：本地有什么扩展名、装了哪些程序，界面无从
+    /// 预判，把打开的决定权还给系统才是诚实的做法。失败（没有关联程序、路径已不
+    /// 存在）把系统原话带回来。
+    pub fn open_with_default(path: &Path) -> Result<()> {
+        let mut opener = Self::opener(path);
+        let status = opener
+            .status()
+            .with_context(|| format!("打开 {} 失败", path.display()))?;
+        // 各平台的 open/start/xdg-open 在"成功唤起"时都返回 0；非零就是它自己报了错。
+        if !status.success() {
+            anyhow::bail!("系统拒绝打开 {}（退出码 {:?}）", path.display(), status.code());
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn opener(path: &Path) -> std::process::Command {
+        // `cmd /c start "" "路径"`：紧跟 start 的那个空串是窗口标题占位，缺了它 start
+        // 会把带空格的路径当成标题。`CREATE_NO_WINDOW` 让那层 cmd 不闪一个黑框。
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/c", "start", ""])
+            .arg(path)
+            .creation_flags(CREATE_NO_WINDOW);
+        cmd
+    }
+
+    #[cfg(target_os = "macos")]
+    fn opener(path: &Path) -> std::process::Command {
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg(path);
+        cmd
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn opener(path: &Path) -> std::process::Command {
+        let mut cmd = std::process::Command::new("xdg-open");
+        cmd.arg(path);
+        cmd
+    }
+
+    /// 删掉一个本地条目。
+    ///
+    /// 与远端删除同一个口径：目录非空时 `std::fs::remove_dir` 会失败，我们不在背后
+    /// 替你递归删 —— 删本机文件本就危险，递归删更是。这一步不可逆，调用方（界面）
+    /// 负责先确认一次。
+    pub async fn remove(path: PathBuf) -> Result<()> {
+        crate::db::run(async move {
+            tokio::task::spawn_blocking(move || remove_blocking(&path))
+                .await
+                .context("本地删除任务中断")?
+        })
+        .await
+    }
+}
+
+/// 真正的删除。同步的 `std::fs`，跑在 blocking 线程上（大目录的判断、网络盘都可能慢）。
+fn remove_blocking(path: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("读取 {} 失败", path.display()))?;
+    let result = if metadata.is_dir() {
+        std::fs::remove_dir(path)
+    } else {
+        // 文件与软链接都走 remove_file：软链接删的是链接本身，不是它指向的东西。
+        std::fs::remove_file(path)
+    };
+    result.with_context(|| format!("删除 {} 失败", path.display()))
 }
 
 /// 真正的读取。同步的 `std::fs`，跑在 blocking 线程上。
