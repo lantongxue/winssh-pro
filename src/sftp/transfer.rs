@@ -35,14 +35,14 @@ impl TransferStatus {
         matches!(self, Self::Queued | Self::Transferring)
     }
 
-    /// 抽屉里那个大写小药丸的文字（原型直接打印状态枚举名）。
+    /// 抽屉里那个状态小药丸的文字。
     pub fn label(self) -> &'static str {
         match self {
-            Self::Queued => "QUEUED",
-            Self::Transferring => "TRANSFERRING",
-            Self::Completed => "COMPLETED",
-            Self::Failed => "FAILED",
-            Self::Canceled => "CANCELED",
+            Self::Queued => "排队中",
+            Self::Transferring => "传输中",
+            Self::Completed => "已完成",
+            Self::Failed => "失败",
+            Self::Canceled => "已取消",
         }
     }
 }
@@ -190,6 +190,6 @@ mod tests {
         assert!(!TransferStatus::Completed.is_active());
         assert!(!TransferStatus::Failed.is_active());
         assert!(!TransferStatus::Canceled.is_active());
-        assert_eq!(TransferStatus::Canceled.label(), "CANCELED");
+        assert_eq!(TransferStatus::Canceled.label(), "已取消");
     }
 }

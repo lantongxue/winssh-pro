@@ -134,7 +134,7 @@ impl SftpEditorDialog {
                                         .custom(variant)
                                         .bg(blue)
                                         .rounded(cx.theme().radius)
-                                        .label("Save")
+                                        .label("保存")
                                         .tooltip("保存（⌘S / Ctrl+S）")
                                         .on_click(move |_, window, cx| {
                                             save.update(cx, |this, cx| this.save(window, cx));

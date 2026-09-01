@@ -91,7 +91,9 @@ async fn run_script(handle: &Handle<SshHandler>, script: &str) -> Result<ExecOut
         match message {
             ChannelMsg::Data { data } => append(&mut stdout, &data),
             ChannelMsg::ExtendedData { data, .. } => append(&mut stderr, &data),
-            ChannelMsg::ExitStatus { exit_status: status } => exit_status = Some(status),
+            ChannelMsg::ExitStatus {
+                exit_status: status,
+            } => exit_status = Some(status),
             ChannelMsg::Close => break,
             _ => {}
         }
@@ -287,8 +289,7 @@ pub(crate) mod fake {
         let port = listener.local_addr().unwrap().port();
         let config = Arc::new(server::Config {
             keys: vec![
-                PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
-                    .expect("生成临时主机密钥"),
+                PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).expect("生成临时主机密钥"),
             ],
             ..Default::default()
         });
@@ -354,10 +355,14 @@ pub(crate) mod fake {
     fn a_silent_server_times_out() {
         crate::db::runtime().block_on(async {
             let (handle, _) = connect("", "", false).await;
-            let error = exec_script(&handle, "sleep 1
-", Duration::from_millis(300))
-                .await
-                .expect_err("超时必须报错");
+            let error = exec_script(
+                &handle,
+                "sleep 1
+",
+                Duration::from_millis(300),
+            )
+            .await
+            .expect_err("超时必须报错");
             assert!(format!("{error}").contains("未返回"), "实际：{error}");
         });
     }

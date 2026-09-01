@@ -16,6 +16,6 @@ pub mod entry;
 pub mod path;
 pub mod transfer;
 
-pub use entry::{FileEntry, FileKind, Glyph, SortKey, SortOrder, human_size, sort_entries};
+pub use entry::{FileEntry, FileKind, Glyph, human_size, sort_entries};
 pub use path::{breadcrumbs, is_hidden, join, normalize, parent};
 pub use transfer::{TransferDirection, TransferItem, TransferStatus};

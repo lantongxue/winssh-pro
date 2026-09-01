@@ -71,12 +71,7 @@ where
     T: Send + 'static,
 {
     let handle = runtime().handle().clone();
-    async move {
-        handle
-            .spawn(work)
-            .await
-            .expect("数据层 runtime 意外退出")
-    }
+    async move { handle.spawn(work).await.expect("数据层 runtime 意外退出") }
 }
 
 /// 同步入口：连上库并建表。只在开窗前的启动阶段调用一次，

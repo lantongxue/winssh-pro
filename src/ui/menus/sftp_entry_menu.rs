@@ -66,14 +66,14 @@ impl SftpEntryAction {
 
     fn label(self) -> &'static str {
         match self {
-            Self::Edit => "Edit File",
-            Self::Download => "Download File",
-            Self::OpenFolder => "Open Folder",
-            Self::CdHere => "cd here in Terminal",
-            Self::CopyPath => "Copy Remote Path",
-            Self::Rename => "Rename",
-            Self::Chmod => "Permissions (chmod)",
-            Self::Delete => "Delete",
+            Self::Edit => "编辑文件",
+            Self::Download => "下载文件",
+            Self::OpenFolder => "打开目录",
+            Self::CdHere => "在终端中 cd 到此目录",
+            Self::CopyPath => "复制远端路径",
+            Self::Rename => "重命名",
+            Self::Chmod => "权限（chmod）",
+            Self::Delete => "删除",
         }
     }
 

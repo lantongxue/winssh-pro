@@ -87,10 +87,7 @@ impl Workspace {
         let host_service = HostService::open();
         if !host_service.is_persistent() {
             cx.defer_in(window, |_, window, cx| {
-                window.push_notification(
-                    "主机配置库打开失败，本次的改动只在当前会话里生效。",
-                    cx,
-                );
+                window.push_notification("主机配置库打开失败，本次的改动只在当前会话里生效。", cx);
             });
         }
 
@@ -285,11 +282,7 @@ impl Workspace {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         CommandCenterBar::new()
-                            .shortcut(Kbd::binding_for_action(
-                                &ToggleCommandPalette,
-                                None,
-                                window,
-                            ))
+                            .shortcut(Kbd::binding_for_action(&ToggleCommandPalette, None, window))
                             .on_search(cx.listener(|this, _, window, cx| {
                                 this.open_command_palette(window, cx);
                             })),

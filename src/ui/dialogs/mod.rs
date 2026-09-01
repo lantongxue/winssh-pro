@@ -17,5 +17,5 @@ mod sftp_form;
 pub use command_palette::{CommandPaletteDialog, CommandPaletteEvent};
 pub use host_form::HostFormDialog;
 pub use sftp_chmod::{ChmodHandler, SftpChmodDialog};
-pub use sftp_editor::{SftpEditorDialog, SavedHandler as SftpSavedHandler};
+pub use sftp_editor::{SavedHandler as SftpSavedHandler, SftpEditorDialog};
 pub use sftp_form::{SftpFormDialog, SftpFormKind, SftpNameHandler};

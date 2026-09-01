@@ -30,7 +30,7 @@ use gpui::{
 use gpui_component::{
     ActiveTheme as _, Colorize as _, Icon, IconName, Sizable as _, StyledExt as _,
     VirtualListScrollHandle, WindowExt as _,
-    button::{Button, ButtonCustomVariant, ButtonVariants as _, ButtonVariant},
+    button::{Button, ButtonCustomVariant, ButtonVariant, ButtonVariants as _},
     dialog::DialogButtonProps,
     dock::{DockArea, DockPlacement, panel_handle},
     h_flex,
@@ -304,9 +304,7 @@ impl HostExplorerView {
                     this.groups = groups;
                     this.rebuild_rows(cx);
                 }
-                Err(error) => {
-                    window.push_notification(format!("读取主机配置失败：{error:#}"), cx)
-                }
+                Err(error) => window.push_notification(format!("读取主机配置失败：{error:#}"), cx),
             })
             .ok();
         })
@@ -408,14 +406,7 @@ impl HostExplorerView {
     /// 分组从自己的快照里取着交给表单 —— 见 [`HostFormDialog::open`]。
     pub fn new_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let groups = self.groups.clone();
-        HostFormDialog::open(
-            self.service.clone(),
-            cx.entity(),
-            &groups,
-            None,
-            window,
-            cx,
-        );
+        HostFormDialog::open(self.service.clone(), cx.entity(), &groups, None, window, cx);
     }
 
     /// 编辑一台主机：表单对话框按现有配置预填，提交后由 [`Self::host_updated`]
@@ -448,9 +439,7 @@ impl HostExplorerView {
                     this.reload(window, cx);
                     this.select_host(&copy, cx);
                 }
-                Err(error) => {
-                    window.push_notification(format!("复制“{name}”失败：{error:#}"), cx)
-                }
+                Err(error) => window.push_notification(format!("复制“{name}”失败：{error:#}"), cx),
             })
             .ok();
         })
@@ -495,10 +484,8 @@ impl HostExplorerView {
                             explorer
                                 .update_in(cx, |explorer, window, cx| match result {
                                     Ok(()) => explorer.host_deleted(&id, window, cx),
-                                    Err(error) => window.push_notification(
-                                        format!("删除主机失败：{error:#}"),
-                                        cx,
-                                    ),
+                                    Err(error) => window
+                                        .push_notification(format!("删除主机失败：{error:#}"), cx),
                                 })
                                 .ok();
                         })
@@ -539,9 +526,7 @@ impl HostExplorerView {
                     this.collapsed.remove(&name);
                     this.reload(window, cx);
                 }
-                Err(error) => {
-                    window.push_notification(format!("删除分组失败：{error:#}"), cx)
-                }
+                Err(error) => window.push_notification(format!("删除分组失败：{error:#}"), cx),
             })
             .ok();
         })
@@ -1051,16 +1036,18 @@ impl HostExplorerView {
                         this.track_drop(&tracked, event, cx);
                     },
                 ))
-                .on_drop(cx.listener(move |this, dragged: &DraggedHost, window, cx| {
-                    // 落点是拖拽移动时记下的。万一一次移动事件都没赶上，
-                    // 就按“插到这张卡片前面”办 —— 指针正停在它上面。
-                    let target = this.drop_target.clone().unwrap_or(DropTarget::Host {
-                        id: dropped.clone(),
-                        after: false,
-                    });
-                    let id = dragged.host.id.clone();
-                    this.move_host(&id, &target, window, cx);
-                }))
+                .on_drop(cx.listener(
+                    move |this, dragged: &DraggedHost, window, cx| {
+                        // 落点是拖拽移动时记下的。万一一次移动事件都没赶上，
+                        // 就按“插到这张卡片前面”办 —— 指针正停在它上面。
+                        let target = this.drop_target.clone().unwrap_or(DropTarget::Host {
+                            id: dropped.clone(),
+                            after: false,
+                        });
+                        let id = dragged.host.id.clone();
+                        this.move_host(&id, &target, window, cx);
+                    },
+                ))
             })
             .children(self.render_drop_line(&host.id, cx))
             .child(

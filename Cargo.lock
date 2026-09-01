@@ -10540,6 +10540,7 @@ dependencies = [
  "env_logger",
  "futures",
  "gpui",
+ "gpui-base",
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",

@@ -273,7 +273,10 @@ mod tests {
     #[test]
     fn all_processes_script_sorts_but_does_not_truncate() {
         let script = script(&ProbeOptions::all_processes());
-        assert!(script.contains("p1=$(cat /proc/[0-9]*/stat"), "仍要采样窗口");
+        assert!(
+            script.contains("p1=$(cat /proc/[0-9]*/stat"),
+            "仍要采样窗口"
+        );
         assert!(script.contains("sort -k2,2nr"), "仍要按 CPU 排序");
         assert!(!script.contains("head -n"), "全部进程不截断");
     }
@@ -290,10 +293,11 @@ mod tests {
     #[test]
     fn awk_program_has_no_single_quote_inside() {
         let inner = PROC_AWK
-            .strip_prefix("awk -v hz=\"$hz\" -v pgkb=\"$pgkb\" -v u1=\"$u1\" -v u2=\"${u2:-$u1}\" '")
+            .strip_prefix(
+                "awk -v hz=\"$hz\" -v pgkb=\"$pgkb\" -v u1=\"$u1\" -v u2=\"${u2:-$u1}\" '",
+            )
             .expect("PROC_AWK 的开头变了");
         let body = inner.strip_suffix('\'').expect("PROC_AWK 的结尾变了");
         assert!(!body.contains('\''), "awk 程序体里不能有单引号");
     }
 }
-

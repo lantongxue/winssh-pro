@@ -1,9 +1,9 @@
 //! 会话底部的 SFTP 文件面板：左半是本地工作站，右半是这台主机的文件系统。
 //!
 //! 对应原型 `SessionBottomSFTPPanel`（挂在终端下沿的那一块）。形状照它：顶部一条
-//! 导航（主机徽标 + 跟随终端 CWD + 路径栏 + 一排开关），中间双栏表格，底下一条
-//! 动作栏，再往下可以拉出传输队列抽屉；右键一行还有一份完整的条目菜单
-//! （见 [`SftpEntryMenu`]）。
+//! 导航（主机徽标 + 跟随终端 CWD + 路径栏 + 一排开关），中间双栏表格（两栏中间
+//! 那根线可拖，比例归 [`ResizableState`] 记），底下一条动作栏，再往下可以拉出
+//! 传输队列抽屉；右键一行还有一份完整的条目菜单（见 [`SftpEntryMenu`]）。
 //!
 //! 原型里这些东西是假的 —— 本地栏是一张写死的表、进度条靠 `setInterval` 往上加、
 //! 速度永远 `24.2 MB/s`、文件内容也是现编的。这里全部换成真的：
@@ -18,8 +18,9 @@
 //! - **面板不碰协议**。只调 service，`russh`、SFTP 报文、`std::fs` 都不出现在这个
 //!   文件里。连接这件事归宿主 [`TerminalPanel`]：连不上时面板会收到一句原因并把它
 //!   显示在空状态里（见 [`SftpPanel::attach`]），要点重试就报一个 [`SftpPanelEvent::Reconnect`]。
-//! - **过滤、隐藏文件与排序同时作用于两栏**。原型只让右栏响应，可两栏画的是同一个
+//! - **过滤与隐藏文件开关同时作用于两栏**。原型只让右栏响应，可两栏画的是同一个
 //!   模型、同一套表头，一半听一半不听更难解释；而且两栏并排看时，顺序不一致就没法对照。
+//!   列表固定按名称排（目录在前），表头只报列名、不提供排序。
 //! - **同时最多两条传输**，其余排队。它们复用同一条 SSH 连接，多开只是在抢同一个
 //!   窗口，两条已经够把它填满。
 //! - **面板销毁时取消所有在跑的传输**（见 `impl Drop`）。关掉一栏终端之后还有字节
@@ -40,14 +41,16 @@ use gpui::{
     prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::{
-    ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, Sizable as _,
-    StyledExt as _, VirtualListScrollHandle, WindowExt as _,
+    ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, ResizableState,
+    Sizable as _, StyledExt as _, VirtualListScrollHandle, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
-    h_flex,
+    h_flex, h_resizable,
     input::{Input, InputEvent, InputState},
     menu::ContextMenuExt as _,
     progress::Progress,
+    resizable_panel,
     scroll::{ScrollableElement as _, ScrollbarAxis},
+    table::{Table, TableCell, TableHead, TableHeader, TableRow},
     v_flex, v_virtual_list,
 };
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -64,8 +67,8 @@ use crate::{
         unique_local_path,
     },
     sftp::{
-        FileEntry, FileKind, SortKey, SortOrder, TransferDirection, TransferItem, TransferStatus,
-        breadcrumbs, is_hidden, join, normalize, parent, sort_entries,
+        FileEntry, FileKind, TransferDirection, TransferItem, TransferStatus, breadcrumbs,
+        is_hidden, join, normalize, parent, sort_entries,
     },
     ui::{
         dialogs::{SftpFormKind, SftpNameHandler},
@@ -92,6 +95,15 @@ const QUEUE_HEIGHT: Pixels = px(96.);
 const HEIGHT_COMPACT: Pixels = px(200.);
 const HEIGHT_TALL: Pixels = px(420.);
 const HEIGHT_SPLIT: Pixels = px(350.);
+
+/// 双栏时本地栏的初始宽度（原型给的是 40%，这里取一个常见窗口下接近它的定值）。
+/// 拖过中间那根线之后比例就归 [`ResizableState`] 记了 —— 之后窗口缩放按比例走，
+/// 这里只是第一眼的样子。
+const LOCAL_PANE_WIDTH: Pixels = px(400.);
+/// 两栏各自能压到的下限：名字列之外还有几列定宽的，再窄就只能裁掉内容了。
+/// 远端那栏列多，下限也高 —— 它是主栏，不该被本地栏挤到没法看。
+const LOCAL_PANE_MIN: Pixels = px(240.);
+const REMOTE_PANE_MIN: Pixels = px(380.);
 
 /// 同时进行的传输数。
 const MAX_ACTIVE_TRANSFERS: usize = 2;
@@ -155,8 +167,10 @@ pub struct SftpPanel {
     /// 当装饰画在输入框外面 —— 那样从别处粘一段路径进来会多出一个斜杠。
     path_input: Entity<InputState>,
     filter: Entity<InputState>,
-    sort_key: SortKey,
-    sort_desc: bool,
+
+    /// 双栏的宽度比例。拖中间那根分界线改的就是它；只在分栏画出来时才会被碰，
+    /// 所以切到单栏再切回来，拖出来的比例还在。
+    resizable_state: Entity<ResizableState>,
 
     /// 两栏各自的选中项，按路径记。
     selected_local: Option<SharedString>,
@@ -171,7 +185,7 @@ pub struct SftpPanel {
     /// 进度事件从 tokio 那一侧回来的管子。
     progress: UnboundedSender<TransferEvent>,
 
-    /// 刚复制过的那条路径："Copied path!" 显示一会儿自己走。
+    /// 刚复制过的那条路径："已复制路径" 显示一会儿自己走。
     copied: Option<SharedString>,
     copied_task: Task<()>,
 
@@ -212,11 +226,14 @@ impl SftpPanel {
     pub fn new(host: Host, window: &mut Window, cx: &mut App) -> Entity<Self> {
         let path_input = cx
             .new(|cx| InputState::new(window, cx).placeholder("远端路径，例如 /var/log 或 ~/logs"));
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter..."));
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("过滤文件名…"));
         let local_dir = LocalFileService::start_dir();
         // 进度事件的管子：sender 存进面板（克隆给每个传输任务），receiver 交给
         // 下面那条排空任务。
         let (progress, receiver) = unbounded_channel();
+
+        // 创建可调整大小的状态
+        let resizable_state = cx.new(|_| ResizableState::default());
 
         cx.new(|cx| {
             // 两个订阅用 `subscribe*` 而不是 `listener`：构造期间这个 Entity 还不能
@@ -253,8 +270,7 @@ impl SftpPanel {
                 remote_path: String::new(),
                 path_input,
                 filter,
-                sort_key: SortKey::Name,
-                sort_desc: false,
+                resizable_state,
                 selected_local: None,
                 selected_remote: None,
                 transfers: Vec::new(),
@@ -493,33 +509,18 @@ impl SftpPanel {
         self.remote.entries = take_limit(entries);
     }
 
-    /// 按当前的过滤词、隐藏文件开关与排序，重算两栏要画的那些行。
+    /// 按当前的过滤词与隐藏文件开关，重算两栏要画的那些行。
     ///
     /// 不在 render 里现算：那一步要为每个条目做两次 `to_lowercase` 再排一遍序，
-    /// 而它只在条目、过滤词或排序方式变化时才会变。
+    /// 而它只在条目或过滤词变化时才会变。顺序固定按名称（目录永远在前）——
+    /// 表头只报列名，不提供点着排序的入口。
     fn rebuild_view(&mut self, cx: &mut Context<Self>) {
         let needle = self.filter.read(cx).value().to_lowercase();
-        let order = if self.sort_desc {
-            SortOrder::Descending
-        } else {
-            SortOrder::Ascending
-        };
-        let (key, show_hidden) = (self.sort_key, self.show_hidden);
+        let show_hidden = self.show_hidden;
 
-        rebuild_pane(&mut self.local, &needle, key, order, show_hidden);
-        rebuild_pane(&mut self.remote, &needle, key, order, show_hidden);
+        rebuild_pane(&mut self.local, &needle, show_hidden);
+        rebuild_pane(&mut self.remote, &needle, show_hidden);
         cx.notify();
-    }
-
-    /// 点表头：同一列再点一次换方向，换列则从头开始。
-    fn set_sort(&mut self, key: SortKey, cx: &mut Context<Self>) {
-        if self.sort_key == key {
-            self.sort_desc = !self.sort_desc;
-        } else {
-            self.sort_key = key;
-            self.sort_desc = false;
-        }
-        self.rebuild_view(cx);
     }
 
     fn at_root(&self) -> bool {
@@ -1113,8 +1114,8 @@ fn take_limit(mut entries: Vec<FileEntry>) -> Vec<FileEntry> {
     entries
 }
 
-/// 按当前的过滤词、隐藏文件开关与排序，重算一栏要画的那些行。
-fn rebuild_pane(pane: &mut Pane, needle: &str, key: SortKey, order: SortOrder, show_hidden: bool) {
+/// 按当前的过滤词与隐藏文件开关，重算一栏要画的那些行。顺序固定按名称，目录在前。
+fn rebuild_pane(pane: &mut Pane, needle: &str, show_hidden: bool) {
     let mut view: Vec<FileEntry> = pane
         .entries
         .iter()
@@ -1122,7 +1123,7 @@ fn rebuild_pane(pane: &mut Pane, needle: &str, key: SortKey, order: SortOrder, s
         .filter(|entry| needle.is_empty() || entry.name.to_lowercase().contains(needle))
         .cloned()
         .collect();
-    sort_entries(&mut view, key, order);
+    sort_entries(&mut view);
     pane.sizes = Rc::new(vec![size(px(0.), ROW_HEIGHT); view.len()]);
     pane.view = view;
 }
@@ -1178,8 +1179,8 @@ fn dropped_paths(event: &ExternalPaths) -> Vec<PathBuf> {
 /// 一栏底下那行"N items"。被截断过时说实话，不然人以为目录就只有这些。
 fn count_label(shown: usize, truncated: bool) -> SharedString {
     match truncated {
-        true => SharedString::from(format!("{shown} items · 已截断，目录比这大")),
-        false => SharedString::from(format!("{shown} items")),
+        true => SharedString::from(format!("{shown} 项 · 已截断，目录比这大")),
+        false => SharedString::from(format!("{shown} 项")),
     }
 }
 
@@ -1194,12 +1195,10 @@ impl Render for SftpPanel {
             .track_focus(&self.focus_handle)
             .child(self.render_nav(cx))
             .child(
-                h_flex()
-                    .id("sftp-panel-body")
+                div()
                     .flex_1()
                     .min_h_0()
-                    .when(self.dual, |this| this.child(self.render_local_pane(cx)))
-                    .child(self.render_remote_pane(cx)),
+                    .child(self.render_panes(cx)),
             )
             .child(self.render_action_bar(cx))
             .when(self.queue_drawer, |this| this.child(self.render_queue(cx)))
@@ -1207,6 +1206,34 @@ impl Render for SftpPanel {
 }
 
 impl SftpPanel {
+    /// 中间那一块：双栏是左右可拖的分栏，单栏就只有远端那一栏铺满。
+    ///
+    /// 单栏时不画 `h_resizable`：藏起来的那个面板仍会在左缘留一根拖不动的把手。
+    /// 不画它还有个好处 —— [`ResizableState`] 只在分栏画出来时才被碰，切回双栏
+    /// 时拖出来的比例还在。
+    fn render_panes(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.dual {
+            return self.render_remote_pane(cx).into_any_element();
+        }
+        // id 带上主机：两个会话分屏摆在一屏上时，各自的分栏状态互不串线
+        // （同 `TerminalPanel` 里 monitor / sftp 那两个的做法）。
+        let group_id = SharedString::from(format!("sftp-panes-{}", self.host.id));
+        h_resizable(group_id)
+            .with_state(&self.resizable_state)
+            .child(
+                resizable_panel()
+                    .size(LOCAL_PANE_WIDTH)
+                    .size_range(LOCAL_PANE_MIN..Pixels::MAX)
+                    .child(self.render_local_pane(cx)),
+            )
+            .child(
+                resizable_panel()
+                    .size_range(REMOTE_PANE_MIN..Pixels::MAX)
+                    .child(self.render_remote_pane(cx)),
+            )
+            .into_any_element()
+    }
+
     /// 顶部那条：徽标、跟随开关、路径栏、以及右边一排视图开关。
     fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
@@ -1278,9 +1305,9 @@ impl SftpPanel {
                     }),
             )
             .label(SharedString::from(if on {
-                "Sync CWD: ON"
+                "同步目录：开"
             } else {
-                "Sync CWD: OFF"
+                "同步目录：关"
             }))
             .tooltip("让右栏跟着终端的当前目录走")
             .on_click(cx.listener(|this, _, window, cx| {
@@ -1363,7 +1390,7 @@ impl SftpPanel {
                     .child(Input::new(&self.path_input).small()),
             )
             .child(
-                Self::accent_button("sftp-panel-go", "Go", !ready, cx).on_click(cx.listener(
+                Self::accent_button("sftp-panel-go", "前往", !ready, cx).on_click(cx.listener(
                     |this, _, window, cx| {
                         let raw = this.path_input.read(cx).value().to_string();
                         this.navigate_remote(raw, window, cx);
@@ -1522,18 +1549,16 @@ impl SftpPanel {
     }
 
     /// 左半：本地工作站。上传的源头，只能看不能删（删本机文件不是这里该干的事）。
+    /// 宽度不在这里定 —— 它撑满所在的 `resizable_panel`，分界线拖到哪儿它就多宽。
     fn render_local_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.selected_local_entry().cloned();
         let can_upload =
             selected.is_some() && self.service.is_some() && !self.remote_path.is_empty();
         v_flex()
             .id("sftp-panel-local")
-            .w(gpui::relative(0.4))
+            .size_full()
             .min_w_0()
-            .h_full()
-            .flex_shrink_0()
-            .border_r_1()
-            .border_color(cx.theme().border)
+            .overflow_hidden()
             .child(
                 h_flex()
                     .h(PANE_HEADER_HEIGHT)
@@ -1546,7 +1571,7 @@ impl SftpPanel {
                             .with_size(px(12.))
                             .text_color(palette::sky()),
                     )
-                    .child(div().text_xs().font_semibold().child("Local Workstation"))
+                    .child(div().text_xs().font_semibold().child("本地工作站"))
                     .child(
                         div()
                             .flex_1()
@@ -1577,32 +1602,28 @@ impl SftpPanel {
                     )
                     .child(div().flex_1())
                     .child(
-                        Self::accent_button(
-                            "sftp-panel-upload",
-                            "Upload to Remote",
-                            !can_upload,
-                            cx,
-                        )
-                        .tooltip(match &selected {
-                            Some(entry) if !can_upload => "先挑一个远端目录当落点".into(),
-                            Some(entry) => SharedString::from(format!(
-                                "把 {} 传到 {}",
-                                entry.name, self.remote_path
-                            )),
-                            None => "先在左边挑一个文件或目录".into(),
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| this.upload_selected_local(cx))),
+                        Self::accent_button("sftp-panel-upload", "上传到远端", !can_upload, cx)
+                            .tooltip(match &selected {
+                                Some(entry) if !can_upload => "先挑一个远端目录当落点".into(),
+                                Some(entry) => SharedString::from(format!(
+                                    "把 {} 传到 {}",
+                                    entry.name, self.remote_path
+                                )),
+                                None => "先在左边挑一个文件或目录".into(),
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| this.upload_selected_local(cx))),
                     ),
             )
     }
 
     /// 右半：这台主机的文件系统。拖进来本机文件就是往这一栏传。
+    /// 和左栏一样撑满所在的 `resizable_panel`；单栏模式下就是它自己铺满。
     fn render_remote_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .id("sftp-panel-remote")
-            .flex_1()
+            .size_full()
             .min_w_0()
-            .h_full()
+            .overflow_hidden()
             .child(self.render_breadcrumb(cx))
             .child(self.render_table_header(&remote_columns(), cx))
             .child(self.render_parent_row(cx))
@@ -1696,7 +1717,7 @@ impl SftpPanel {
                         .text_color(palette::teal())
                         .truncate()
                         .max_w(px(180.))
-                        .child(SharedString::from(format!("Copied path! {}", path))),
+                        .child(SharedString::from(format!("已复制路径：{path}"))),
                 )
             })
     }
@@ -1707,28 +1728,34 @@ impl SftpPanel {
             return div().into_any_element();
         }
         // 列表是空的（刚清完、或者一个都不匹配）时，这一行就是唯一的出路。
-        div()
+        h_flex()
             .id("sftp-panel-parent")
             .h(ROW_HEIGHT)
             .flex_shrink_0()
-            .px_2()
-            .items_center()
+            .w_full()
+            .min_w_0()
             .text_xs()
+            .overflow_hidden()
             .cursor_pointer()
             .hover(|style| style.bg(palette::surface(cx)))
             .child(
-                h_flex()
-                    .size_full()
-                    .items_center()
-                    .gap_1p5()
-                    .text_color(palette::idle(cx))
-                    .child(
-                        Icon::new(IconName::ChevronUp)
-                            .with_size(px(12.))
-                            .text_color(palette::coral()),
-                    )
-                    .child("..")
-                    .child(div().child("[Parent Directory]")),
+                TableRow::new().xsmall().h_full().w_full().min_w_0().child(
+                    TableCell::new()
+                        .xsmall()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .gap_1p5()
+                        .text_color(palette::idle(cx))
+                        .child(
+                            Icon::new(IconName::ChevronUp)
+                                .with_size(px(12.))
+                                .flex_shrink_0()
+                                .text_color(palette::coral()),
+                        )
+                        .child("..")
+                        .child(div().child("[上级目录]")),
+                ),
             )
             .on_click(cx.listener(|this, _, window, cx| {
                 let up = parent(&this.remote_path);
@@ -1737,66 +1764,31 @@ impl SftpPanel {
             .into_any_element()
     }
 
-    /// 表头。只有 Name / Size / Modified 能点：`SortKey` 就这三档，权限与属主没有
-    /// 可靠的比较口径（对端常常不给属主名，只给 uid），点不动比点了乱排好。
+    /// 表头。用 `Table` 组件画：每一格都是 [`TableHead`]，宽度和单元格内边距
+    /// 走行里 [`TableCell`] 的同一套口径（`head_cell` / `name_cell` / `fixed_cell`
+    /// 共用同一列定义），所以表头和条目天然对齐。表头只有列名，不提供排序入口。
     fn render_table_header(
         &self,
-        columns: &[(HeaderCell, Option<Pixels>)],
+        columns: &[(&'static str, Option<Pixels>)],
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let (key, desc) = (self.sort_key, self.sort_desc);
-        h_flex()
-            .id("sftp-panel-header")
-            .h(px(22.))
+        Table::new()
+            .xsmall()
             .flex_shrink_0()
-            .px_2()
-            .items_center()
-            .gap_2()
-            .text_xs()
-            .font_semibold()
-            .text_color(palette::idle(cx))
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .children(columns.iter().enumerate().map(|(ix, (cell, width))| {
-                let id = SharedString::from(format!("sftp-panel-header-{ix}"));
-                div()
-                    .map(|slot| match width {
-                        Some(width) => slot.w(*width).flex_shrink_0().text_right(),
-                        None => slot.flex_1().min_w_0(),
-                    })
-                    .child(match cell {
-                        HeaderCell::Sort(sort) => {
-                            let sort = *sort;
-                            let label = label_of(sort);
-                            let active = key == sort;
-                            Button::new(id)
-                                .ghost()
-                                .xsmall()
-                                .label(label)
-                                .when(active, |button| {
-                                    button
-                                        .text_color(palette::teal())
-                                        .icon(
-                                            Icon::new(if desc {
-                                                IconName::ChevronDown
-                                            } else {
-                                                IconName::ChevronUp
-                                            })
-                                            .with_size(px(10.)),
-                                        )
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.set_sort(sort, cx)
-                                        }))
-                                })
-                                .into_any_element()
-                        }
-                        HeaderCell::Static(label) => div()
-                            .text_xs()
-                            .text_right()
-                            .child(*label)
-                            .into_any_element(),
-                    })
-            }))
+            .bg(gpui::transparent_black())
+            .child(
+                TableHeader::new()
+                    .text_xs()
+                    .font_semibold()
+                    .text_color(palette::idle(cx))
+                    .child(
+                        TableRow::new().h(px(22.)).children(
+                            columns
+                                .iter()
+                                .map(|(label, width)| head_cell(label, *width)),
+                        ),
+                    ),
+            )
     }
 
     /// 一栏的主体：要么是一张虚拟列表，要么是一句话说清楚为什么没有。
@@ -1951,9 +1943,8 @@ impl SftpPanel {
             .id(("sftp-panel-local-row", ix))
             .h(ROW_HEIGHT)
             .flex_shrink_0()
-            .px_2()
-            .items_center()
-            .gap_2()
+            .w_full()
+            .min_w_0()
             .text_xs()
             .overflow_hidden()
             .cursor_pointer()
@@ -1963,9 +1954,19 @@ impl SftpPanel {
             .when(!selected, |row| {
                 row.hover(|style| style.bg(palette::surface(cx)))
             })
-            .child(self.render_entry_name(&entry, cx))
-            .child(fixed_cell(SIZE_WIDTH, entry.size_label(), cx))
-            .child(fixed_cell(MODIFIED_WIDTH, entry.modified_label(now), cx))
+            .child(
+                TableRow::new()
+                    .xsmall()
+                    .h_full()
+                    .w_full()
+                    .min_w_0()
+                    .text_xs()
+                    .children([
+                        name_cell(&entry, cx),
+                        fixed_cell(SIZE_WIDTH, entry.size_label(), cx),
+                        fixed_cell(MODIFIED_WIDTH, entry.modified_label(now), cx),
+                    ]),
+            )
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 // 这一版 gpui 没有双击事件：同一次点击会先报 1 再报 2，
                 // 所以按计数判断。先选中再打开，不会漏掉那一下单击。
@@ -1995,9 +1996,8 @@ impl SftpPanel {
             .group(ROW_GROUP)
             .h(ROW_HEIGHT)
             .flex_shrink_0()
-            .px_2()
-            .items_center()
-            .gap_2()
+            .w_full()
+            .min_w_0()
             .text_xs()
             .overflow_hidden()
             .cursor_pointer()
@@ -2007,47 +2007,57 @@ impl SftpPanel {
             .when(!selected, |row| {
                 row.hover(|style| style.bg(palette::surface(cx)))
             })
-            .child(self.render_entry_name(&entry, cx))
-            .child(fixed_cell(SIZE_WIDTH, entry.size_label(), cx))
-            .child(fixed_cell(PERM_WIDTH, entry.permission_line(), cx))
-            .child(fixed_cell(OWNER_WIDTH, entry.owner_label(), cx))
-            .child(fixed_cell(MODIFIED_WIDTH, entry.modified_label(now), cx))
             .child(
-                h_flex()
-                    .w(ACTION_WIDTH)
-                    .flex_shrink_0()
-                    .justify_end()
-                    .gap_1()
-                    .when(entry.is_downloadable(), |cell| {
-                        cell.child(row_button(
-                            "sftp-panel-row-download",
-                            Icon::new(AppIcon::Download).text_color(palette::teal()),
-                            "下载到本地",
-                            SftpEntryAction::Download,
-                            &menu_for,
-                            cx,
-                        ))
-                    })
-                    .when(entry.kind.is_dir(), |cell| {
-                        cell.child(row_button(
-                            "sftp-panel-row-open",
-                            Icon::new(IconName::Folder).text_color(palette::coral()),
-                            "进到这个目录",
-                            SftpEntryAction::OpenFolder,
-                            &menu_for,
-                            cx,
-                        ))
-                    })
-                    .when(deletable, |cell| {
-                        cell.child(row_button(
-                            "sftp-panel-row-delete",
-                            Icon::new(AppIcon::Trash).text_color(cx.theme().danger),
-                            "删掉这个条目",
-                            SftpEntryAction::Delete,
-                            &menu_for,
-                            cx,
-                        ))
-                    }),
+                TableRow::new()
+                    .xsmall()
+                    .h_full()
+                    .w_full()
+                    .min_w_0()
+                    .text_xs()
+                    .children([
+                        name_cell(&entry, cx),
+                        fixed_cell(SIZE_WIDTH, entry.size_label(), cx),
+                        fixed_cell(PERM_WIDTH, entry.permission_line(), cx),
+                        fixed_cell(OWNER_WIDTH, entry.owner_label(), cx),
+                        fixed_cell(MODIFIED_WIDTH, entry.modified_label(now), cx),
+                        TableCell::new()
+                            .xsmall()
+                            .w(ACTION_WIDTH)
+                            .min_w(ACTION_WIDTH)
+                            .flex_shrink_0()
+                            .justify_end()
+                            .gap_1()
+                            .when(entry.is_downloadable(), |cell| {
+                                cell.child(row_button(
+                                    "sftp-panel-row-download",
+                                    Icon::new(AppIcon::Download).text_color(palette::teal()),
+                                    "下载到本地",
+                                    SftpEntryAction::Download,
+                                    &menu_for,
+                                    cx,
+                                ))
+                            })
+                            .when(entry.kind.is_dir(), |cell| {
+                                cell.child(row_button(
+                                    "sftp-panel-row-open",
+                                    Icon::new(IconName::Folder).text_color(palette::coral()),
+                                    "进到这个目录",
+                                    SftpEntryAction::OpenFolder,
+                                    &menu_for,
+                                    cx,
+                                ))
+                            })
+                            .when(deletable, |cell| {
+                                cell.child(row_button(
+                                    "sftp-panel-row-delete",
+                                    Icon::new(AppIcon::Trash).text_color(cx.theme().danger),
+                                    "删掉这个条目",
+                                    SftpEntryAction::Delete,
+                                    &menu_for,
+                                    cx,
+                                ))
+                            }),
+                    ]),
             )
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 if event.click_count() >= 2 {
@@ -2058,23 +2068,6 @@ impl SftpPanel {
             }))
             .context_menu(SftpEntryMenu::items(menu_for, menu))
             .into_any_element()
-    }
-
-    /// 名字那一格：一个小图标加名字，长的名字截断而不是挤掉右边几列。
-    fn render_entry_name(&self, entry: &FileEntry, cx: &App) -> impl IntoElement {
-        h_flex()
-            .flex_1()
-            .min_w_0()
-            .items_center()
-            .gap_1p5()
-            .child(entry_icon(entry, cx).with_size(px(12.)).flex_shrink_0())
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .when(entry.kind.is_dir(), |name| name.font_medium())
-                    .child(entry.name.clone()),
-            )
     }
 
     /// 底下一条：选中了什么就能对它做什么，没选中就是两句用法提示。
@@ -2114,7 +2107,7 @@ impl SftpPanel {
                         },
                     ))
                     .label(SharedString::from(format!(
-                        "Transfers ({})",
+                        "传输 ({})",
                         self.transfers.len()
                     )))
                     .tooltip("传输队列")
@@ -2169,7 +2162,7 @@ impl SftpPanel {
                     .flex_shrink_0()
                     .text_xs()
                     .text_color(palette::idle(cx))
-                    .child("Selected:"),
+                    .child("已选中："),
             )
             .child(
                 div()
@@ -2182,7 +2175,7 @@ impl SftpPanel {
             .child(chip(
                 "sftp-panel-chip-download",
                 Icon::new(AppIcon::Download).text_color(palette::teal()),
-                "Download",
+                "下载",
                 SftpEntryAction::Download,
                 false,
                 cx,
@@ -2190,7 +2183,7 @@ impl SftpPanel {
             .child(chip(
                 "sftp-panel-chip-edit",
                 Icon::new(AppIcon::Pencil).text_color(palette::sky()),
-                "Edit",
+                "编辑",
                 SftpEntryAction::Edit,
                 false,
                 cx,
@@ -2198,7 +2191,7 @@ impl SftpPanel {
             .child(chip(
                 "sftp-panel-chip-rename",
                 Icon::new(AppIcon::Pencil).text_color(palette::magenta()),
-                "Rename",
+                "重命名",
                 SftpEntryAction::Rename,
                 false,
                 cx,
@@ -2206,7 +2199,7 @@ impl SftpPanel {
             .child(chip(
                 "sftp-panel-chip-chmod",
                 Icon::new(AppIcon::KeyRound).text_color(palette::sky()),
-                "chmod",
+                "权限",
                 SftpEntryAction::Chmod,
                 false,
                 cx,
@@ -2214,7 +2207,7 @@ impl SftpPanel {
             .child(chip(
                 "sftp-panel-chip-delete",
                 Icon::new(AppIcon::Trash),
-                "Delete",
+                "删除",
                 SftpEntryAction::Delete,
                 true,
                 cx,
@@ -2242,7 +2235,7 @@ impl SftpPanel {
                             .text_xs()
                             .font_semibold()
                             .child(SharedString::from(format!(
-                                "Active Transfers ({})",
+                                "传输队列 ({})",
                                 self.transfers.len()
                             ))),
                     )
@@ -2251,7 +2244,7 @@ impl SftpPanel {
                         Button::new("sftp-panel-queue-clear")
                             .ghost()
                             .xsmall()
-                            .label("Clear All")
+                            .label("清除已完成")
                             .tooltip("清掉已经完事的行；还在跑的得先取消")
                             .on_click(cx.listener(|this, _, _, cx| this.clear_finished(cx))),
                     )
@@ -2366,64 +2359,67 @@ impl SftpPanel {
     }
 }
 
-/// 三个能排序的列在表头上叫什么。
-fn label_of(sort: SortKey) -> &'static str {
-    match sort {
-        SortKey::Name => "Name",
-        SortKey::Size => "Size",
-        SortKey::Modified => "Modified",
-    }
-}
-
-/// 表头里的一格：能排的那三列带 `SortKey`，其余只是标签。
-enum HeaderCell {
-    Sort(SortKey),
-    Static(&'static str),
-}
-
-impl HeaderCell {
-    fn sortable(label: SortKey) -> (Self, Option<Pixels>) {
-        (Self::Sort(label), None)
-    }
-
-    fn numeric(label: SortKey, width: Pixels) -> (Self, Option<Pixels>) {
-        ((Self::Sort(label)), Some(width))
-    }
-
-    fn static_str(text: &'static str, width: Pixels) -> (Self, Option<Pixels>) {
-        (Self::Static(text), Some(width))
-    }
-}
-
 /// 空状态里那下按钮要做的两件事之一：重列这一格，或者请宿主重开通道。
 enum Retry {
     Reload,
     Connect,
 }
 
-fn local_columns() -> Vec<(HeaderCell, Option<Pixels>)> {
+/// 两栏的列定义：`(列名, 宽度)`，宽度为 `None` 的那一列（名字）吃掉剩下的。
+/// 表头与每一行走同一份定义，对齐就是这么来的。
+fn local_columns() -> Vec<(&'static str, Option<Pixels>)> {
     vec![
-        HeaderCell::sortable(SortKey::Name),
-        HeaderCell::numeric(SortKey::Size, SIZE_WIDTH),
-        HeaderCell::numeric(SortKey::Modified, MODIFIED_WIDTH),
+        ("名称", None),
+        ("大小", Some(SIZE_WIDTH)),
+        ("修改时间", Some(MODIFIED_WIDTH)),
     ]
 }
 
-fn remote_columns() -> Vec<(HeaderCell, Option<Pixels>)> {
+fn remote_columns() -> Vec<(&'static str, Option<Pixels>)> {
     vec![
-        HeaderCell::sortable(SortKey::Name),
-        HeaderCell::numeric(SortKey::Size, SIZE_WIDTH),
-        HeaderCell::static_str("Perms", PERM_WIDTH),
-        HeaderCell::static_str("Owner", OWNER_WIDTH),
-        HeaderCell::numeric(SortKey::Modified, MODIFIED_WIDTH),
-        (HeaderCell::Static("Actions"), Some(ACTION_WIDTH)),
+        ("名称", None),
+        ("大小", Some(SIZE_WIDTH)),
+        ("权限", Some(PERM_WIDTH)),
+        ("属主", Some(OWNER_WIDTH)),
+        ("修改时间", Some(MODIFIED_WIDTH)),
+        ("操作", Some(ACTION_WIDTH)),
     ]
+}
+
+/// 表头的一格。定宽的列右对齐，与行里同列的 [`fixed_cell`] 同宽同边距。
+fn head_cell(label: &'static str, width: Option<Pixels>) -> TableHead {
+    let cell = TableHead::new().xsmall().truncate();
+    let cell = match width {
+        Some(width) => cell.w(width).min_w(width).flex_shrink_0().text_right(),
+        None => cell.flex_1().min_w(px(60.)),
+    };
+    cell.child(label)
+}
+
+/// 名字那一格：一个小图标加名字，长的名字截断而不是挤掉右边几列。
+fn name_cell(entry: &FileEntry, cx: &App) -> TableCell {
+    TableCell::new()
+        .xsmall()
+        .flex_1()
+        .min_w(px(60.))
+        .truncate()
+        .gap_1p5()
+        .child(entry_icon(entry, cx).with_size(px(12.)).flex_shrink_0())
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .when(entry.kind.is_dir(), |name| name.font_medium())
+                .child(entry.name.clone()),
+        )
 }
 
 /// 定宽的那几列。数字右对齐，读的人才能一眼比出大小。
-fn fixed_cell(width: Pixels, text: String, cx: &App) -> impl IntoElement {
-    div()
+fn fixed_cell(width: Pixels, text: String, cx: &App) -> TableCell {
+    TableCell::new()
+        .xsmall()
         .w(width)
+        .min_w(width)
         .flex_shrink_0()
         .truncate()
         .text_right()

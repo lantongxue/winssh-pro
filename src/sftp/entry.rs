@@ -4,7 +4,7 @@
 //! 属主名字，只给 uid）在界面上明说"没有"，不替对端编。格式化都在这一层，
 //! 因为它们是可单测的纯函数，而且本地与远端两份列表要用同一套口径。
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use gpui::SharedString;
 
@@ -183,45 +183,20 @@ pub fn human_size(bytes: u64) -> String {
     }
 }
 
-/// 表格的一列排序键（原型：点表头排序）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SortKey {
-    Name,
-    Size,
-    Modified,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SortOrder {
-    Ascending,
-    Descending,
-}
-
-/// 排序：目录永远在前，和 `ls` 与绝大多数文件管理器一致，之后再按选中的列。
+/// 排序：目录永远在前，和 `ls` 与绝大多数文件管理器一致。
 ///
 /// 名字按不区分大小写排，但相同小写时按原始大小写再比一次 —— 不然
 /// `Makefile` 与 `make` 谁先谁后每次都不一样。
-pub fn sort_entries(entries: &mut [FileEntry], key: SortKey, order: SortOrder) {
-    let descending = order == SortOrder::Descending;
+pub fn sort_entries(entries: &mut [FileEntry]) {
     entries.sort_by(|a, b| {
-        // 目录永远在前，倒序也不动它 —— 倒的是同一类内部的顺序。
         let by_kind = b.kind.is_dir().cmp(&a.kind.is_dir());
         if by_kind != std::cmp::Ordering::Equal {
             return by_kind;
         }
-        let by_key = match key {
-            SortKey::Name => a
-                .name
-                .to_lowercase()
-                .cmp(&b.name.to_lowercase())
-                .then_with(|| a.name.cmp(&b.name)),
-            SortKey::Size => a.size.cmp(&b.size),
-            SortKey::Modified => a
-                .modified
-                .unwrap_or(UNIX_EPOCH)
-                .cmp(&b.modified.unwrap_or(UNIX_EPOCH)),
-        };
-        if descending { by_key.reverse() } else { by_key }
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.name.cmp(&b.name))
     });
 }
 
@@ -356,28 +331,17 @@ mod tests {
     }
 
     #[test]
-    fn sorting_keeps_directories_first_in_both_orders() {
+    fn sorting_keeps_directories_first() {
         let mut entries = vec![
             entry("zeta", FileKind::File, 10, None),
             entry("Beta", FileKind::Dir, 0, None),
             entry("alpha", FileKind::File, 5, None),
         ];
 
-        sort_entries(&mut entries, SortKey::Name, SortOrder::Ascending);
+        sort_entries(&mut entries);
         assert_eq!(
             entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
             ["Beta", "alpha", "zeta"]
         );
-
-        sort_entries(&mut entries, SortKey::Name, SortOrder::Descending);
-        assert_eq!(
-            entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
-            ["Beta", "zeta", "alpha"],
-            "倒序也只倒文件，目录仍然在最前"
-        );
-
-        sort_entries(&mut entries, SortKey::Size, SortOrder::Descending);
-        assert_eq!(entries[1].size, 10);
-        assert_eq!(entries[2].size, 5);
     }
 }

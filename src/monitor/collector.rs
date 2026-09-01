@@ -73,8 +73,7 @@ impl MonitorCollector {
         // 内存占用没有累计值的概念，这一次就能算：used/total，和遥测里那个
         // `memory_percent()` 同一个式子。总量算不出来（0）就当 0，不塞进历史。
         let mem_percent = if sample.mem.total_kb > 0 {
-            (sample.mem.used_kb() as f64 / sample.mem.total_kb as f64 * 100.).clamp(0., 100.)
-                as f32
+            (sample.mem.used_kb() as f64 / sample.mem.total_kb as f64 * 100.).clamp(0., 100.) as f32
         } else {
             0.
         };
@@ -246,12 +245,18 @@ mod tests {
     #[test]
     fn cpu_falls_back_to_comparing_with_the_previous_probe() {
         let mut collector = MonitorCollector::new();
-        let first = collector.ingest(sample(100., ticks(1000, 900), None, NetTotals::default()), 3);
+        let first = collector.ingest(
+            sample(100., ticks(1000, 900), None, NetTotals::default()),
+            3,
+        );
         // 第一次轻量采集没有可比的前一次：不知道，不画。
         assert_eq!(first.cpu_percent, 0.);
         assert!(first.cpu_history.is_empty());
 
-        let second = collector.ingest(sample(105., ticks(1200, 1000), None, NetTotals::default()), 3);
+        let second = collector.ingest(
+            sample(105., ticks(1200, 1000), None, NetTotals::default()),
+            3,
+        );
         // 两次之间总计 +200，空闲 +100 → 忙一半。
         assert_eq!(second.cpu_percent, 50.);
         assert_eq!(second.cpu_history, vec![50.]);
@@ -289,7 +294,15 @@ mod tests {
             1,
         );
         let after_reboot = collector.ingest(
-            sample(12., ticks(50, 40), None, NetTotals { rx_bytes: 0, tx_bytes: 0 }),
+            sample(
+                12.,
+                ticks(50, 40),
+                None,
+                NetTotals {
+                    rx_bytes: 0,
+                    tx_bytes: 0,
+                },
+            ),
             1,
         );
         assert!(
@@ -328,9 +341,11 @@ mod tests {
 
     #[test]
     fn uptime_reads_like_the_prototype() {
-        assert_eq!(format_uptime(48. * 86400. + 14. * 3600. + 22. * 60.), "48 days, 14 hours, 22 mins");
+        assert_eq!(
+            format_uptime(48. * 86400. + 14. * 3600. + 22. * 60.),
+            "48 days, 14 hours, 22 mins"
+        );
         assert_eq!(format_uptime(3600. + 60.), "1 hour, 1 min");
         assert_eq!(format_uptime(45.), "0 mins");
     }
 }
-

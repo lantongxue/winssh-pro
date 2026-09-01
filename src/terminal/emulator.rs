@@ -511,7 +511,9 @@ impl Emulator {
             }
             Transport::Ssh(bridge) => {
                 let size = bounds.window_size();
-                let _ = bridge.window_tx.send((size.num_cols as u32, size.num_lines as u32));
+                let _ = bridge
+                    .window_tx
+                    .send((size.num_cols as u32, size.num_lines as u32));
             }
             Transport::None => {}
         }

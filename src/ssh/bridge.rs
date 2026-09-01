@@ -51,9 +51,8 @@ pub fn spawn_bridge(
     let (window_tx, window_rx) = unbounded_channel::<(u32, u32)>();
     let (output_tx, output_rx) = unbounded_channel::<Vec<u8>>();
 
-    let io_handle = crate::db::runtime().spawn(bridge_task(
-        handle, channel, output_tx, input_rx, window_rx,
-    ));
+    let io_handle =
+        crate::db::runtime().spawn(bridge_task(handle, channel, output_tx, input_rx, window_rx));
 
     let bridge = SshBridge {
         input_tx,
@@ -127,7 +126,9 @@ async fn bridge_task(
     }
 
     // 尽力优雅关闭，失败也不再扰动 UI
-    let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "en").await;
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "en")
+        .await;
 }
 
 // 仅保留底层桥接，`Emulator` 侧自行把 `SshOutputReceiver` 的字节

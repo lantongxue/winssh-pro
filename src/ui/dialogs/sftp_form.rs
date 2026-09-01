@@ -40,9 +40,9 @@ pub enum SftpFormKind {
 impl SftpFormKind {
     fn title(self) -> &'static str {
         match self {
-            Self::NewFile => "Create New Remote File",
-            Self::NewFolder => "Create New Remote Directory",
-            Self::Rename => "Rename Item",
+            Self::NewFile => "新建远端文件",
+            Self::NewFolder => "新建远端目录",
+            Self::Rename => "重命名条目",
         }
     }
 
@@ -50,16 +50,16 @@ impl SftpFormKind {
     /// 因为面板可能已经翻到别处去了 —— 这一行就是落点。
     fn label(self, subject: &SharedString) -> SharedString {
         match self {
-            Self::NewFile => SharedString::from(format!("File Name in {subject}")),
-            Self::NewFolder => SharedString::from(format!("Directory Name in {subject}")),
-            Self::Rename => SharedString::from(format!("New Name for {subject}")),
+            Self::NewFile => SharedString::from(format!("{subject} 内的文件名")),
+            Self::NewFolder => SharedString::from(format!("{subject} 内的目录名")),
+            Self::Rename => SharedString::from(format!("{subject} 的新名称")),
         }
     }
 
     fn placeholder(self) -> &'static str {
         match self {
-            Self::NewFile => "e.g. app.config.json or script.sh",
-            Self::NewFolder => "e.g. backups or releases",
+            Self::NewFile => "例如 app.config.json 或 script.sh",
+            Self::NewFolder => "例如 backups 或 releases",
             Self::Rename => "",
         }
     }
@@ -68,9 +68,9 @@ impl SftpFormKind {
         match self {
             // 新建文件之后紧接着打开编辑器（原型就是 "Create & Edit"）：
             // 建一个空文件不写点东西，等于没建完。
-            Self::NewFile => "Create & Edit",
-            Self::NewFolder => "Create Folder",
-            Self::Rename => "Save",
+            Self::NewFile => "创建并编辑",
+            Self::NewFolder => "创建目录",
+            Self::Rename => "保存",
         }
     }
 

@@ -19,8 +19,8 @@ use std::{rc::Rc, time::Duration};
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
-    Size, StatefulInteractiveElement as _, Styled as _, Task, Window, div, linear_color_stop,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString, Size,
+    StatefulInteractiveElement as _, Styled as _, Task, Window, div, linear_color_stop,
     linear_gradient, prelude::FluentBuilder as _, px, rgb, size,
 };
 use gpui_component::{
@@ -335,9 +335,7 @@ impl MonitorPanel {
                 .on_ok(move |_, _, cx| {
                     // 只有确认才动手。面板还在就把这次 kill 交回给 kill_process，
                     // 它自己去发信号并安排重采。
-                    panel
-                        .update(cx, |this, cx| this.kill_process(pid, cx))
-                        .ok();
+                    panel.update(cx, |this, cx| this.kill_process(pid, cx)).ok();
                     // 返回真：确认框收起。
                     true
                 })
@@ -368,7 +366,12 @@ impl MonitorPanel {
         .detach();
     }
 
-    fn container_action(&mut self, id: SharedString, action: ContainerAction, cx: &mut Context<Self>) {
+    fn container_action(
+        &mut self,
+        id: SharedString,
+        action: ContainerAction,
+        cx: &mut Context<Self>,
+    ) {
         let Some(service) = self.service.clone() else {
             return;
         };
@@ -378,8 +381,9 @@ impl MonitorPanel {
                 match outcome {
                     Ok(()) => this.error = None,
                     Err(error) => {
-                        this.error =
-                            Some(SharedString::from(format!("docker {id} 操作失败：{error:#}")))
+                        this.error = Some(SharedString::from(format!(
+                            "docker {id} 操作失败：{error:#}"
+                        )))
                     }
                 }
                 this.refresh(cx);
@@ -559,15 +563,12 @@ impl MonitorPanel {
                     .gap_1()
                     .text_color(cx.theme().muted_foreground)
                     .child(div().child("Load:"))
-                    .child(
-                        div()
-                            .text_color(rgb(0x4EC9B0))
-                            .font_semibold()
-                            .child(SharedString::from(format!(
-                                "{:.2} {:.2} {:.2}",
-                                telemetry.load_avg[0], telemetry.load_avg[1], telemetry.load_avg[2]
-                            ))),
-                    ),
+                    .child(div().text_color(rgb(0x4EC9B0)).font_semibold().child(
+                        SharedString::from(format!(
+                            "{:.2} {:.2} {:.2}",
+                            telemetry.load_avg[0], telemetry.load_avg[1], telemetry.load_avg[2]
+                        )),
+                    )),
             )
     }
 
@@ -732,22 +733,19 @@ impl MonitorPanel {
             .child(
                 // CPU 历史曲线：面积图。没有轴线、没有网格，收成一条和原来
                 // sparkline 等高的紧凑曲线，塞在这块 2x2 小卡片里。
-                div()
-                    .w_full()
-                    .h(px(40.))
-                    .child(
-                        AreaChart::new(history)
-                            .x(|sample| sample.label.clone())
-                            .y(|sample| sample.value)
-                            .stroke(blue)
-                            .fill(linear_gradient(
-                                0.,
-                                linear_color_stop(blue.opacity(0.45), 1.),
-                                linear_color_stop(blue.opacity(0.02), 0.),
-                            ))
-                            .x_axis(false)
-                            .grid(false),
-                    ),
+                div().w_full().h(px(40.)).child(
+                    AreaChart::new(history)
+                        .x(|sample| sample.label.clone())
+                        .y(|sample| sample.value)
+                        .stroke(blue)
+                        .fill(linear_gradient(
+                            0.,
+                            linear_color_stop(blue.opacity(0.45), 1.),
+                            linear_color_stop(blue.opacity(0.02), 0.),
+                        ))
+                        .x_axis(false)
+                        .grid(false),
+                ),
             )
     }
 
@@ -804,22 +802,19 @@ impl MonitorPanel {
             )
             .child(
                 // 面积图版本的历史曲线，收成和 CPU 卡片等高的紧凑形态。
-                div()
-                    .w_full()
-                    .h(px(40.))
-                    .child(
-                        AreaChart::new(history)
-                            .x(|sample| sample.label.clone())
-                            .y(|sample| sample.value)
-                            .stroke(teal)
-                            .fill(linear_gradient(
-                                0.,
-                                linear_color_stop(teal.opacity(0.45), 1.),
-                                linear_color_stop(teal.opacity(0.02), 0.),
-                            ))
-                            .x_axis(false)
-                            .grid(false),
-                    ),
+                div().w_full().h(px(40.)).child(
+                    AreaChart::new(history)
+                        .x(|sample| sample.label.clone())
+                        .y(|sample| sample.value)
+                        .stroke(teal)
+                        .fill(linear_gradient(
+                            0.,
+                            linear_color_stop(teal.opacity(0.45), 1.),
+                            linear_color_stop(teal.opacity(0.02), 0.),
+                        ))
+                        .x_axis(false)
+                        .grid(false),
+                ),
             )
             .child(
                 h_flex()
@@ -873,28 +868,32 @@ impl MonitorPanel {
                     ),
             )
             .child(
-                v_flex().gap_1().mt_1().child(
-                    div()
-                        .w_full()
-                        .h(px(6.))
-                        .rounded_full()
-                        .bg(cx.theme().sidebar_accent.opacity(0.5))
-                        .child(
-                            div()
-                                .h_full()
-                                .w(gpui::relative(disk_percent as f32 / 100.))
-                                .rounded_full()
-                                .bg(rgb(0xCE9178)),
-                        ),
-                ).child(
-                    h_flex()
-                        .justify_between()
-                        .text_xs()
-                        .font_family(cx.theme().mono_font_family.clone())
-                        .text_color(cx.theme().muted_foreground)
-                        .child(SharedString::from(format!("{:.1} GB", t.disk_used_gb)))
-                        .child(SharedString::from(format!("{:.0} GB", t.disk_total_gb))),
-                ),
+                v_flex()
+                    .gap_1()
+                    .mt_1()
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(6.))
+                            .rounded_full()
+                            .bg(cx.theme().sidebar_accent.opacity(0.5))
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(gpui::relative(disk_percent as f32 / 100.))
+                                    .rounded_full()
+                                    .bg(rgb(0xCE9178)),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .text_xs()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(format!("{:.1} GB", t.disk_used_gb)))
+                            .child(SharedString::from(format!("{:.0} GB", t.disk_total_gb))),
+                    ),
             )
     }
 
@@ -936,25 +935,19 @@ impl MonitorPanel {
                                     .child("▲ Out:"),
                             )
                             .child(
-                                div()
-                                    .font_bold()
-                                    .text_color(rgb(0xC586C0))
-                                    .child(SharedString::from(format!("{:.0} KB/s", t.net_out_kbps))),
+                                div().font_bold().text_color(rgb(0xC586C0)).child(
+                                    SharedString::from(format!("{:.0} KB/s", t.net_out_kbps)),
+                                ),
                             ),
                     )
                     .child(
                         h_flex()
                             .justify_between()
+                            .child(div().text_color(cx.theme().muted_foreground).child("▼ In:"))
                             .child(
-                                div()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("▼ In:"),
-                            )
-                            .child(
-                                div()
-                                    .font_bold()
-                                    .text_color(rgb(0x4EC9B0))
-                                    .child(SharedString::from(format!("{:.0} KB/s", t.net_in_kbps))),
+                                div().font_bold().text_color(rgb(0x4EC9B0)).child(
+                                    SharedString::from(format!("{:.0} KB/s", t.net_in_kbps)),
+                                ),
                             ),
                     ),
             )
@@ -965,7 +958,12 @@ impl MonitorPanel {
         telemetry: &MonitorTelemetry,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let processes = telemetry.processes.iter().take(10).cloned().collect::<Vec<_>>();
+        let processes = telemetry
+            .processes
+            .iter()
+            .take(10)
+            .cloned()
+            .collect::<Vec<_>>();
         // "View All" 后面那个数是主机上真正的进程总数，不是截断后这份预览的长度
         // —— 点进 Procs 页看到的是全量，这里的数要和它以及标签一致。
         let total = telemetry.process_total.unwrap_or(telemetry.processes.len());
@@ -1009,99 +1007,97 @@ impl MonitorPanel {
                             })),
                     ),
             )
-            .child(
-                v_flex().children(processes.into_iter().map(|p| {
-                    let pid = p.pid;
-                    let command = p.command.clone();
-                    h_flex()
-                        .id(SharedString::from(format!("top-proc-row-{pid}")))
-                        // 悬停高亮整行，和 Procs 页一致。
-                        .hover(|style| style.bg(palette::surface(cx)))
-                        .px_2()
-                        .py(px(6.))
-                        .items_center()
-                        .justify_between()
-                        .border_b_1()
-                        .border_color(cx.theme().border.opacity(0.5))
+            .child(v_flex().children(processes.into_iter().map(|p| {
+                let pid = p.pid;
+                let command = p.command.clone();
+                h_flex()
+                    .id(SharedString::from(format!("top-proc-row-{pid}")))
+                    // 悬停高亮整行，和 Procs 页一致。
+                    .hover(|style| style.bg(palette::surface(cx)))
+                    .px_2()
+                    .py(px(6.))
+                    .items_center()
+                    .justify_between()
+                    .border_b_1()
+                    .border_color(cx.theme().border.opacity(0.5))
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .gap(px(2.))
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .text_xs()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .child(
+                                        div()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .text_xs()
+                                            .child(SharedString::from(format!("[{}]", pid))),
+                                    )
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .max_w(px(140.))
+                                            .text_color(cx.theme().foreground)
+                                            .font_medium()
+                                            .child(p.command.clone()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(SharedString::from(format!(
+                                        "{} • state {}",
+                                        p.user, p.state
+                                    ))),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .flex_shrink_0()
                             .child(
                                 v_flex()
-                                    .min_w_0()
-                                    .gap(px(2.))
+                                    .items_end()
+                                    .gap(px(1.))
                                     .child(
-                                        h_flex()
-                                            .gap_1()
-                                            .items_center()
+                                        div()
                                             .text_xs()
+                                            .font_bold()
                                             .font_family(cx.theme().mono_font_family.clone())
-                                            .child(
-                                                div()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .text_xs()
-                                                    .child(SharedString::from(format!("[{}]", pid))),
-                                            )
-                                            .child(
-                                                div()
-                                                    .truncate()
-                                                    .max_w(px(140.))
-                                                    .text_color(cx.theme().foreground)
-                                                    .font_medium()
-                                                    .child(p.command.clone()),
-                                            ),
+                                            .text_color(rgb(0x569CD6))
+                                            .child(SharedString::from(format!(
+                                                "{:.1}% CPU",
+                                                p.cpu
+                                            ))),
                                     )
                                     .child(
                                         div()
                                             .text_xs()
+                                            .font_family(cx.theme().mono_font_family.clone())
                                             .text_color(cx.theme().muted_foreground)
                                             .child(SharedString::from(format!(
-                                                "{} • state {}",
-                                                p.user, p.state
+                                                "{:.1}% RAM",
+                                                p.mem
                                             ))),
                                     ),
                             )
                             .child(
-                                h_flex()
-                                    .gap_2()
-                                    .items_center()
-                                    .flex_shrink_0()
-                                    .child(
-                                        v_flex()
-                                            .items_end()
-                                            .gap(px(1.))
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .font_bold()
-                                                    .font_family(cx.theme().mono_font_family.clone())
-                                                    .text_color(rgb(0x569CD6))
-                                                    .child(SharedString::from(format!(
-                                                        "{:.1}% CPU",
-                                                        p.cpu
-                                                    ))),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .font_family(cx.theme().mono_font_family.clone())
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child(SharedString::from(format!(
-                                                        "{:.1}% RAM",
-                                                        p.mem
-                                                    ))),
-                                            ),
-                                    )
-                                    .child(
-                                        Button::new(SharedString::from(format!("kill-top-{pid}")))
-                                            .ghost()
-                                            .xsmall()
-                                            .icon(Icon::new(AppIcon::Trash).with_size(px(12.)))
-                                            .tooltip(SharedString::from(format!("kill -15 {pid}")))
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.confirm_kill(pid, command.clone(), window, cx);
-                                            })),
-                                    ),
-                            )
-                    })),
-            )
+                                Button::new(SharedString::from(format!("kill-top-{pid}")))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(AppIcon::Trash).with_size(px(12.)))
+                                    .tooltip(SharedString::from(format!("kill -15 {pid}")))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.confirm_kill(pid, command.clone(), window, cx);
+                                    })),
+                            ),
+                    )
+            })))
     }
 
     /// Procs 页：筛选/排序条 + 一条虚拟列表。
@@ -1201,7 +1197,9 @@ impl MonitorPanel {
                             .label("MEM")
                             .when(!by_cpu, |button| button.primary())
                             .when(by_cpu, |button| button.ghost())
-                            .on_click(cx.listener(|this, _, _, cx| this.set_sort_by_cpu(false, cx))),
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.set_sort_by_cpu(false, cx)),
+                            ),
                     ),
             )
     }
@@ -1341,16 +1339,13 @@ impl MonitorPanel {
                                         .gap_1()
                                         .items_center()
                                         .min_w_0()
-                                        .child(
-                                            div()
-                                                .size(px(8.))
-                                                .rounded_full()
-                                                .bg(if is_running {
-                                                    rgb(0x27C93F)
-                                                } else {
-                                                    rgb(0xFF5F56)
-                                                }),
-                                        )
+                                        .child(div().size(px(8.)).rounded_full().bg(
+                                            if is_running {
+                                                rgb(0x27C93F)
+                                            } else {
+                                                rgb(0xFF5F56)
+                                            },
+                                        ))
                                         .child(
                                             div()
                                                 .font_semibold()
@@ -1420,40 +1415,46 @@ impl MonitorPanel {
                                     h_flex()
                                         .gap_1()
                                         .child(
-                                            Button::new(SharedString::from(format!("restart-{}", id)))
-                                                .ghost()
-                                                .xsmall()
-                                                .icon(IconName::Redo2)
-                                                .tooltip("docker restart")
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.container_action(
-                                                        id.clone(),
-                                                        ContainerAction::Restart,
-                                                        cx,
-                                                    );
-                                                })),
+                                            Button::new(SharedString::from(format!(
+                                                "restart-{}",
+                                                id
+                                            )))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(IconName::Redo2)
+                                            .tooltip("docker restart")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.container_action(
+                                                    id.clone(),
+                                                    ContainerAction::Restart,
+                                                    cx,
+                                                );
+                                            })),
                                         )
                                         .child(
-                                            Button::new(SharedString::from(format!("toggle-{}", id2)))
-                                                .ghost()
-                                                .xsmall()
-                                                .icon(if is_running {
-                                                    IconName::Pause
-                                                } else {
-                                                    IconName::Play
-                                                })
-                                                .tooltip(if is_running {
-                                                    "docker stop"
-                                                } else {
-                                                    "docker start"
-                                                })
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    let action = match is_running {
-                                                        true => ContainerAction::Stop,
-                                                        false => ContainerAction::Start,
-                                                    };
-                                                    this.container_action(id2.clone(), action, cx);
-                                                })),
+                                            Button::new(SharedString::from(format!(
+                                                "toggle-{}",
+                                                id2
+                                            )))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(if is_running {
+                                                IconName::Pause
+                                            } else {
+                                                IconName::Play
+                                            })
+                                            .tooltip(if is_running {
+                                                "docker stop"
+                                            } else {
+                                                "docker start"
+                                            })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                let action = match is_running {
+                                                    true => ContainerAction::Stop,
+                                                    false => ContainerAction::Start,
+                                                };
+                                                this.container_action(id2.clone(), action, cx);
+                                            })),
                                         ),
                                 ),
                         )

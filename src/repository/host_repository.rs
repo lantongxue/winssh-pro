@@ -94,7 +94,11 @@ impl HostRepository {
     }
 
     /// 删除一个分组。
-    pub async fn delete_group(&self, conn: &impl ConnectionTrait, group_id: i64) -> Result<(), DbErr> {
+    pub async fn delete_group(
+        &self,
+        conn: &impl ConnectionTrait,
+        group_id: i64,
+    ) -> Result<(), DbErr> {
         host_group::Entity::delete_by_id(group_id)
             .exec(conn)
             .await?;
@@ -161,11 +165,7 @@ impl HostRepository {
     }
 
     /// 删除一台主机，返回是否真的删掉了一行。
-    pub async fn delete_host(
-        &self,
-        conn: &impl ConnectionTrait,
-        id: &str,
-    ) -> Result<bool, DbErr> {
+    pub async fn delete_host(&self, conn: &impl ConnectionTrait, id: &str) -> Result<bool, DbErr> {
         let result = host::Entity::delete_by_id(id).exec(conn).await?;
         Ok(result.rows_affected == 1)
     }

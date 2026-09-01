@@ -59,10 +59,7 @@ impl SshConnection {
                 window.rows,
                 window.width_px,
                 window.height_px,
-                &[
-                    (Pty::TTY_OP_ISPEED, 14400),
-                    (Pty::TTY_OP_OSPEED, 14400),
-                ],
+                &[(Pty::TTY_OP_ISPEED, 14400), (Pty::TTY_OP_OSPEED, 14400)],
             )
             .await
             .context("请求远端 PTY 失败（对端可能禁用了 PTY）")?;
@@ -92,14 +89,20 @@ impl SshConnection {
     #[allow(dead_code)]
     pub async fn disconnect(self) -> Result<()> {
         let _ = self.channel.eof().await;
-        let _ = self.handle.disconnect(Disconnect::ByApplication, "", "en").await;
+        let _ = self
+            .handle
+            .disconnect(Disconnect::ByApplication, "", "en")
+            .await;
         Ok(())
     }
 
     /// 把本地输入原样送给远端。
     #[allow(dead_code)]
     pub async fn send(&mut self, data: &[u8]) -> Result<()> {
-        self.channel.data(data).await.context("发送数据到远端失败")?;
+        self.channel
+            .data(data)
+            .await
+            .context("发送数据到远端失败")?;
         Ok(())
     }
 }
@@ -211,7 +214,10 @@ fn shellexpand(raw: &str) -> String {
     {
         return home.join(stripped).to_string_lossy().into_owned();
     }
-    if raw.starts_with('~') && raw.len() == 1 && let Some(home) = dirs::home_dir() {
+    if raw.starts_with('~')
+        && raw.len() == 1
+        && let Some(home) = dirs::home_dir()
+    {
         return home.to_string_lossy().into_owned();
     }
     raw.to_owned()

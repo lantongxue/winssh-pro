@@ -136,7 +136,9 @@ pub fn parse_probe(stdout: &str) -> Result<ProbeSample> {
                 }
             }
             "window" => {
-                let mut fields = body.split_whitespace().filter_map(|v| v.parse::<f64>().ok());
+                let mut fields = body
+                    .split_whitespace()
+                    .filter_map(|v| v.parse::<f64>().ok());
                 if let (Some(start), Some(end)) = (fields.next(), fields.next()) {
                     sample.window_secs = (end - start).max(0.);
                 }
@@ -152,7 +154,9 @@ pub fn parse_probe(stdout: &str) -> Result<ProbeSample> {
             }
             "load" => sample.load = parse_loadavg(body),
             "cpu" => {
-                let (before, after) = body.split_once(&format!("\n{SPLIT}\n")).unwrap_or((body, ""));
+                let (before, after) = body
+                    .split_once(&format!("\n{SPLIT}\n"))
+                    .unwrap_or((body, ""));
                 sample.cpu = parse_cpu_total(before).unwrap_or_default();
                 sample.cpu_cores = before
                     .lines()
@@ -278,9 +282,7 @@ fn parse_meminfo(body: &str) -> MemInfo {
 /// 的机器看着很忙（WSL 里那条 `loopback0` 的计数器能到几百 MB）。桥接与容器虚拟
 /// 网卡也不算：那些流量已经在物理网卡上计过一遍，再加一遍就是双重计数。
 fn parse_net_dev(body: &str) -> NetTotals {
-    const SKIP_PREFIX: [&str; 7] = [
-        "lo", "veth", "br-", "docker", "virbr", "dummy", "bond",
-    ];
+    const SKIP_PREFIX: [&str; 7] = ["lo", "veth", "br-", "docker", "virbr", "dummy", "bond"];
 
     let mut totals = NetTotals::default();
     for line in body.lines() {
@@ -327,7 +329,12 @@ fn parse_proc(body: &str) -> Vec<(u32, f32, SharedString, u64, SharedString)> {
             let pid = fields.next()?.trim().parse::<u32>().ok()?;
             let cpu = fields.next()?.trim().parse::<f32>().unwrap_or(0.);
             let state = fields.next().unwrap_or("?").trim();
-            let rss_kb = fields.next().unwrap_or("0").trim().parse::<u64>().unwrap_or(0);
+            let rss_kb = fields
+                .next()
+                .unwrap_or("0")
+                .trim()
+                .parse::<u64>()
+                .unwrap_or(0);
             let comm = fields.next().unwrap_or("").trim();
             Some((
                 pid,
@@ -545,7 +552,8 @@ mod tests {
 
     #[test]
     fn memory_without_mem_available_falls_back_to_subtraction() {
-        let mem = parse_meminfo("MemTotal: 1000 kB\nMemFree: 100 kB\nBuffers: 50 kB\nCached: 200 kB");
+        let mem =
+            parse_meminfo("MemTotal: 1000 kB\nMemFree: 100 kB\nBuffers: 50 kB\nCached: 200 kB");
         assert_eq!(mem.used_kb(), 650);
     }
 
@@ -600,7 +608,10 @@ mod tests {
         );
         let sample = parse_probe(&text).unwrap();
         let first = &sample.processes[0];
-        assert_eq!(first.command, "kubelet", "没有 ps 那一行就用 /proc 的进程名");
+        assert_eq!(
+            first.command, "kubelet",
+            "没有 ps 那一行就用 /proc 的进程名"
+        );
         assert_eq!(first.user, "-", "用户名不猜");
     }
 
@@ -661,4 +672,3 @@ mod tests {
         assert!(format!("{error}").contains("Linux"));
     }
 }
-

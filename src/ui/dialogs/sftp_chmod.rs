@@ -86,7 +86,7 @@ impl SftpChmodDialog {
                                 .custom(variant)
                                 .bg(blue)
                                 .rounded(cx.theme().radius)
-                                .label("Apply")
+                                .label("应用")
                                 .on_click(move |_, window, cx| {
                                     apply.update(cx, |this, cx| this.apply(window, cx));
                                 }),
@@ -157,7 +157,7 @@ impl Render for SftpChmodDialog {
                     .items_baseline()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("Target:")
+                    .child("目标：")
                     .child(
                         div()
                             .min_w_0()
@@ -277,7 +277,7 @@ fn render_header(cx: &App) -> impl IntoElement {
         .child(
             v_flex()
                 .gap(px(2.))
-                .child(div().text_sm().font_semibold().child("Change Permissions"))
+                .child(div().text_sm().font_semibold().child("修改权限"))
                 .child(
                     div()
                         .text_xs()

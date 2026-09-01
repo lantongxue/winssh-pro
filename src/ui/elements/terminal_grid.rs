@@ -29,7 +29,9 @@ use gpui::{
 use alacritty_terminal::vte::ansi::CursorShape;
 
 use crate::{
-    terminal::{Content, Emulator, GridCell, GridPoint, TerminalBounds, fps, is_default_background},
+    terminal::{
+        Content, Emulator, GridCell, GridPoint, TerminalBounds, fps, is_default_background,
+    },
     ui::theme::ansi::AnsiPalette,
 };
 
@@ -89,9 +91,7 @@ impl Run {
 
     /// 这个格子能不能接在这一段后面：字形一致，而且位置正好是下一格。
     fn accepts(&self, at: GridPoint, key: &StyleKey) -> bool {
-        self.at.line == at.line
-            && self.at.column + self.cells == at.column
-            && &self.key == key
+        self.at.line == at.line && self.at.column + self.cells == at.column && &self.key == key
     }
 
     fn push(&mut self, character: char, counts_cell: bool) {
@@ -290,10 +290,7 @@ impl Element for TerminalGridElement {
         let rows = (available_height / line_height).floor().max(1.) as usize;
         let adjusted_cell_width = available_width / cols as f32;
         let adjusted_line_height = available_height / rows as f32;
-        let grid_origin = point(
-            bounds.origin.x + PADDING_X,
-            bounds.origin.y + PADDING_TOP,
-        );
+        let grid_origin = point(bounds.origin.x + PADDING_X, bounds.origin.y + PADDING_TOP);
         let grid_bounds = TerminalBounds::new(
             adjusted_line_height,
             adjusted_cell_width,
