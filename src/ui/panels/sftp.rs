@@ -1860,12 +1860,13 @@ impl SftpPanel {
             .flex_1()
             .min_w_0()
             .id("local-breadcrumb-scroll")
+            .flex()
             .overflow_x_scroll()
             .child(
                 h_flex()
                     .items_center()
                     .gap_1()
-                    .flex_shrink_0()
+                    .flex_none()
                     .children(segments.into_iter().enumerate().map(|(ix, (label, path))| {
                         let here = ix == last;
                         h_flex()
@@ -1925,12 +1926,13 @@ impl SftpPanel {
                     .flex_1()
                     .min_w_0()
                     .id("remote-breadcrumb-scroll")
+                    .flex()
                     .overflow_x_scroll()
                     .child(
                         h_flex()
                             .items_center()
                             .gap_1()
-                            .flex_shrink_0()
+                            .flex_none()
                             .child(
                                 Button::new("sftp-panel-root")
                                     .ghost()
