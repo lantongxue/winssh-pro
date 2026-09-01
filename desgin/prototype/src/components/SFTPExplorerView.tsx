@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   FolderSync,
   Upload,
@@ -23,9 +23,12 @@ import {
   Server,
   KeyRound,
   Lock,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
-import { SFTPFile, SFTPTransferItem, ServerHost, AppSettings } from '../types';
-import { INITIAL_SFTP_FILES } from '../data/defaultData';
+import { SFTPFile, SFTPTransferItem, SFTPTransferSubItem, ServerHost, AppSettings } from '../types';
+import { INITIAL_SFTP_FILES, DEFAULT_TRANSFERS } from '../data/defaultData';
+import { TransferQueueTable } from './TransferQueueTable';
 
 interface SFTPExplorerViewProps {
   host: ServerHost;
@@ -52,19 +55,34 @@ export const SFTPExplorerView: React.FC<SFTPExplorerViewProps> = ({
   const [selectedLocalFile, setSelectedLocalFile] = useState<string | null>(null);
 
   // Transfer Queue state
-  const [transfers, setTransfers] = useState<SFTPTransferItem[]>([
-    {
-      id: 'tx-1',
-      filename: 'nginx.conf.bak',
-      direction: 'download',
-      size: 1840,
-      transferred: 1840,
-      speed: '12.4 MB/s',
-      status: 'completed',
-      progress: 100,
-      hostName: host.name,
-    },
-  ]);
+  const [transfers, setTransfers] = useState<SFTPTransferItem[]>(DEFAULT_TRANSFERS);
+  const [transferDrawerHeight, setTransferDrawerHeight] = useState<number>(200);
+  const [isDraggingTransferDrawer, setIsDraggingTransferDrawer] = useState(false);
+  const startTransferYRef = useRef<number>(0);
+  const startTransferHeightRef = useRef<number>(0);
+
+  // Resize handler for Transfer Drawer
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingTransferDrawer) return;
+      const deltaY = startTransferYRef.current - e.clientY;
+      const newHeight = Math.min(600, Math.max(90, startTransferHeightRef.current + deltaY));
+      setTransferDrawerHeight(newHeight);
+    };
+
+    const handleMouseUp = () => {
+      setIsDraggingTransferDrawer(false);
+    };
+
+    if (isDraggingTransferDrawer) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDraggingTransferDrawer]);
 
   // Modals for New File / Folder / Chmod
   const [showNewFileModal, setShowNewFileModal] = useState(false);
@@ -77,8 +95,8 @@ export const SFTPExplorerView: React.FC<SFTPExplorerViewProps> = ({
     { name: 'deploy_v2_bundle.tar.gz', size: 14820000, modified: 'Today, 10:14', isDir: false },
     { name: 'id_rsa_backup.pem', size: 3240, modified: 'Yesterday, 18:22', isDir: false },
     { name: 'app_config.json', size: 4120, modified: 'Feb 22, 14:00', isDir: false },
-    { name: 'certificates', size: 4096, modified: 'Feb 20, 09:30', isDir: true },
-    { name: 'kubernetes-manifests', size: 4096, modified: 'Feb 18, 16:10', isDir: true },
+    { name: 'certificates', size: 24500, modified: 'Feb 20, 09:30', isDir: true },
+    { name: 'kubernetes-manifests', size: 2840000, modified: 'Feb 18, 16:10', isDir: true },
   ];
 
   const currentRemoteFiles = sftpFiles[remotePath] || INITIAL_SFTP_FILES[remotePath] || [];
@@ -103,12 +121,157 @@ export const SFTPExplorerView: React.FC<SFTPExplorerViewProps> = ({
     setSelectedRemoteFile(null);
   };
 
-  const handleSimulateTransfer = (direction: 'upload' | 'download', fileName: string, size: number) => {
-    const newTxId = `tx-${Date.now()}`;
+  const handleSimulateTransfer = (
+    direction: 'upload' | 'download',
+    fileName: string,
+    size: number,
+    isDir: boolean = false
+  ) => {
+    const newTxId = `tx-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+
+    if (isDir) {
+      const sampleChildren: SFTPTransferSubItem[] = [
+        {
+          id: `${newTxId}-sub-1`,
+          filename: 'config.json',
+          relativePath: `${fileName}/config.json`,
+          size: Math.floor(size * 0.15) || 2048,
+          transferred: 0,
+          speed: '20.4 MB/s',
+          status: 'transferring',
+          progress: 0,
+        },
+        {
+          id: `${newTxId}-sub-2`,
+          filename: 'index.ts',
+          relativePath: `${fileName}/index.ts`,
+          size: Math.floor(size * 0.25) || 4096,
+          transferred: 0,
+          speed: '20.4 MB/s',
+          status: 'queued',
+          progress: 0,
+        },
+        {
+          id: `${newTxId}-sub-3`,
+          filename: 'routes.manifest.json',
+          relativePath: `${fileName}/routes.manifest.json`,
+          size: Math.floor(size * 0.20) || 3072,
+          transferred: 0,
+          speed: '20.4 MB/s',
+          status: 'queued',
+          progress: 0,
+        },
+        {
+          id: `${newTxId}-sub-4`,
+          filename: 'assets.bundle.gz',
+          relativePath: `${fileName}/assets.bundle.gz`,
+          size: Math.floor(size * 0.40) || 8192,
+          transferred: 0,
+          speed: '20.4 MB/s',
+          status: 'queued',
+          progress: 0,
+        },
+      ];
+
+      const newTx: SFTPTransferItem = {
+        id: newTxId,
+        filename: fileName,
+        direction,
+        isDir: true,
+        size: size || 17408,
+        transferred: 0,
+        speed: '20.4 MB/s',
+        status: 'transferring',
+        progress: 5,
+        hostName: host.name,
+        totalFiles: sampleChildren.length,
+        completedFiles: 0,
+        children: sampleChildren,
+      };
+
+      setTransfers((prev) => [newTx, ...prev]);
+
+      let step = 0;
+      const interval = setInterval(() => {
+        step += 1;
+        if (step >= 5) {
+          clearInterval(interval);
+          setTransfers((prev) =>
+            prev.map((t) =>
+              t.id === newTxId
+                ? {
+                    ...t,
+                    progress: 100,
+                    transferred: t.size,
+                    status: 'completed',
+                    completedFiles: t.totalFiles,
+                    children: t.children?.map((c) => ({
+                      ...c,
+                      progress: 100,
+                      transferred: c.size,
+                      status: 'completed',
+                    })),
+                  }
+                : t
+            )
+          );
+
+          if (direction === 'upload') {
+            const newFolder: SFTPFile = {
+              name: fileName,
+              path: `${remotePath === '/' ? '' : remotePath}/${fileName}`,
+              isDir: true,
+              size: size || 4096,
+              permissions: 'drwxr-xr-x',
+              modified: 'Just now',
+              owner: host.username,
+              group: 'root',
+            };
+            onUpdateSftpFiles({
+              ...sftpFiles,
+              [remotePath]: [...(sftpFiles[remotePath] || []), newFolder],
+            });
+          }
+        } else {
+          setTransfers((prev) =>
+            prev.map((t) => {
+              if (t.id !== newTxId) return t;
+              const completedCount = Math.min(step, t.children?.length || 1);
+              const progressPct = Math.min(100, step * 22);
+              const updatedChildren = t.children?.map((c, idx) => {
+                if (idx < completedCount - 1) {
+                  return { ...c, progress: 100, transferred: c.size, status: 'completed' as const };
+                } else if (idx === completedCount - 1) {
+                  const subPct = Math.min(100, (step % 2 === 1 ? 55 : 85));
+                  return {
+                    ...c,
+                    progress: subPct,
+                    transferred: Math.floor((c.size * subPct) / 100),
+                    status: 'transferring' as const,
+                  };
+                } else {
+                  return { ...c, progress: 0, transferred: 0, status: 'queued' as const };
+                }
+              });
+              return {
+                ...t,
+                progress: progressPct,
+                transferred: Math.floor((t.size * progressPct) / 100),
+                completedFiles: Math.max(0, completedCount - 1),
+                children: updatedChildren,
+              };
+            })
+          );
+        }
+      }, 500);
+      return;
+    }
+
     const newTx: SFTPTransferItem = {
       id: newTxId,
       filename: fileName,
       direction,
+      isDir: false,
       size,
       transferred: 0,
       speed: '18.5 MB/s',
@@ -434,8 +597,13 @@ export const SFTPExplorerView: React.FC<SFTPExplorerViewProps> = ({
               <button
                 disabled={!selectedRemoteFile}
                 onClick={() => {
-                  if (selectedRemoteFile && !selectedRemoteFile.isDir) {
-                    handleSimulateTransfer('download', selectedRemoteFile.name, selectedRemoteFile.size);
+                  if (selectedRemoteFile) {
+                    handleSimulateTransfer(
+                      'download',
+                      selectedRemoteFile.name,
+                      selectedRemoteFile.size,
+                      selectedRemoteFile.isDir
+                    );
                   }
                 }}
                 className="flex items-center gap-1.5 px-3 py-1 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:hover:bg-amber-600 text-white rounded-md text-xs font-medium transition-colors"
@@ -480,64 +648,56 @@ export const SFTPExplorerView: React.FC<SFTPExplorerViewProps> = ({
         </div>
       </div>
 
-      {/* Bottom SFTP Transfer Queue Drawer */}
-      <div className="h-28 bg-zinc-900/95 border-t border-zinc-800 flex flex-col">
-        <div className="h-6 bg-zinc-850 px-3 flex items-center justify-between text-[11px] text-zinc-400">
-          <div className="flex items-center gap-2 font-medium">
-            <FolderSync className="w-3 h-3 text-cyan-400" />
-            <span>Transfer Queue & Speed Monitor ({transfers.length})</span>
-          </div>
-          <button
-            onClick={() => setTransfers([])}
-            className="hover:text-zinc-200 transition-colors"
-          >
-            Clear Completed
-          </button>
+      {/* Bottom SFTP Transfer Queue Drawer with Table */}
+      <div
+        style={{ height: `${transferDrawerHeight}px` }}
+        className="bg-zinc-950 border-t border-zinc-800 flex flex-col shrink-0 shadow-2xl relative z-20 transition-[height] duration-75"
+      >
+        {/* Top Resize Drag Handle for Transfer Queue */}
+        <div
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            setIsDraggingTransferDrawer(true);
+            startTransferYRef.current = e.clientY;
+            startTransferHeightRef.current = transferDrawerHeight;
+          }}
+          onDoubleClick={() => setTransferDrawerHeight(transferDrawerHeight > 200 ? 160 : 320)}
+          className="h-1.5 w-full bg-zinc-900 hover:bg-cyan-500 cursor-ns-resize flex items-center justify-center group transition-colors select-none"
+          title="Drag up/down to adjust Transfer Queue height (Double click to toggle)"
+        >
+          <div className="w-12 h-0.5 rounded-full bg-zinc-700 group-hover:bg-white transition-colors" />
         </div>
 
-        <div className="flex-1 overflow-y-auto p-2 space-y-1.5 font-mono text-xs">
-          {transfers.map((tx) => (
-            <div
-              key={tx.id}
-              className="flex items-center justify-between p-1.5 bg-zinc-950/80 border border-zinc-800 rounded text-[11px]"
+        <div className="h-6 bg-zinc-900 px-3 flex items-center justify-between text-[11px] text-zinc-400 border-b border-zinc-800">
+          <div className="flex items-center gap-2 font-medium">
+            <FolderSync className="w-3 h-3 text-cyan-400" />
+            <span className="text-zinc-200">Transfer Queue & Speed Monitor</span>
+            <span className="text-zinc-500 font-mono text-[10px]">
+              ({transfers.filter((t) => t.status === 'transferring').length} active, {transfers.length} total)
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setTransferDrawerHeight(transferDrawerHeight > 200 ? 160 : 320)}
+              title={transferDrawerHeight > 200 ? 'Restore Height' : 'Expand Height'}
+              className="hover:text-zinc-200 transition-colors p-0.5"
             >
-              <div className="flex items-center gap-2 min-w-0">
-                {tx.direction === 'upload' ? (
-                  <Upload className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                ) : (
-                  <Download className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                )}
-                <span className="text-zinc-200 font-medium truncate max-w-[200px]">
-                  {tx.filename}
-                </span>
-                <span className="text-zinc-500 text-[10px]">({formatFileSize(tx.size)})</span>
-              </div>
+              {transferDrawerHeight > 200 ? (
+                <Minimize2 className="w-3 h-3" />
+              ) : (
+                <Maximize2 className="w-3 h-3" />
+              )}
+            </button>
+          </div>
+        </div>
 
-              {/* Progress bar and speed */}
-              <div className="flex items-center gap-3">
-                <div className="w-32 bg-zinc-800 rounded-full h-1.5 overflow-hidden">
-                  <div
-                    className={`h-full transition-all duration-300 ${
-                      tx.status === 'completed' ? 'bg-emerald-500' : 'bg-cyan-500'
-                    }`}
-                    style={{ width: `${tx.progress}%` }}
-                  />
-                </div>
-                <span className="text-zinc-400 w-16 text-right text-[10px]">
-                  {tx.speed}
-                </span>
-                <span
-                  className={`text-[10px] px-1.5 py-0.2 rounded font-sans uppercase ${
-                    tx.status === 'completed'
-                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                      : 'bg-cyan-500/20 text-cyan-400'
-                  }`}
-                >
-                  {tx.status}
-                </span>
-              </div>
-            </div>
-          ))}
+        <div className="flex-1 overflow-hidden">
+          <TransferQueueTable
+            transfers={transfers}
+            onUpdateTransfers={setTransfers}
+            onClearCompleted={() => setTransfers(transfers.filter((t) => t.status !== 'completed'))}
+            onOpenFileEditor={onOpenFileEditor}
+          />
         </div>
       </div>
 

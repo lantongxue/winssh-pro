@@ -406,70 +406,6 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
             <Plus className="w-3.5 h-3.5" />
           </button>
         </div>
-
-        {/* Tab Right Controls: Host Ping, Bottom SFTP Panel, Port Forwarding & Right Top Monitor Panel Switchers */}
-        <div className="flex items-center gap-1.5 pr-2 text-xs font-mono text-[#858585]">
-          {/* Session Port Forwarding Button */}
-          <button
-            onClick={() => setIsTunnelModalOpen(true)}
-            title={`Session Port Forwarding for ${activeHost.name} (Alt+P)`}
-            className={`flex items-center gap-1 px-2 py-0.5 rounded border transition-all text-[11px] ${
-              activeHostTunnelsCount > 0
-                ? 'bg-[#007ACC]/20 text-[#4EC9B0] border-[#007ACC]/70 font-semibold shadow-xs'
-                : 'bg-[#2D2D2D] hover:bg-[#3C3C3C] border-[#333333] text-[#A0A0A0] hover:text-white'
-            }`}
-          >
-            <Network
-              className={`w-3 h-3 ${
-                activeHostTunnelsCount > 0 ? 'text-[#4EC9B0]' : 'text-[#858585]'
-              }`}
-            />
-            <span>Tunnels</span>
-            {activeHostTunnelsCount > 0 ? (
-              <span className="px-1 py-[0.5px] rounded-full bg-[#007ACC] text-white text-[9px] font-mono leading-none">
-                {activeHostTunnelsCount}
-              </span>
-            ) : null}
-          </button>
-
-          {/* Bottom SFTP Panel Toggle Button */}
-          <button
-            onClick={handleToggleSftpPanel}
-            title={isSftpOpen ? 'Hide Bottom SFTP Panel (Alt+F)' : 'Show Bottom SFTP Panel (Alt+F)'}
-            className={`flex items-center gap-1 px-2.5 py-0.5 rounded border transition-all text-[11px] ${
-              isSftpOpen
-                ? 'bg-[#007ACC]/20 text-[#4EC9B0] border-[#007ACC]/70 font-semibold shadow-xs'
-                : 'bg-[#2D2D2D] hover:bg-[#3C3C3C] border-[#333333] text-[#CE9178]'
-            }`}
-          >
-            <FolderSync className={`w-3 h-3 ${isSftpOpen ? 'text-[#4EC9B0]' : 'text-[#CE9178]'}`} />
-            <span>SFTP Panel</span>
-            {isSftpOpen ? (
-              <ChevronDown className="w-3 h-3 text-[#4EC9B0]" />
-            ) : (
-              <ChevronUp className="w-3 h-3 text-[#858585]" />
-            )}
-          </button>
-
-          {/* Right Top / Telemetry Monitor button (Follows active session host) */}
-          <button
-            onClick={handleToggleMonitorPanel}
-            title={isMonitorOpen ? 'Hide Right Top Monitor (Alt+M)' : 'Show Right Top Monitor (Alt+M)'}
-            className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded border transition-all text-[11px] ${
-              isMonitorOpen
-                ? 'bg-[#27C93F]/20 text-[#27C93F] border-[#27C93F]/70 font-semibold shadow-xs'
-                : 'bg-[#2D2D2D] hover:bg-[#3C3C3C] border-[#333333] text-[#27C93F]'
-            }`}
-          >
-            <Activity className={`w-3 h-3 text-[#27C93F] ${isMonitorOpen ? 'animate-pulse' : ''}`} />
-            <span>Top Monitor</span>
-            {isMonitorOpen ? (
-              <ChevronRight className="w-3 h-3 text-[#27C93F]" />
-            ) : (
-              <ChevronLeft className="w-3 h-3 text-[#858585]" />
-            )}
-          </button>
-        </div>
       </div>
 
       {/* Main Terminal Workspace Layout: Center Panes + Bottom SFTP Panel + Right Top Monitor Panel */}
@@ -518,28 +454,94 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
               }}
             >
               {/* Pane Top Sub-Bar */}
-              <div className="h-6 bg-[#1E1E1E] border-b border-[#333333] px-2.5 flex items-center justify-between text-[11px] text-[#858585] select-none shrink-0">
-                <div className="flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#27C93F] animate-pulse" />
-                  <span className="text-[#D4D4D4] font-semibold">{host.username}@{host.host}</span>
-                  <span className="text-[#454545]">|</span>
-                  <span className="text-[#569CD6] truncate max-w-[240px]">{pane.cwd}</span>
+              <div className="h-7 bg-[#1E1E1E] border-b border-[#333333] px-2.5 flex items-center justify-between text-[11px] text-[#858585] select-none shrink-0 gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#27C93F] animate-pulse shrink-0" />
+                  <span className="text-[#D4D4D4] font-semibold truncate">{host.username}@{host.host}</span>
+                  <span className="text-[#454545] shrink-0">|</span>
+                  <span className="text-[#569CD6] truncate max-w-[200px] sm:max-w-[280px]">{pane.cwd}</span>
                 </div>
 
-                <div className="flex items-center gap-2 text-[10px]">
+                <div className="flex items-center gap-1.5 shrink-0 text-[11px] font-mono">
+                  {/* Session Port Forwarding Button */}
+                  <button
+                    onClick={() => setIsTunnelModalOpen(true)}
+                    title={`Session Port Forwarding for ${host.name} (Alt+P)`}
+                    className={`flex items-center gap-1 px-2 py-0.5 rounded border transition-all text-[11px] ${
+                      activeHostTunnelsCount > 0
+                        ? 'bg-[#007ACC]/20 text-[#4EC9B0] border-[#007ACC]/70 font-semibold shadow-xs'
+                        : 'bg-[#2D2D2D] hover:bg-[#3C3C3C] border-[#333333] text-[#A0A0A0] hover:text-white'
+                    }`}
+                  >
+                    <Network
+                      className={`w-3 h-3 ${
+                        activeHostTunnelsCount > 0 ? 'text-[#4EC9B0]' : 'text-[#858585]'
+                      }`}
+                    />
+                    <span>Tunnels</span>
+                    {activeHostTunnelsCount > 0 && (
+                      <span className="px-1 py-[0.5px] rounded-full bg-[#007ACC] text-white text-[9px] font-mono leading-none">
+                        {activeHostTunnelsCount}
+                      </span>
+                    )}
+                  </button>
+
+                  {/* Bottom SFTP Panel Toggle Button */}
+                  <button
+                    onClick={handleToggleSftpPanel}
+                    title={isSftpOpen ? 'Hide Bottom SFTP Panel (Alt+F)' : 'Show Bottom SFTP Panel (Alt+F)'}
+                    className={`flex items-center gap-1 px-2.5 py-0.5 rounded border transition-all text-[11px] ${
+                      isSftpOpen
+                        ? 'bg-[#007ACC]/20 text-[#4EC9B0] border-[#007ACC]/70 font-semibold shadow-xs'
+                        : 'bg-[#2D2D2D] hover:bg-[#3C3C3C] border-[#333333] text-[#CE9178]'
+                    }`}
+                  >
+                    <FolderSync className={`w-3 h-3 ${isSftpOpen ? 'text-[#4EC9B0]' : 'text-[#CE9178]'}`} />
+                    <span>SFTP Panel</span>
+                    {isSftpOpen ? (
+                      <ChevronDown className="w-3 h-3 text-[#4EC9B0]" />
+                    ) : (
+                      <ChevronUp className="w-3 h-3 text-[#858585]" />
+                    )}
+                  </button>
+
+                  {/* Right Top / Telemetry Monitor button (Follows active session host) */}
+                  <button
+                    onClick={handleToggleMonitorPanel}
+                    title={isMonitorOpen ? 'Hide Right Top Monitor (Alt+M)' : 'Show Right Top Monitor (Alt+M)'}
+                    className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded border transition-all text-[11px] ${
+                      isMonitorOpen
+                        ? 'bg-[#27C93F]/20 text-[#27C93F] border-[#27C93F]/70 font-semibold shadow-xs'
+                        : 'bg-[#2D2D2D] hover:bg-[#3C3C3C] border-[#333333] text-[#27C93F]'
+                    }`}
+                  >
+                    <Activity className={`w-3 h-3 text-[#27C93F] ${isMonitorOpen ? 'animate-pulse' : ''}`} />
+                    <span>Top Monitor</span>
+                    {isMonitorOpen ? (
+                      <ChevronRight className="w-3 h-3 text-[#27C93F]" />
+                    ) : (
+                      <ChevronLeft className="w-3 h-3 text-[#858585]" />
+                    )}
+                  </button>
+
+                  <div className="w-[1px] h-3.5 bg-[#333333] mx-0.5" />
+
+                  {/* Export Log */}
                   <button
                     onClick={() => handleExportLog(pane)}
                     title="Export Terminal Session Log"
-                    className="p-1 hover:text-[#4EC9B0] transition-colors"
+                    className="p-1 hover:text-[#4EC9B0] hover:bg-[#2D2D2D] rounded transition-colors text-[#858585]"
                   >
-                    <Download className="w-3 h-3" />
+                    <Download className="w-3.5 h-3.5" />
                   </button>
+
+                  {/* Clear Screen */}
                   <button
                     onClick={() => handleSendCommand(pane.id, 'clear')}
                     title="Clear Screen (Ctrl+L)"
-                    className="p-1 hover:text-[#4EC9B0] transition-colors"
+                    className="p-1 hover:text-[#FF5F56] hover:bg-[#2D2D2D] rounded transition-colors text-[#858585]"
                   >
-                    <Trash2 className="w-3 h-3" />
+                    <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
               </div>

@@ -5,7 +5,7 @@ import { GoogleGenAI } from "@google/genai";
 
 async function startServer() {
   const app = express();
-  const PORT = 3001;
+  const PORT = 3000;
 
   app.use(express.json({ limit: "10mb" }));
 

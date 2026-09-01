@@ -86,6 +86,19 @@ export interface SFTPFile {
   content?: string;
 }
 
+export interface SFTPTransferSubItem {
+  id: string;
+  filename: string;
+  relativePath?: string;
+  size: number;
+  transferred: number;
+  speed?: string;
+  status: 'queued' | 'transferring' | 'completed' | 'failed' | 'paused';
+  progress: number;
+  isDir?: boolean;
+  errorMsg?: string;
+}
+
 export interface SFTPTransferItem {
   id: string;
   filename: string;
@@ -93,9 +106,17 @@ export interface SFTPTransferItem {
   size: number;
   transferred: number;
   speed: string;
-  status: 'queued' | 'transferring' | 'completed' | 'failed';
+  status: 'queued' | 'transferring' | 'completed' | 'failed' | 'paused';
   progress: number;
   hostName: string;
+  isDir?: boolean;
+  totalFiles?: number;
+  completedFiles?: number;
+  children?: SFTPTransferSubItem[];
+  path?: string;
+  remotePath?: string;
+  startTime?: string;
+  errorMsg?: string;
 }
 
 export type TunnelType = 'local' | 'remote' | 'dynamic';
