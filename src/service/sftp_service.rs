@@ -15,6 +15,7 @@
 //!   比我们能写的任何转述都准。
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -25,7 +26,7 @@ use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::protocol::{FileAttributes, FileType, StatusCode};
 use tokio::fs::File as TokioFile;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{Notify, mpsc::UnboundedSender};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -93,6 +94,7 @@ pub enum TransferEvent {
 /// 面板关掉时统一取消，不留"界面没了还在偷偷写盘"的任务。
 pub struct TransferHandle {
     cancel: CancellationToken,
+    pause: Arc<PauseState>,
     join: JoinHandle<()>,
 }
 
@@ -102,8 +104,60 @@ impl TransferHandle {
         self.cancel.cancel();
     }
 
+    /// 暂停：块与块之间停住，字节不再流动；句柄还在，恢复接着搬。
+    pub fn pause(&self) {
+        self.pause.pause();
+    }
+
+    /// 恢复一块暂停中的传输。
+    pub fn resume(&self) {
+        self.pause.resume();
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.pause.is_paused()
+    }
+
     pub fn is_finished(&self) -> bool {
         self.join.is_finished()
+    }
+}
+
+/// 暂停开关。与 [`CancellationToken`] 同一思想，只是可逆：暂停在块与块之间
+/// 生效（一块 32 KiB 是最小的停顿单位），恢复要能把等待中的任务叫醒。
+#[derive(Default)]
+struct PauseState {
+    paused: AtomicBool,
+    notify: Notify,
+}
+
+impl PauseState {
+    fn pause(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+    }
+
+    fn resume(&self) {
+        self.paused.store(false, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
+    }
+
+    /// 停在块与块之间，直到恢复或取消。
+    ///
+    /// 除了被 `notify` 叫醒，还挂了一个 200ms 一班的轮询兜底：恢复若发生在
+    /// `notified()` 注册之前，通知会丢，靠着这一班最多晚 200ms 起身 ——
+    /// 对一次人手点的暂停来说无关痛痒。
+    async fn wait(&self, cancel: &CancellationToken) {
+        while self.is_paused() {
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = self.notify.notified() => {}
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+            }
+        }
     }
 }
 
@@ -356,16 +410,28 @@ impl SftpService {
     ) -> TransferHandle {
         let session = self.session.clone();
         let cancel = CancellationToken::new();
+        let pause = Arc::new(PauseState::default());
         let task_cancel = cancel.clone();
+        let task_pause = pause.clone();
         let task_progress = progress.clone();
         let id = job.id;
 
         let join = crate::db::runtime().spawn(async move {
-            let outcome = download(&session, &job, &task_cancel, &task_progress).await;
+            let ctx = PumpCtx {
+                id,
+                cancel: &task_cancel,
+                pause: &task_pause,
+                progress: &task_progress,
+            };
+            let outcome = download(&session, &job, &ctx).await;
             report_done(&progress, id, outcome, task_cancel.is_cancelled());
         });
 
-        TransferHandle { cancel, join }
+        TransferHandle {
+            cancel,
+            pause,
+            join,
+        }
     }
 
     /// 派一个上传（本地文件或整棵目录树）到远端的任务。
@@ -376,17 +442,39 @@ impl SftpService {
     ) -> TransferHandle {
         let session = self.session.clone();
         let cancel = CancellationToken::new();
+        let pause = Arc::new(PauseState::default());
         let task_cancel = cancel.clone();
+        let task_pause = pause.clone();
         let task_progress = progress.clone();
         let id = job.id;
 
         let join = crate::db::runtime().spawn(async move {
-            let outcome = upload(&session, &job, &task_cancel, &task_progress).await;
+            let ctx = PumpCtx {
+                id,
+                cancel: &task_cancel,
+                pause: &task_pause,
+                progress: &task_progress,
+            };
+            let outcome = upload(&session, &job, &ctx).await;
             report_done(&progress, id, outcome, task_cancel.is_cancelled());
         });
 
-        TransferHandle { cancel, join }
+        TransferHandle {
+            cancel,
+            pause,
+            join,
+        }
     }
+}
+
+/// 搬运循环共用的那捆东西：任务身份、取消令牌、暂停开关与进度管子。
+///
+/// 捆在一起传，`pump` 的参数表就不用长到需要竖着读。
+struct PumpCtx<'a> {
+    id: u64,
+    cancel: &'a CancellationToken,
+    pause: &'a Arc<PauseState>,
+    progress: &'a UnboundedSender<TransferEvent>,
 }
 
 /// 传输结束：把结果说成一个事件。取消不是失败，界面上是另一种颜色。
@@ -417,12 +505,7 @@ fn check_mode(octal: u32) -> Result<()> {
 }
 
 /// 远端 → 本地。先写 `.<name>.part`，成功后改名落到最终名字上。
-async fn download(
-    session: &Arc<SftpSession>,
-    job: &TransferJob,
-    cancel: &CancellationToken,
-    progress: &UnboundedSender<TransferEvent>,
-) -> Result<()> {
+async fn download(session: &Arc<SftpSession>, job: &TransferJob, ctx: &PumpCtx<'_>) -> Result<()> {
     let remote_path = path::normalize(&job.remote);
     let local = job.local.clone();
     if let Some(parent) = local.parent() {
@@ -446,7 +529,7 @@ async fn download(
         .await
         .with_context(|| format!("创建本地临时文件 {} 失败", temp.display()))?;
 
-    let moved = pump(&mut source, &mut sink, total, job.id, 0, None, cancel, progress).await?;
+    let moved = pump(&mut source, &mut sink, total, 0, None, ctx).await?;
     if total > 0 && moved < total {
         bail!("下载不完整：{} / {} 字节", moved, total);
     }
@@ -474,13 +557,9 @@ async fn download(
 
 /// 本地 → 远端。`job.remote` 是目标目录；单文件写 `<dir>/<basename>`，
 /// 目录则整棵树照搬（远端目录不存在就建，已存在就并进去）。
-async fn upload(
-    session: &Arc<SftpSession>,
-    job: &TransferJob,
-    cancel: &CancellationToken,
-    progress: &UnboundedSender<TransferEvent>,
-) -> Result<()> {
-    let plan = plan_upload(&job.local, &path::normalize(&job.remote))?;
+async fn upload(session: &Arc<SftpSession>, job: &TransferJob, ctx: &PumpCtx<'_>) -> Result<()> {
+    let remote_dir = path::normalize(&job.remote);
+    let plan = plan_upload(&job.local, &remote_dir)?;
     let total = plan.total_bytes();
     let folder = job.local.is_dir();
 
@@ -492,26 +571,28 @@ async fn upload(
 
     // 目录上传在聚合进度之外还逐个文件报进度：先一次性把子项清单报出去
     // （界面展开就有完整的文件列表），之后每搬一块、落定一个都有事件跟上。
-    // 单文件传输不报 —— 没有可展开的东西。
+    // 单文件传输不报 —— 没有可展开的东西。子项名带上传目录自己的名字
+    // （`pkg/a/one`），一行能看出它是树里的哪一个。
     if folder {
-        let root = plan.dirs.first().map(String::as_str);
         let items = plan
             .files
             .iter()
             .map(|file| TransferChild {
-                filename: relative_remote(&file.remote, root).into(),
+                filename: relative_remote(&file.remote, &remote_dir).into(),
                 total: file.size,
                 transferred: 0,
                 status: TransferStatus::Queued,
             })
             .collect();
-        let _ = progress.send(TransferEvent::Children { id: job.id, items });
+        let _ = ctx
+            .progress
+            .send(TransferEvent::Children { id: job.id, items });
     }
 
     // 一个目录上传在界面上是**一条**进度条：分母是整棵树，偏移是前面已经搬完的。
     let mut moved = 0u64;
     for (index, file) in plan.files.iter().enumerate() {
-        if cancel.is_cancelled() {
+        if ctx.cancel.is_cancelled() {
             bail!("已取消");
         }
         let mut source = TokioFile::open(&file.local)
@@ -527,11 +608,9 @@ async fn upload(
             &mut source,
             &mut sink,
             total,
-            job.id,
             moved,
             folder.then_some((index, file.size)),
-            cancel,
-            progress,
+            ctx,
         )
         .await?;
         moved += pumped;
@@ -547,7 +626,9 @@ async fn upload(
 
         // 改名成功才算这个文件到了：报在收尾之后，而不是最后一块写完时。
         if folder {
-            let _ = progress.send(TransferEvent::ChildDone { id: job.id, index });
+            let _ = ctx
+                .progress
+                .send(TransferEvent::ChildDone { id: job.id, index });
         }
     }
     Ok(())
@@ -696,23 +777,20 @@ fn upload_file(local: &Path, remote: &str) -> Result<UploadFile> {
     })
 }
 
-/// 一块一块地搬，每搬完一块报一次进度；取消令牌一响就在块与块之间停下。
+/// 一块一块地搬，每搬完一块报一次进度；取消与暂停都在块与块之间生效。
 ///
 /// 读写两端都是泛型：远端是 [`russh_sftp::client::fs::File`]，本地是
 /// [`tokio::fs::File`]，两边都只要求 `AsyncRead`/`AsyncWrite`。
 /// `offset` 是给进度的起点偏移（目录树里前面那些文件已经搬了多少）。
 /// `child` 是目录上传里正在搬的那个子项（序号与它自己的大小）：聚合进度
 /// 照旧报整棵树，子项进度只在这一份文件自己的范围内报。
-#[allow(clippy::too_many_arguments)]
 async fn pump<R, W>(
     read: &mut R,
     write: &mut W,
     total: u64,
-    id: u64,
     offset: u64,
     child: Option<(usize, u64)>,
-    cancel: &CancellationToken,
-    progress: &UnboundedSender<TransferEvent>,
+    ctx: &PumpCtx<'_>,
 ) -> Result<u64>
 where
     R: AsyncRead + Unpin,
@@ -722,7 +800,9 @@ where
     let mut moved = 0u64;
 
     loop {
-        let Some(result) = cancel.run_until_cancelled(read.read(&mut buffer)).await else {
+        // 暂停就停在块与块之间：一块是最小的停顿单位，字节不会断在半截。
+        ctx.pause.wait(ctx.cancel).await;
+        let Some(result) = ctx.cancel.run_until_cancelled(read.read(&mut buffer)).await else {
             bail!("已取消");
         };
         let read_len = result.context("读取数据失败")?;
@@ -730,7 +810,8 @@ where
             break;
         }
 
-        let Some(result) = cancel
+        let Some(result) = ctx
+            .cancel
             .run_until_cancelled(write.write_all(&buffer[..read_len]))
             .await
         else {
@@ -739,14 +820,14 @@ where
         result.context("写入数据失败")?;
 
         moved += read_len as u64;
-        let _ = progress.send(TransferEvent::Progress {
-            id,
+        let _ = ctx.progress.send(TransferEvent::Progress {
+            id: ctx.id,
             transferred: offset + moved,
             total,
         });
         if let Some((index, size)) = child {
-            let _ = progress.send(TransferEvent::ChildProgress {
-                id,
+            let _ = ctx.progress.send(TransferEvent::ChildProgress {
+                id: ctx.id,
                 index,
                 transferred: moved.min(size),
             });
@@ -756,14 +837,12 @@ where
     Ok(moved)
 }
 
-/// 子项的展示名：远端绝对路径剥掉上传根目录后的相对路径（`docs/img.png`）。
+/// 子项的展示名：远端绝对路径剥掉目标目录后的相对路径（`pkg/a/one`），
+/// 带着上传目录自己的名字，一行能看出它是树里的哪一个。
 /// 树的走法保证了剥得掉；万一剥不掉，退回文件名本身。
-fn relative_remote(remote: &str, root: Option<&str>) -> String {
+fn relative_remote(remote: &str, remote_dir: &str) -> String {
     let name = path::file_name(remote).to_owned();
-    let Some(root) = root else {
-        return name;
-    };
-    match remote.strip_prefix(root) {
+    match remote.strip_prefix(remote_dir) {
         Some(rest) if !rest.is_empty() => rest.trim_start_matches('/').to_owned(),
         _ => name,
     }
@@ -926,14 +1005,25 @@ mod tests {
     }
 
     #[test]
-    fn child_names_are_relative_to_the_upload_root() {
-        assert_eq!(relative_remote("/dst/pkg/two", Some("/dst/pkg")), "two");
-        assert_eq!(relative_remote("/dst/pkg/a/one", Some("/dst/pkg")), "a/one");
+    fn child_names_are_relative_to_the_target_directory() {
+        assert_eq!(relative_remote("/dst/pkg/two", "/dst"), "pkg/two");
+        assert_eq!(relative_remote("/dst/pkg/a/one", "/dst"), "pkg/a/one");
         assert_eq!(
-            relative_remote("/dst/two", None),
+            relative_remote("/dst/two", "/dst/elsewhere"),
             "two",
-            "单文件传输没有根目录这回事，就报文件名"
+            "剥不掉就退回文件名本身"
         );
+    }
+
+    #[test]
+    fn a_paused_transfer_resumes_and_cancels() {
+        let pause = PauseState::default();
+        assert!(!pause.is_paused(), "默认在跑");
+
+        pause.pause();
+        assert!(pause.is_paused());
+        pause.resume();
+        assert!(!pause.is_paused(), "恢复要真的解开开关");
     }
 
     #[test]
@@ -999,7 +1089,14 @@ mod tests {
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             let cancel = CancellationToken::new();
-            let moved = pump(&mut source, &mut sink, total, 7, 0, None, &cancel, &tx)
+            let pause = Arc::new(PauseState::default());
+            let ctx = PumpCtx {
+                id: 7,
+                cancel: &cancel,
+                pause: &pause,
+                progress: &tx,
+            };
+            let moved = pump(&mut source, &mut sink, total, 0, None, &ctx)
                 .await
                 .expect("搬运应成功");
 
@@ -1010,17 +1107,15 @@ mod tests {
             drop(tx);
             let mut events = Vec::new();
             while let Some(event) = rx.recv().await {
-                match event {
-                    TransferEvent::Progress {
-                        id,
-                        transferred,
-                        total: reported,
-                    } => {
-                        assert_eq!(id, 7);
-                        assert_eq!(reported, total);
-                        events.push(transferred);
-                    }
-                    _ => {}
+                if let TransferEvent::Progress {
+                    id,
+                    transferred,
+                    total: reported,
+                } = event
+                {
+                    assert_eq!(id, 7);
+                    assert_eq!(reported, total);
+                    events.push(transferred);
                 }
             }
             assert!(events.len() >= 3, "应当是一块一块报上来的：{events:?}");
@@ -1039,8 +1134,15 @@ mod tests {
             let mut sink: Vec<u8> = Vec::new();
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             let cancel = CancellationToken::new();
+            let pause = Arc::new(PauseState::default());
+            let ctx = PumpCtx {
+                id: 1,
+                cancel: &cancel,
+                pause: &pause,
+                progress: &tx,
+            };
 
-            pump(&mut source, &mut sink, 100, 1, 40, None, &cancel, &tx)
+            pump(&mut source, &mut sink, 100, 40, None, &ctx)
                 .await
                 .expect("搬 10 个");
 
@@ -1063,9 +1165,16 @@ mod tests {
             let mut sink: Vec<u8> = Vec::new();
             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
             let cancel = CancellationToken::new();
+            let pause = Arc::new(PauseState::default());
             cancel.cancel();
 
-            let error = pump(&mut source, &mut sink, 100, 1, 0, None, &cancel, &tx)
+            let ctx = PumpCtx {
+                id: 1,
+                cancel: &cancel,
+                pause: &pause,
+                progress: &tx,
+            };
+            let error = pump(&mut source, &mut sink, 100, 0, None, &ctx)
                 .await
                 .expect_err("取消了就不算成功");
             assert_eq!(error.to_string(), "已取消");

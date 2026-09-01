@@ -11,6 +11,10 @@ use gpui::SharedString;
 
 use super::entry::human_size;
 
+/// 速率的发布间隔。块级事件一秒能来几千个，每个都刷数字只会闪成一片；
+/// 一秒一跳的平均速率读得清，也足够看出"在动"。
+const SPEED_UPDATE_INTERVAL: Duration = Duration::from_secs(1);
+
 /// 方向决定图标与文案，也决定哪一端是源。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferDirection {
@@ -23,6 +27,8 @@ pub enum TransferDirection {
 pub enum TransferStatus {
     Queued,
     Transferring,
+    /// 用户按了暂停：块与块之间停住，句柄还在，恢复接着搬。
+    Paused,
     Completed,
     Failed,
     /// 用户按了取消，或者面板自己关掉时留下的。
@@ -32,7 +38,10 @@ pub enum TransferStatus {
 impl TransferStatus {
     /// 队列里"还没完事"的状态 —— 界面的脉冲提示与自动清理都按这个判断。
     pub fn is_active(self) -> bool {
-        matches!(self, Self::Queued | Self::Transferring)
+        matches!(
+            self,
+            Self::Queued | Self::Transferring | Self::Paused
+        )
     }
 
     /// 抽屉里那个状态小药丸的文字。
@@ -40,6 +49,7 @@ impl TransferStatus {
         match self {
             Self::Queued => "排队中",
             Self::Transferring => "传输中",
+            Self::Paused => "已暂停",
             Self::Completed => "已完成",
             Self::Failed => "失败",
             Self::Canceled => "已取消",
@@ -59,10 +69,15 @@ pub struct TransferItem {
     pub status: TransferStatus,
     /// 失败原因，来自对端或本地文件系统，原样展示。
     pub error: Option<SharedString>,
-    /// 上一次收到进度更新的时刻，用来算瞬时速率。
+    /// 上一次收到进度更新的时刻，速率差分的窗口尽头。
     pub last_update: Option<SystemTime>,
     /// 上一次算出的速率，字节/秒。第一个事件之前没有速率。
     pub speed_bps: Option<f64>,
+    /// 上一次**发布**速率的时刻。速率一秒才发布一次，它与 [`Self::last_update`]
+    /// 是两回事：差分每个事件都做，发布要攒满一个间隔。
+    pub last_speed_at: Option<SystemTime>,
+    /// 自上次发布以来攒下的字节，到点折成这一段的平均速率。
+    pub speed_window_bytes: f64,
     /// 目录传输摊平出来的子项，顺序就是任务里逐个搬运的顺序。
     /// 单文件传输为空，那一行没有展开箭头。
     pub children: Vec<TransferChild>,
@@ -110,8 +125,10 @@ impl TransferItem {
 
     /// 收下一个进度事件：更新已搬字节与速率，必要时把状态推到"传输中"。
     ///
-    /// 速率按"距上次更新多久搬了多少"算，只留最后一段，因此拖动进度条与网络抖动
-    /// 的反应是即时的；完成与失败不再算速率，留下的那个数字就是最后一段的。
+    /// 速率按"距上次更新多久搬了多少"差分，但**不每个事件都发布** —— 32 KiB
+    /// 一块、快的时候一秒几千块，逐块刷新只会闪成一片。这里把没发布的字节
+    /// 攒起来，满 [`SPEED_UPDATE_INTERVAL`] 才折成这一段的平均速率发出去；
+    /// 完成与失败不再算速率，留下的那个数字就是最后发布的。
     pub fn record_progress(&mut self, transferred: u64, at: SystemTime) {
         let delta_bytes = transferred.saturating_sub(self.transferred) as f64;
         let delta_secs = match self.last_update {
@@ -125,11 +142,35 @@ impl TransferItem {
         self.transferred = transferred.max(self.transferred);
         self.last_update = Some(at);
         if delta_secs > 0.0 {
-            self.speed_bps = Some(delta_bytes / delta_secs);
+            match self.last_speed_at {
+                // 从没发布过：第一段差分直接当速率，别让数字空着。
+                None => {
+                    self.speed_bps = Some(delta_bytes / delta_secs);
+                    self.last_speed_at = Some(at);
+                }
+                Some(published) => {
+                    self.speed_window_bytes += delta_bytes;
+                    let elapsed = at.duration_since(published).unwrap_or(Duration::ZERO);
+                    if elapsed >= SPEED_UPDATE_INTERVAL {
+                        self.speed_bps =
+                            Some(self.speed_window_bytes / elapsed.as_secs_f64());
+                        self.last_speed_at = Some(at);
+                        self.speed_window_bytes = 0.0;
+                    }
+                }
+            }
         }
         if self.status == TransferStatus::Queued && transferred > 0 {
             self.status = TransferStatus::Transferring;
         }
+    }
+
+    /// 把速率观测重置干净：恢复暂停的传输时用 —— 暂停的时长不能摊进下一段
+    /// 速率，攒着没发布的字节也该作废重数。
+    pub fn reset_rate(&mut self) {
+        self.last_update = None;
+        self.last_speed_at = None;
+        self.speed_window_bytes = 0.0;
     }
 }
 
@@ -200,6 +241,8 @@ mod tests {
             error: None,
             last_update: None,
             speed_bps: None,
+            last_speed_at: None,
+            speed_window_bytes: 0.0,
             children: Vec::new(),
         }
     }
@@ -301,6 +344,35 @@ mod tests {
     }
 
     #[test]
+    fn speed_publishes_once_per_second() {
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let mb = 1024.0 * 1024.0;
+        let mut item = item(1000 * 1024 * 1024);
+
+        item.record_progress(1 << 20, start);
+        assert_eq!(item.speed_bps, None, "第一个事件没有可比的前一次");
+
+        // 第一段差分立即发布，之后一秒之内的事件只攒不刷。
+        item.record_progress(2 << 20, start + Duration::from_millis(100));
+        let first = item.speed_bps;
+        assert_eq!(first, Some(10.0 * mb), "1 MB / 0.1 s");
+        item.record_progress(3 << 20, start + Duration::from_millis(400));
+        item.record_progress(4 << 20, start + Duration::from_millis(800));
+        assert_eq!(
+            item.speed_bps, first,
+            "满一个间隔之前数字不该动：{item:?}"
+        );
+
+        // 到点了：把攒下的字节折成这一段的平均速率（6 MB ÷ 1.0 s）。
+        item.record_progress(8 << 20, start + Duration::from_millis(1_100));
+        assert_eq!(
+            item.speed_bps,
+            Some(6.0 * mb),
+            "窗口是上次发布以来的字节 ÷ 这段时间"
+        );
+    }
+
+    #[test]
     fn progress_never_goes_backwards() {
         let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let mut item = item(100);
@@ -313,9 +385,11 @@ mod tests {
     fn only_open_states_count_as_active() {
         assert!(TransferStatus::Queued.is_active());
         assert!(TransferStatus::Transferring.is_active());
+        assert!(TransferStatus::Paused.is_active(), "暂停了但没完事");
         assert!(!TransferStatus::Completed.is_active());
         assert!(!TransferStatus::Failed.is_active());
         assert!(!TransferStatus::Canceled.is_active());
+        assert_eq!(TransferStatus::Paused.label(), "已暂停");
         assert_eq!(TransferStatus::Canceled.label(), "已取消");
     }
 }

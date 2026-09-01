@@ -253,8 +253,9 @@ impl SftpPanel {
         // 下面那条排空任务。
         let (progress, receiver) = unbounded_channel();
 
-        // 传输队列抽屉：行模型与展开状态都归它。
-        let queue = cx.new(|_| TransferQueueDrawer::new());
+        // 传输队列抽屉：搜索框在这里造（要 window），行模型与展开状态都归抽屉。
+        let queue_search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索文件…"));
+        let queue = cx.new(|_| TransferQueueDrawer::new(queue_search, host.name.clone()));
 
         // 两份可调整大小的状态：左右两栏一份，文件区与传输队列一份。
         let resizable_state = cx.new(|_| ResizableState::default());
@@ -277,10 +278,12 @@ impl SftpPanel {
                 cx.subscribe(&filter, |this: &mut Self, _, _: &InputEvent, cx| {
                     this.rebuild_view(cx)
                 }),
-                // 抽屉上的动作（取消 / 清除已完成 / 收起）以事件过来。
+                // 抽屉上的动作（取消 / 暂停 / 清除已完成 / 收起）以事件过来。
                 cx.subscribe(&queue, |this: &mut Self, _, event: &TransferQueueEvent, cx| {
                     match event {
                         TransferQueueEvent::Cancel(id) => this.cancel_or_remove(*id, cx),
+                        TransferQueueEvent::TogglePause(id) => this.toggle_pause(*id, cx),
+                        TransferQueueEvent::TogglePauseAll => this.toggle_pause_all(cx),
                         TransferQueueEvent::ClearFinished => this.clear_finished(cx),
                         TransferQueueEvent::Collapse => {
                             this.queue_drawer = false;
@@ -289,6 +292,9 @@ impl SftpPanel {
                     }
                 }),
             ];
+
+            // 抽屉自己盯着搜索框：每敲一个字重算一遍可见行。
+            queue.update(cx, |drawer, cx| drawer.watch_search(cx));
 
             let mut panel = Self {
                 host,
@@ -965,6 +971,8 @@ impl SftpPanel {
                     error: None,
                     last_update: None,
                     speed_bps: None,
+                    last_speed_at: None,
+                    speed_window_bytes: 0.0,
                     children: Vec::new(),
                 },
                 cx,
@@ -1033,6 +1041,55 @@ impl SftpPanel {
                 }
             }
         }
+        cx.notify();
+    }
+
+    /// 行上的暂停 / 恢复。只对在跑的那条有意义：排队的还没有把手，
+    /// 轮到它时自然会开始。
+    fn toggle_pause(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(handle) = self.running.get(&id) else {
+            return;
+        };
+        if handle.is_paused() {
+            handle.resume();
+            self.queue
+                .update(cx, |drawer, cx| drawer.resume_transfer(id, cx));
+        } else {
+            handle.pause();
+            self.queue.update(cx, |drawer, cx| {
+                drawer.set_status(id, TransferStatus::Paused, cx)
+            });
+        }
+        cx.notify();
+    }
+
+    /// 暂停全部 / 恢复全部。只摆布在跑的那些；按钮的文案由抽屉里翻过来
+    /// 的那个开关决定，跟这一侧"全部停稳了"的事实对齐。
+    fn toggle_pause_all(&mut self, cx: &mut Context<Self>) {
+        if self.running.is_empty() {
+            return;
+        }
+        let all_paused = self.running.values().all(|handle| handle.is_paused());
+        let ids: Vec<u64> = self.running.keys().copied().collect();
+        for id in &ids {
+            let handle = &self.running[id];
+            if all_paused {
+                handle.resume();
+            } else {
+                handle.pause();
+            }
+        }
+        let paused_now = !all_paused;
+        self.queue.update(cx, |drawer, cx| {
+            for id in ids {
+                if paused_now {
+                    drawer.set_status(id, TransferStatus::Paused, cx);
+                } else {
+                    drawer.resume_transfer(id, cx);
+                }
+            }
+            drawer.set_all_paused(paused_now, cx);
+        });
         cx.notify();
     }
 
