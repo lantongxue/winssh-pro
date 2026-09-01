@@ -127,6 +127,10 @@ const ROW_GROUP: &str = "sftp-panel-row";
 /// 到顶了就在栏里说明截断了，而不是让人以为目录只有这些。
 const PANE_LIMIT: usize = 5_000;
 
+/// 隐藏文件开关的初始值：画出来。服务器上 `.ssh`、`.bashrc`、`.env` 这类都是
+/// 正经内容，藏起来等于每次连上都要先多点一下（原型 `sftpShowHidden` 默认为开）。
+const SHOW_HIDDEN_BY_DEFAULT: bool = true;
+
 /// 面板向宿主 [`crate::ui::panels::TerminalPanel`] 要的事。
 #[derive(Clone, Debug)]
 pub enum SftpPanelEvent {
@@ -156,6 +160,8 @@ pub struct SftpPanel {
     height: Pixels,
     /// 双栏，还是只看远端（窄窗口下远端那一栏才有地方呼吸）。
     dual: bool,
+    /// 点开头的条目画不画。两栏共用一个开关（导航条上那只眼睛），初值见
+    /// [`SHOW_HIDDEN_BY_DEFAULT`]。
     show_hidden: bool,
     /// 跟着终端的当前目录走。开着时 [`Self::set_terminal_cwd`] 会顺手翻过去。
     follow_cwd: bool,
@@ -268,7 +274,7 @@ impl SftpPanel {
                 open: false,
                 height: HEIGHT_COMPACT,
                 dual: true,
-                show_hidden: false,
+                show_hidden: SHOW_HIDDEN_BY_DEFAULT,
                 follow_cwd: false,
                 terminal_cwd: None,
                 local: Pane::default(),
