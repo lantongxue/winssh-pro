@@ -1713,16 +1713,7 @@ impl SftpPanel {
                                     .text_color(palette::sky()),
                             )
                             .child(div().text_xs().font_semibold().child("本地工作站"))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_xs()
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .text_color(palette::idle(cx))
-                                    .child(self.local_dir.display().to_string()),
-                            ),
+                            .child(self.render_local_breadcrumb(cx)),
                     )
                     .child(self.render_table_header(&local_columns(), cx))
                     .child(self.render_pane_body(false, cx))
@@ -1857,6 +1848,51 @@ impl SftpPanel {
                         ),
                 )
             })
+    }
+
+    /// 本地面包屑：把路径拆成可点的段，点一段就跳过去。
+    fn render_local_breadcrumb(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let path_str = self.local_dir.display().to_string();
+        let segments = local_breadcrumbs(&path_str);
+        let last = segments.len().saturating_sub(1);
+
+        h_flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap_1()
+            .children(segments.into_iter().enumerate().map(|(ix, (label, path))| {
+                let here = ix == last;
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .flex_shrink_0()
+                    .when(ix > 0, |this| {
+                        this.child(
+                            Icon::new(IconName::ChevronRight)
+                                .with_size(px(10.))
+                                .text_color(palette::idle(cx)),
+                        )
+                    })
+                    .child(
+                        Button::new(SharedString::from(format!("local-crumb-{}", ix)))
+                            .ghost()
+                            .xsmall()
+                            .label(label)
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .disabled(here)
+                            .when(!here, |button| {
+                                button
+                                    .text_color(palette::idle(cx))
+                                    .tooltip(SharedString::from(path.clone()))
+                            })
+                            .when(!here, |button| {
+                                button.on_click(cx.listener(move |this, _, window, cx| {
+                                    this.list_local(PathBuf::from(path.clone()), window, cx);
+                                }))
+                            }),
+                    )
+            }))
     }
 
     /// 面包屑那一行，右边带条目数与刚复制过的路径。
@@ -2600,4 +2636,33 @@ fn row_button(
                 this.on_entry_action(&target, &action, window, cx);
             });
         })
+}
+
+/// 把本地路径拆成面包屑：每一段是 (显示名, 完整路径)。
+/// Windows 上盘符会作为第一段（如 "C:"），Unix 上根目录是第一段（"/"）。
+fn local_breadcrumbs(path: &str) -> Vec<(String, String)> {
+    let path = std::path::Path::new(path);
+    let mut segments = Vec::new();
+    let mut current = std::path::PathBuf::new();
+
+    for component in path.components() {
+        current.push(component);
+        let label = match component {
+            std::path::Component::Prefix(prefix) => {
+                // Windows 盘符，如 "C:"
+                prefix.as_os_str().to_string_lossy().to_string()
+            }
+            std::path::Component::RootDir => {
+                // Unix 根目录
+                "/".to_string()
+            }
+            std::path::Component::Normal(name) => {
+                // 普通目录名
+                name.to_string_lossy().to_string()
+            }
+            _ => continue,
+        };
+        segments.push((label, current.display().to_string()));
+    }
+    segments
 }
