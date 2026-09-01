@@ -206,6 +206,9 @@ struct Pane {
     sizes: Rc<Vec<Size<Pixels>>>,
     scroll: VirtualListScrollHandle,
     loading: bool,
+    /// 删除操作进行中。用单独的标志而不复用 `loading`，是因为删除要画一个全屏遮罩
+    /// （挡住所有交互），而列目录只是在那一栏顶部转个圈。
+    deleting: bool,
     error: Option<SharedString>,
     /// 被 [`PANE_LIMIT`] 截断过。
     truncated: bool,
@@ -219,6 +222,7 @@ impl Default for Pane {
             sizes: Rc::new(Vec::new()),
             scroll: VirtualListScrollHandle::new(),
             loading: false,
+            deleting: false,
             error: None,
             truncated: false,
         }
@@ -705,6 +709,9 @@ impl SftpPanel {
                     if let Some(entity) = panel.upgrade() {
                         entity.update(app, |this, cx| {
                             let victim = victim.clone();
+                            // 开始删除前先把遮罩立起来。
+                            this.remote.deleting = true;
+                            cx.notify();
                             let work = {
                                 let service = service.clone();
                                 async move { service.remove(&victim).await }
@@ -741,17 +748,21 @@ impl SftpPanel {
         let directory = self.remote_path.clone();
         cx.spawn_in(window, async move |this, cx| {
             let outcome = work.await;
-            _ = this.update_in(cx, |this, window, cx| match outcome {
-                Ok(()) => {
-                    window.push_notification(done, cx);
-                    this.reload_in_place(&directory, window, cx);
-                    then(this, window, cx);
-                }
-                // 失败只在动作栏那一条里说：通知会被划走，而这栏正对着出错的那一格。
-                Err(error) => {
-                    window.push_notification(format!("{error:#}"), cx);
-                    this.remote.error = Some(SharedString::from(format!("{error:#}")));
-                    cx.notify();
+            _ = this.update_in(cx, |this, window, cx| {
+                // 不管成败，都把删除遮罩收起来。
+                this.remote.deleting = false;
+                match outcome {
+                    Ok(()) => {
+                        window.push_notification(done, cx);
+                        this.reload_in_place(&directory, window, cx);
+                        then(this, window, cx);
+                    }
+                    // 失败只在动作栏那一条里说：通知会被划走，而这栏正对着出错的那一格。
+                    Err(error) => {
+                        window.push_notification(format!("{error:#}"), cx);
+                        this.remote.error = Some(SharedString::from(format!("{error:#}")));
+                        cx.notify();
+                    }
                 }
             });
         })
@@ -1189,6 +1200,9 @@ impl SftpPanel {
                         entity.update(app, |this, cx| {
                             let target = PathBuf::from(victim.path.as_str());
                             let done = format!("已删除 {name}");
+                            // 开始删除前先把遮罩立起来。
+                            this.local.deleting = true;
+                            cx.notify();
                             this.run_local(LocalFileService::remove(target), done, window, cx);
                         });
                     }
@@ -1209,15 +1223,19 @@ impl SftpPanel {
         let dir = self.local_dir.clone();
         cx.spawn_in(window, async move |this, cx| {
             let outcome = work.await;
-            _ = this.update_in(cx, |this, window, cx| match outcome {
-                Ok(()) => {
-                    window.push_notification(done, cx);
-                    this.list_local(dir, window, cx);
-                }
-                Err(error) => {
-                    window.push_notification(format!("{error:#}"), cx);
-                    this.local.error = Some(SharedString::from(format!("{error:#}")));
-                    cx.notify();
+            _ = this.update_in(cx, |this, window, cx| {
+                // 不管成败，都把删除遮罩收起来。
+                this.local.deleting = false;
+                match outcome {
+                    Ok(()) => {
+                        window.push_notification(done, cx);
+                        this.list_local(dir, window, cx);
+                    }
+                    Err(error) => {
+                        window.push_notification(format!("{error:#}"), cx);
+                        this.local.error = Some(SharedString::from(format!("{error:#}")));
+                        cx.notify();
+                    }
                 }
             });
         })
@@ -1673,88 +1691,160 @@ impl SftpPanel {
         let selected = self.selected_local_entry().cloned();
         let can_upload =
             selected.is_some() && self.service.is_some() && !self.remote_path.is_empty();
-        v_flex()
-            .id("sftp-panel-local")
+        div()
+            .relative()
             .size_full()
-            .min_w_0()
-            .overflow_hidden()
             .child(
-                h_flex()
-                    .h(PANE_HEADER_HEIGHT)
-                    .flex_shrink_0()
-                    .px_2()
-                    .items_center()
-                    .gap_1p5()
+                v_flex()
+                    .id("sftp-panel-local")
+                    .size_full()
+                    .min_w_0()
+                    .overflow_hidden()
                     .child(
-                        Icon::new(AppIcon::Laptop)
-                            .with_size(px(12.))
-                            .text_color(palette::sky()),
+                        h_flex()
+                            .h(PANE_HEADER_HEIGHT)
+                            .flex_shrink_0()
+                            .px_2()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                Icon::new(AppIcon::Laptop)
+                                    .with_size(px(12.))
+                                    .text_color(palette::sky()),
+                            )
+                            .child(div().text_xs().font_semibold().child("本地工作站"))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_color(palette::idle(cx))
+                                    .child(self.local_dir.display().to_string()),
+                            ),
                     )
-                    .child(div().text_xs().font_semibold().child("本地工作站"))
+                    .child(self.render_table_header(&local_columns(), cx))
+                    .child(self.render_pane_body(false, cx))
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_xs()
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .text_color(palette::idle(cx))
-                            .child(self.local_dir.display().to_string()),
+                        h_flex()
+                            .h(PANE_HEADER_HEIGHT)
+                            .flex_shrink_0()
+                            .px_2()
+                            .items_center()
+                            .gap_2()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette::idle(cx))
+                                    .child(count_label(self.local.view.len(), self.local.truncated)),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                Self::accent_button("sftp-panel-upload", "上传到远端", !can_upload, cx)
+                                    .tooltip(match &selected {
+                                        Some(entry) if !can_upload => "先挑一个远端目录当落点".into(),
+                                        Some(entry) => SharedString::from(format!(
+                                            "把 {} 传到 {}",
+                                            entry.name, self.remote_path
+                                        )),
+                                        None => "先在左边挑一个文件或目录".into(),
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| this.upload_selected_local(cx))),
+                            ),
                     ),
             )
-            .child(self.render_table_header(&local_columns(), cx))
-            .child(self.render_pane_body(false, cx))
-            .child(
-                h_flex()
-                    .h(PANE_HEADER_HEIGHT)
-                    .flex_shrink_0()
-                    .px_2()
-                    .items_center()
-                    .gap_2()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette::idle(cx))
-                            .child(count_label(self.local.view.len(), self.local.truncated)),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        Self::accent_button("sftp-panel-upload", "上传到远端", !can_upload, cx)
-                            .tooltip(match &selected {
-                                Some(entry) if !can_upload => "先挑一个远端目录当落点".into(),
-                                Some(entry) => SharedString::from(format!(
-                                    "把 {} 传到 {}",
-                                    entry.name, self.remote_path
-                                )),
-                                None => "先在左边挑一个文件或目录".into(),
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| this.upload_selected_local(cx))),
-                    ),
-            )
+            .when(self.local.deleting, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(gpui::black().opacity(0.6))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .px_6()
+                                .py_4()
+                                .bg(cx.theme().background)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .rounded_lg()
+                                .shadow_lg()
+                                .child(
+                                    div()
+                                        .text_base()
+                                        .font_semibold()
+                                        .text_color(cx.theme().foreground)
+                                        .child("正在删除…"),
+                                ),
+                        ),
+                )
+            })
     }
 
     /// 右半：这台主机的文件系统。拖进来本机文件就是往这一栏传。
     /// 和左栏一样撑满所在的 `resizable_panel`；单栏模式下就是它自己铺满。
     fn render_remote_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .id("sftp-panel-remote")
+        div()
+            .relative()
             .size_full()
-            .min_w_0()
-            .overflow_hidden()
-            .child(self.render_breadcrumb(cx))
-            .child(self.render_table_header(&remote_columns(), cx))
-            .child(self.render_parent_row(cx))
             .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                        this.upload_paths(dropped_paths(paths), cx);
-                    }))
-                    .child(self.render_pane_body(true, cx)),
+                v_flex()
+                    .id("sftp-panel-remote")
+                    .size_full()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .child(self.render_breadcrumb(cx))
+                    .child(self.render_table_header(&remote_columns(), cx))
+                    .child(self.render_parent_row(cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                                this.upload_paths(dropped_paths(paths), cx);
+                            }))
+                            .child(self.render_pane_body(true, cx)),
+                    ),
             )
+            .when(self.remote.deleting, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(gpui::black().opacity(0.6))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .px_6()
+                                .py_4()
+                                .bg(cx.theme().background)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .rounded_lg()
+                                .shadow_lg()
+                                .child(
+                                    div()
+                                        .text_base()
+                                        .font_semibold()
+                                        .text_color(cx.theme().foreground)
+                                        .child("正在删除…"),
+                                ),
+                        ),
+                )
+            })
     }
 
     /// 面包屑那一行，右边带条目数与刚复制过的路径。
