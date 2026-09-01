@@ -1865,6 +1865,7 @@ impl SftpPanel {
                 h_flex()
                     .items_center()
                     .gap_1()
+                    .flex_shrink_0()
                     .children(segments.into_iter().enumerate().map(|(ix, (label, path))| {
                         let here = ix == last;
                         h_flex()
@@ -1929,6 +1930,7 @@ impl SftpPanel {
                         h_flex()
                             .items_center()
                             .gap_1()
+                            .flex_shrink_0()
                             .child(
                                 Button::new("sftp-panel-root")
                                     .ghost()
