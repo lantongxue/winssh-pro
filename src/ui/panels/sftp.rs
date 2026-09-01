@@ -690,8 +690,8 @@ impl SftpPanel {
                     "删除这个文件？"
                 })
                 .description(format!(
-                    "{name} 会从远端文件系统里去掉。目录非空时对端会拒绝这次删除，\
-                     我们不在背后替你递归删。"
+                    "{name} 会从远端文件系统里去掉。目录会连同里面的所有内容一并递归删除，\
+                     这一步不可恢复。"
                 ))
                 .button_props(
                     gpui_component::dialog::DialogButtonProps::default()
@@ -1156,8 +1156,8 @@ impl SftpPanel {
         }
     }
 
-    /// 删一个本地条目。这一步不可逆，且删的是本机文件 —— 所以先确认一次，且不在背后
-    /// 递归删非空目录（[`LocalFileService::remove`] 会让 `std::fs` 把这句原话报回来）。
+    /// 删一个本地条目。这一步不可逆，删的是本机文件 —— 所以先确认一次。目录会连整棵
+    /// 子树一并删掉（[`LocalFileService::remove`] 交给系统的 `remove_dir_all`）。
     fn delete_local_entry(&mut self, entry: &FileEntry, window: &mut Window, cx: &mut Context<Self>) {
         let victim = entry.clone();
         let name = victim.name.to_string();
@@ -1173,8 +1173,8 @@ impl SftpPanel {
                     "删除这个本地文件？"
                 })
                 .description(format!(
-                    "{name} 会从你的电脑上删掉。这一步不可逆，也不进回收站；\
-                     目录非空时会失败，我们不在背后替你递归删。"
+                    "{name} 会从你的电脑上直接删掉，不进回收站。这一步不可逆；\
+                     目录会连同里面的所有内容一并删除。"
                 ))
                 .button_props(
                     gpui_component::dialog::DialogButtonProps::default()

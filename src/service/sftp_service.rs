@@ -149,8 +149,14 @@ impl SftpService {
     /// 列一个目录。排序与过滤都不在这里 —— 那是界面每次显示前的加工，
     /// 服务只负责"对端认为这个目录里有什么"。
     pub async fn list(&self, dir: &str) -> Result<Vec<FileEntry>> {
+        Self::list_with(&self.session, dir).await
+    }
+
+    /// [`Self::list`] 的实现，收一个 `session` 而不是 `&self`：递归删除要在拿到子项后
+    /// 逐层下钻，那里只有 `session` 可用。normalize 口径两处共用一份。
+    async fn list_with(session: &Arc<SftpSession>, dir: &str) -> Result<Vec<FileEntry>> {
         let dir = path::normalize(dir);
-        let session = self.session.clone();
+        let session = session.clone();
         let label = dir.clone();
         let entries = crate::db::run(async move { session.read_dir(dir).await })
             .await
@@ -201,22 +207,54 @@ impl SftpService {
         .map_err(|error| remote(&format!("创建文件 {path_for_error}"), error))
     }
 
-    /// 删一个条目。目录用 `rmdir`：非空会被对端拒绝，那是实话 ——
-    /// 我们不在背后替你递归删掉别人的东西。
+    /// 删一个条目。目录走递归删除：自底向上把整棵子树清空，最后 rmdir 这一层。
+    ///
+    /// 软链接即便指向目录也只删链接本身（它的 `kind` 是 `Symlink` 不是 `Dir`），
+    /// 不顺着它删到别处去。这一步不可逆，界面负责先确认一次。
     pub async fn remove(&self, entry: &FileEntry) -> Result<()> {
         let target = entry.path.to_string();
-        let is_dir = entry.kind == FileKind::Dir;
+        if entry.kind == FileKind::Dir {
+            return Self::remove_dir_all(self.session.clone(), target).await;
+        }
         let session = self.session.clone();
         let label = target.clone();
-        crate::db::run(async move {
-            if is_dir {
-                session.remove_dir(target).await
-            } else {
-                session.remove_file(target).await
+        crate::db::run(async move { session.remove_file(target).await })
+            .await
+            .map_err(|error| remote(&format!("删除 {label}"), error))
+    }
+
+    /// 递归删一个远端目录：先把每一层的子项删干净，再对这一层 `rmdir`。
+    ///
+    /// 子项的绝对路径由 [`Self::list_with`] 拼好，递归下去就能直接当再次删除的目标；
+    /// `.` 与 `..` 挡掉，免得原地绕圈。async fn 自递归要装箱，所以这里是收 `session`
+    /// 的关联函数而不是 `&self` 方法。
+    fn remove_dir_all(
+        session: Arc<SftpSession>,
+        dir: String,
+    ) -> impl std::future::Future<Output = Result<()>> + Send + 'static {
+        async move {
+            for child in Self::list_with(&session, &dir).await? {
+                if matches!(child.name.as_str(), "." | "..") {
+                    continue;
+                }
+                let target = child.path.to_string();
+                let label = target.clone();
+                if child.kind == FileKind::Dir {
+                    // 真目录才再往下钻一层；其余（文件、软链接、特殊）当单个条目删掉。
+                    Box::pin(Self::remove_dir_all(session.clone(), target)).await?;
+                } else {
+                    let session = session.clone();
+                    crate::db::run(async move { session.remove_file(target).await })
+                        .await
+                        .map_err(|error| remote(&format!("删除 {label}"), error))?;
+                }
             }
-        })
-        .await
-        .map_err(|error| remote(&format!("删除 {label}"), error))
+            let target = dir;
+            let label = target.clone();
+            crate::db::run(async move { session.remove_dir(target).await })
+                .await
+                .map_err(|error| remote(&format!("删除目录 {label}"), error))
+        }
     }
 
     /// 重命名（给绝对路径时就是移动）。

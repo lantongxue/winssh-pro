@@ -95,11 +95,12 @@ impl LocalFileService {
         cmd
     }
 
-    /// 删掉一个本地条目。
+    /// 删掉一个本地条目。目录连整棵子树一并删掉。
     ///
-    /// 与远端删除同一个口径：目录非空时 `std::fs::remove_dir` 会失败，我们不在背后
-    /// 替你递归删 —— 删本机文件本就危险，递归删更是。这一步不可逆，调用方（界面）
-    /// 负责先确认一次。
+    /// 这一步直接交给操作系统的删除接口，而不是我们自己一行进制目录再删：目录走
+    /// `std::fs::remove_dir_all`（Windows 上是系统那一套带 `\\?\` 长路径、逐层删除的
+    /// 实现），文件与软链接走 `remove_file`（软链接删的是链接本身，不是它指向的东西）。
+    /// 这一步不可逆，调用方（界面）负责先确认一次。
     pub async fn remove(path: PathBuf) -> Result<()> {
         crate::db::run(async move {
             tokio::task::spawn_blocking(move || remove_blocking(&path))
@@ -110,12 +111,13 @@ impl LocalFileService {
     }
 }
 
-/// 真正的删除。同步的 `std::fs`，跑在 blocking 线程上（大目录的判断、网络盘都可能慢）。
+/// 真正的删除。同步的 `std::fs`，跑在 blocking 线程上（大目录、网络盘都可能慢）。
 fn remove_blocking(path: &Path) -> Result<()> {
     let metadata = std::fs::symlink_metadata(path)
         .with_context(|| format!("读取 {} 失败", path.display()))?;
     let result = if metadata.is_dir() {
-        std::fs::remove_dir(path)
+        // 目录连里面的东西一并删掉：系统调用负责递归，不在这儿手写遍历。
+        std::fs::remove_dir_all(path)
     } else {
         // 文件与软链接都走 remove_file：软链接删的是链接本身，不是它指向的东西。
         std::fs::remove_file(path)
@@ -326,5 +328,34 @@ mod tests {
             "本地栏一打开就该有东西可列：{}",
             LocalFileService::start_dir().display()
         );
+    }
+
+    #[test]
+    fn removing_a_directory_takes_the_whole_subtree() {
+        let root = std::env::temp_dir().join(format!("winssh-pro-rm-{}", std::process::id()));
+        let nested = root.join("a").join("b");
+        std::fs::create_dir_all(&nested).expect("建多层目录");
+        std::fs::write(nested.join("leaf.txt"), b"x").expect("写文件");
+
+        crate::db::runtime()
+            .block_on(LocalFileService::remove(root.clone()))
+            .expect("递归删非空目录");
+        assert!(!root.exists(), "整棵子树都该没了");
+    }
+
+    #[test]
+    fn removing_a_file_leaves_its_siblings() {
+        let root = std::env::temp_dir().join(format!("winssh-pro-rm1-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("建目录");
+        let victim = root.join("gone.txt");
+        std::fs::write(&victim, b"x").expect("写文件");
+        std::fs::write(root.join("keep.txt"), b"y").expect("写另一个");
+
+        crate::db::runtime()
+            .block_on(LocalFileService::remove(victim))
+            .expect("删单个文件");
+        assert!(!root.join("gone.txt").exists());
+        assert!(root.join("keep.txt").exists(), "只删点名的那一个");
+        std::fs::remove_dir_all(&root).ok();
     }
 }
