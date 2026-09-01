@@ -8,11 +8,12 @@
 //! | [`views`] | `*View` | 侧边栏里的整块内容，一次显示一个 |
 //! | [`panels`] | `*Panel` | 进 [`gpui_component::dock`] 的面板，可拖拽、分屏、存布局 |
 //! | [`dialogs`] | `*Dialog` | 盖在窗口中央、要用户答复的一层 |
+//! | [`drawers`] | `*Drawer` | 从边缘拉出来的抽屉（传输队列抽屉） |
 //! | [`cards`] | `*Card` | 列表或网格里代表一条数据的那一块 |
 //! | [`menus`] | `*Menu` | 点开之后浮在内容之上的一列动作 |
 //! | [`elements`] | `*Element` | 自己实现 [`gpui::Element`]，下到布局与绘制里的那一层 |
 //!
-//! 新增一类组件（抽屉、气泡……）就照这个样子新开一个目录，不要塞进
+//! 新增一类组件（气泡、浮层……）就照这个样子新开一个目录，不要塞进
 //! 已有的目录里凑合 —— 目录名一旦对不上里面的东西，就没人知道该往哪儿找了。
 //!
 //! 另外两处不是组件：[`theme`] 是画法（主题、配色、图标），
@@ -21,6 +22,7 @@
 mod bars;
 mod cards;
 mod dialogs;
+mod drawers;
 mod elements;
 mod menus;
 mod panels;

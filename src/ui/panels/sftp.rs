@@ -35,7 +35,7 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, App, AppContext as _, AsyncApp, ClickEvent, ClipboardItem, Context, Element as _,
+    AnyElement, App, AppContext as _, AsyncApp, ClickEvent, ClipboardItem, Context,
     Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, InteractiveElement as _,
     IntoElement, ParentElement as _, Pixels, Render, SharedString, Size,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
@@ -48,7 +48,6 @@ use gpui_component::{
     h_flex, h_resizable,
     input::{Input, InputEvent, InputState},
     menu::ContextMenuExt as _,
-    progress::Progress,
     resizable_panel,
     scroll::{ScrollableElement as _, ScrollbarAxis},
     table::{Table, TableCell, TableHead, TableHeader, TableRow},
@@ -58,6 +57,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::ui::{
     dialogs::{ChmodHandler, SftpChmodDialog, SftpEditorDialog, SftpFormDialog, SftpSavedHandler},
+    drawers::{TransferQueueDrawer, TransferQueueEvent},
     menus::{LocalEntryAction, LocalEntryActionHandler, LocalEntryMenu},
     menus::{SftpEntryAction, SftpEntryActionHandler, SftpEntryMenu},
     theme::AppIcon,
@@ -81,14 +81,11 @@ use crate::{
 /// 一行的行高。虚拟列表按它算滚动范围与可见区间，所以行必须**真的**是这么高：
 /// 对不上就会错行（同 `MonitorPanel` 的进程表）。
 const ROW_HEIGHT: Pixels = px(24.);
-/// 传输队列里的一行比表格行矮一点：那一块是状态，不是要读的东西。
-const QUEUE_ROW_HEIGHT: Pixels = px(20.);
 
 /// 导航条、栏头、动作栏的高度（原型分别是 h-8 / h-7 / h-7）。
 const NAV_HEIGHT: Pixels = px(32.);
 const PANE_HEADER_HEIGHT: Pixels = px(28.);
 const FOOTER_HEIGHT: Pixels = px(28.);
-const QUEUE_HEADER_HEIGHT: Pixels = px(22.);
 
 /// 传输队列抽屉的初始高度（原型 h-20，这里多留一点，好一次看见三行）。拖过它上沿
 /// 那根线之后，高度就归 [`ResizableState`] 记了。
@@ -126,8 +123,6 @@ const OWNER_WIDTH: Pixels = px(62.);
 /// 再窄就会因为右对齐 + truncate 把年份左半边裁掉、看着像被“大小”列盖住。
 const MODIFIED_WIDTH: Pixels = px(130.);
 const ACTION_WIDTH: Pixels = px(58.);
-const PROGRESS_WIDTH: Pixels = px(110.);
-const SPEED_WIDTH: Pixels = px(78.);
 
 /// 行内那排只在悬停时显形的按钮用的组名（同 `host_explorer` 的分组行）。
 const ROW_GROUP: &str = "sftp-panel-row";
@@ -197,11 +192,12 @@ pub struct SftpPanel {
     selected_local: Option<SharedString>,
     selected_remote: Option<SharedString>,
 
-    /// 队列里的行，新起的往上插（原型也是这个顺序）。
-    transfers: Vec<TransferItem>,
+    /// 传输队列抽屉：行模型与展开状态都在它里面（见 [`TransferQueueDrawer`]）。
+    queue: Entity<TransferQueueDrawer>,
     transfer_seq: u64,
     queue_drawer: bool,
-    queue: VecDeque<TransferJob>,
+    /// 待跑的任务：同时最多两条，坑位满了就在这里排队。
+    pending: VecDeque<TransferJob>,
     running: HashMap<u64, TransferHandle>,
     /// 进度事件从 tokio 那一侧回来的管子。
     progress: UnboundedSender<TransferEvent>,
@@ -257,12 +253,15 @@ impl SftpPanel {
         // 下面那条排空任务。
         let (progress, receiver) = unbounded_channel();
 
+        // 传输队列抽屉：行模型与展开状态都归它。
+        let queue = cx.new(|_| TransferQueueDrawer::new());
+
         // 两份可调整大小的状态：左右两栏一份，文件区与传输队列一份。
         let resizable_state = cx.new(|_| ResizableState::default());
         let queue_state = cx.new(|_| ResizableState::default());
 
         cx.new(|cx| {
-            // 两个订阅用 `subscribe*` 而不是 `listener`：构造期间这个 Entity 还不能
+            // 订阅用 `subscribe*` 而不是 `listener`：构造期间这个 Entity 还不能
             // 被 upgrade，而 `cx.listener` 内部要 upgrade 一次。
             let subscriptions = vec![
                 cx.subscribe_in(
@@ -277,6 +276,17 @@ impl SftpPanel {
                 ),
                 cx.subscribe(&filter, |this: &mut Self, _, _: &InputEvent, cx| {
                     this.rebuild_view(cx)
+                }),
+                // 抽屉上的动作（取消 / 清除已完成 / 收起）以事件过来。
+                cx.subscribe(&queue, |this: &mut Self, _, event: &TransferQueueEvent, cx| {
+                    match event {
+                        TransferQueueEvent::Cancel(id) => this.cancel_or_remove(*id, cx),
+                        TransferQueueEvent::ClearFinished => this.clear_finished(cx),
+                        TransferQueueEvent::Collapse => {
+                            this.queue_drawer = false;
+                            cx.notify();
+                        }
+                    }
                 }),
             ];
 
@@ -300,10 +310,10 @@ impl SftpPanel {
                 queue_state,
                 selected_local: None,
                 selected_remote: None,
-                transfers: Vec::new(),
+                queue,
                 transfer_seq: 0,
                 queue_drawer: false,
-                queue: VecDeque::new(),
+                pending: VecDeque::new(),
                 running: HashMap::new(),
                 progress,
                 copied: None,
@@ -943,21 +953,24 @@ impl SftpPanel {
         cx: &mut Context<Self>,
     ) {
         let id = job.id;
-        self.transfers.insert(
-            0,
-            TransferItem {
-                id,
-                filename,
-                direction: job.direction,
-                total,
-                transferred: 0,
-                status: TransferStatus::Queued,
-                error: None,
-                last_update: None,
-                speed_bps: None,
-            },
-        );
-        self.queue.push_back(job);
+        self.queue.update(cx, |drawer, cx| {
+            drawer.push(
+                TransferItem {
+                    id,
+                    filename,
+                    direction: job.direction,
+                    total,
+                    transferred: 0,
+                    status: TransferStatus::Queued,
+                    error: None,
+                    last_update: None,
+                    speed_bps: None,
+                    children: Vec::new(),
+                },
+                cx,
+            );
+        });
+        self.pending.push_back(job);
         self.queue_drawer = true;
         self.start_queued(cx);
     }
@@ -968,7 +981,7 @@ impl SftpPanel {
             return;
         };
         while self.running.len() < MAX_ACTIVE_TRANSFERS {
-            let Some(next) = self.queue.pop_front() else {
+            let Some(next) = self.pending.pop_front() else {
                 break;
             };
             let handle = match next.direction {
@@ -979,76 +992,48 @@ impl SftpPanel {
                     service.spawn_download(next.clone(), self.progress.clone())
                 }
             };
-            self.set_status(next.id, TransferStatus::Transferring);
+            self.queue.update(cx, |drawer, cx| {
+                drawer.set_status(next.id, TransferStatus::Transferring, cx)
+            });
             self.running.insert(next.id, handle);
         }
         cx.notify();
     }
 
-    fn set_status(&mut self, id: u64, status: TransferStatus) {
-        if let Some(item) = self.transfers.iter_mut().find(|item| item.id == id) {
-            item.status = status;
-        }
-    }
-
+    /// 进度与完成事件。展示的一半（行、子项、展开状态）归抽屉；这里只留
+    /// 任务调度的一半：腾坑、放行下一条、把传完的那一栏目录重列一遍。
     fn on_transfer_event(
         &mut self,
         event: TransferEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match event {
-            TransferEvent::Progress {
-                id,
-                transferred,
-                total,
-            } => {
-                if let Some(item) = self.transfers.iter_mut().find(|item| item.id == id) {
-                    // 总数以任务实际算出的为准：传一棵树时这里那份只是个猜。
-                    if total > 0 {
-                        item.total = total;
-                    }
-                    item.record_progress(transferred, SystemTime::now());
+        self.queue
+            .update(cx, |drawer, cx| drawer.on_transfer_event(&event, cx));
+        let TransferEvent::Done { id, error } = event else {
+            cx.notify();
+            return;
+        };
+
+        // 丢掉把手：任务本身已经结束，这里只是把坑腾出来。
+        self.running.remove(&id);
+        let direction = self.queue.read(cx).item(id).map(|item| item.direction);
+        let finished = error.is_none();
+        self.start_queued(cx);
+        if let Some(direction) = finished.then_some(direction).flatten() {
+            // 传完的那一栏要跟上：不然列表里那个文件还是旧大小、旧时间。
+            match direction {
+                TransferDirection::Upload => {
+                    let dir = self.remote_path.clone();
+                    self.reload_in_place(&dir, window, cx);
                 }
-                cx.notify();
-            }
-            TransferEvent::Done { id, error } => {
-                // 丢掉把手：任务本身已经结束，这里只是把坑腾出来。
-                self.running.remove(&id);
-                let direction = self
-                    .transfers
-                    .iter()
-                    .find(|item| item.id == id)
-                    .map(|item| item.direction);
-                let finished = error.is_none();
-                if let Some(item) = self.transfers.iter_mut().find(|item| item.id == id) {
-                    item.status = match error.as_deref() {
-                        None => TransferStatus::Completed,
-                        Some("已取消") => TransferStatus::Canceled,
-                        Some(_) => TransferStatus::Failed,
-                    };
-                    item.error = error.map(SharedString::from);
-                    if finished {
-                        item.transferred = item.transferred.max(item.total);
-                    }
+                TransferDirection::Download => {
+                    let dir = self.local_dir.clone();
+                    self.list_local(dir, window, cx);
                 }
-                self.start_queued(cx);
-                if let Some(direction) = finished.then_some(direction).flatten() {
-                    // 传完的那一栏要跟上：不然列表里那个文件还是旧大小、旧时间。
-                    match direction {
-                        TransferDirection::Upload => {
-                            let dir = self.remote_path.clone();
-                            self.reload_in_place(&dir, window, cx);
-                        }
-                        TransferDirection::Download => {
-                            let dir = self.local_dir.clone();
-                            self.list_local(dir, window, cx);
-                        }
-                    }
-                }
-                cx.notify();
             }
         }
+        cx.notify();
     }
 
     /// 行尾那个 ×：在跑的取消它，排队的撤下来，已经完事的从列表里去掉。
@@ -1061,25 +1046,25 @@ impl SftpPanel {
                 return; // 结束事件会把这一行落成"已取消"
             }
         }
-        if let Some(index) = self.queue.iter().position(|job| job.id == id) {
-            self.queue.remove(index);
+        if let Some(index) = self.pending.iter().position(|job| job.id == id) {
+            self.pending.remove(index);
         }
-        self.transfers.retain(|item| item.id != id);
+        self.queue.update(cx, |drawer, cx| {
+            drawer.retain(|item| item.id != id, cx)
+        });
         cx.notify();
     }
 
     /// 清掉已经完事的那些。在跑的不动 —— 那得先取消它。
     fn clear_finished(&mut self, cx: &mut Context<Self>) {
-        self.transfers
-            .retain(|item| item.status.is_active() || self.running.contains_key(&item.id));
+        let running = &self.running;
+        self.queue.update(cx, |drawer, cx| {
+            drawer.retain(
+                |item| item.status.is_active() || running.contains_key(&item.id),
+                cx,
+            );
+        });
         cx.notify();
-    }
-
-    fn active_transfers(&self) -> usize {
-        self.transfers
-            .iter()
-            .filter(|item| item.status.is_active())
-            .count()
     }
 
     // ------------------------------------------------------------------ 其它
@@ -1306,16 +1291,6 @@ fn rebuild_pane(pane: &mut Pane, needle: &str, show_hidden: bool, add_parent: bo
     pane.view = view;
 }
 
-/// 队列一行的颜色：一眼看得出这条是完事了、在跑、还是废了。
-fn status_tone(status: TransferStatus, cx: &App) -> gpui::Hsla {
-    match status {
-        TransferStatus::Completed => palette::green(),
-        TransferStatus::Failed => cx.theme().danger,
-        TransferStatus::Transferring => palette::blue(),
-        TransferStatus::Queued | TransferStatus::Canceled => palette::idle(cx),
-    }
-}
-
 impl EventEmitter<SftpPanelEvent> for SftpPanel {}
 
 impl Focusable for SftpPanel {
@@ -1330,7 +1305,7 @@ impl Drop for SftpPanel {
         for (_, handle) in self.running.drain() {
             handle.cancel();
         }
-        self.queue.clear();
+        self.pending.clear();
     }
 }
 
@@ -1416,7 +1391,8 @@ impl SftpPanel {
                 resizable_panel()
                     .size(QUEUE_HEIGHT)
                     .size_range(QUEUE_MIN_HEIGHT..Pixels::MAX)
-                    .child(self.render_queue(cx)),
+                    // 抽屉整个（头、表、行）都是那份组件，这里只负责把它装进来。
+                    .child(self.queue.clone()),
             );
         div().flex_1().min_h_0().child(group).into_any_element()
     }
@@ -2386,7 +2362,7 @@ impl SftpPanel {
     /// 底下一条：一句用法提示，加右边的传输队列开关。
     /// 选中条目能做的动作都收在行右键菜单里，这里不再重复摆一排按钮。
     fn render_action_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let active = self.active_transfers();
+        let active = self.queue.read(cx).active_count();
         h_flex()
             .id("sftp-panel-action-bar")
             .h(FOOTER_HEIGHT)
@@ -2417,160 +2393,15 @@ impl SftpPanel {
                             palette::idle(cx)
                         },
                     ))
-                    .label(SharedString::from(format!(
-                        "传输 ({})",
-                        self.transfers.len()
-                    )))
+                    .label(SharedString::from(
+                        format!("传输 ({})", self.queue.read(cx).count()),
+                    ))
                     .tooltip("传输队列")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.queue_drawer = !this.queue_drawer;
                         cx.notify();
                     })),
             )
-    }
-
-    /// 传输队列抽屉。高度不由自己定 —— 它住在 `v_resizable` 的下边那一格，拖上沿
-    /// 那根线改的就是它。
-    fn render_queue(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .id("sftp-panel-queue")
-            .size_full()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .bg(palette::recessed(cx))
-            .child(
-                h_flex()
-                    .h(QUEUE_HEADER_HEIGHT)
-                    .flex_shrink_0()
-                    .px_2()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_semibold()
-                            .child(SharedString::from(format!(
-                                "传输队列 ({})",
-                                self.transfers.len()
-                            ))),
-                    )
-                    .child(div().flex_1().min_w_0())
-                    .child(
-                        Button::new("sftp-panel-queue-clear")
-                            .ghost()
-                            .xsmall()
-                            .label("清除已完成")
-                            .tooltip("清掉已经完事的行；还在跑的得先取消")
-                            .on_click(cx.listener(|this, _, _, cx| this.clear_finished(cx))),
-                    )
-                    .child(
-                        Button::new("sftp-panel-queue-close")
-                            .ghost()
-                            .xsmall()
-                            .icon(Icon::new(IconName::Close).with_size(px(12.)))
-                            .tooltip("收起队列")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.queue_drawer = false;
-                                cx.notify();
-                            })),
-                    ),
-            )
-            // 这一块没有虚拟列表，套 `overflow_y_scroll` 是安全的。
-            .child(
-                div()
-                    .id("sftp-panel-queue-list")
-                    .flex_1()
-                    .min_h_0()
-                    .px_2()
-                    .pb_1()
-                    .overflow_y_scroll()
-                    .children(
-                        self.transfers
-                            .iter()
-                            .map(|item| self.render_transfer_row(item, cx)),
-                    ),
-            )
-    }
-
-    /// 队列里的一行：名字、进度、速率、状态，末尾那个 × 按状态是取消或去掉。
-    fn render_transfer_row(&self, item: &TransferItem, cx: &mut Context<Self>) -> AnyElement {
-        let tone = status_tone(item.status, cx);
-        let id = item.id;
-        let running = self.running.contains_key(&id);
-        let label = item.status.label();
-        h_flex()
-            .id(("sftp-panel-transfer", id))
-            .h(QUEUE_ROW_HEIGHT)
-            .flex_shrink_0()
-            .items_center()
-            .gap_2()
-            .text_xs()
-            .child(
-                Icon::new(match item.direction {
-                    TransferDirection::Upload => AppIcon::Upload,
-                    TransferDirection::Download => AppIcon::Download,
-                })
-                .with_size(px(10.))
-                .text_color(tone)
-                .flex_shrink_0(),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .child(item.filename.clone()),
-            )
-            .child(
-                div().w(PROGRESS_WIDTH).flex_shrink_0().child(
-                    Progress::new(("sftp-panel-progress", id))
-                        .value(item.progress())
-                        .color(tone)
-                        .loading(item.status == TransferStatus::Transferring),
-                ),
-            )
-            .child(
-                div()
-                    .w(SPEED_WIDTH)
-                    .flex_shrink_0()
-                    .text_right()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_color(palette::idle(cx))
-                    .child(item.speed_label()),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .px_1p5()
-                    .rounded_full()
-                    .bg(tone.opacity(0.15))
-                    .text_color(tone)
-                    .child(label),
-            )
-            .child(
-                Button::new(("sftp-panel-transfer-cancel", id))
-                    .ghost()
-                    .xsmall()
-                    .flex_shrink_0()
-                    .icon(
-                        Icon::new(IconName::Close)
-                            .with_size(px(10.))
-                            .text_color(palette::idle(cx)),
-                    )
-                    .tooltip(match running {
-                        true => "取消这次传输",
-                        false => "从列表里去掉",
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| this.cancel_or_remove(id, cx))),
-            )
-            .children(item.error.clone().map(|reason| {
-                div()
-                    .max_w(px(180.))
-                    .truncate()
-                    .text_color(cx.theme().danger)
-                    .child(reason)
-            }))
-            .into_any()
     }
 }
 

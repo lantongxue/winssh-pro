@@ -63,19 +63,34 @@ pub struct TransferItem {
     pub last_update: Option<SystemTime>,
     /// 上一次算出的速率，字节/秒。第一个事件之前没有速率。
     pub speed_bps: Option<f64>,
+    /// 目录传输摊平出来的子项，顺序就是任务里逐个搬运的顺序。
+    /// 单文件传输为空，那一行没有展开箭头。
+    pub children: Vec<TransferChild>,
 }
 
 impl TransferItem {
     /// 0.0 ~ 1.0。总数未知时不猜，给 0（进度条靠状态色表示"在跑"）。
     pub fn fraction(&self) -> f32 {
-        if self.total == 0 {
-            return if self.status == TransferStatus::Completed {
-                1.0
-            } else {
-                0.0
-            };
+        fraction_of(self.total, self.transferred, self.status)
+    }
+
+    /// 是不是目录传输：有子项的才有展开一说。
+    pub fn is_folder(&self) -> bool {
+        !self.children.is_empty()
+    }
+
+    /// 主行落定后同步子行：还没走到终点的跟着主行走同一个终点。
+    /// 成功时把字节数补齐（漏收的事件不再补报）；取消与失败只改状态，
+    /// 半截就是半截，不虚报字节数。
+    pub fn settle_children(&mut self, status: TransferStatus) {
+        for child in &mut self.children {
+            if child.status.is_active() {
+                child.status = status;
+                if status == TransferStatus::Completed {
+                    child.transferred = child.transferred.max(child.total);
+                }
+            }
         }
-        (self.transferred as f64 / self.total as f64).clamp(0.0, 1.0) as f32
     }
 
     /// 百分比，给 [`gpui_component::progress::Progress`]（它要 0~100）。
@@ -118,6 +133,58 @@ impl TransferItem {
     }
 }
 
+/// 目录传输里一个子文件自己的搬运状态，展开目录行时铺在下面。
+///
+/// 聚合进度（整棵树一条）仍归 [`TransferItem`]；子行只回答"这一个文件走到哪了"。
+/// 速率不在子行算 —— 单个文件几十毫秒就过去了，差分出来的数字只会抖。
+#[derive(Clone, Debug)]
+pub struct TransferChild {
+    /// 相对上传根目录的路径（`docs/img.png`），一行一个文件。
+    pub filename: SharedString,
+    /// 文件大小，任务规划时就数好了。
+    pub total: u64,
+    pub transferred: u64,
+    pub status: TransferStatus,
+}
+
+impl TransferChild {
+    /// 0.0 ~ 1.0，口径与 [`TransferItem::fraction`] 相同。
+    pub fn fraction(&self) -> f32 {
+        fraction_of(self.total, self.transferred, self.status)
+    }
+
+    /// 百分比，给 [`gpui_component::progress::Progress`]（它要 0~100）。
+    pub fn progress(&self) -> f32 {
+        self.fraction() * 100.0
+    }
+
+    /// 收下一个进度事件：字节数只进不退，排队中的算"在传"。
+    pub fn record_progress(&mut self, transferred: u64) {
+        self.transferred = self.transferred.max(transferred);
+        if self.status == TransferStatus::Queued {
+            self.status = TransferStatus::Transferring;
+        }
+    }
+
+    /// 这个文件落定了（改名成功）：字节数补齐，状态落成"已完成"。
+    pub fn mark_done(&mut self) {
+        self.transferred = self.transferred.max(self.total);
+        self.status = TransferStatus::Completed;
+    }
+}
+
+/// 比例的统一口径：总数未知（0）时不猜，只有完成才给满格。
+fn fraction_of(total: u64, transferred: u64, status: TransferStatus) -> f32 {
+    if total == 0 {
+        return if status == TransferStatus::Completed {
+            1.0
+        } else {
+            0.0
+        };
+    }
+    (transferred as f64 / total as f64).clamp(0.0, 1.0) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,7 +200,66 @@ mod tests {
             error: None,
             last_update: None,
             speed_bps: None,
+            children: Vec::new(),
         }
+    }
+
+    fn child(name: &str, total: u64, transferred: u64, status: TransferStatus) -> TransferChild {
+        TransferChild {
+            filename: name.into(),
+            total,
+            transferred,
+            status,
+        }
+    }
+
+    #[test]
+    fn folder_rows_are_the_ones_with_children() {
+        assert!(!item(0).is_folder(), "单文件没有子项，也不该有展开箭头");
+        let mut folder = item(0);
+        folder.children.push(child("a", 1, 0, TransferStatus::Queued));
+        assert!(folder.is_folder());
+    }
+
+    #[test]
+    fn a_child_keeps_counting_and_never_goes_backwards() {
+        let mut one = child("a", 10, 0, TransferStatus::Queued);
+
+        one.record_progress(4);
+        assert_eq!(one.status, TransferStatus::Transferring, "动了就算在传");
+        assert_eq!(one.progress(), 40.0);
+
+        one.record_progress(2);
+        assert_eq!(one.transferred, 4, "字节数只进不退");
+
+        one.mark_done();
+        assert_eq!(
+            (one.status, one.transferred),
+            (TransferStatus::Completed, 10),
+            "落定要补齐字节数"
+        );
+    }
+
+    #[test]
+    fn children_follow_the_parent_when_it_settles() {
+        let mut row = item(0);
+        row.children = vec![
+            child("done", 100, 100, TransferStatus::Completed),
+            child("half", 50, 20, TransferStatus::Transferring),
+            child("waiting", 0, 0, TransferStatus::Queued),
+        ];
+
+        row.settle_children(TransferStatus::Failed);
+        assert_eq!(row.children[0].status, TransferStatus::Completed, "到站的不再动");
+        assert_eq!(row.children[1].status, TransferStatus::Failed);
+        assert_eq!(row.children[1].transferred, 20, "失败不虚报字节数");
+        assert_eq!(row.children[2].status, TransferStatus::Failed);
+
+        let mut ok = item(0);
+        ok.children = vec![child("a", 100, 40, TransferStatus::Transferring)];
+        ok.settle_children(TransferStatus::Completed);
+        assert_eq!(ok.children[0].status, TransferStatus::Completed);
+        assert_eq!(ok.children[0].transferred, 100, "成功要补齐字节数");
     }
 
     #[test]

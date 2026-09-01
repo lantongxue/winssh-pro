@@ -30,7 +30,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    sftp::{FileEntry, FileKind, TransferDirection, path},
+    sftp::{FileEntry, FileKind, TransferChild, TransferDirection, TransferStatus, path},
     ssh::{SshHandler, open_sftp_session},
 };
 
@@ -71,6 +71,20 @@ pub enum TransferEvent {
         transferred: u64,
         total: u64,
     },
+    /// 目录传输：规划完成，一次报出全部子项，顺序就是之后逐个搬运的顺序。
+    /// 界面拿它把展开行里的文件清单铺出来，之后每个文件各有自己的进度。
+    Children {
+        id: u64,
+        items: Vec<TransferChild>,
+    },
+    /// 目录传输：序号 `index` 的子项搬完了一块。
+    ChildProgress {
+        id: u64,
+        index: usize,
+        transferred: u64,
+    },
+    /// 目录传输：序号 `index` 的子项落定（改名成功，真的到了最终名字上）。
+    ChildDone { id: u64, index: usize },
     /// 结束了。`error` 为空即成功；取消也是一条 `error`，文案就是"已取消"。
     Done { id: u64, error: Option<String> },
 }
@@ -432,7 +446,7 @@ async fn download(
         .await
         .with_context(|| format!("创建本地临时文件 {} 失败", temp.display()))?;
 
-    let moved = pump(&mut source, &mut sink, total, job.id, 0, &cancel, &progress).await?;
+    let moved = pump(&mut source, &mut sink, total, job.id, 0, None, cancel, progress).await?;
     if total > 0 && moved < total {
         bail!("下载不完整：{} / {} 字节", moved, total);
     }
@@ -468,6 +482,7 @@ async fn upload(
 ) -> Result<()> {
     let plan = plan_upload(&job.local, &path::normalize(&job.remote))?;
     let total = plan.total_bytes();
+    let folder = job.local.is_dir();
 
     // 先把骨架搭出来再搬字节：中途失败时界面上多出来的空目录是本来就要建的，
     // 不会被人误读成"这次上传留下了一半形状"。
@@ -475,9 +490,27 @@ async fn upload(
         ensure_dir(session, dir).await?;
     }
 
+    // 目录上传在聚合进度之外还逐个文件报进度：先一次性把子项清单报出去
+    // （界面展开就有完整的文件列表），之后每搬一块、落定一个都有事件跟上。
+    // 单文件传输不报 —— 没有可展开的东西。
+    if folder {
+        let root = plan.dirs.first().map(String::as_str);
+        let items = plan
+            .files
+            .iter()
+            .map(|file| TransferChild {
+                filename: relative_remote(&file.remote, root).into(),
+                total: file.size,
+                transferred: 0,
+                status: TransferStatus::Queued,
+            })
+            .collect();
+        let _ = progress.send(TransferEvent::Children { id: job.id, items });
+    }
+
     // 一个目录上传在界面上是**一条**进度条：分母是整棵树，偏移是前面已经搬完的。
     let mut moved = 0u64;
-    for file in &plan.files {
+    for (index, file) in plan.files.iter().enumerate() {
         if cancel.is_cancelled() {
             bail!("已取消");
         }
@@ -496,6 +529,7 @@ async fn upload(
             total,
             job.id,
             moved,
+            folder.then_some((index, file.size)),
             cancel,
             progress,
         )
@@ -510,6 +544,11 @@ async fn upload(
         rename_into_place(session, &temp, &file.remote)
             .await
             .map_err(|error| remote(&format!("落下 {}", file.remote), error))?;
+
+        // 改名成功才算这个文件到了：报在收尾之后，而不是最后一块写完时。
+        if folder {
+            let _ = progress.send(TransferEvent::ChildDone { id: job.id, index });
+        }
     }
     Ok(())
 }
@@ -662,12 +701,16 @@ fn upload_file(local: &Path, remote: &str) -> Result<UploadFile> {
 /// 读写两端都是泛型：远端是 [`russh_sftp::client::fs::File`]，本地是
 /// [`tokio::fs::File`]，两边都只要求 `AsyncRead`/`AsyncWrite`。
 /// `offset` 是给进度的起点偏移（目录树里前面那些文件已经搬了多少）。
+/// `child` 是目录上传里正在搬的那个子项（序号与它自己的大小）：聚合进度
+/// 照旧报整棵树，子项进度只在这一份文件自己的范围内报。
+#[allow(clippy::too_many_arguments)]
 async fn pump<R, W>(
     read: &mut R,
     write: &mut W,
     total: u64,
     id: u64,
     offset: u64,
+    child: Option<(usize, u64)>,
     cancel: &CancellationToken,
     progress: &UnboundedSender<TransferEvent>,
 ) -> Result<u64>
@@ -701,9 +744,29 @@ where
             transferred: offset + moved,
             total,
         });
+        if let Some((index, size)) = child {
+            let _ = progress.send(TransferEvent::ChildProgress {
+                id,
+                index,
+                transferred: moved.min(size),
+            });
+        }
     }
 
     Ok(moved)
+}
+
+/// 子项的展示名：远端绝对路径剥掉上传根目录后的相对路径（`docs/img.png`）。
+/// 树的走法保证了剥得掉；万一剥不掉，退回文件名本身。
+fn relative_remote(remote: &str, root: Option<&str>) -> String {
+    let name = path::file_name(remote).to_owned();
+    let Some(root) = root else {
+        return name;
+    };
+    match remote.strip_prefix(root) {
+        Some(rest) if !rest.is_empty() => rest.trim_start_matches('/').to_owned(),
+        _ => name,
+    }
 }
 
 /// 用 `from` 顶掉 `to`：本地这边先删同名再改名（`rename` 在 Windows 上不覆盖）。
@@ -863,6 +926,17 @@ mod tests {
     }
 
     #[test]
+    fn child_names_are_relative_to_the_upload_root() {
+        assert_eq!(relative_remote("/dst/pkg/two", Some("/dst/pkg")), "two");
+        assert_eq!(relative_remote("/dst/pkg/a/one", Some("/dst/pkg")), "a/one");
+        assert_eq!(
+            relative_remote("/dst/two", None),
+            "two",
+            "单文件传输没有根目录这回事，就报文件名"
+        );
+    }
+
+    #[test]
     fn a_tree_upload_is_planned_flat_and_adds_up() {
         let root = temp_dir("plan");
         let nested = root.join("pkg/a");
@@ -925,7 +999,7 @@ mod tests {
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             let cancel = CancellationToken::new();
-            let moved = pump(&mut source, &mut sink, total, 7, 0, &cancel, &tx)
+            let moved = pump(&mut source, &mut sink, total, 7, 0, None, &cancel, &tx)
                 .await
                 .expect("搬运应成功");
 
@@ -946,7 +1020,7 @@ mod tests {
                         assert_eq!(reported, total);
                         events.push(transferred);
                     }
-                    TransferEvent::Done { .. } => {}
+                    _ => {}
                 }
             }
             assert!(events.len() >= 3, "应当是一块一块报上来的：{events:?}");
@@ -966,7 +1040,7 @@ mod tests {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             let cancel = CancellationToken::new();
 
-            pump(&mut source, &mut sink, 100, 1, 40, &cancel, &tx)
+            pump(&mut source, &mut sink, 100, 1, 40, None, &cancel, &tx)
                 .await
                 .expect("搬 10 个");
 
@@ -991,7 +1065,7 @@ mod tests {
             let cancel = CancellationToken::new();
             cancel.cancel();
 
-            let error = pump(&mut source, &mut sink, 100, 1, 0, &cancel, &tx)
+            let error = pump(&mut source, &mut sink, 100, 1, 0, None, &cancel, &tx)
                 .await
                 .expect_err("取消了就不算成功");
             assert_eq!(error.to_string(), "已取消");
