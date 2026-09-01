@@ -1765,6 +1765,12 @@ impl SftpPanel {
                         .items_center()
                         .justify_center()
                         .bg(gpui::black().opacity(0.6))
+                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation()
+                        })
+                        .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation()
+                        })
                         .child(
                             div()
                                 .flex()
@@ -1823,6 +1829,12 @@ impl SftpPanel {
                         .items_center()
                         .justify_center()
                         .bg(gpui::black().opacity(0.6))
+                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation()
+                        })
+                        .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation()
+                        })
                         .child(
                             div()
                                 .flex()
