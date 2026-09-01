@@ -466,7 +466,11 @@ impl SftpPanel {
                 }
                 this.remote.loading = false;
                 match outcome {
-                    Ok(entries) => this.set_remote_entries(entries),
+                    Ok(entries) => {
+                        this.set_remote_entries(entries);
+                        // 进入新目录后重置滚动到顶部
+                        this.remote.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
+                    }
                     Err(error) => {
                         this.remote.entries.clear();
                         this.remote.error = Some(SharedString::from(format!("{error:#}")));
@@ -492,6 +496,8 @@ impl SftpPanel {
             _ = this.update_in(cx, |this, _, cx| {
                 if outcome.is_ok() {
                     this.local_dir = requested;
+                    // 进入新目录后重置滚动到顶部
+                    this.local.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
                 }
                 this.local.loading = false;
                 match outcome {
@@ -525,8 +531,10 @@ impl SftpPanel {
         let needle = self.filter.read(cx).value().to_lowercase();
         let show_hidden = self.show_hidden;
 
-        rebuild_pane(&mut self.local, &needle, show_hidden);
-        rebuild_pane(&mut self.remote, &needle, show_hidden);
+        let local_at_root = self.local_dir.parent().is_none();
+        let remote_at_root = self.at_root();
+        rebuild_pane(&mut self.local, &needle, show_hidden, true, local_at_root);
+        rebuild_pane(&mut self.remote, &needle, show_hidden, true, remote_at_root);
         cx.notify();
     }
 
@@ -546,9 +554,19 @@ impl SftpPanel {
     ) {
         if entry.kind.is_dir() {
             if local {
-                self.list_local(PathBuf::from(entry.path.as_str()), window, cx);
+                let target = if entry.name == ".." {
+                    self.local_dir.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.local_dir.clone())
+                } else {
+                    PathBuf::from(entry.path.as_str())
+                };
+                self.list_local(target, window, cx);
             } else {
-                self.load_remote(entry.path.as_str(), window, cx);
+                let target = if entry.name == ".." {
+                    parent(&self.remote_path)
+                } else {
+                    entry.path.to_string()
+                };
+                self.load_remote(&target, window, cx);
             }
             return;
         }
@@ -1250,7 +1268,9 @@ fn take_limit(mut entries: Vec<FileEntry>) -> Vec<FileEntry> {
 }
 
 /// 按当前的过滤词与隐藏文件开关，重算一栏要画的那些行。顺序固定按名称，目录在前。
-fn rebuild_pane(pane: &mut Pane, needle: &str, show_hidden: bool) {
+///
+/// `add_parent` 为 `true` 时在开头插入 ".." 返回上级目录的条目（不在根目录时）。
+fn rebuild_pane(pane: &mut Pane, needle: &str, show_hidden: bool, add_parent: bool, at_root: bool) {
     let mut view: Vec<FileEntry> = pane
         .entries
         .iter()
@@ -1259,6 +1279,21 @@ fn rebuild_pane(pane: &mut Pane, needle: &str, show_hidden: bool) {
         .cloned()
         .collect();
     sort_entries(&mut view);
+
+    // 在开头插入 ".." 返回上级目录条目（非根目录时）
+    if add_parent && !at_root && !view.is_empty() {
+        view.insert(0, FileEntry {
+            name: "..".into(),
+            path: "..".into(),
+            kind: crate::sftp::FileKind::Dir,
+            size: 0,
+            modified: None,
+            mode: None,
+            uid: None,
+            owner: None,
+        });
+    }
+
     pane.sizes = Rc::new(vec![size(px(0.), ROW_HEIGHT); view.len()]);
     pane.view = view;
 }
