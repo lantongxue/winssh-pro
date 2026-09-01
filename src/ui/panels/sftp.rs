@@ -3,7 +3,8 @@
 //! 对应原型 `SessionBottomSFTPPanel`（挂在终端下沿的那一块）。形状照它：顶部一条
 //! 导航（主机徽标 + 跟随终端 CWD + 路径栏 + 一排开关），中间双栏表格（两栏中间
 //! 那根线可拖，比例归 [`ResizableState`] 记），底下一条动作栏，再往下可以拉出
-//! 传输队列抽屉；右键一行还有一份完整的条目菜单（见 [`SftpEntryMenu`]）。
+//! 传输队列抽屉（它的上沿也是一根可拖的线，高度自己调，另有一份
+//! [`ResizableState`]）；右键一行还有一份完整的条目菜单（见 [`SftpEntryMenu`]）。
 //!
 //! 原型里这些东西是假的 —— 本地栏是一张写死的表、进度条靠 `setInterval` 往上加、
 //! 速度永远 `24.2 MB/s`、文件内容也是现编的。这里全部换成真的：
@@ -51,7 +52,7 @@ use gpui_component::{
     resizable_panel,
     scroll::{ScrollableElement as _, ScrollbarAxis},
     table::{Table, TableCell, TableHead, TableHeader, TableRow},
-    v_flex, v_virtual_list,
+    v_flex, v_resizable, v_virtual_list,
 };
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
@@ -89,8 +90,16 @@ const PANE_HEADER_HEIGHT: Pixels = px(28.);
 const FOOTER_HEIGHT: Pixels = px(28.);
 const QUEUE_HEADER_HEIGHT: Pixels = px(22.);
 
-/// 传输队列抽屉的高度（原型 h-20，这里多留一点，好一次看见三行）。
+/// 传输队列抽屉的初始高度（原型 h-20，这里多留一点，好一次看见三行）。拖过它上沿
+/// 那根线之后，高度就归 [`ResizableState`] 记了。
 const QUEUE_HEIGHT: Pixels = px(96.);
+
+/// 队列能被拖到的最矮：一个抽屉头加一行传输，再矮就没有内容可看了。
+const QUEUE_MIN_HEIGHT: Pixels = px(64.);
+/// 文件区（表格 + 动作栏）能被压到的最矮：一个栏头、两行文件，加动作栏自己那一截。
+/// 两个下限之和恰好等于紧凑档（`HEIGHT_COMPACT`）去掉导航条的高度 —— 面板再矮，
+/// 两边也都能守着自己的最小说法，不会把对方挤出去。
+const FILES_MIN_HEIGHT: Pixels = px(104.);
 
 /// 高度预设按钮在两档之间切。分界取原型那个 350：高于它给"压扁"，低于它给"展开"。
 const HEIGHT_COMPACT: Pixels = px(200.);
@@ -111,11 +120,11 @@ const MAX_ACTIVE_TRANSFERS: usize = 2;
 
 /// 右栏各列的宽度：名字吃掉剩下的，其余定死 —— 一列数字左右挪动就没法比了。
 const SIZE_WIDTH: Pixels = px(74.);
-const PERM_WIDTH: Pixels = px(78.);
+const PERM_WIDTH: Pixels = px(90.);
 const OWNER_WIDTH: Pixels = px(62.);
 /// 修改时间要放得下 `2026-06-10 21:54` 这串绝对时间（等宽字体 16 字符）。
 /// 再窄就会因为右对齐 + truncate 把年份左半边裁掉、看着像被“大小”列盖住。
-const MODIFIED_WIDTH: Pixels = px(118.);
+const MODIFIED_WIDTH: Pixels = px(130.);
 const ACTION_WIDTH: Pixels = px(58.);
 const PROGRESS_WIDTH: Pixels = px(110.);
 const SPEED_WIDTH: Pixels = px(78.);
@@ -180,6 +189,9 @@ pub struct SftpPanel {
     /// 双栏的宽度比例。拖中间那根分界线改的就是它；只在分栏画出来时才会被碰，
     /// 所以切到单栏再切回来，拖出来的比例还在。
     resizable_state: Entity<ResizableState>,
+    /// 文件区与传输队列的高度比例。拖队列上沿那根线改的就是它；只在队列拉开时才会
+    /// 被碰，所以收起再拉开，拖出来的高度还在。
+    queue_state: Entity<ResizableState>,
 
     /// 两栏各自的选中项，按路径记。
     selected_local: Option<SharedString>,
@@ -245,8 +257,9 @@ impl SftpPanel {
         // 下面那条排空任务。
         let (progress, receiver) = unbounded_channel();
 
-        // 创建可调整大小的状态
+        // 两份可调整大小的状态：左右两栏一份，文件区与传输队列一份。
         let resizable_state = cx.new(|_| ResizableState::default());
+        let queue_state = cx.new(|_| ResizableState::default());
 
         cx.new(|cx| {
             // 两个订阅用 `subscribe*` 而不是 `listener`：构造期间这个 Entity 还不能
@@ -284,6 +297,7 @@ impl SftpPanel {
                 path_input,
                 filter,
                 resizable_state,
+                queue_state,
                 selected_local: None,
                 selected_remote: None,
                 transfers: Vec::new(),
@@ -903,13 +917,6 @@ impl SftpPanel {
         }
     }
 
-    fn upload_selected_local(&mut self, cx: &mut Context<Self>) {
-        let Some(selected) = self.selected_local.clone() else {
-            return;
-        };
-        self.upload_paths(vec![PathBuf::from(selected.as_str())], cx);
-    }
-
     /// 下载的那一格还能不能落脚。目录被人删了、挂在 U 盘上被拔了，都在这儿说，
     /// 而不是等 worker 写到第一个字节上才说。
     fn writable_local_dir(&mut self, window: &mut Window, cx: &mut App) -> Option<PathBuf> {
@@ -1091,11 +1098,6 @@ impl SftpPanel {
             });
         });
         cx.notify();
-    }
-
-    fn selected_local_entry(&self) -> Option<&FileEntry> {
-        let path = self.selected_local.as_ref()?;
-        self.local.view.iter().find(|entry| &entry.path == path)
     }
 
     /// 右键菜单（以及行内悬停按钮）共用的分发：菜单只报"要干什么"，怎么做在这儿。
@@ -1370,18 +1372,61 @@ impl Render for SftpPanel {
             .bg(cx.theme().sidebar)
             .track_focus(&self.focus_handle)
             .child(self.render_nav(cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.render_panes(cx)),
-            )
-            .child(self.render_action_bar(cx))
-            .when(self.queue_drawer, |this| this.child(self.render_queue(cx)))
+            .child(self.render_body(cx))
     }
 }
 
 impl SftpPanel {
+    /// 导航条以下那一块。队列拉开时是上下可拖的分栏：上面文件区（表格 + 动作栏），
+    /// 下面传输队列，中间那根线拖的就是两者各占多高（原型也是这个叠法：动作栏在
+    /// 队列之上）。
+    ///
+    /// 队列收起时不画 `v_resizable`：藏起来的那一栏仍会在上缘留一根拖不动的把手。
+    /// 不画它还有个好处 —— [`ResizableState`] 只在分栏画出来时才被碰，收起再拉开，
+    /// 拖出来的高度还在。
+    fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.queue_drawer {
+            return v_flex()
+                .flex_1()
+                .min_h_0()
+                .child(self.render_files(cx))
+                .child(self.render_action_bar(cx))
+                .into_any_element();
+        }
+
+        // id 带上主机：两个会话分屏摆在一屏上时，各自的分栏状态互不串线
+        // （同 `render_panes`）。
+        //
+        // `ResizablePanelGroup` 自己只会 `size_full`，不接 `Styled` —— 直接挂在
+        // 面板上会按整面板的高度算（导航条那截就被顶出去了），所以包一层 `flex_1`。
+        let group_id = SharedString::from(format!("sftp-queue-{}", self.host.id));
+        let group = v_resizable(group_id)
+            .with_state(&self.queue_state)
+            .child(
+                resizable_panel()
+                    .size_range(FILES_MIN_HEIGHT..Pixels::MAX)
+                    .child(
+                        v_flex()
+                            .size_full()
+                            .child(self.render_files(cx))
+                            .child(self.render_action_bar(cx)),
+                    ),
+            )
+            .child(
+                resizable_panel()
+                    .size(QUEUE_HEIGHT)
+                    .size_range(QUEUE_MIN_HEIGHT..Pixels::MAX)
+                    .child(self.render_queue(cx)),
+            );
+        div().flex_1().min_h_0().child(group).into_any_element()
+    }
+
+    /// 双栏表格那一块。怎么撑满由调用方给：直接挂在面板上时是 `flex_1`，进
+    /// `v_resizable` 时由外面那个 `resizable_panel` 定高。
+    fn render_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div().flex_1().min_h_0().child(self.render_panes(cx))
+    }
+
     /// 中间那一块：双栏是左右可拖的分栏，单栏就只有远端那一栏铺满。
     ///
     /// 单栏时不画 `h_resizable`：藏起来的那个面板仍会在左缘留一根拖不动的把手。
@@ -1425,7 +1470,6 @@ impl SftpPanel {
             .bg(palette::recessed(cx))
             .child(self.render_host_badge(cx))
             .child(self.render_follow_toggle(cx))
-            .child(self.render_cwd_chip(cx))
             .child(self.render_path_bar(cx))
             .child(self.render_view_toggles(cx))
     }
@@ -1503,40 +1547,60 @@ impl SftpPanel {
             }))
     }
 
-    /// 终端目录和这一格不一样时给的一块快捷跳转：只看这一次，不动跟随开关。
-    fn render_cwd_chip(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(cwd) = self
-            .terminal_cwd
-            .clone()
-            .filter(|cwd| cwd.as_str() != self.remote_path)
-        else {
-            return div().into_any_element();
-        };
-        div()
-            .flex_shrink_0()
-            .child(
-                Button::new("sftp-panel-jump-cwd")
-                    .secondary()
-                    .xsmall()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .label(SharedString::from(format!("cd {cwd}")))
-                    .tooltip("只跳这一次：到终端当前目录")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.load_remote(cwd.as_str(), window, cx);
-                    })),
-            )
-            .into_any_element()
-    }
-
     fn render_path_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let ready = self.service.is_some();
-        let at_root = self.at_root();
         h_flex()
             .id("sftp-panel-path-bar")
             .flex_1()
             .min_w_0()
             .items_center()
             .gap_1()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(Input::new(&self.path_input).small()),
+            )
+            .child(
+                Self::accent_button("sftp-panel-go", "前往", !ready, cx).on_click(cx.listener(
+                    |this, _, window, cx| {
+                        let raw = this.path_input.read(cx).value().to_string();
+                        this.navigate_remote(raw, window, cx);
+                    },
+                )),
+            )
+            .child(
+                nav_button(
+                    "sftp-panel-refresh",
+                    Icon::new(AppIcon::RefreshCw).with_size(px(12.)),
+                    "刷新",
+                    cx,
+                )
+                .disabled(!ready)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    let dir = this.remote_path.clone();
+                    this.load_remote(&dir, window, cx);
+                })),
+            )
+    }
+
+    fn render_view_toggles(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let ready = self.service.is_some();
+        let at_root = self.at_root();
+        let tall = self.height > HEIGHT_SPLIT;
+        h_flex()
+            .id("sftp-panel-toggles")
+            .flex_shrink_0()
+            .items_center()
+            .gap_1()
+            .child(
+                div()
+                    .w(px(120.))
+                    .flex_shrink_0()
+                    .child(Input::new(&self.filter).small().cleanable(true)),
+            )
+            // 上一级与家目录跟路径输入是一件事，但它们挤在左边会把地址栏顶窄 ——
+            // 放在这里挨着新建那一组，导航用的图标按钮就都在一处。
             .child(
                 nav_button(
                     "sftp-panel-up",
@@ -1559,49 +1623,6 @@ impl SftpPanel {
                 )
                 .disabled(!ready)
                 .on_click(cx.listener(|this, _, window, cx| this.enter_remote_home(window, cx))),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(Input::new(&self.path_input).small()),
-            )
-            .child(
-                Self::accent_button("sftp-panel-go", "前往", !ready, cx).on_click(cx.listener(
-                    |this, _, window, cx| {
-                        let raw = this.path_input.read(cx).value().to_string();
-                        this.navigate_remote(raw, window, cx);
-                    },
-                )),
-            )
-            .child(
-                nav_button(
-                    "sftp-panel-refresh",
-                    Icon::new(AppIcon::RefreshCw).with_size(px(12.)),
-                    "重新列这一格",
-                    cx,
-                )
-                .disabled(!ready)
-                .on_click(cx.listener(|this, _, window, cx| {
-                    let dir = this.remote_path.clone();
-                    this.load_remote(&dir, window, cx);
-                })),
-            )
-    }
-
-    fn render_view_toggles(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let ready = self.service.is_some();
-        let tall = self.height > HEIGHT_SPLIT;
-        h_flex()
-            .id("sftp-panel-toggles")
-            .flex_shrink_0()
-            .items_center()
-            .gap_1()
-            .child(
-                div()
-                    .w(px(120.))
-                    .flex_shrink_0()
-                    .child(Input::new(&self.filter).small().cleanable(true)),
             )
             .child(
                 nav_button(
@@ -1706,7 +1727,7 @@ impl SftpPanel {
             )
     }
 
-    /// 主按钮（Go、Upload to Remote）：一个实心的强调色块。
+    /// 主按钮（前往）：一个实心的强调色块。
     fn accent_button(id: &'static str, label: &'static str, disabled: bool, cx: &App) -> Button {
         let accent = palette::blue();
         Button::new(id)
@@ -1725,13 +1746,13 @@ impl SftpPanel {
             .disabled(disabled)
     }
 
-    /// 左半：本地工作站。上传的源头；右键一栏也能打开、进目录、复制路径、删除。
+    /// 左半：本地工作站。上传的源头 —— 双击一个文件、把它拖到右栏、或走右键菜单里的
+    /// "上传到远端"，都会传到远端当前那一格。本地栏不画底栏：远端那栏要用它摆计数
+    /// 与"已复制路径"，这一栏没什么要摆的，省下来给文件列表。
+    /// 右键一栏也能打开、进目录、复制路径、删除。
     /// 删除会先弹确认，且不递归删非空目录 —— 动的是用户本机上的文件，处处保守。
     /// 宽度不在这里定 —— 它撑满所在的 `resizable_panel`，分界线拖到哪儿它就多宽。
     fn render_local_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let selected = self.selected_local_entry().cloned();
-        let can_upload =
-            selected.is_some() && self.service.is_some() && !self.remote_path.is_empty();
         div()
             .relative()
             .size_full()
@@ -1757,36 +1778,7 @@ impl SftpPanel {
                             .child(self.render_local_breadcrumb(cx)),
                     )
                     .child(self.render_table_header(&local_columns(), cx))
-                    .child(self.render_pane_body(false, cx))
-                    .child(
-                        h_flex()
-                            .h(PANE_HEADER_HEIGHT)
-                            .flex_shrink_0()
-                            .px_2()
-                            .items_center()
-                            .gap_2()
-                            .border_t_1()
-                            .border_color(cx.theme().border)
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(palette::idle(cx))
-                                    .child(count_label(self.local.view.len(), self.local.truncated)),
-                            )
-                            .child(div().flex_1())
-                            .child(
-                                Self::accent_button("sftp-panel-upload", "上传到远端", !can_upload, cx)
-                                    .tooltip(match &selected {
-                                        Some(entry) if !can_upload => "先挑一个远端目录当落点".into(),
-                                        Some(entry) => SharedString::from(format!(
-                                            "把 {} 传到 {}",
-                                            entry.name, self.remote_path
-                                        )),
-                                        None => "先在左边挑一个文件或目录".into(),
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| this.upload_selected_local(cx))),
-                            ),
-                    ),
+                    .child(self.render_pane_body(false, cx)),
             )
             .when(self.local.deleting, |this| {
                 this.child(
@@ -2437,12 +2429,12 @@ impl SftpPanel {
             )
     }
 
-    /// 传输队列抽屉。
+    /// 传输队列抽屉。高度不由自己定 —— 它住在 `v_resizable` 的下边那一格，拖上沿
+    /// 那根线改的就是它。
     fn render_queue(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .id("sftp-panel-queue")
-            .h(QUEUE_HEIGHT)
-            .flex_shrink_0()
+            .size_full()
             .border_t_1()
             .border_color(cx.theme().border)
             .bg(palette::recessed(cx))
