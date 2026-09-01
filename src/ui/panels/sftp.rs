@@ -1856,43 +1856,48 @@ impl SftpPanel {
         let segments = local_breadcrumbs(&path_str);
         let last = segments.len().saturating_sub(1);
 
-        h_flex()
+        div()
             .flex_1()
             .min_w_0()
-            .items_center()
-            .gap_1()
-            .children(segments.into_iter().enumerate().map(|(ix, (label, path))| {
-                let here = ix == last;
+            .id("local-breadcrumb-scroll")
+            .overflow_x_scroll()
+            .child(
                 h_flex()
                     .items_center()
                     .gap_1()
-                    .flex_shrink_0()
-                    .when(ix > 0, |this| {
-                        this.child(
-                            Icon::new(IconName::ChevronRight)
-                                .with_size(px(10.))
-                                .text_color(palette::idle(cx)),
-                        )
-                    })
-                    .child(
-                        Button::new(SharedString::from(format!("local-crumb-{}", ix)))
-                            .ghost()
-                            .xsmall()
-                            .label(label)
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .disabled(here)
-                            .when(!here, |button| {
-                                button
-                                    .text_color(palette::idle(cx))
-                                    .tooltip(SharedString::from(path.clone()))
+                    .children(segments.into_iter().enumerate().map(|(ix, (label, path))| {
+                        let here = ix == last;
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .flex_shrink_0()
+                            .when(ix > 0, |this| {
+                                this.child(
+                                    Icon::new(IconName::ChevronRight)
+                                        .with_size(px(10.))
+                                        .text_color(palette::idle(cx)),
+                                )
                             })
-                            .when(!here, |button| {
-                                button.on_click(cx.listener(move |this, _, window, cx| {
-                                    this.list_local(PathBuf::from(path.clone()), window, cx);
-                                }))
-                            }),
-                    )
-            }))
+                            .child(
+                                Button::new(SharedString::from(format!("local-crumb-{}", ix)))
+                                    .ghost()
+                                    .xsmall()
+                                    .label(label)
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .disabled(here)
+                                    .when(!here, |button| {
+                                        button
+                                            .text_color(palette::idle(cx))
+                                            .tooltip(SharedString::from(path.clone()))
+                                    })
+                                    .when(!here, |button| {
+                                        button.on_click(cx.listener(move |this, _, window, cx| {
+                                            this.list_local(PathBuf::from(path.clone()), window, cx);
+                                        }))
+                                    }),
+                            )
+                    })),
+            )
     }
 
     /// 面包屑那一行，右边带条目数与刚复制过的路径。
@@ -1915,47 +1920,58 @@ impl SftpPanel {
                     .text_color(palette::green()),
             )
             .child(
-                Button::new("sftp-panel-root")
-                    .ghost()
-                    .xsmall()
-                    .label("/")
-                    .tooltip("根目录")
-                    .disabled(self.service.is_none())
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.load_remote("/", window, cx);
-                    })),
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .id("remote-breadcrumb-scroll")
+                    .overflow_x_scroll()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                Button::new("sftp-panel-root")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("/")
+                                    .tooltip("根目录")
+                                    .disabled(self.service.is_none())
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.load_remote("/", window, cx);
+                                    })),
+                            )
+                            .children(segments.into_iter().enumerate().map(|(ix, (label, path))| {
+                                let here = ix == last;
+                                h_flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .flex_shrink_0()
+                                    .child(
+                                        Icon::new(IconName::ChevronRight)
+                                            .with_size(px(10.))
+                                            .text_color(palette::idle(cx)),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!("sftp-panel-crumb-{path}")))
+                                            .ghost()
+                                            .xsmall()
+                                            .label(label)
+                                            .disabled(here)
+                                            .when(!here, |button| {
+                                                button
+                                                    .text_color(palette::idle(cx))
+                                                    .tooltip(SharedString::from(path.clone()))
+                                            })
+                                            .when(!here, |button| {
+                                                button.on_click(cx.listener(move |this, _, window, cx| {
+                                                    this.load_remote(&path, window, cx);
+                                                }))
+                                            }),
+                                    )
+                            })),
+                    ),
             )
-            .children(segments.into_iter().enumerate().map(|(ix, (label, path))| {
-                let here = ix == last;
-                h_flex()
-                    .items_center()
-                    .gap_1()
-                    .flex_shrink_0()
-                    .child(
-                        Icon::new(IconName::ChevronRight)
-                            .with_size(px(10.))
-                            .text_color(palette::idle(cx)),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("sftp-panel-crumb-{path}")))
-                            .ghost()
-                            .xsmall()
-                            .label(label)
-                            .disabled(here)
-                            .when(!here, |button| {
-                                button
-                                    .text_color(palette::idle(cx))
-                                    .tooltip(SharedString::from(path.clone()))
-                            })
-                            .when(!here, |button| {
-                                button.on_click(cx.listener(move |this, _, window, cx| {
-                                    this.load_remote(&path, window, cx);
-                                }))
-                            }),
-                    )
-            }))
-            .child(div().flex_1().min_w_0())
             .child(
                 div()
                     .flex_shrink_0()
