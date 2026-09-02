@@ -35,24 +35,23 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, App, AppContext as _, AsyncApp, ClickEvent, ClipboardItem, Context,
-    Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Pixels, Render, SharedString, Size,
+    AnyElement, App, AppContext as _, AsyncApp, ClipboardItem, Context, Div, Entity,
+    EventEmitter, ExternalPaths, FocusHandle, Focusable, Hsla, InteractiveElement as _,
+    IntoElement, ParentElement as _, Pixels, Render, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
-    prelude::FluentBuilder as _, px, size,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, ResizableState,
-    Sizable as _, StyledExt as _, VirtualListScrollHandle, WindowExt as _,
+    Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex, h_resizable,
     input::{Input, InputEvent, InputState},
-    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
+    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     progress::Progress,
     resizable_panel,
-    scroll::{ScrollableElement as _, ScrollbarAxis},
-    table::{Table, TableCell, TableHead, TableHeader, TableRow},
-    v_flex, v_resizable, v_virtual_list,
+    table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState},
+    v_flex, v_resizable,
 };
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
@@ -118,18 +117,6 @@ const REMOTE_PANE_MIN: Pixels = px(380.);
 const MAX_ACTIVE_UPLOADS: usize = 10;
 const MAX_ACTIVE_DOWNLOADS: usize = 10;
 
-/// 右栏各列的宽度：名字吃掉剩下的，其余定死 —— 一列数字左右挪动就没法比了。
-const SIZE_WIDTH: Pixels = px(74.);
-const PERM_WIDTH: Pixels = px(90.);
-const OWNER_WIDTH: Pixels = px(62.);
-/// 修改时间要放得下 `2026-06-10 21:54` 这串绝对时间（等宽字体 16 字符）。
-/// 再窄就会因为右对齐 + truncate 把年份左半边裁掉、看着像被“大小”列盖住。
-const MODIFIED_WIDTH: Pixels = px(130.);
-const ACTION_WIDTH: Pixels = px(72.);
-
-/// 行内那排只在悬停时显形的按钮用的组名（同 `host_explorer` 的分组行）。
-const ROW_GROUP: &str = "sftp-panel-row";
-
 /// 一格里最多画这么多条目。远端目录动辄几万项，全搬进内存只为"看得见几个"不划算；
 /// 到顶了就在栏里说明截断了，而不是让人以为目录只有这些。
 const PANE_LIMIT: usize = 5_000;
@@ -148,6 +135,7 @@ pub enum SftpPanelEvent {
     /// 高度预设按钮要的绝对高度。真正的改法由宿主在它的 `ResizableState` 上做。
     SetHeight(Pixels),
     /// 空状态里那下"重试"：请宿主重新开一次 SFTP 通道。
+    #[allow(dead_code)]
     Reconnect,
 }
 
@@ -233,6 +221,603 @@ impl Render for RemoteDragPreview {
     }
 }
 
+/// 按列和排序方向对条目排序（目录始终置顶）。
+fn sort_by_column(entries: &mut [FileEntry], col_key: &str, sort: ColumnSort) {
+    match sort {
+        ColumnSort::Ascending => match col_key {
+            "name" => entries.sort_by(|a, b| {
+                b.kind.is_dir().cmp(&a.kind.is_dir()).then_with(|| {
+                    a.name
+                        .to_lowercase()
+                        .cmp(&b.name.to_lowercase())
+                        .then_with(|| a.name.cmp(&b.name))
+                })
+            }),
+            "size" => entries.sort_by(|a, b| {
+                b.kind.is_dir().cmp(&a.kind.is_dir()).then_with(|| {
+                    a.size.cmp(&b.size).then_with(|| {
+                        a.name
+                            .to_lowercase()
+                            .cmp(&b.name.to_lowercase())
+                            .then_with(|| a.name.cmp(&b.name))
+                    })
+                })
+            }),
+            "modified" => entries.sort_by(|a, b| {
+                b.kind.is_dir().cmp(&a.kind.is_dir()).then_with(|| {
+                    a.modified.cmp(&b.modified).then_with(|| {
+                        a.name
+                            .to_lowercase()
+                            .cmp(&b.name.to_lowercase())
+                            .then_with(|| a.name.cmp(&b.name))
+                    })
+                })
+            }),
+            "perm" => entries.sort_by(|a, b| {
+                b.kind.is_dir().cmp(&a.kind.is_dir()).then_with(|| {
+                    a.mode.cmp(&b.mode).then_with(|| {
+                        a.name
+                            .to_lowercase()
+                            .cmp(&b.name.to_lowercase())
+                            .then_with(|| a.name.cmp(&b.name))
+                    })
+                })
+            }),
+            "owner" => entries.sort_by(|a, b| {
+                b.kind.is_dir().cmp(&a.kind.is_dir()).then_with(|| {
+                    a.owner.cmp(&b.owner).then_with(|| {
+                        a.name
+                            .to_lowercase()
+                            .cmp(&b.name.to_lowercase())
+                            .then_with(|| a.name.cmp(&b.name))
+                    })
+                })
+            }),
+            _ => sort_entries(entries),
+        },
+        ColumnSort::Descending => match col_key {
+            "name" => entries.sort_by(|a, b| {
+                b.kind.is_dir().cmp(&a.kind.is_dir()).then_with(|| {
+                    b.name
+                        .to_lowercase()
+                        .cmp(&a.name.to_lowercase())
+                        .then_with(|| b.name.cmp(&a.name))
+                })
+            }),
+            "size" => entries.sort_by(|a, b| {
+                b.kind.is_dir().cmp(&a.kind.is_dir()).then_with(|| {
+                    b.size.cmp(&a.size).then_with(|| {
+                        b.name
+                            .to_lowercase()
+                            .cmp(&a.name.to_lowercase())
+                            .then_with(|| b.name.cmp(&a.name))
+                    })
+                })
+            }),
+            "modified" => entries.sort_by(|a, b| {
+                b.kind.is_dir().cmp(&a.kind.is_dir()).then_with(|| {
+                    b.modified.cmp(&a.modified).then_with(|| {
+                        b.name
+                            .to_lowercase()
+                            .cmp(&a.name.to_lowercase())
+                            .then_with(|| b.name.cmp(&a.name))
+                    })
+                })
+            }),
+            "perm" => entries.sort_by(|a, b| {
+                b.kind.is_dir().cmp(&a.kind.is_dir()).then_with(|| {
+                    b.mode.cmp(&a.mode).then_with(|| {
+                        b.name
+                            .to_lowercase()
+                            .cmp(&a.name.to_lowercase())
+                            .then_with(|| b.name.cmp(&a.name))
+                    })
+                })
+            }),
+            "owner" => entries.sort_by(|a, b| {
+                b.kind.is_dir().cmp(&a.kind.is_dir()).then_with(|| {
+                    b.owner.cmp(&a.owner).then_with(|| {
+                        b.name
+                            .to_lowercase()
+                            .cmp(&a.name.to_lowercase())
+                            .then_with(|| b.name.cmp(&a.name))
+                    })
+                })
+            }),
+            _ => sort_entries(entries),
+        },
+        ColumnSort::Default => {
+            sort_entries(entries);
+        }
+    }
+}
+
+/// 本地文件数据表格 Delegate。
+pub struct LocalTableDelegate {
+    pub entries: Vec<FileEntry>,
+    pub columns: Vec<Column>,
+    pub sort_col: Option<usize>,
+    pub sort_dir: ColumnSort,
+    pub menu_handler: Option<LocalEntryActionHandler>,
+}
+
+impl LocalTableDelegate {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            columns: vec![
+                Column::new("name", "名称")
+                    .width(px(360.))
+                    .min_width(px(150.))
+                    .sortable(),
+                Column::new("size", "大小")
+                    .width(px(90.))
+                    .min_width(px(60.))
+                    .sortable()
+                    .text_right(),
+                Column::new("modified", "修改时间")
+                    .width(px(180.))
+                    .min_width(px(110.))
+                    .sortable()
+                    .text_right(),
+            ],
+            sort_col: None,
+            sort_dir: ColumnSort::Default,
+            menu_handler: None,
+        }
+    }
+
+    pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
+        self.entries = entries;
+        if let Some(col_ix) = self.sort_col {
+            if let Some(col) = self.columns.get(col_ix) {
+                let key = col.key.to_string();
+                sort_by_column(&mut self.entries, &key, self.sort_dir);
+            }
+        }
+    }
+}
+
+impl TableDelegate for LocalTableDelegate {
+    fn columns_count(&self, _: &App) -> usize {
+        self.columns.len()
+    }
+
+    fn rows_count(&self, _: &App) -> usize {
+        self.entries.len()
+    }
+
+    fn column(&self, col_ix: usize, _: &App) -> Column {
+        self.columns[col_ix].clone()
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        for (i, col) in self.columns.iter_mut().enumerate() {
+            if i == col_ix {
+                col.sort = Some(sort);
+            } else if col.sort.is_some() {
+                col.sort = Some(ColumnSort::Default);
+            }
+        }
+        self.sort_col = Some(col_ix);
+        self.sort_dir = sort;
+        let key = self.columns[col_ix].key.to_string();
+        sort_by_column(&mut self.entries, &key, sort);
+        cx.notify();
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let Some(entry) = self.entries.get(row_ix) else {
+            return div().into_any_element();
+        };
+        let Some(col) = self.columns.get(col_ix) else {
+            return div().into_any_element();
+        };
+        let now = SystemTime::now();
+
+        match col.key.as_ref() {
+            "name" => h_flex()
+                .size_full()
+                .items_center()
+                .gap_1p5()
+                .min_w_0()
+                .truncate()
+                .text_xs()
+                .child(entry_icon(entry, cx).with_size(px(12.)).flex_shrink_0())
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .when(entry.kind.is_dir(), |name| name.font_medium())
+                        .child(entry.name.clone()),
+                )
+                .into_any_element(),
+            "size" => h_flex()
+                .size_full()
+                .items_center()
+                .justify_end()
+                .text_xs()
+                .font_family(cx.theme().mono_font_family.clone())
+                .text_color(palette::idle(cx))
+                .child(entry.size_label())
+                .into_any_element(),
+            "modified" => h_flex()
+                .size_full()
+                .items_center()
+                .justify_end()
+                .text_xs()
+                .font_family(cx.theme().mono_font_family.clone())
+                .text_color(palette::idle(cx))
+                .child(entry.modified_label(now))
+                .into_any_element(),
+            _ => div().into_any_element(),
+        }
+    }
+
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        let entry = self.entries.get(row_ix).cloned();
+        div()
+            .id(("local-table-row", row_ix))
+            .cursor_pointer()
+            .when_some(entry, |this, entry| {
+                this.on_drag(
+                    DraggedLocalEntry {
+                        entry: entry.clone(),
+                    },
+                    |dragged, _, _, cx| {
+                        let entry = dragged.entry.clone();
+                        cx.new(|_| LocalDragPreview { entry })
+                    },
+                )
+            })
+    }
+
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let Some(entry) = self.entries.get(row_ix).cloned() else {
+            return menu;
+        };
+        let Some(handler) = self.menu_handler.clone() else {
+            return menu;
+        };
+        LocalEntryMenu::build(menu, &entry, &handler, cx)
+    }
+
+    fn render_empty(
+        &mut self,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .p_4()
+            .text_center()
+            .child(
+                Icon::new(IconName::Folder)
+                    .with_size(px(20.))
+                    .text_color(palette::idle(cx)),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("目录是空的"),
+            )
+    }
+}
+
+/// 远端文件数据表格 Delegate。
+pub struct RemoteTableDelegate {
+    pub entries: Vec<FileEntry>,
+    pub columns: Vec<Column>,
+    pub sort_col: Option<usize>,
+    pub sort_dir: ColumnSort,
+    pub menu_handler: Option<SftpEntryActionHandler>,
+    pub service_active: bool,
+}
+
+impl RemoteTableDelegate {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            columns: vec![
+                Column::new("name", "名称")
+                    .width(px(260.))
+                    .min_width(px(150.))
+                    .sortable(),
+                Column::new("size", "大小")
+                    .width(px(90.))
+                    .min_width(px(60.))
+                    .sortable()
+                    .text_right(),
+                Column::new("perm", "权限")
+                    .width(px(100.))
+                    .min_width(px(60.))
+                    .sortable(),
+                Column::new("owner", "所属")
+                    .width(px(80.))
+                    .min_width(px(50.))
+                    .sortable(),
+                Column::new("modified", "修改时间")
+                    .width(px(180.))
+                    .min_width(px(110.))
+                    .sortable()
+                    .text_right(),
+                Column::new("action", "操作")
+                    .width(px(80.))
+                    .min_width(px(80.))
+                    .resizable(false)
+                    .movable(false)
+                    .selectable(false),
+            ],
+            sort_col: None,
+            sort_dir: ColumnSort::Default,
+            menu_handler: None,
+            service_active: false,
+        }
+    }
+
+    pub fn set_entries(&mut self, entries: Vec<FileEntry>) {
+        self.entries = entries;
+        if let Some(col_ix) = self.sort_col {
+            if let Some(col) = self.columns.get(col_ix) {
+                let key = col.key.to_string();
+                sort_by_column(&mut self.entries, &key, self.sort_dir);
+            }
+        }
+    }
+}
+
+impl TableDelegate for RemoteTableDelegate {
+    fn columns_count(&self, _: &App) -> usize {
+        self.columns.len()
+    }
+
+    fn rows_count(&self, _: &App) -> usize {
+        self.entries.len()
+    }
+
+    fn column(&self, col_ix: usize, _: &App) -> Column {
+        self.columns[col_ix].clone()
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        for (i, col) in self.columns.iter_mut().enumerate() {
+            if i == col_ix {
+                col.sort = Some(sort);
+            } else if col.sort.is_some() {
+                col.sort = Some(ColumnSort::Default);
+            }
+        }
+        self.sort_col = Some(col_ix);
+        self.sort_dir = sort;
+        let key = self.columns[col_ix].key.to_string();
+        sort_by_column(&mut self.entries, &key, sort);
+        cx.notify();
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let Some(entry) = self.entries.get(row_ix).cloned() else {
+            return div().into_any_element();
+        };
+        let Some(col) = self.columns.get(col_ix) else {
+            return div().into_any_element();
+        };
+        let now = SystemTime::now();
+
+        match col.key.as_ref() {
+            "name" => h_flex()
+                .size_full()
+                .items_center()
+                .gap_1p5()
+                .min_w_0()
+                .truncate()
+                .text_xs()
+                .child(entry_icon(&entry, cx).with_size(px(12.)).flex_shrink_0())
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .when(entry.kind.is_dir(), |name| name.font_medium())
+                        .child(entry.name.clone()),
+                )
+                .into_any_element(),
+            "size" => h_flex()
+                .size_full()
+                .items_center()
+                .justify_end()
+                .text_xs()
+                .font_family(cx.theme().mono_font_family.clone())
+                .text_color(palette::idle(cx))
+                .child(entry.size_label())
+                .into_any_element(),
+            "perm" => h_flex()
+                .size_full()
+                .items_center()
+                .text_xs()
+                .font_family(cx.theme().mono_font_family.clone())
+                .text_color(palette::idle(cx))
+                .child(entry.permission_line())
+                .into_any_element(),
+            "owner" => h_flex()
+                .size_full()
+                .items_center()
+                .text_xs()
+                .text_color(palette::idle(cx))
+                .child(entry.owner_label())
+                .into_any_element(),
+            "modified" => h_flex()
+                .size_full()
+                .items_center()
+                .justify_end()
+                .text_xs()
+                .font_family(cx.theme().mono_font_family.clone())
+                .text_color(palette::idle(cx))
+                .child(entry.modified_label(now))
+                .into_any_element(),
+            "action" => {
+                let menu_handler = self.menu_handler.clone();
+                let deletable = self.service_active;
+                h_flex()
+                    .size_full()
+                    .items_center()
+                    .justify_end()
+                    .gap_1()
+                    .when_some(menu_handler, |this, handler| {
+                        let menu_for = entry.clone();
+                        this.when(entry.is_downloadable(), |cell| {
+                            let handler = handler.clone();
+                            let entry = menu_for.clone();
+                            cell.child(
+                                Button::new(("remote-row-download", row_ix))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(AppIcon::Download).text_color(palette::teal()))
+                                    .tooltip("下载到本地")
+                                    .on_click(move |_, window, cx| {
+                                        handler(&entry, &SftpEntryAction::Download, window, cx);
+                                    }),
+                            )
+                        })
+                        .when(entry.kind.is_dir(), |cell| {
+                            let handler = handler.clone();
+                            let entry = menu_for.clone();
+                            cell.child(
+                                Button::new(("remote-row-open", row_ix))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(IconName::Folder).text_color(palette::coral()))
+                                    .tooltip("进到这个目录")
+                                    .on_click(move |_, window, cx| {
+                                        handler(&entry, &SftpEntryAction::OpenFolder, window, cx);
+                                    }),
+                            )
+                        })
+                        .when(deletable, |cell| {
+                            let handler = handler.clone();
+                            let entry = menu_for.clone();
+                            cell.child(
+                                Button::new(("remote-row-delete", row_ix))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(AppIcon::Trash).text_color(cx.theme().danger))
+                                    .tooltip("删掉这个条目")
+                                    .on_click(move |_, window, cx| {
+                                        handler(&entry, &SftpEntryAction::Delete, window, cx);
+                                    }),
+                            )
+                        })
+                    })
+                    .into_any_element()
+            }
+            _ => div().into_any_element(),
+        }
+    }
+
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        let entry = self.entries.get(row_ix).cloned();
+        div()
+            .id(("remote-table-row", row_ix))
+            .cursor_pointer()
+            .when_some(entry, |this, entry| {
+                this.on_drag(
+                    DraggedRemoteEntry {
+                        entry: entry.clone(),
+                    },
+                    |dragged, _, _, cx| {
+                        let entry = dragged.entry.clone();
+                        cx.new(|_| RemoteDragPreview { entry })
+                    },
+                )
+            })
+    }
+
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let Some(entry) = self.entries.get(row_ix).cloned() else {
+            return menu;
+        };
+        let Some(handler) = self.menu_handler.clone() else {
+            return menu;
+        };
+        SftpEntryMenu::build(menu, &entry, &handler, cx)
+    }
+
+    fn render_empty(
+        &mut self,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .p_4()
+            .text_center()
+            .child(
+                Icon::new(AppIcon::Server)
+                    .with_size(px(20.))
+                    .text_color(palette::idle(cx)),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("目录是空的"),
+            )
+    }
+}
+
 /// 底部这一栏 SFTP 面板。
 pub struct SftpPanel {
     host: Host,
@@ -260,6 +845,9 @@ pub struct SftpPanel {
     remote: Pane,
     local_dir: PathBuf,
     remote_path: String,
+
+    local_table: Entity<TableState<LocalTableDelegate>>,
+    remote_table: Entity<TableState<RemoteTableDelegate>>,
 
     /// 中间那格路径：里面是**完整**路径（`~/logs` 也行）。不像原型那样把前导 `/`
     /// 当装饰画在输入框外面 —— 那样从别处粘一段路径进来会多出一个斜杠。
@@ -301,10 +889,7 @@ pub struct SftpPanel {
 /// 以及为什么没画上。
 struct Pane {
     entries: Vec<FileEntry>,
-    /// 虚拟列表要能按下标直接取行，所以这份提前算好（同进程表）。
     view: Vec<FileEntry>,
-    sizes: Rc<Vec<Size<Pixels>>>,
-    scroll: VirtualListScrollHandle,
     loading: bool,
     /// 删除操作进行中。用单独的标志而不复用 `loading`，是因为删除要画一个全屏遮罩
     /// （挡住所有交互），而列目录只是在那一栏顶部转个圈。
@@ -319,8 +904,6 @@ impl Default for Pane {
         Self {
             entries: Vec::new(),
             view: Vec::new(),
-            sizes: Rc::new(Vec::new()),
-            scroll: VirtualListScrollHandle::new(),
             loading: false,
             deleting: false,
             error: None,
@@ -346,6 +929,21 @@ impl SftpPanel {
         // 两份可调整大小的状态：左右两栏一份，文件区与传输队列一份。
         let resizable_state = cx.new(|_| ResizableState::default());
         let queue_state = cx.new(|_| ResizableState::default());
+
+        let local_table = cx.new(|cx| {
+            TableState::new(LocalTableDelegate::new(), window, cx)
+                .sortable(true)
+                .col_resizable(true)
+                .row_selectable(true)
+                .autofit(true)
+        });
+        let remote_table = cx.new(|cx| {
+            TableState::new(RemoteTableDelegate::new(), window, cx)
+                .sortable(true)
+                .col_resizable(true)
+                .row_selectable(true)
+                .autofit(true)
+        });
 
         cx.new(|cx| {
             // 订阅用 `subscribe*` 而不是 `listener`：构造期间这个 Entity 还不能
@@ -377,6 +975,68 @@ impl SftpPanel {
                         }
                     }
                 }),
+                cx.subscribe_in(
+                    &local_table,
+                    window,
+                    |this: &mut Self, _, event: &TableEvent, window, cx| match event {
+                        TableEvent::SelectRow(row_ix) => {
+                            let entry = this
+                                .local_table
+                                .read(cx)
+                                .delegate()
+                                .entries
+                                .get(*row_ix)
+                                .cloned();
+                            if let Some(entry) = entry {
+                                this.select(&entry, true, cx);
+                            }
+                        }
+                        TableEvent::DoubleClickedRow(row_ix) => {
+                            let entry = this
+                                .local_table
+                                .read(cx)
+                                .delegate()
+                                .entries
+                                .get(*row_ix)
+                                .cloned();
+                            if let Some(entry) = entry {
+                                this.open_entry(&entry, true, window, cx);
+                            }
+                        }
+                        _ => {}
+                    },
+                ),
+                cx.subscribe_in(
+                    &remote_table,
+                    window,
+                    |this: &mut Self, _, event: &TableEvent, window, cx| match event {
+                        TableEvent::SelectRow(row_ix) => {
+                            let entry = this
+                                .remote_table
+                                .read(cx)
+                                .delegate()
+                                .entries
+                                .get(*row_ix)
+                                .cloned();
+                            if let Some(entry) = entry {
+                                this.select(&entry, false, cx);
+                            }
+                        }
+                        TableEvent::DoubleClickedRow(row_ix) => {
+                            let entry = this
+                                .remote_table
+                                .read(cx)
+                                .delegate()
+                                .entries
+                                .get(*row_ix)
+                                .cloned();
+                            if let Some(entry) = entry {
+                                this.open_entry(&entry, false, window, cx);
+                            }
+                        }
+                        _ => {}
+                    },
+                ),
             ];
 
             // 抽屉自己盯着搜索框：每敲一个字重算一遍可见行。
@@ -396,6 +1056,8 @@ impl SftpPanel {
                 remote: Pane::default(),
                 local_dir,
                 remote_path: String::new(),
+                local_table,
+                remote_table,
                 path_input,
                 filter,
                 resizable_state,
@@ -591,7 +1253,9 @@ impl SftpPanel {
                     Ok(entries) => {
                         this.set_remote_entries(entries);
                         // 进入新目录后重置滚动到顶部
-                        this.remote.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
+                        this.remote_table.update(cx, |table, _| {
+                            table.vertical_scroll_handle.scroll_to_item(0, gpui::ScrollStrategy::Top);
+                        });
                     }
                     Err(error) => {
                         this.remote.entries.clear();
@@ -619,7 +1283,9 @@ impl SftpPanel {
                 if outcome.is_ok() {
                     this.local_dir = requested;
                     // 进入新目录后重置滚动到顶部
-                    this.local.scroll.scroll_to_item(0, gpui::ScrollStrategy::Top);
+                    this.local_table.update(cx, |table, _| {
+                        table.vertical_scroll_handle.scroll_to_item(0, gpui::ScrollStrategy::Top);
+                    });
                 }
                 this.local.loading = false;
                 match outcome {
@@ -657,6 +1323,24 @@ impl SftpPanel {
         let remote_at_root = self.at_root();
         rebuild_pane(&mut self.local, &needle, show_hidden, true, local_at_root);
         rebuild_pane(&mut self.remote, &needle, show_hidden, true, remote_at_root);
+
+        let local_entries = self.local.view.clone();
+        let remote_entries = self.remote.view.clone();
+        let local_menu = self.local_handler(cx);
+        let remote_menu = self.entry_handler(cx);
+        let service_active = self.service.is_some();
+
+        self.local_table.update(cx, |table, cx| {
+            table.delegate_mut().menu_handler = Some(local_menu);
+            table.delegate_mut().set_entries(local_entries);
+            table.refresh(cx);
+        });
+        self.remote_table.update(cx, |table, cx| {
+            table.delegate_mut().menu_handler = Some(remote_menu);
+            table.delegate_mut().service_active = service_active;
+            table.delegate_mut().set_entries(remote_entries);
+            table.refresh(cx);
+        });
         cx.notify();
     }
 
@@ -1468,7 +2152,6 @@ fn rebuild_pane(pane: &mut Pane, needle: &str, show_hidden: bool, add_parent: bo
         });
     }
 
-    pane.sizes = Rc::new(vec![size(px(0.), ROW_HEIGHT); view.len()]);
     pane.view = view;
 }
 
@@ -1576,7 +2259,12 @@ impl SftpPanel {
     /// 双栏表格那一块。怎么撑满由调用方给：直接挂在面板上时是 `flex_1`，进
     /// `v_resizable` 时由外面那个 `resizable_panel` 定高。
     fn render_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div().flex_1().min_h_0().child(self.render_panes(cx))
+        div()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .child(self.render_panes(cx))
     }
 
     /// 中间那一块：双栏是左右可拖的分栏，单栏就只有远端那一栏铺满。
@@ -1932,7 +2620,6 @@ impl SftpPanel {
                             .child(self.render_quick_jump_menu(cx))
                             .child(self.render_local_breadcrumb(cx)),
                     )
-                    .child(self.render_table_header(&local_columns(), cx))
                     .child(
                         div()
                             .relative()
@@ -1941,7 +2628,12 @@ impl SftpPanel {
                             .on_drop(cx.listener(|this, dragged: &DraggedRemoteEntry, window, cx| {
                                 this.download_entry(&dragged.entry, window, cx);
                             }))
-                            .child(self.render_pane_body(false, cx))
+                            .child(
+                                DataTable::new(&self.local_table)
+                                    .xsmall()
+                                    .bordered(false)
+                                    .stripe(true),
+                            )
                             .child(
                                 // 拖拽接收指示遮罩层（拖拽下载效果）
                                 div()
@@ -2026,7 +2718,7 @@ impl SftpPanel {
                                         .font_semibold()
                                         .text_color(cx.theme().foreground)
                                         .child("正在删除…"),
-                                ),
+                                    ),
                         ),
                 )
             })
@@ -2047,7 +2739,6 @@ impl SftpPanel {
                     .min_w_0()
                     .overflow_hidden()
                     .child(self.render_breadcrumb(cx))
-                    .child(self.render_table_header(&remote_columns(), cx))
                     .child(self.render_parent_row(cx))
                     .child(
                         div()
@@ -2061,7 +2752,12 @@ impl SftpPanel {
                                 let local_path = PathBuf::from(dragged.entry.path.to_string());
                                 this.upload_paths(vec![local_path], cx);
                             }))
-                            .child(self.render_pane_body(true, cx))
+                            .child(
+                                DataTable::new(&self.remote_table)
+                                    .xsmall()
+                                    .bordered(false)
+                                    .stripe(false),
+                            )
                             .child(
                                 // 拖拽接收指示遮罩层（类似网页拖拽上传效果）
                                 div()
@@ -2441,29 +3137,22 @@ impl SftpPanel {
             .flex_shrink_0()
             .w_full()
             .min_w_0()
+            .px_2()
+            .gap_1p5()
+            .items_center()
             .text_xs()
             .overflow_hidden()
             .cursor_pointer()
             .hover(|style| style.bg(palette::surface(cx)))
+            .text_color(palette::idle(cx))
             .child(
-                TableRow::new().xsmall().h_full().w_full().min_w_0().child(
-                    TableCell::new()
-                        .xsmall()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .gap_1p5()
-                        .text_color(palette::idle(cx))
-                        .child(
-                            Icon::new(IconName::ChevronUp)
-                                .with_size(px(12.))
-                                .flex_shrink_0()
-                                .text_color(palette::coral()),
-                        )
-                        .child("..")
-                        .child(div().child("[上级目录]")),
-                ),
+                Icon::new(IconName::ChevronUp)
+                    .with_size(px(12.))
+                    .flex_shrink_0()
+                    .text_color(palette::coral()),
             )
+            .child("..")
+            .child(div().child("[上级目录]"))
             .on_click(cx.listener(|this, _, window, cx| {
                 let up = parent(&this.remote_path);
                 this.load_remote(&up, window, cx);
@@ -2471,334 +3160,7 @@ impl SftpPanel {
             .into_any_element()
     }
 
-    /// 表头。用 `Table` 组件画：每一格都是 [`TableHead`]，宽度和单元格内边距
-    /// 走行里 [`TableCell`] 的同一套口径（`head_cell` / `name_cell` / `fixed_cell`
-    /// 共用同一列定义），所以表头和条目天然对齐。表头只有列名，不提供排序入口。
-    fn render_table_header(
-        &self,
-        columns: &[(&'static str, Option<Pixels>)],
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        Table::new()
-            .xsmall()
-            .flex_shrink_0()
-            .bg(gpui::transparent_black())
-            .child(
-                TableHeader::new()
-                    .text_xs()
-                    .font_semibold()
-                    .text_color(palette::idle(cx))
-                    .child(
-                        TableRow::new().h(px(22.)).children(
-                            columns
-                                .iter()
-                                .map(|(label, width)| head_cell(label, *width)),
-                        ),
-                    ),
-            )
-    }
 
-    /// 一栏的主体：要么是一张虚拟列表，要么是一句话说清楚为什么没有。
-    ///
-    /// 这里**不**套 `overflow_y_scroll`：那会给虚拟列表一个无限高的可用空间，
-    /// 于是它把全部行都画出来（同 `MonitorPanel` 的进程页）。
-    fn render_pane_body(&self, remote: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let pane = match remote {
-            true => &self.remote,
-            false => &self.local,
-        };
-        if pane.view.is_empty() {
-            return self.render_pane_note(remote, cx);
-        }
-
-        let (id, sizes, scroll) = (
-            SharedString::from(if remote { "remote" } else { "local" }),
-            pane.sizes.clone(),
-            &pane.scroll,
-        );
-        let list_id = SharedString::from(format!("sftp-panel-{id}-list"));
-        let rows_id = SharedString::from(format!("sftp-panel-{id}-rows"));
-
-        v_flex()
-            .id(list_id)
-            .flex_1()
-            .min_h_0()
-            .relative()
-            .size_full()
-            .child(
-                v_virtual_list(
-                    cx.entity().clone(),
-                    rows_id,
-                    sizes,
-                    move |this, visible, _, cx| {
-                        visible
-                            .map(|ix| match remote {
-                                true => this.render_remote_row(ix, cx),
-                                false => this.render_local_row(ix, cx),
-                            })
-                            .collect()
-                    },
-                )
-                .track_scroll(scroll),
-            )
-            .scrollbar(scroll, ScrollbarAxis::Vertical)
-            .into_any_element()
-    }
-
-    /// 没有行可画的时候说什么。只说真的：拿不到的值就说明拿不到。
-    fn render_pane_note(&self, remote: bool, cx: &mut Context<Self>) -> AnyElement {
-        let pane = match remote {
-            true => &self.remote,
-            false => &self.local,
-        };
-        let (head, detail, retry) = if pane.loading {
-            ("正在列目录…", None, None)
-        } else if let Some(error) = pane.error.clone() {
-            (
-                "这一格列不出来。",
-                Some(error),
-                remote.then_some(Retry::Reload),
-            )
-        } else if remote && self.service.is_none() {
-            (
-                "这条会话没有 SFTP 通道。",
-                self.connect_error
-                    .clone()
-                    .or_else(|| Some("本地 Shell 会话没有远端文件系统可看。".into())),
-                Some(Retry::Connect),
-            )
-        } else if !pane.entries.is_empty() {
-            (
-                "没有匹配的条目。",
-                Some("过滤词或者隐藏文件的开关把它们挡掉了。".into()),
-                None,
-            )
-        } else {
-            ("这个目录是空的。", None, None)
-        };
-
-        v_flex()
-            .id("sftp-panel-note")
-            .flex_1()
-            .min_h_0()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .gap_2()
-            .p_4()
-            .text_center()
-            .child(
-                Icon::new(if remote {
-                    Icon::from(AppIcon::Server)
-                } else {
-                    Icon::from(IconName::Folder)
-                })
-                .with_size(px(20.))
-                .text_color(palette::idle(cx)),
-            )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(head),
-            )
-            .children(detail.map(|reason| {
-                div()
-                    .max_w(px(320.))
-                    .text_xs()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_color(palette::idle(cx))
-                    .child(reason)
-            }))
-            .children(retry.map(|kind| {
-                match kind {
-                    Retry::Reload => {
-                        let dir = self.remote_path.clone();
-                        Button::new("sftp-panel-retry")
-                            .ghost()
-                            .xsmall()
-                            .label("重试")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.load_remote(&dir, window, cx);
-                            }))
-                            .into_any_element()
-                    }
-                    Retry::Connect => Button::new("sftp-panel-reconnect")
-                        .ghost()
-                        .xsmall()
-                        .label("重新建立通道")
-                        .tooltip("让宿主重开一次 SFTP 会话")
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            cx.emit(SftpPanelEvent::Reconnect);
-                        }))
-                        .into_any_element(),
-                }
-            }))
-            .into_any_element()
-    }
-
-    /// 本地栏的一行。图标与列宽和右栏同一套口径，只是少了权限与属主两列。
-    fn render_local_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
-        let Some(entry) = self.local.view.get(ix).cloned() else {
-            return div().h(ROW_HEIGHT).into_any_element();
-        };
-        let selected = self.selected_local.as_ref() == Some(&entry.path);
-        let clicked = entry.clone();
-        let dragged_entry = entry.clone();
-        let menu_for = entry.clone();
-        let menu = self.local_handler(cx);
-        let now = SystemTime::now();
-
-        h_flex()
-            .id(("sftp-panel-local-row", ix))
-            .h(ROW_HEIGHT)
-            .flex_shrink_0()
-            .w_full()
-            .min_w_0()
-            .text_xs()
-            .overflow_hidden()
-            .cursor_pointer()
-            .border_b_1()
-            .border_color(cx.theme().border.opacity(0.5))
-            .when(selected, |row| row.bg(palette::surface_strong(cx)))
-            .when(!selected, |row| {
-                row.hover(|style| style.bg(palette::surface(cx)))
-            })
-            .on_drag(
-                DraggedLocalEntry {
-                    entry: dragged_entry,
-                },
-                |dragged, _, _, cx| {
-                    let entry = dragged.entry.clone();
-                    cx.new(|_| LocalDragPreview { entry })
-                },
-            )
-            .child(
-                TableRow::new()
-                    .xsmall()
-                    .h_full()
-                    .w_full()
-                    .min_w_0()
-                    .text_xs()
-                    .children([
-                        name_cell(&entry, cx),
-                        fixed_cell(SIZE_WIDTH, entry.size_label(), cx),
-                        fixed_cell(MODIFIED_WIDTH, entry.modified_label(now), cx),
-                    ]),
-            )
-            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                // 这一版 gpui 没有双击事件：同一次点击会先报 1 再报 2，
-                // 所以按计数判断。先选中再打开，不会漏掉那一下单击。
-                if event.click_count() >= 2 {
-                    this.open_entry(&clicked, true, window, cx);
-                } else {
-                    this.select(&clicked, true, cx);
-                }
-            }))
-            .context_menu(LocalEntryMenu::items(menu_for, menu))
-            .into_any_element()
-    }
-
-    /// 远栏的一行。悬停显形的那几个按钮走 [`SftpEntryAction`]，和右键菜单同一套分发。
-    fn render_remote_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
-        let Some(entry) = self.remote.view.get(ix).cloned() else {
-            return div().h(ROW_HEIGHT).into_any_element();
-        };
-        let selected = self.selected_remote.as_ref() == Some(&entry.path);
-        let clicked = entry.clone();
-        let dragged_entry = entry.clone();
-        let menu_for = entry.clone();
-        let menu = self.entry_handler(cx);
-        let now = SystemTime::now();
-        let deletable = self.service.is_some();
-
-        h_flex()
-            .id(("sftp-panel-remote-row", ix))
-            .group(ROW_GROUP)
-            .h(ROW_HEIGHT)
-            .flex_shrink_0()
-            .w_full()
-            .min_w_0()
-            .text_xs()
-            .overflow_hidden()
-            .cursor_pointer()
-            .border_b_1()
-            .border_color(cx.theme().border.opacity(0.5))
-            .when(selected, |row| row.bg(palette::surface_strong(cx)))
-            .when(!selected, |row| {
-                row.hover(|style| style.bg(palette::surface(cx)))
-            })
-            .on_drag(
-                DraggedRemoteEntry {
-                    entry: dragged_entry,
-                },
-                |dragged, _, _, cx| {
-                    let entry = dragged.entry.clone();
-                    cx.new(|_| RemoteDragPreview { entry })
-                },
-            )
-            .child(
-                TableRow::new()
-                    .xsmall()
-                    .h_full()
-                    .w_full()
-                    .min_w_0()
-                    .text_xs()
-                    .children([
-                        name_cell(&entry, cx),
-                        fixed_cell(SIZE_WIDTH, entry.size_label(), cx),
-                        fixed_cell(PERM_WIDTH, entry.permission_line(), cx),
-                        fixed_cell(OWNER_WIDTH, entry.owner_label(), cx),
-                        fixed_cell(MODIFIED_WIDTH, entry.modified_label(now), cx),
-                        TableCell::new()
-                            .xsmall()
-                            .w(ACTION_WIDTH)
-                            .min_w(ACTION_WIDTH)
-                            .flex_shrink_0()
-                            .justify_end()
-                            .gap_1()
-                            .when(entry.is_downloadable(), |cell| {
-                                cell.child(row_button(
-                                    "sftp-panel-row-download",
-                                    Icon::new(AppIcon::Download).text_color(palette::teal()),
-                                    "下载到本地",
-                                    SftpEntryAction::Download,
-                                    &menu_for,
-                                    cx,
-                                ))
-                            })
-                            .when(entry.kind.is_dir(), |cell| {
-                                cell.child(row_button(
-                                    "sftp-panel-row-open",
-                                    Icon::new(IconName::Folder).text_color(palette::coral()),
-                                    "进到这个目录",
-                                    SftpEntryAction::OpenFolder,
-                                    &menu_for,
-                                    cx,
-                                ))
-                            })
-                            .when(deletable, |cell| {
-                                cell.child(row_button(
-                                    "sftp-panel-row-delete",
-                                    Icon::new(AppIcon::Trash).text_color(cx.theme().danger),
-                                    "删掉这个条目",
-                                    SftpEntryAction::Delete,
-                                    &menu_for,
-                                    cx,
-                                ))
-                            }),
-                    ]),
-            )
-            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                if event.click_count() >= 2 {
-                    this.open_entry(&clicked, false, window, cx);
-                } else {
-                    this.select(&clicked, false, cx);
-                }
-            }))
-            .context_menu(SftpEntryMenu::items(menu_for, menu))
-            .into_any_element()
-    }
 
     /// 底下一条：一句用法提示，加右边的整体传输进度与速度（面板收起时）和传输队列开关。
     /// 选中条目能做的动作都收在行右键菜单里，这里不再重复摆一排按钮。
@@ -2934,75 +3296,6 @@ impl SftpPanel {
     }
 }
 
-/// 空状态里那下按钮要做的两件事之一：重列这一格，或者请宿主重开通道。
-enum Retry {
-    Reload,
-    Connect,
-}
-
-/// 两栏的列定义：`(列名, 宽度)`，宽度为 `None` 的那一列（名字）吃掉剩下的。
-/// 表头与每一行走同一份定义，对齐就是这么来的。
-fn local_columns() -> Vec<(&'static str, Option<Pixels>)> {
-    vec![
-        ("名称", None),
-        ("大小", Some(SIZE_WIDTH)),
-        ("修改时间", Some(MODIFIED_WIDTH)),
-    ]
-}
-
-fn remote_columns() -> Vec<(&'static str, Option<Pixels>)> {
-    vec![
-        ("名称", None),
-        ("大小", Some(SIZE_WIDTH)),
-        ("权限", Some(PERM_WIDTH)),
-        ("属主", Some(OWNER_WIDTH)),
-        ("修改时间", Some(MODIFIED_WIDTH)),
-        ("操作", Some(ACTION_WIDTH)),
-    ]
-}
-
-/// 表头的一格。定宽的列右对齐，与行里同列的 [`fixed_cell`] 同宽同边距。
-fn head_cell(label: &'static str, width: Option<Pixels>) -> TableHead {
-    let cell = TableHead::new().xsmall().truncate();
-    let cell = match width {
-        Some(width) => cell.w(width).min_w(width).flex_shrink_0().text_right(),
-        None => cell.flex_1().min_w(px(60.)),
-    };
-    cell.child(label)
-}
-
-/// 名字那一格：一个小图标加名字，长的名字截断而不是挤掉右边几列。
-fn name_cell(entry: &FileEntry, cx: &App) -> TableCell {
-    TableCell::new()
-        .xsmall()
-        .flex_1()
-        .min_w(px(60.))
-        .truncate()
-        .gap_1p5()
-        .child(entry_icon(entry, cx).with_size(px(12.)).flex_shrink_0())
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .when(entry.kind.is_dir(), |name| name.font_medium())
-                .child(entry.name.clone()),
-        )
-}
-
-/// 定宽的那几列。数字右对齐，读的人才能一眼比出大小。
-fn fixed_cell(width: Pixels, text: String, cx: &App) -> TableCell {
-    TableCell::new()
-        .xsmall()
-        .w(width)
-        .min_w(width)
-        .flex_shrink_0()
-        .truncate()
-        .text_right()
-        .font_family(cx.theme().mono_font_family.clone())
-        .text_color(palette::idle(cx))
-        .child(text)
-}
-
 /// 条目前面那个图标。目录一眼可辨（橙），剩下的按扩展名归类。
 fn entry_icon(entry: &FileEntry, cx: &App) -> Icon {
     if entry.kind.is_dir() {
@@ -3019,37 +3312,6 @@ fn entry_icon(entry: &FileEntry, cx: &App) -> Icon {
     }
 }
 
-/// 行尾那几个悬停才显形的小按钮。走的是和右键菜单同一条分发。
-fn row_button(
-    id: &'static str,
-    icon: Icon,
-    tooltip: &'static str,
-    action: SftpEntryAction,
-    entry: &FileEntry,
-    cx: &mut Context<SftpPanel>,
-) -> Button {
-    let target = entry.clone();
-    let panel = cx.entity().downgrade();
-    Button::new(id)
-        .ghost()
-        .xsmall()
-        .flex_shrink_0()
-        .icon(icon)
-        .tooltip(tooltip)
-        // 隐着的时候不参与命中测试，不会有人在看着空白的地方误触删除。
-        .invisible()
-        .group_hover(ROW_GROUP, |style| style.visible())
-        .on_click(move |_, window, app| {
-            let Some(entity) = panel.upgrade() else {
-                return;
-            };
-            entity.update(app, |this, cx| {
-                // 这一击只算在按钮上，别再冒泡成这一行的选中/打开。
-                cx.stop_propagation();
-                this.on_entry_action(&target, &action, window, cx);
-            });
-        })
-}
 
 /// 把本地路径拆成面包屑：每一段是 (显示名, 完整路径)。
 /// Windows 上盘符作为第一段（如 ("C:", "C:\\")），Unix 上根目录是第一段（("/", "/")）。

@@ -144,28 +144,37 @@ pub type SftpEntryActionHandler = Rc<dyn Fn(&FileEntry, &SftpEntryAction, &mut W
 pub struct SftpEntryMenu;
 
 impl SftpEntryMenu {
+    /// 直接向已有的 [`PopupMenu`] 填充条目。
+    pub fn build(
+        menu: PopupMenu,
+        entry: &FileEntry,
+        on_action: &SftpEntryActionHandler,
+        cx: &App,
+    ) -> PopupMenu {
+        SftpEntryAction::ALL
+            .iter()
+            .filter(|action| action.applies_to(entry))
+            .fold(menu.min_w(MENU_MIN_WIDTH), |menu, action| {
+                let item = action.menu_item(entry, on_action, cx);
+                if *action == SftpEntryAction::Delete {
+                    menu.separator().item(item)
+                } else {
+                    menu.item(item)
+                }
+            })
+    }
+
     /// 菜单内容，交给 [`PopupMenu`] 的调用方去填。
     ///
     /// 和 [`crate::ui::menus::HostMenu::items`] 一样返回构建器而不是菜单本身：
     /// 弹层每次打开都要重建一份，所以这个闭包会被反复调用。
+    #[allow(dead_code)]
     pub fn items(
         entry: FileEntry,
         on_action: SftpEntryActionHandler,
     ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         move |menu, _, cx| {
-            SftpEntryAction::ALL
-                .iter()
-                .filter(|action| action.applies_to(&entry))
-                .fold(menu.min_w(MENU_MIN_WIDTH), |menu, action| {
-                        let item = action.menu_item(&entry, &on_action, cx);
-                        // 删除自己一段，前面补一条分隔线。
-                        if *action == SftpEntryAction::Delete {
-                            menu.separator().item(item)
-                        } else {
-                            menu.item(item)
-                        }
-                    },
-                )
+            Self::build(menu, &entry, &on_action, cx)
         }
     }
 }
