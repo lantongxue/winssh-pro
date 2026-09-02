@@ -37,8 +37,8 @@ use gpui::{App, KeyBinding};
 use gpui_component::dock::{ClosePanel, ToggleZoom};
 
 use panels::{
-    BackTab, CopySelection, ExtendSelectionDown, ExtendSelectionUp, OpenSelection, PasteClipboard,
-    SelectAllEntries, Tab, ToggleMonitor, ToggleSftp,
+    BackTab, CloseSearch, CopySelection, ExtendSelectionDown, ExtendSelectionUp, Find,
+    OpenSelection, PasteClipboard, SelectAllEntries, Tab, ToggleMonitor, ToggleSftp,
 };
 use workspace::{ToggleCommandPalette, ToggleRightDock, ToggleSidebar};
 
@@ -64,6 +64,14 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("alt-m", ToggleMonitor, Some("Terminal")),
         KeyBinding::new("alt-t", ToggleMonitor, Some("Terminal")),
         KeyBinding::new("alt-f", ToggleSftp, Some("Terminal")),
+        // 终端内搜索。`ctrl-f` 在终端里是"光标右移一格"（emacs 键位、readline
+        // 默认就绑着它），所以非 macOS 上让给 `ctrl-shift-f`，和复制粘贴让开的
+        // 理由是同一个。Esc 只在搜索栏开着时被消费，见 `on_close_search`。
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-f", Find, Some("Terminal")),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-f", Find, Some("Terminal")),
+        KeyBinding::new("escape", CloseSearch, Some("Terminal")),
         // SFTP 文件列表里的多选。方向键、Esc 归表格自己（`DataTable` 上下文里
         // 已经绑过），这里只补它没有的那几个。绑在 `SftpPanel` 上下文而不是全局：
         // 焦点落在面板里的输入框（路径栏、过滤框）时，输入框自己的 `cmd-a`

@@ -21,7 +21,9 @@
 mod emulator;
 pub(crate) mod fps;
 mod keys;
+mod search;
 
 pub use emulator::{
     Content, Emulator, EmulatorEvent, GridCell, GridPoint, TerminalBounds, is_default_background,
 };
+pub use search::{SearchQuery, SearchState, rows_under_the_bar};

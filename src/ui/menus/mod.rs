@@ -7,7 +7,11 @@
 mod host_menu;
 mod local_entry_menu;
 mod sftp_entry_menu;
+mod terminal_menu;
 
 pub use host_menu::{HostAction, HostActionHandler, HostMenu};
 pub use local_entry_menu::{LocalEntryAction, LocalEntryActionHandler, LocalEntryMenu};
 pub use sftp_entry_menu::{SftpEntryAction, SftpEntryActionHandler, SftpEntryMenu};
+pub use terminal_menu::{
+    TerminalAction, TerminalActionHandler, TerminalMenu, allowed as terminal_menu_allowed,
+};

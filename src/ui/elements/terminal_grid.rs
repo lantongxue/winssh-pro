@@ -1,8 +1,13 @@
 //! 终端网格元素：把一份 [`Content`] 画成一屏字符。
 //!
 //! 移植自 zed 的 `crates/terminal_view/src/terminal_element.rs`，去掉了
-//! 超链接、搜索高亮、块状字符的次格子绘制与内联模式，留下终端必须有的三层：
-//! **底色 → 文字 → 光标**。
+//! 超链接、搜索高亮与内联模式，留下终端必须有的四层：
+//! **底色 → 自绘字形 → 文字 → 光标**。
+//!
+//! 第二层是 [`crate::ui::elements::boxdraw`]：制表符、块元素与 powerline
+//! 分隔符不交给字体，按格子的矩形自己画。理由见那个模块的头注释 ——
+//! 一句话是字体的字形按 em 盒设计，而格子是"字号 × 行距"算出来的另一个
+//! 尺寸，交给字体画，格与格之间就会露出缝（btop 的边框会变成虚线）。
 //!
 //! 为什么要自己写一个 `Element`，而不是拿 `div` 拼：
 //!
@@ -20,19 +25,20 @@
 use std::time::Instant;
 
 use gpui::{
-    App, Bounds, Element, ElementId, Entity, Font, FontFeatures, FontStyle, FontWeight,
-    GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, ShapedLine,
-    StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window, fill, outline, point,
-    px, relative, size,
+    App, Bounds, CursorStyle, Element, ElementId, Entity, Font, FontFeatures, FontStyle,
+    FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
+    LayoutId, Pixels, Point, ShapedLine, StrikethroughStyle, Style, TextAlign, TextRun,
+    UnderlineStyle, Window, fill, outline, point, px, relative, size,
 };
 
-use alacritty_terminal::vte::ansi::CursorShape;
+use alacritty_terminal::{term::search::Match, vte::ansi::CursorShape};
 
 use crate::{
     terminal::{
-        Content, Emulator, GridCell, GridPoint, TerminalBounds, fps, is_default_background,
+        Content, Emulator, GridCell, GridPoint, SearchState, TerminalBounds, fps,
+        is_default_background,
     },
-    ui::theme::ansi::AnsiPalette,
+    ui::{elements::boxdraw, theme::ansi::AnsiPalette},
 };
 
 /// 终端网格左右留空、上下贴边：上下 0 彻底消除与信息栏/状态栏的间距，
@@ -109,12 +115,121 @@ struct Region {
     color: Hsla,
 }
 
+/// 一屏格子上"哪些是搜索命中"的查询表。
+///
+/// 命中在 [`crate::terminal::SearchState`] 里是若干个跨行的区间，而画格子是
+/// 一格一问。每帧把区间摊平成一张按屏幕坐标索引的表，逐格 O(1) 查 ——
+/// 反过来每格去遍历几千个命中区间，满屏命中时就是平方级的。
+///
+/// 没开搜索时整张表不分配。
+#[derive(Default)]
+struct MatchMap {
+    /// 每个可见格子一个字节：0 = 不是命中，1 = 命中，2 = 当前那一个。
+    flags: Vec<u8>,
+    columns: usize,
+}
+
+impl MatchMap {
+    const HIT: u8 = 1;
+    const CURRENT: u8 = 2;
+
+    /// 按快照的可见区域摊平。
+    fn new(search: Option<&SearchState>, content: &Content) -> Self {
+        let Some(search) = search else {
+            return Self::default();
+        };
+        Self::build(
+            search.matches(),
+            search.current_index(),
+            content.screen_lines,
+            content.columns,
+            content.display_offset as i32,
+        )
+    }
+
+    /// 摊平那一步本身。和 [`Self::new`] 分开是为了能直接喂命中来测
+    /// —— 跨行的区间、屏幕上下的截断、偏移换算，每一处都差得起一位。
+    ///
+    /// `offset` 是 `display_offset`：命中的行号是缓冲坐标，加上它才是屏幕行号
+    /// —— 和 [`TerminalGridElement::layout_cells`] 里那一步是同一个换算。
+    fn build(
+        matches: &[Match],
+        current: Option<usize>,
+        rows: usize,
+        columns: usize,
+        offset: i32,
+    ) -> Self {
+        if rows == 0 || columns == 0 || matches.is_empty() {
+            return Self::default();
+        }
+
+        let mut flags = vec![0u8; rows * columns];
+        // 命中按网格顺序排着，所以整段在屏幕上方的是开头连续的一段，
+        // 跳过它们；到了第一个落在屏幕下方的就可以收手。
+        let skip = matches.partition_point(|m| m.end().line.0 + offset < 0);
+        for (index, m) in matches.iter().enumerate().skip(skip) {
+            let (start, end) = (*m.start(), *m.end());
+            if start.line.0 + offset >= rows as i32 {
+                break;
+            }
+            let value = match current == Some(index) {
+                true => Self::CURRENT,
+                false => Self::HIT,
+            };
+            for line in start.line.0..=end.line.0 {
+                let row = line + offset;
+                if row < 0 || row as usize >= rows {
+                    continue;
+                }
+                // 跨行的命中：第一行从它自己的列起，中间几行整行，
+                // 最后一行到它自己的列止。
+                let first = match line == start.line.0 {
+                    true => start.column.0,
+                    false => 0,
+                };
+                let last = match line == end.line.0 {
+                    true => end.column.0,
+                    false => columns.saturating_sub(1),
+                };
+                let base = row as usize * columns;
+                for column in first..=last.min(columns.saturating_sub(1)) {
+                    flags[base + column] = value;
+                }
+            }
+        }
+
+        Self { flags, columns }
+    }
+
+    /// 这一格是不是命中。`at` 是屏幕坐标。
+    fn at(&self, at: GridPoint) -> u8 {
+        if self.flags.is_empty() || at.line < 0 || at.column >= self.columns {
+            return 0;
+        }
+        let index = at.line as usize * self.columns + at.column;
+        self.flags.get(index).copied().unwrap_or(0)
+    }
+}
+
+/// 一个自己画的格子：制表符、块元素或 powerline 分隔符。`ink` 是它拆出来的
+/// 几笔（矩形、半透明矩形、路径），坐标已经是最终的像素位置。
+struct Native {
+    ink: Vec<boxdraw::Ink>,
+    color: Hsla,
+}
+
 /// prepaint 算好、paint 直接用的东西。
 pub struct GridLayout {
     bounds: TerminalBounds,
     regions: Vec<Region>,
+    natives: Vec<Native>,
     lines: Vec<(GridPoint, ShapedLine)>,
     cursor: Option<Cursor>,
+    /// 指针样式挂靠的那块区域。
+    hitbox: Hitbox,
+    /// 对端此刻自己收鼠标。是的话就不设 I 形指针，让它落回平台默认的箭头
+    /// —— 见 [`Element::paint`] 里那一句。
+    mouse_reporting: bool,
     /// 度量关掉时是 `None`，一次 `Instant::now()` 都不取（dev 默认开着，release
     /// 需 `WINSSH_FPS`）。开着时从 prepaint 记到 paint 末，量的就是这一帧网格的真实成本。
     painted_at: Option<Instant>,
@@ -139,12 +254,23 @@ impl TerminalGridElement {
         Self { emulator, focused }
     }
 
-    /// 把快照里的格子切成"底色块"与"文字段"两串。
+    /// 把快照里的格子切成"底色块"、"自绘格"与"文字段"三串。
     ///
-    /// 两串分开是因为它们的绘制单位不一样：底色是矩形，能横跨若干格合成一块；
-    /// 文字要交给排版系统，一段里的字形必须一致。
-    fn layout_cells(content: &Content, palette: &AnsiPalette) -> (Vec<Region>, Vec<Run>) {
+    /// 三串分开是因为它们的绘制单位不一样：底色是矩形，能横跨若干格合成一块；
+    /// 自绘格是按格子算出来的几笔，一格一份；文字要交给排版系统，一段里的
+    /// 字形必须一致。
+    ///
+    /// `scale` 是 `window.scale_factor()`，只有自绘那一路用得着 —— 笔画要对齐
+    /// 到物理像素，否则同一条竖线会一列 1px 一列 2px。
+    fn layout_cells(
+        content: &Content,
+        palette: &AnsiPalette,
+        bounds: &TerminalBounds,
+        scale: f32,
+        matches: &MatchMap,
+    ) -> (Vec<Region>, Vec<Native>, Vec<Run>) {
         let mut regions: Vec<Region> = Vec::new();
+        let mut natives: Vec<Native> = Vec::new();
         let mut runs: Vec<Run> = Vec::new();
         // 攒在手里还没收尾的那一段。
         let mut open: Option<Run> = None;
@@ -164,7 +290,7 @@ impl TerminalGridElement {
                 line: cell.point.line + content.display_offset as i32,
                 column: cell.point.column,
             };
-            let (foreground, background) = cell_colors(cell, palette, selected);
+            let (foreground, background) = cell_colors(cell, palette, selected, matches.at(at));
 
             if let Some(background) = background {
                 // 能接上就把上一块拉长，接不上另起一块 —— 块数越少画得越少。
@@ -196,12 +322,31 @@ impl TerminalGridElement {
                 continue;
             }
 
+            // 制表符、块元素、powerline 分隔符自己画，不走字体 —— 字体的字形
+            // 按 em 盒设计，格子按"字号 × 行距"算，交给字体画就会在格与格之间
+            // 露出缝。跳过之后这一段也就断在这里了：下一格的列号不再紧接着
+            // `run.at.column + run.cells`，[`Run::accepts`] 自然不认。
+            let mut character = cell.character();
+            if let Some(ink) = boxdraw::ink(character, cell_rect(at, bounds), scale, foreground.a) {
+                natives.push(Native {
+                    ink,
+                    color: foreground,
+                });
+                // 自绘只画字符本身。下划线、波浪线、删除线是 gpui 的 `TextRun`
+                // 装饰，得有个字形挂着才画得出来，所以带这些标志的格子补一个
+                // 空格进排版段；其余的到此为止。
+                if !(cell.has_underline() || cell.has_strikeout()) {
+                    continue;
+                }
+                character = ' ';
+            }
+
             let key = cell_style(cell, foreground);
             match &mut open {
-                Some(run) if run.accepts(at, &key) => run.push(cell.character(), true),
+                Some(run) if run.accepts(at, &key) => run.push(character, true),
                 _ => {
                     runs.extend(open.take());
-                    open = Some(Run::new(at, cell.character(), key));
+                    open = Some(Run::new(at, character, key));
                 }
             }
 
@@ -214,7 +359,7 @@ impl TerminalGridElement {
         }
 
         runs.extend(open);
-        (regions, runs)
+        (regions, natives, runs)
     }
 }
 
@@ -277,26 +422,31 @@ impl Element for TerminalGridElement {
             // 字宽大约是字号的六成），总比这一帧画不出来好。
             .unwrap_or(font_size * 0.6);
 
-        // 可用区域扣除内边距后，行列数向下取整。直接用 `cell_width/line_height`
-        // 会因为容器高度不是行高的整数倍而留下余量，余量留在顶部或底部都会
-        // 形成一条与状态栏/信息栏之间的空隙（两张截图红框）。为彻底消除上下
-        // 间距，这里将格子尺寸拉伸到恰好填满容器：`adjusted_* = available / cols/rows`，
-        // 使 `cols*adjusted_cell_width == available_width` 且
-        // `rows*adjusted_line_height == available_height`，网格与上下
-        // 栏零间距对齐，拉伸量每格 <1px，视觉无感。
+        // 格子取字体给的自然尺寸，不拉伸去凑满容器。
+        //
+        // 以前这里把格子拉到 `available / cols`，为的是让网格严丝合缝贴住上下
+        // 两条栏。代价是格宽不再等于字体的步进：`shape_line` 的 `force_width`
+        // 只挪字形不缩字形，而且差值 ≤1px 时干脆不挪，于是每一格的字都带一点
+        // 说不准的偏移。上下那条空隙其实不必这么治 —— 余量落在容器里，而容器
+        // 的底色和终端的默认底色本来就是同一个（见 `TerminalPanel::render_terminal`
+        // 的 `.bg(cx.theme().background)`），看不出来。
+        //
+        // 行高取整像素：整数行距让自绘的横线在每一行上厚度一致，也让上下相邻
+        // 两格的竖线正好接上。这一条和 tty7 的 `TerminalElement::prepaint` 一致。
+        let line_height = px(f32::from(line_height).round()).max(px(1.));
         let available_width = (bounds.size.width - PADDING_X * 2.).max(cell_width);
         let available_height = (bounds.size.height - PADDING_TOP - PADDING_BOTTOM).max(line_height);
         let cols = (available_width / cell_width).floor().max(1.) as usize;
         let rows = (available_height / line_height).floor().max(1.) as usize;
-        let adjusted_cell_width = available_width / cols as f32;
-        let adjusted_line_height = available_height / rows as f32;
         let grid_origin = point(bounds.origin.x + PADDING_X, bounds.origin.y + PADDING_TOP);
         let grid_bounds = TerminalBounds::new(
-            adjusted_line_height,
-            adjusted_cell_width,
+            line_height,
+            cell_width,
             Bounds {
                 origin: grid_origin,
-                size: size(available_width, available_height),
+                // 网格真正占的那一块，不是可用区域：余量不算进去，
+                // `num_columns()` / `num_lines()` 才和这里的 `cols` / `rows` 完全一致。
+                size: size(cell_width * cols as f32, line_height * rows as f32),
             },
         );
 
@@ -312,10 +462,22 @@ impl Element for TerminalGridElement {
         });
 
         let palette = AnsiPalette::new(cx);
+        let scale = window.scale_factor();
+        // 指针样式挂在这块地方上。用元素的整块 `bounds` 而不是 `grid_bounds`：
+        // 左右那 8px 内边距也是终端的一部分，光标划过去不该跳一下。
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        // 读的是这一帧刚取的快照，不是上一帧的 —— 对端刚打开鼠标模式的那一帧
+        // 指针就得变过来。挂在外层 `div` 上做不到这件事：`render` 跑在 prepaint
+        // 之前，那时候看到的还是上一帧的模式。
+        let mouse_reporting = self.emulator.read(cx).mouse_mode();
         // 借着读，不复制。一屏是几千个格子，每帧克隆一份纯属白费 ——
         // 排版只往前扫一遍，扫完就不再需要它了。
-        let content = self.emulator.read(cx).content();
-        let (regions, runs) = Self::layout_cells(content, &palette);
+        let emulator = self.emulator.read(cx);
+        let content = emulator.content();
+        // 搜索命中摊平成按屏幕坐标查的一张表。没开搜索时它是空的，不分配。
+        let matches = MatchMap::new(emulator.search(), content);
+        let (regions, natives, runs) =
+            Self::layout_cells(content, &palette, &grid_bounds, scale, &matches);
         let cursor = cursor(content, &grid_bounds, &palette, self.focused);
         let lines = runs
             .into_iter()
@@ -328,8 +490,9 @@ impl Element for TerminalGridElement {
                     run.text.into(),
                     font_size,
                     std::slice::from_ref(&style),
-                    // 逼着排版按格子对齐：用拉伸后的格宽，使文字与网格列严格对齐
-                    Some(adjusted_cell_width),
+                    // 逼着排版按格子对齐。格宽就是字体的自然步进，所以这一步
+                    // 通常什么都不用挪 —— 它兜住的是字体里那些宽度不老实的字符。
+                    Some(cell_width),
                 );
                 (run.at, line)
             })
@@ -338,8 +501,11 @@ impl Element for TerminalGridElement {
         GridLayout {
             bounds: grid_bounds,
             regions,
+            natives,
             lines,
             cursor,
+            hitbox,
+            mouse_reporting,
             // 从这一帧 prepaint 起算，到 paint 收尾。中间是取快照、切段、
             // 排版、画四边形这一整摊本帧的实际开销。
             painted_at: fps::enabled().then(Instant::now),
@@ -367,6 +533,23 @@ impl Element for TerminalGridElement {
                 bounds.line_height,
             );
             window.paint_quad(fill(Bounds::new(origin, extent), region.color));
+        }
+
+        // 自绘的字形：制表符、块元素、powerline。坐标在 prepaint 里就按格子
+        // 算好了，这里只管照着涂。
+        for native in &layout.natives {
+            for ink in &native.ink {
+                match ink {
+                    boxdraw::Ink::Rect(rect) => window.paint_quad(fill(*rect, native.color)),
+                    // `░▒▓` 是同一个前景色按比例打薄，不是另一种颜色。
+                    boxdraw::Ink::Shade(rect, alpha) => {
+                        let mut color = native.color;
+                        color.a *= alpha;
+                        window.paint_quad(fill(*rect, color));
+                    }
+                    boxdraw::Ink::Path(path) => window.paint_path(path.clone(), native.color),
+                }
+            }
         }
 
         // 空心框画在字下面：它是个框，盖不住字，先画后画都一样，
@@ -399,6 +582,21 @@ impl Element for TerminalGridElement {
             window.paint_quad(fill(cursor.bounds, cursor.color));
         }
 
+        // 指针样式：能划词的时候是 I 形，对端自己收鼠标的时候**什么都不设**。
+        //
+        // 不设是关键 —— `set_cursor_style` 是每帧往这一帧的样式表里登记一条，
+        // 不登记就没有人认领这块区域，`Window::reset_cursor_style` 那句
+        // `unwrap_or(CursorStyle::Arrow)` 就把指针落回平台默认的箭头。这比
+        // "设成 Arrow"更对：真正在做决定的是那些开了鼠标模式的程序（btop、
+        // vim、lazygit），它们自己画选区，I 形指针会误导用户以为还能划词。
+        //
+        // 这里刻意不看 Shift，尽管按住 Shift 确实能抢回划词（见
+        // `TerminalPanel::reports_mouse`）：指针跟着一个随时会松开的修饰键
+        // 闪来闪去比不变更糟，各家终端也都是这么处理的。
+        if !layout.mouse_reporting {
+            window.set_cursor_style(CursorStyle::IBeam, &layout.hitbox);
+        }
+
         // 收尾计时。`painted_at` 只有开了 `WINSSH_FPS` 才是 `Some`，
         // 平时这一句是一次 `Option` 判空，几乎无成本。
         if let Some(start) = layout.painted_at {
@@ -423,9 +621,36 @@ fn cell_origin(at: GridPoint, bounds: &TerminalBounds) -> Point<Pixels> {
     )
 }
 
+/// 一个格子的矩形，**横向不取整**。自绘那一路专用。
+///
+/// [`cell_origin`] 会把 x 抹到整数逻辑像素，那对底色和文字都没关系（底色的
+/// 宽度是向上取整的，本来就多盖一点），但自绘不行：格宽是小数时，
+/// `floor(x₀ + n·w) + w` 和 `floor(x₀ + (n+1)·w)` 不是同一个数，横线在格与格
+/// 之间会差出一像素 —— 正是自绘要消掉的那种缝。这里把没抹过的边界交给
+/// [`boxdraw`]，由它统一 `snap` 到物理像素，第 n 格的右边界与第 n+1 格的
+/// 左边界于是算的是同一个表达式，结果必然相等。
+fn cell_rect(at: GridPoint, bounds: &TerminalBounds) -> Bounds<Pixels> {
+    Bounds::new(
+        point(
+            bounds.bounds.origin.x + bounds.cell_width * at.column as f32,
+            bounds.bounds.origin.y + bounds.line_height * at.line as f32,
+        ),
+        size(bounds.cell_width, bounds.line_height),
+    )
+}
+
 /// 一个格子最终画成什么颜色：(前景, 底色)。底色是 `None` 表示"就是终端的
 /// 底色"，不必单独画一块。
-fn cell_colors(cell: &GridCell, palette: &AnsiPalette, selected: bool) -> (Hsla, Option<Hsla>) {
+///
+/// 底色的优先级：**当前命中 > 其余命中 > 选中 > 程序自己设的底色**。
+/// 搜索压过选中，是因为搜索栏开着的时候用户看的就是那些黄块；而当前那一个
+/// 又必须压过其余的，不然"我现在在第几个上"就没有着落了。
+fn cell_colors(
+    cell: &GridCell,
+    palette: &AnsiPalette,
+    selected: bool,
+    match_flag: u8,
+) -> (Hsla, Option<Hsla>) {
     let mut foreground = cell.foreground();
     let mut background = cell.background();
     // 反显（SGR 7）就是把两个颜色换过来。
@@ -438,12 +663,43 @@ fn cell_colors(cell: &GridCell, palette: &AnsiPalette, selected: bool) -> (Hsla,
         foreground.a *= DIM_ALPHA;
     }
 
+    let background = (!is_default_background(background)).then(|| palette.color(background));
+
+    let tint = match match_flag {
+        MatchMap::CURRENT => Some(palette.match_current()),
+        MatchMap::HIT => Some(palette.match_hit()),
+        _ => None,
+    };
+    if let Some(tint) = tint {
+        // 高亮是半透明的，得**合成**到这一格原本的底色上再交出去，不能直接
+        // 顶替。直接顶替的话，程序自己画的底色（`ls` 的目录、diff 的红绿、
+        // 反显的提示符）会被换成"琥珀色压在终端默认底色上"，命中落在什么
+        // 东西上就看不出来了。底色画的是一块不透明四边形，所以合成在这儿做，
+        // 而不是叠两层四边形。
+        return (
+            foreground,
+            Some(over(tint, background.unwrap_or(palette.background()))),
+        );
+    }
+
     if selected {
         return (foreground, Some(palette.selection()));
     }
 
-    let background = (!is_default_background(background)).then(|| palette.color(background));
     (foreground, background)
+}
+
+/// 把半透明的 `top` 合成到不透明的 `bottom` 上，得到一个不透明色。
+fn over(top: Hsla, bottom: Hsla) -> Hsla {
+    let (top, bottom) = (gpui::Rgba::from(top), gpui::Rgba::from(bottom));
+    let a = top.a.clamp(0., 1.);
+    gpui::Rgba {
+        r: top.r * a + bottom.r * (1. - a),
+        g: top.g * a + bottom.g * (1. - a),
+        b: top.b * a + bottom.b * (1. - a),
+        a: 1.,
+    }
+    .into()
 }
 
 /// 一个格子的字形开关：粗、斜、下划线、删除线。每格算一次，只读几个 bit，
@@ -534,19 +790,240 @@ fn cursor(
     })
 }
 
-/// 指针位置落在哪个格子上，供拖选用。
+/// 指针位置落在屏幕的第几行第几列，(列, 行)，都是 0 起。
 ///
-/// 行号按快照的坐标系给（可见区域第一行是 0，回卷区是负数），所以调用方
-/// 拿到的和 [`Content::cells`] 里的 `point` 是同一套坐标。
-pub fn point_at(position: Point<Pixels>, bounds: &TerminalBounds, content: &Content) -> GridPoint {
+/// 这是"看得见的那一屏"的坐标：往回滚之后第一行仍然是 0。鼠标上报要的就是
+/// 这一套 —— 对端根本不知道我们留了回卷区。
+pub fn cell_at(
+    position: Point<Pixels>,
+    bounds: &TerminalBounds,
+    content: &Content,
+) -> (usize, usize) {
     let origin = bounds.bounds.origin;
     let column = (position.x - origin.x) / bounds.cell_width;
     let line = (position.y - origin.y) / bounds.line_height;
-    // 先夹在可见区域里再减偏移：夹的是"屏幕上第几行"，减完才是缓冲里的行号。
-    let line = (line.floor() as i32).clamp(0, content.screen_lines.saturating_sub(1) as i32);
+    (
+        (column.floor().max(0.) as usize).min(content.columns.saturating_sub(1)),
+        (line.floor().max(0.) as usize).min(content.screen_lines.saturating_sub(1)),
+    )
+}
 
+/// 指针位置落在哪个格子上，供拖选用。
+///
+/// 行号按快照的坐标系给（可见区域第一行是 0，回卷区是负数），所以调用方
+/// 拿到的和 [`Content::cells`] 里的 `point` 是同一套坐标。和 [`cell_at`] 的
+/// 区别就在这儿：那个是屏幕坐标，这个是缓冲坐标。
+pub fn point_at(position: Point<Pixels>, bounds: &TerminalBounds, content: &Content) -> GridPoint {
+    let (column, line) = cell_at(position, bounds, content);
     GridPoint {
-        line: line - content.display_offset as i32,
-        column: (column.floor().max(0.) as usize).min(content.columns.saturating_sub(1)),
+        // 夹的是"屏幕上第几行"，减完才是缓冲里的行号。
+        line: line as i32 - content.display_offset as i32,
+        column,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn grid(cell_width: f32, line_height: f32, origin_x: f32) -> TerminalBounds {
+        TerminalBounds::new(
+            px(line_height),
+            px(cell_width),
+            Bounds::new(point(px(origin_x), px(0.)), size(px(800.), px(600.))),
+        )
+    }
+
+    fn at(column: usize, line: i32) -> GridPoint {
+        GridPoint { line, column }
+    }
+
+    fn span(ink: &[boxdraw::Ink]) -> (f32, f32, f32, f32) {
+        let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for piece in ink {
+            let (boxdraw::Ink::Rect(r) | boxdraw::Ink::Shade(r, _)) = piece else {
+                continue;
+            };
+            x0 = x0.min(r.origin.x.as_f32());
+            x1 = x1.max(r.origin.x.as_f32() + r.size.width.as_f32());
+            y0 = y0.min(r.origin.y.as_f32());
+            y1 = y1.max(r.origin.y.as_f32() + r.size.height.as_f32());
+        }
+        (x0, x1, y0, y1)
+    }
+
+    /// 横线要在格与格之间接上：第 n 格的右边界必须正好是第 n+1 格的左边界。
+    ///
+    /// 这一条是自绘的全部意义所在，而它只在格子矩形**不**横向取整时成立
+    /// —— 见 [`cell_rect`] 的注释。格宽用小数，取整的那条路才露馅。
+    #[test]
+    fn horizontal_rules_tile_across_columns() {
+        for (cw, ox) in [(7.8f32, 8.0f32), (9.03, 8.0), (10.8, 13.37)] {
+            for scale in [1.0f32, 2.0, 3.0] {
+                let g = grid(cw, 18., ox);
+                for column in 0..40 {
+                    let left = boxdraw::ink('─', cell_rect(at(column, 0), &g), scale, 1.).unwrap();
+                    let right =
+                        boxdraw::ink('─', cell_rect(at(column + 1, 0), &g), scale, 1.).unwrap();
+                    assert_eq!(
+                        span(&left).1,
+                        span(&right).0,
+                        "─ breaks between column {column} and {} \
+                         (cell_width {cw}, origin {ox}, scale {scale})",
+                        column + 1
+                    );
+                }
+            }
+        }
+    }
+
+    /// 竖线要在行与行之间接上。行高是整数，所以这一条本来就该成立 ——
+    /// 钉住它是防着以后有人把行高改回小数。
+    #[test]
+    fn vertical_rules_tile_across_rows() {
+        for scale in [1.0f32, 2.0, 3.0] {
+            let g = grid(9.03, 18., 8.);
+            for line in 0..30 {
+                let upper = boxdraw::ink('│', cell_rect(at(0, line), &g), scale, 1.).unwrap();
+                let lower = boxdraw::ink('│', cell_rect(at(0, line + 1), &g), scale, 1.).unwrap();
+                assert_eq!(
+                    span(&upper).3,
+                    span(&lower).2,
+                    "│ breaks between row {line} and {} (scale {scale})",
+                    line + 1
+                );
+            }
+        }
+    }
+
+    /// 屏幕坐标与缓冲坐标只差一个滚动偏移，两个换算不能各算各的。
+    #[test]
+    fn screen_and_buffer_coordinates_differ_only_by_the_scroll_offset() {
+        let g = grid(9., 18., 8.);
+        let mut content = Content {
+            columns: 80,
+            screen_lines: 24,
+            ..Content::default()
+        };
+        let position = point(px(8. + 9. * 3.5), px(18. * 5.5));
+
+        assert_eq!(cell_at(position, &g, &content), (3, 5));
+        assert_eq!(point_at(position, &g, &content), at(3, 5));
+
+        // 往回滚 10 行：屏幕行号不变，缓冲行号变成负的。
+        content.display_offset = 10;
+        assert_eq!(cell_at(position, &g, &content), (3, 5));
+        assert_eq!(point_at(position, &g, &content), at(3, -5));
+    }
+
+    fn hit(line: i32, columns: std::ops::RangeInclusive<usize>) -> Match {
+        use alacritty_terminal::index::{Column, Line, Point};
+        Point::new(Line(line), Column(*columns.start()))
+            ..=Point::new(Line(line), Column(*columns.end()))
+    }
+
+    /// 一个命中washed 出来的正好是它自己那几格，不多不少。
+    #[test]
+    fn a_match_flags_exactly_its_own_cells() {
+        let map = MatchMap::build(&[hit(1, 2..=4)], None, 3, 8, 0);
+        assert_eq!(map.at(at(1, 1)), 0, "命中左边一格不该被染上");
+        for column in 2..=4 {
+            assert_eq!(
+                map.at(at(column, 1)),
+                MatchMap::HIT,
+                "第 {column} 列该是命中"
+            );
+        }
+        assert_eq!(map.at(at(5, 1)), 0, "命中右边一格不该被染上");
+        // 别的行一格都不该动。
+        assert_eq!(map.at(at(3, 0)), 0);
+        assert_eq!(map.at(at(3, 2)), 0);
+    }
+
+    /// 当前那一个要和其余的分得开 —— 不然"我在第几个上"就没有着落。
+    #[test]
+    fn only_the_current_match_gets_the_stronger_flag() {
+        let map = MatchMap::build(&[hit(0, 0..=1), hit(1, 0..=1)], Some(1), 2, 8, 0);
+        assert_eq!(map.at(at(0, 0)), MatchMap::HIT);
+        assert_eq!(map.at(at(0, 1)), MatchMap::CURRENT);
+    }
+
+    /// 跨行的命中：头一行从它的列起，末一行到它的列止，中间整行。
+    #[test]
+    fn a_match_that_wraps_covers_the_rows_between_its_ends() {
+        use alacritty_terminal::index::{Column, Line, Point};
+        let wrapped = Point::new(Line(0), Column(6))..=Point::new(Line(2), Column(1));
+        let map = MatchMap::build(&[wrapped], None, 3, 8, 0);
+        // 第一行：从第 6 列到行尾。
+        assert_eq!(map.at(at(5, 0)), 0);
+        assert_eq!(map.at(at(6, 0)), MatchMap::HIT);
+        assert_eq!(map.at(at(7, 0)), MatchMap::HIT);
+        // 中间那行整行。
+        for column in 0..8 {
+            assert_eq!(map.at(at(column, 1)), MatchMap::HIT);
+        }
+        // 末一行到第 1 列为止。
+        assert_eq!(map.at(at(1, 2)), MatchMap::HIT);
+        assert_eq!(map.at(at(2, 2)), 0);
+    }
+
+    /// 命中的行号是缓冲坐标，往回滚之后要跟着偏移换算，否则高亮会整体错位
+    /// —— 这是搜索最容易出的那个错。
+    #[test]
+    fn the_scroll_offset_moves_the_highlight_onto_its_screen_row() {
+        // 命中在缓冲的 -5 行；往回滚 5 行之后它正好是屏幕第 0 行。
+        let map = MatchMap::build(&[hit(-5, 0..=1)], None, 4, 8, 5);
+        assert_eq!(map.at(at(0, 0)), MatchMap::HIT);
+        // 不带偏移的话它落在屏幕外面，一格都不该染。
+        let map = MatchMap::build(&[hit(-5, 0..=1)], None, 4, 8, 0);
+        assert_eq!(map.at(at(0, 0)), 0);
+    }
+
+    /// 屏幕外的命中要被截掉，而不是写到缓冲外面去。
+    #[test]
+    fn matches_outside_the_screen_are_dropped_not_wrapped() {
+        // 上方、下方各一个，中间一个 —— 只有中间那个该留下。
+        let map = MatchMap::build(
+            &[hit(-9, 0..=1), hit(1, 0..=1), hit(9, 0..=1)],
+            None,
+            4,
+            8,
+            0,
+        );
+        assert_eq!(map.at(at(0, 1)), MatchMap::HIT);
+        assert_eq!(map.flags.iter().filter(|f| **f != 0).count(), 2);
+    }
+
+    /// 超出列数的命中要夹住。宽字符让命中的列号可以落在最后一列之外。
+    #[test]
+    fn a_match_past_the_last_column_is_clamped() {
+        let map = MatchMap::build(&[hit(0, 6..=99)], None, 2, 8, 0);
+        assert_eq!(map.at(at(7, 0)), MatchMap::HIT);
+        // 没有越界写坏下一行。
+        assert_eq!(map.at(at(0, 1)), 0);
+    }
+
+    /// 没开搜索时整张表不分配 —— 每帧几千格的缓冲不能白建。
+    #[test]
+    fn no_search_allocates_nothing() {
+        let map = MatchMap::build(&[], None, 40, 120, 0);
+        assert!(map.flags.is_empty());
+        assert_eq!(map.at(at(0, 0)), 0);
+    }
+
+    /// 指针跑到网格外面时夹回边界，不能溢出成一个巨大的 `usize`。
+    #[test]
+    fn positions_outside_the_grid_are_clamped() {
+        let g = grid(9., 18., 8.);
+        let content = Content {
+            columns: 80,
+            screen_lines: 24,
+            ..Content::default()
+        };
+        assert_eq!(cell_at(point(px(-500.), px(-500.)), &g, &content), (0, 0));
+        assert_eq!(
+            cell_at(point(px(99_999.), px(99_999.)), &g, &content),
+            (79, 23)
+        );
     }
 }

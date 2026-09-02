@@ -11,6 +11,8 @@
 use gpui::{App, Hsla, Rgba, rgb};
 use gpui_component::ActiveTheme as _;
 
+use crate::ui::theme::palette;
+
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb};
 
 /// 终端用到的一整套颜色。每帧取一次，逐格查表 —— 一屏几千个格子，
@@ -25,6 +27,9 @@ pub struct AnsiPalette {
     cursor: Hsla,
     /// 选中那一段的底色。
     selection: Hsla,
+    /// 搜索命中的底色，以及当前那一个的。
+    match_hit: Hsla,
+    match_current: Hsla,
 }
 
 /// Dark+ 的 16 色：黑、红、绿、黄、蓝、洋红、青、白，然后是同顺序的高亮 8 色。
@@ -60,6 +65,13 @@ impl AnsiPalette {
             background: cx.theme().background,
             cursor: cx.theme().foreground,
             selection: cx.theme().selection,
+            // 琥珀色，各家编辑器找东西时的老规矩，而且终端的 16 色里没有
+            // 一个是这个色相 —— 高亮不会和程序自己的配色撞上。
+            //
+            // 两档都是半透明的：底下压着的可能是程序画的底色（`ls` 的目录、
+            // diff 的红绿），盖死了就分不出命中落在什么东西上。
+            match_hit: palette::amber().opacity(0.28),
+            match_current: palette::amber().opacity(0.62),
         }
     }
 
@@ -67,8 +79,24 @@ impl AnsiPalette {
         self.cursor
     }
 
+    /// 终端的默认底色。半透明的搜索高亮要合成到它上面。
+    pub fn background(&self) -> Hsla {
+        self.background
+    }
+
     pub fn selection(&self) -> Hsla {
         self.selection
+    }
+
+    /// 搜索命中的底色。
+    pub fn match_hit(&self) -> Hsla {
+        self.match_hit
+    }
+
+    /// 当前停在的那一个命中。比其余的重，一眼能从一屏黄块里找出来
+    /// —— "还有 17 个"和"你现在在第 3 个上"是两件事。
+    pub fn match_current(&self) -> Hsla {
+        self.match_current
     }
 
     /// 一个 ANSI 颜色对应的像素颜色。

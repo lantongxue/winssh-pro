@@ -23,25 +23,33 @@ use gpui::{
     App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, SharedString, Styled as _, WeakEntity, Window, actions, div, px,
+    ScrollWheelEvent, SharedString, Styled as _, Subscription, WeakEntity, Window, actions, div,
+    px,
 };
 use gpui_component::{
-    ActiveTheme as _, Icon, IconName, ResizableState, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, ResizableState, Selectable as _,
+    Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent, PanelId, TabGroup},
-    h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
+    h_flex, h_resizable,
+    input::{Input, InputEvent, InputState},
+    menu::ContextMenuExt as _,
+    resizable_panel, v_flex, v_resizable,
 };
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 
 use alacritty_terminal::selection::SelectionType;
 
 use crate::{
     host::Host,
     session::SessionTelemetry,
-    terminal::{Emulator, EmulatorEvent, GridPoint, TerminalBounds},
+    terminal::{
+        Emulator, EmulatorEvent, GridPoint, SearchQuery, TerminalBounds, rows_under_the_bar,
+    },
     ui::{
         bars::{SessionInfoBar, SessionStatusBar},
-        elements::{TerminalGridElement, point_at},
+        elements::{TerminalGridElement, cell_at, point_at},
+        menus::{TerminalAction, TerminalActionHandler, TerminalMenu, terminal_menu_allowed},
         panels::{MonitorEvent, MonitorPanel, SftpPanel, SftpPanelEvent},
         theme::palette,
     },
@@ -68,6 +76,10 @@ actions!(
         ToggleMonitor,
         /// 切换底部 SFTP 栏（Alt+F）。
         ToggleSftp,
+        /// 打开终端内搜索（Ctrl/Cmd-F）。
+        Find,
+        /// 关掉搜索栏（Esc）。
+        CloseSearch,
     ]
 );
 
@@ -87,6 +99,13 @@ const TRIPLE_CLICK: usize = 3;
 
 /// 右侧监控面板的固定宽度。
 const MONITOR_WIDTH: gpui::Pixels = px(360.);
+
+/// 搜索栏浮在网格右上角的位置与大小。它遮住的行数由这两个数算出来
+/// （见 `TerminalPanel::rows_behind_the_search_bar`），所以改这里就要想到
+/// "下一个"会不会把命中停到栏底下 —— 那是搜索最不能出的错。
+const SEARCH_BAR_TOP: Pixels = px(8.);
+const SEARCH_BAR_HEIGHT: Pixels = px(34.);
+const SEARCH_BAR_WIDTH: Pixels = px(400.);
 
 /// 底部 SFTP 栏展开时的初始高度，以及能拖到多高/多矮。展开时给到三行的目录加一条
 /// 队列（原型是 h-20 那一档），拖拽范围则由"还能看见一两行"到"半屏"。
@@ -109,6 +128,23 @@ pub struct TerminalPanel {
     grid: TerminalBounds,
     /// 鼠标左键是否按着。按着才把移动当成拖选。
     selecting: bool,
+    /// 搜索栏的输入框。`None` 表示搜索栏没开着。
+    ///
+    /// 命中、当前落在第几个那些状态在 [`Emulator`] 那边（扫描要锁 `Term`），
+    /// 这里只有控件本身与它的订阅。
+    search_input: Option<Entity<InputState>>,
+    _search_sub: Option<Subscription>,
+    /// 关掉搜索栏之后仍然记着上一次查的词：再开一次多半还是找它。
+    last_query: SearchQuery,
+    /// 最近这一下右键该不该弹菜单（[`terminal_menu_allowed`] 的判断结果）。
+    ///
+    /// 要在这儿存一份，是因为弹层那个元素（`gpui_component` 的 `ContextMenu`）
+    /// 自己拿走了右键的 mouse-down，而交给菜单构建器的参数里没有事件，读不到
+    /// 修饰键。它又包在我们这层外面，所以也拦不住它 —— 只能在自己的
+    /// [`Self::on_mouse_down`] 里把结论记下来，构建器再回头读。
+    /// 这是安全的：那个元素在 `window.defer` 里才建菜单，那时候整轮鼠标派发
+    /// 已经走完了。
+    context_menu_allowed: bool,
     focus_handle: FocusHandle,
     /// 右侧监控面板是否展开。
     monitor_open: bool,
@@ -141,6 +177,10 @@ impl TerminalPanel {
                 group: None,
                 grid: TerminalBounds::default(),
                 selecting: false,
+                search_input: None,
+                _search_sub: None,
+                last_query: SearchQuery::default(),
+                context_menu_allowed: true,
                 focus_handle: cx.focus_handle(),
                 monitor_open: false,
                 monitor_panel: monitor_panel.clone(),
@@ -279,6 +319,10 @@ impl TerminalPanel {
                         group: None,
                         grid: TerminalBounds::default(),
                         selecting: false,
+                        search_input: None,
+                        _search_sub: None,
+                        last_query: SearchQuery::default(),
+                        context_menu_allowed: true,
                         focus_handle: cx.focus_handle(),
                         monitor_open: false,
                         monitor_panel: monitor_panel.clone(),
@@ -313,6 +357,10 @@ impl TerminalPanel {
                         group: None,
                         grid: TerminalBounds::default(),
                         selecting: false,
+                        search_input: None,
+                        _search_sub: None,
+                        last_query: SearchQuery::default(),
+                        context_menu_allowed: true,
                         focus_handle: cx.focus_handle(),
                         monitor_open: false,
                         monitor_panel: monitor_panel.clone(),
@@ -587,9 +635,30 @@ impl TerminalPanel {
             return;
         }
 
+        let mods = event.modifiers;
         emulator.update(cx, |emulator, cx| {
-            emulator.scroll_lines(lines.round() as i32, cx);
+            emulator.scroll_lines(lines.round() as i32, &mods, cx);
         });
+    }
+
+    /// 对端此刻有没有打开鼠标模式。
+    fn mouse_mode(&self, cx: &App) -> bool {
+        self.emulator
+            .as_ref()
+            .is_some_and(|emulator| emulator.read(cx).mouse_mode())
+    }
+
+    /// 这一下鼠标归对端还是归自己。
+    ///
+    /// 对端开了鼠标模式（btop、vim `set mouse=a`、lazygit、tmux）时它自己画
+    /// 选区和菜单，我们再叠一层划词选中就是同一下点击喂了两个消费者。
+    /// 按住 Shift 抢回来 —— 这和滚轮那边的逃生门是同一个约定
+    /// （见 [`crate::terminal::Emulator::scroll_lines`]）。
+    ///
+    /// 刻意写成 [`terminal_menu_allowed`] 的反面而不是另写一遍判据：这两件事
+    /// 必须严格互补（一下点击只能喂一个消费者），共用一个函数就不可能跑偏。
+    fn reports_mouse(&self, shift: bool, cx: &App) -> bool {
+        !terminal_menu_allowed(self.mouse_mode(cx), shift)
     }
 
     fn on_mouse_down(
@@ -601,9 +670,32 @@ impl TerminalPanel {
         // 点一下终端就把焦点收回来，否则焦点还在侧边栏或按钮上，Tab 会跑去切焦点而不是进终端
         cx.focus_self(window);
 
+        // 右键的结论要在这儿记下来给菜单构建器读，理由见
+        // [`Self::context_menu_allowed`]。记的是这一下的修饰键状态，
+        // 所以必须在下面那个 early return 之前。
+        if event.button == MouseButton::Right {
+            self.context_menu_allowed =
+                terminal_menu_allowed(self.mouse_mode(cx), event.modifiers.shift);
+        }
+
         let Some(emulator) = self.emulator.clone() else {
             return;
         };
+
+        if self.reports_mouse(event.modifiers.shift, cx) {
+            let (column, line) = self.cell_at(event.position, cx);
+            let mods = event.modifiers;
+            emulator.update(cx, |emulator, _| {
+                emulator.mouse_press(event.button, column, line, &mods);
+            });
+            return;
+        }
+
+        // 选区只认左键。右键中键在不报鼠标的时候没有本地含义，
+        // 落到这里就当没发生 —— 尤其不能让它清掉已经选好的那一段。
+        if event.button != MouseButton::Left {
+            return;
+        }
 
         // 双击选词、三击选行，和别的终端一致。三种起手都能接着拖，
         // 拖的粒度跟着起手的那一下走：双击起手再拖，是按词扩。
@@ -621,31 +713,62 @@ impl TerminalPanel {
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(emulator) = self.emulator.clone() else {
+            return;
+        };
+
+        // 报给对端的那一路不看 `selecting`：没按键的悬停也要报（`MOUSE_MOTION`，
+        // btop 的行高亮靠它），过滤留给模拟器 —— 只有对端确实要，它才发。
+        if self.reports_mouse(event.modifiers.shift, cx) {
+            self.selecting = false;
+            let (column, line) = self.cell_at(event.position, cx);
+            let mods = event.modifiers;
+            emulator.update(cx, |emulator, _| match event.pressed_button {
+                Some(button) => emulator.mouse_drag(button, column, line, &mods),
+                None => emulator.mouse_motion(column, line, &mods),
+            });
+            return;
+        }
+
         // 也看按键状态，不只看自己那个标志：拖到面板外面松手的话，
         // 松手事件落不到这里，标志会一直留在"正在拖"上。
         if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
             self.selecting = false;
             return;
         }
-        let Some(emulator) = self.emulator.clone() else {
-            return;
-        };
 
         let point = self.point_at(event.position, cx);
         emulator.update(cx, |emulator, cx| emulator.extend_selection(point, cx));
     }
 
     /// 松手：选中的那一段留在屏幕上，但不再跟着鼠标走。
-    fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
+    fn on_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.reports_mouse(event.modifiers.shift, cx)
+            && let Some(emulator) = self.emulator.clone()
+        {
+            let (column, line) = self.cell_at(event.position, cx);
+            let mods = event.modifiers;
+            emulator.update(cx, |emulator, _| {
+                emulator.mouse_release(event.button, column, line, &mods);
+            });
+        }
         self.selecting = false;
     }
 
-    /// 指针位置落在网格的哪个格子上。
+    /// 指针位置落在网格的哪个格子上（缓冲坐标，供选区用）。
     fn point_at(&self, position: gpui::Point<gpui::Pixels>, cx: &App) -> GridPoint {
         let Some(emulator) = &self.emulator else {
             return GridPoint::default();
         };
         point_at(position, &self.grid, emulator.read(cx).content())
+    }
+
+    /// 指针位置落在屏幕的第几行第几列（屏幕坐标，供鼠标上报用）。
+    fn cell_at(&self, position: gpui::Point<gpui::Pixels>, cx: &App) -> (usize, usize) {
+        let Some(emulator) = &self.emulator else {
+            return (0, 0);
+        };
+        cell_at(position, &self.grid, emulator.read(cx).content())
     }
 
     fn on_copy_selection(
@@ -683,6 +806,323 @@ impl TerminalPanel {
             return;
         };
         emulator.update(cx, |emulator, cx| emulator.paste(&text, cx));
+    }
+
+    // ─── 终端内搜索 ─────────────────────────────────────────────────────────
+    //
+    // 命中怎么扫、怎么跟着输出挪，都在 `crate::terminal::search` 里。这一段
+    // 只做界面那一半：开关搜索栏、把输入框里的字变成一次查询、画那条栏。
+
+    /// 搜索栏浮在网格上，遮住的那几行不算"看得见"。
+    ///
+    /// 命中滚到被栏挡住的行上等于没滚，所以扫描那边要知道这个数
+    /// —— 见 [`crate::terminal::rows_under_the_bar`]。
+    fn rows_behind_the_search_bar(&self) -> i32 {
+        rows_under_the_bar(
+            f32::from(SEARCH_BAR_TOP + SEARCH_BAR_HEIGHT),
+            f32::from(self.grid.line_height),
+        )
+    }
+
+    /// 打开搜索栏（Ctrl/Cmd-F，或者右键菜单里那一项）。
+    ///
+    /// 已经开着就只是把焦点收回输入框并全选 —— 连按两次 Ctrl-F 是"我要重新
+    /// 输一个词"，不是"再开一个"。
+    fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(input) = self.search_input.clone() {
+            input.update(cx, |state, cx| {
+                state.focus(window, cx);
+                state.select_all(window, cx);
+            });
+            return;
+        }
+
+        // 划着一段的时候开搜索，多半就是要找那一段。跨行的不算：那不是一个词。
+        let seed = self
+            .emulator
+            .as_ref()
+            .and_then(|emulator| emulator.read(cx).selected_text())
+            .map(|text| text.trim_matches(['\n', '\r']).to_string())
+            .filter(|text| !text.is_empty() && !text.contains('\n'))
+            .unwrap_or_else(|| self.last_query.text.clone());
+
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("在终端里查找…")
+                .default_value(seed.clone())
+        });
+        // 框里预填的是上次查的词，光标进去要选中它 —— 直接接着打字就是换一个词，
+        // 而不是在旧词后面续。
+        input.update(cx, |state, cx| {
+            state.focus(window, cx);
+            state.select_all(window, cx);
+        });
+        self._search_sub = Some(cx.subscribe_in(&input, window, Self::on_search_event));
+        self.search_input = Some(input);
+        self.last_query.text = seed;
+
+        self.apply_search(cx);
+        cx.notify();
+    }
+
+    fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search_input.take().is_none() {
+            return;
+        }
+        self._search_sub = None;
+        if let Some(emulator) = self.emulator.clone() {
+            emulator.update(cx, |emulator, cx| emulator.close_search(cx));
+        }
+        // 焦点交还给终端，不然关掉栏之后敲字没地方去。
+        cx.focus_self(window);
+        cx.notify();
+    }
+
+    fn on_search_event(
+        &mut self,
+        _: &Entity<InputState>,
+        event: &InputEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            InputEvent::Change => self.apply_search(cx),
+            // 回车下一个，Shift-回车上一个 —— 和各家找东西的框一致。
+            InputEvent::PressEnter { shift, .. } => self.step_match(!shift, cx),
+            InputEvent::Focus | InputEvent::Blur => cx.notify(),
+        }
+    }
+
+    /// 把输入框里的字连同两个开关一起交给模拟器重扫。
+    fn apply_search(&mut self, cx: &mut Context<Self>) {
+        let Some(input) = self.search_input.as_ref() else {
+            return;
+        };
+        self.last_query.text = input.read(cx).value().to_string();
+        let (query, hidden) = (self.last_query.clone(), self.rows_behind_the_search_bar());
+        if let Some(emulator) = self.emulator.clone() {
+            emulator.update(cx, |emulator, cx| emulator.set_search(query, hidden, cx));
+        }
+        cx.notify();
+    }
+
+    fn step_match(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let hidden = self.rows_behind_the_search_bar();
+        if let Some(emulator) = self.emulator.clone() {
+            emulator.update(cx, |emulator, cx| emulator.step_match(forward, hidden, cx));
+        }
+        cx.notify();
+    }
+
+    fn toggle_search_case(&mut self, cx: &mut Context<Self>) {
+        self.last_query.case_sensitive = !self.last_query.case_sensitive;
+        self.apply_search(cx);
+    }
+
+    fn toggle_search_regex(&mut self, cx: &mut Context<Self>) {
+        self.last_query.regex = !self.last_query.regex;
+        self.apply_search(cx);
+    }
+
+    fn on_find(&mut self, _: &Find, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.terminal_is_focused(window) && self.search_input.is_none() {
+            return;
+        }
+        self.open_search(window, cx);
+    }
+
+    /// Esc 关掉搜索栏。焦点在输入框里，所以这个 action 不查终端焦点。
+    fn on_close_search(&mut self, _: &CloseSearch, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search_input.is_none() {
+            return;
+        }
+        self.close_search(window, cx);
+        cx.stop_propagation();
+    }
+
+    /// 搜索栏本身。浮在网格右上角，不把网格顶下去 —— 顶下去会让整屏重排，
+    /// 开关一次搜索栏就抖一下。代价是它盖住了几行，那几行由
+    /// [`Self::rows_behind_the_search_bar`] 报给扫描那边。
+    fn render_search_bar(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let input = self.search_input.as_ref()?;
+        let query = input.read(cx).value();
+        let search = self
+            .emulator
+            .as_ref()
+            .and_then(|emulator| emulator.read(cx).search());
+        let (total, ordinal, capped, regex_error) = match search {
+            Some(state) => (
+                state.total(),
+                state.ordinal(),
+                state.capped(),
+                state.regex_error(),
+            ),
+            None => (0, 0, false, false),
+        };
+        let has_matches = total > 0;
+
+        let count = (!query.is_empty()).then(|| {
+            // 扫描停在 MAX_MATCHES 上。不加这个 `+` 的话，撞了天花板的查询
+            // 看着就像"回卷区里正好这么多个"。
+            let more = if capped { "+" } else { "" };
+            div()
+                .flex_none()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(format!("{ordinal}/{total}{more}"))
+        });
+
+        Some(
+            h_flex()
+                .absolute()
+                .top(SEARCH_BAR_TOP)
+                .right_4()
+                // 挡住底下的网格：在栏上划拉不该变成在终端里拖选。
+                .occlude()
+                .items_center()
+                .gap_1p5()
+                .w(SEARCH_BAR_WIDTH)
+                .h(SEARCH_BAR_HEIGHT)
+                .pl_3()
+                .pr_1()
+                .rounded_lg()
+                .border_1()
+                .border_color(match regex_error {
+                    true => cx.theme().danger,
+                    false => cx.theme().border,
+                })
+                .bg(cx.theme().popover)
+                .shadow_md()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(Input::new(input).appearance(false).small()),
+                )
+                .children(count)
+                .child(
+                    Button::new("search-case")
+                        .label("Aa")
+                        .ghost()
+                        .small()
+                        .selected(self.last_query.case_sensitive)
+                        .tooltip("区分大小写")
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_search_case(cx))),
+                )
+                .child(
+                    Button::new("search-regex")
+                        .label(".*")
+                        .ghost()
+                        .small()
+                        .selected(self.last_query.regex)
+                        .tooltip("使用正则表达式")
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_search_regex(cx))),
+                )
+                .child(div().flex_none().w(px(1.)).h(px(16.)).bg(cx.theme().border))
+                .child(
+                    Button::new("search-prev")
+                        .icon(IconName::ChevronUp)
+                        .ghost()
+                        .small()
+                        .tooltip("上一个（Shift+回车）")
+                        .disabled(!has_matches)
+                        .on_click(cx.listener(|this, _, _, cx| this.step_match(false, cx))),
+                )
+                .child(
+                    Button::new("search-next")
+                        .icon(IconName::ChevronDown)
+                        .ghost()
+                        .small()
+                        .tooltip("下一个（回车）")
+                        .disabled(!has_matches)
+                        .on_click(cx.listener(|this, _, _, cx| this.step_match(true, cx))),
+                )
+                .child(
+                    Button::new("search-close")
+                        .icon(IconName::Close)
+                        .ghost()
+                        .small()
+                        .tooltip("关闭（Esc）")
+                        .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// 右键菜单选了某一项。
+    ///
+    /// 和键盘那几个 action 不同，这里**不查焦点**：菜单弹出来的时候焦点已经
+    /// 在菜单上了，查焦点等于每一项都点不动。能点到这个菜单本身就说明用户
+    /// 对着的是这个终端。
+    fn on_menu_action(
+        &mut self,
+        action: TerminalAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(emulator) = self.emulator.clone() else {
+            return;
+        };
+        match action {
+            TerminalAction::Copy => {
+                if let Some(text) = emulator.read(cx).selected_text() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            }
+            TerminalAction::Paste => {
+                let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+                    return;
+                };
+                emulator.update(cx, |emulator, cx| emulator.paste(&text, cx));
+            }
+            TerminalAction::SelectAll => {
+                emulator.update(cx, |emulator, cx| emulator.select_all(cx));
+            }
+            TerminalAction::Find => self.open_search(window, cx),
+            TerminalAction::CopyAll => self.copy_all(cx),
+            TerminalAction::Clear => self.clear(cx),
+            TerminalAction::Close => self.close(window, cx),
+        }
+    }
+
+    /// 挂给弹层的菜单构建器。
+    ///
+    /// 每次弹出都会被调一遍，所以里面读到的都是**弹出那一刻**的状态：选中了
+    /// 没有、这一下右键该不该归我们。返回一个空菜单就等于不弹 —— `ContextMenu`
+    /// 那个元素在菜单 `is_empty()` 时整个跳过渲染，而它包在我们外面，
+    /// 拦不住也抢不到它前面。
+    fn context_menu_builder(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(
+        gpui_component::menu::PopupMenu,
+        &mut Window,
+        &mut Context<gpui_component::menu::PopupMenu>,
+    ) -> gpui_component::menu::PopupMenu
+    + 'static {
+        let panel = cx.entity().downgrade();
+        let handler: TerminalActionHandler = {
+            let panel = panel.clone();
+            Rc::new(move |action, window, cx| {
+                let action = *action;
+                let _ = panel.update(cx, |this, cx| this.on_menu_action(action, window, cx));
+            })
+        };
+
+        move |menu, _window, cx| {
+            let Some(panel) = panel.upgrade() else {
+                return menu;
+            };
+            let this = panel.read(cx);
+            if !this.context_menu_allowed {
+                return menu;
+            }
+            let has_selection = this
+                .emulator
+                .as_ref()
+                .is_some_and(|emulator| emulator.read(cx).has_selection());
+            TerminalMenu::build(menu, has_selection, &handler)
+        }
     }
 
     /// 复制整个缓冲，回卷区也算进去。信息栏右端那个按钮走这条路 ——
@@ -828,12 +1268,32 @@ impl TerminalPanel {
             .font_family(cx.theme().mono_font_family.clone())
             .text_size(font_size)
             .line_height(font_size * LINE_HEIGHT)
-            .cursor_text()
+            // 指针样式不在这儿定。`cursor_text()` 是无条件挂在这块 `div` 上的，
+            // 而它该不该是 I 形取决于对端有没有打开鼠标模式 —— 那件事只有
+            // 网格元素在 prepaint 取完快照之后才知道（`render` 跑在它前面）。
+            // 所以交给 `TerminalGridElement::paint`，它按当帧的模式决定设不设。
             .on_scroll_wheel(cx.listener(Self::on_scroll))
+            // 三个键都要收：开了鼠标模式的程序（btop 的右键菜单、lazygit 的
+            // 面板切换）分得清是哪一个，只挂左键的话它们永远收不到另外两个。
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
+            // 松手要收两遍：gpui 的 `on_mouse_up` 按 hover 门住，只在格子里面
+            // 才响。在外面松手（拖出边界、拖到监控面板上）落到 `on_mouse_up_out`，
+            // 不接的话对端收到按下却收不到松开，会一直以为键还按着 —— lazygit
+            // 拖分隔条、vim 拖选都会卡在那个状态。两者互补，同一下不会响两次。
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up_out(MouseButton::Right, cx.listener(Self::on_mouse_up))
+            .on_mouse_up_out(MouseButton::Middle, cx.listener(Self::on_mouse_up))
             .child(TerminalGridElement::new(emulator, focused))
+            // 搜索栏浮在网格上（`absolute`），所以放在网格之后当兄弟画，
+            // 而不是把网格顶下去 —— 顶下去会让终端重排，开关一次抖一屏。
+            .children(self.render_search_bar(cx))
+            .context_menu(self.context_menu_builder(cx))
             .into_any_element()
     }
 }
@@ -930,6 +1390,8 @@ impl Render for TerminalPanel {
             .on_action(cx.listener(Self::on_back_tab))
             .on_action(cx.listener(Self::on_toggle_monitor))
             .on_action(cx.listener(Self::on_toggle_sftp))
+            .on_action(cx.listener(Self::on_find))
+            .on_action(cx.listener(Self::on_close_search))
             // 按键挂在整个面板上而不是网格上：网格里没有可聚焦的东西，
             // 焦点落在面板这一层，按键也就在这一层收。
             .on_key_down(cx.listener(Self::on_key_down))

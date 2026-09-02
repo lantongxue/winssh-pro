@@ -46,11 +46,11 @@ use alacritty_terminal::{
 use anyhow::{Context as _, Result};
 use futures::{StreamExt as _, channel::mpsc};
 use gpui::{
-    App, AppContext as _, Bounds, Context, Entity, EventEmitter, Keystroke, Pixels, Point, Size,
-    Task, px,
+    App, AppContext as _, Bounds, Context, Entity, EventEmitter, Keystroke, Modifiers, Pixels,
+    Point, Size, Task, px,
 };
 
-use super::keys::to_esc_str;
+use super::{keys::to_esc_str, search::SearchState};
 
 use crate::ssh::{SshHandler, spawn_bridge};
 use russh::{Channel, client::Handle, client::Msg as ClientMsg};
@@ -302,7 +302,7 @@ enum Transport {
 /// 一条终端（PTY 或 SSH）。
 pub struct Emulator {
     /// 屏幕缓冲。PTY 线程与前台共用，所以在锁里。
-    term: Arc<FairMutex<Term<EventProxy>>>,
+    pub(super) term: Arc<FairMutex<Term<EventProxy>>>,
     transport: Transport,
     /// [`Emulator::write_output`] 用的解析器。它有跨调用的状态（一个转义序列
     /// 可能被切在两次写入之间），所以要留着，不能每次现建一个。
@@ -311,6 +311,15 @@ pub struct Emulator {
     content: Content,
     title: Option<String>,
     exited: bool,
+    /// 上一次报给对端的鼠标格子。移动与拖动只在**跨过格子边界**时才报一次，
+    /// 不然一次划过屏幕就是几百条报文，对端（btop、vim）会被淹掉。
+    last_mouse_cell: Option<(usize, usize)>,
+    /// 终端内搜索。`None` 表示搜索栏没开着，那时下面两个字段也没有意义。
+    pub(super) search: Option<SearchState>,
+    /// 输出批次的计数，防抖重扫用它判断"这一觉里有没有来新东西"。
+    pub(super) scan_epoch: u32,
+    /// 已经有一个防抖重扫在等着了，不要再起第二个。
+    pub(super) scan_armed: bool,
     /// 事件泵。丢掉它就等于停掉这条会话的更新。
     _pump: Task<()>,
     /// SSH 输出转发任务（GPUI 侧）。丢掉它就停掉远端到本地的字节流。
@@ -379,6 +388,10 @@ impl Emulator {
                 content: Content::default(),
                 title: None,
                 exited: false,
+                last_mouse_cell: None,
+                search: None,
+                scan_epoch: 0,
+                scan_armed: false,
                 _pump: cx.spawn(async move |this, cx| pump(this, events_rx, cx).await),
                 _ssh_forward: None,
             };
@@ -423,6 +436,10 @@ impl Emulator {
                 content: Content::default(),
                 title: None,
                 exited: false,
+                last_mouse_cell: None,
+                search: None,
+                scan_epoch: 0,
+                scan_armed: false,
                 _pump: cx.spawn(async move |this, cx| pump(this, events_rx, cx).await),
                 _ssh_forward: None,
             };
@@ -459,6 +476,10 @@ impl Emulator {
                 content: Content::default(),
                 title: None,
                 exited: false,
+                last_mouse_cell: None,
+                search: None,
+                scan_epoch: 0,
+                scan_armed: false,
                 _pump: cx.spawn(async move |this, cx| pump(this, events_rx, cx).await),
                 _ssh_forward: None,
             };
@@ -597,18 +618,126 @@ impl Emulator {
         self.input(text.into_bytes(), cx);
     }
 
-    /// 滚动可见区域。
-    pub fn scroll_lines(&mut self, lines: i32, cx: &mut Context<Self>) {
-        self.scroll(Scroll::Delta(lines), cx);
+    /// 滚轮。`lines` 为正表示往回看（显示更早的输出），按住 Shift 时强制
+    /// 走本地回卷 —— 那是各家终端约定的"绕过程序、我要自己滚"的逃生门。
+    ///
+    /// 三条去向由 [`wheel_route`] 决定：报给对端、翻译成方向键、或者本地回卷。
+    /// 中间那条是备用屏（btop、htop、less）能用滚轮的唯一原因 —— 那种屏幕没有
+    /// 回卷区，滚动得由程序自己做，而它只认方向键或鼠标报文。
+    pub fn scroll_lines(&mut self, lines: i32, mods: &Modifiers, cx: &mut Context<Self>) {
+        if lines == 0 {
+            return;
+        }
+        match wheel_route(self.content.mode, mods.shift, lines > 0) {
+            WheelRoute::Report { base } => {
+                // 滚轮没有自己的位置，报的是指针上一次停在的那一格 —— 这也是
+                // xterm 的做法，`btop` 靠它判断滚的是哪个面板。
+                let (column, line) = self.last_mouse_cell.unwrap_or((0, 0));
+                for _ in 0..lines.unsigned_abs() {
+                    self.write_mouse(base, mods, column, line, true);
+                }
+            }
+            WheelRoute::Arrows { seq } => {
+                let mut out = Vec::with_capacity(seq.len() * lines.unsigned_abs() as usize);
+                for _ in 0..lines.unsigned_abs() {
+                    out.extend_from_slice(seq);
+                }
+                self.send_bytes(out);
+            }
+            WheelRoute::Scrollback => self.scroll(Scroll::Delta(lines), cx),
+        }
     }
 
     fn scroll(&mut self, scroll: Scroll, cx: &mut Context<Self>) {
-        // 备用屏（vim、htop 这类全屏程序）没有回卷区，滚轮该交给程序自己处理。
+        // 备用屏（vim、htop 这类全屏程序）没有回卷区，没什么可滚的。
         if self.content.mode.contains(TermMode::ALT_SCREEN) {
             return;
         }
         self.term.lock().scroll_display(scroll);
         self.refresh(cx);
+    }
+
+    /// 对端此刻是不是要自己收鼠标。
+    ///
+    /// 开着的时候点击、拖动、悬停都归它（btop 的行高亮、vim 的 `set mouse=a`、
+    /// lazygit 的面板切换），本地的划词选中让位 —— 按住 Shift 可以抢回来。
+    pub fn mouse_mode(&self) -> bool {
+        self.content.mode.intersects(TermMode::MOUSE_MODE)
+    }
+
+    /// 按下。`column` / `line` 是可见区域里的格子坐标，0 起。
+    pub fn mouse_press(
+        &mut self,
+        button: gpui::MouseButton,
+        column: usize,
+        line: usize,
+        mods: &Modifiers,
+    ) {
+        let Some(base) = button_base(button) else {
+            return;
+        };
+        self.last_mouse_cell = Some((column, line));
+        self.write_mouse(base, mods, column, line, true);
+    }
+
+    /// 松开。
+    pub fn mouse_release(
+        &mut self,
+        button: gpui::MouseButton,
+        column: usize,
+        line: usize,
+        mods: &Modifiers,
+    ) {
+        let Some(base) = button_base(button) else {
+            return;
+        };
+        self.write_mouse(base, mods, column, line, false);
+    }
+
+    /// 按着键移动。只有开了 `MOUSE_DRAG` 或 `MOUSE_MOTION` 的程序要这个。
+    pub fn mouse_drag(
+        &mut self,
+        button: gpui::MouseButton,
+        column: usize,
+        line: usize,
+        mods: &Modifiers,
+    ) {
+        if self.last_mouse_cell == Some((column, line)) {
+            return;
+        }
+        if !self
+            .content
+            .mode
+            .intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION)
+        {
+            return;
+        }
+        let Some(base) = button_base(button) else {
+            return;
+        };
+        self.last_mouse_cell = Some((column, line));
+        // 拖动的按钮编码是"按下的编码 + 32"。
+        self.write_mouse(base + 32, mods, column, line, true);
+    }
+
+    /// 不按键移动。只有开了 `MOUSE_MOTION`（1003）的程序要这个 ——
+    /// btop 的行悬停高亮就靠它。
+    pub fn mouse_motion(&mut self, column: usize, line: usize, mods: &Modifiers) {
+        if self.last_mouse_cell == Some((column, line)) {
+            return;
+        }
+        if !self.content.mode.contains(TermMode::MOUSE_MOTION) {
+            return;
+        }
+        self.last_mouse_cell = Some((column, line));
+        self.write_mouse(35, mods, column, line, true);
+    }
+
+    fn write_mouse(&mut self, base: u8, mods: &Modifiers, column: usize, line: usize, down: bool) {
+        let sgr = self.content.mode.contains(TermMode::SGR_MOUSE);
+        if let Some(msg) = encode_mouse(sgr, base, mods, column, line, down) {
+            self.send_bytes(msg);
+        }
     }
 
     /// 清屏：回卷区一起丢掉，光标所在那一行提到最上面。
@@ -657,6 +786,29 @@ impl Emulator {
             .filter(|text| !text.is_empty())
     }
 
+    /// 现在有没有选中什么。
+    ///
+    /// 读快照而不是 [`Self::selected_text`]：后者要把整段选区拼成一个 `String`
+    /// 才知道它非空，而右键菜单每次弹出都要问一遍"复制"该不该灰掉。
+    pub fn has_selection(&self) -> bool {
+        self.content.selection.is_some()
+    }
+
+    /// 全选：从回卷区最上面一行到缓冲最下面一行。
+    ///
+    /// 选的是整个缓冲而不是看得见的那一屏 —— "全选"在终端里的意思一向是
+    /// "连滚上去的那些也算"，和 [`Self::text`] 取的范围一致。
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        let mut term = self.term.lock();
+        let start = AlacPoint::new(term.topmost_line(), Column(0));
+        let end = AlacPoint::new(term.bottommost_line(), term.last_column());
+        let mut selection = Selection::new(SelectionType::Simple, start, Direction::Left);
+        selection.update(end, Direction::Right);
+        term.selection = Some(selection);
+        drop(term);
+        self.refresh(cx);
+    }
+
     /// 开始拖选。`ty` 决定这一下选的是字符、词还是整行。
     pub fn start_selection(&mut self, point: GridPoint, ty: SelectionType, cx: &mut Context<Self>) {
         self.term.lock().selection =
@@ -688,7 +840,7 @@ impl Emulator {
     /// 内所有 notify 合并成一次重绘（对齐 vsync），快照就在那一次重绘的 prepaint
     /// 里取。于是"拷整屏"从按输入速率降到了按帧速率，且每帧最多一次。
     /// 屏幕内容本身就在 `Term` 里，快照只是它给渲染用的一份缓存。
-    fn refresh(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn refresh(&mut self, cx: &mut Context<Self>) {
         cx.notify();
     }
 
@@ -808,6 +960,9 @@ async fn pump(
             for event in batch {
                 this.handle(event, cx);
             }
+            // 开着搜索栏的话，这一批输出可能把命中挪了位置、也可能改写了它们
+            // 指的那段文字。两件事怎么处理见 `super::search`。
+            this.note_output_under_search(cx);
             this.refresh(cx);
         });
         if updated.is_err() {
@@ -887,14 +1042,257 @@ fn cursor(cursor: RenderableCursor, mode: TermMode) -> Option<Cursor> {
     })
 }
 
+/// 三个键在 xterm 编码里的基数。侧键（前进/后退）没有编码，不报。
+fn button_base(button: gpui::MouseButton) -> Option<u8> {
+    Some(match button {
+        gpui::MouseButton::Left => 0,
+        gpui::MouseButton::Middle => 1,
+        gpui::MouseButton::Right => 2,
+        _ => return None,
+    })
+}
+
+/// 一次鼠标事件编成的字节。
+///
+/// 两套编码，对端选哪套由它自己开的模式决定：
+///
+/// - **SGR（`\x1b[?1006h`）**：`\x1b[<b;col;lineM`，松开是小写 `m`。十进制，
+///   坐标没有上限，现在的程序基本都用这套。
+/// - **传统（X10/normal）**：`\x1b[M` 后跟三个字节，每个都是 `32 + 值`。
+///   一个字节装不下 223 以上的坐标，超了就只能不报 —— 报一个错的位置比不报更坏。
+///
+/// 两套都是 1 起的坐标，所以这里统一 `+1`；松开在传统编码里不区分是哪个键
+/// （固定 3），SGR 才分得出来。
+fn encode_mouse(
+    sgr: bool,
+    base: u8,
+    mods: &Modifiers,
+    column: usize,
+    line: usize,
+    down: bool,
+) -> Option<Vec<u8>> {
+    // xterm 的修饰键位：Shift = 4、Alt = 8、Ctrl = 16。
+    let mut bits = 0u8;
+    if mods.shift {
+        bits += 4;
+    }
+    if mods.alt {
+        bits += 8;
+    }
+    if mods.control {
+        bits += 16;
+    }
+
+    if sgr {
+        let tail = if down { 'M' } else { 'm' };
+        return Some(
+            format!("\x1b[<{};{};{}{}", base + bits, column + 1, line + 1, tail).into_bytes(),
+        );
+    }
+
+    if column >= 223 || line >= 223 {
+        return None;
+    }
+    let code = if down { base + bits } else { 3 + bits };
+    Some(vec![
+        0x1b,
+        b'[',
+        b'M',
+        32 + code,
+        (32 + 1 + column) as u8,
+        (32 + 1 + line) as u8,
+    ])
+}
+
+/// 一次滚轮该去哪儿。
+#[derive(Debug, PartialEq)]
+enum WheelRoute {
+    /// 报给对端（它开了鼠标模式）。64 是上滚、65 是下滚。
+    Report { base: u8 },
+    /// 翻译成方向键。备用屏里开了 `ALTERNATE_SCROLL`（默认就是开的）的程序
+    /// 靠这个滚 —— `less`、`man`、`git log` 都是。
+    Arrows { seq: &'static [u8] },
+    /// 本地回卷。
+    Scrollback,
+}
+
+fn wheel_route(mode: TermMode, shift: bool, up: bool) -> WheelRoute {
+    // Shift 是逃生门：任何时候都能绕过对端，滚自己的回卷区。
+    if !shift && mode.intersects(TermMode::MOUSE_MODE) {
+        return WheelRoute::Report {
+            base: if up { 64 } else { 65 },
+        };
+    }
+    if !shift && mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
+        // 开了 `DECCKM` 的程序要 `\x1bO?` 那套，不是 `\x1b[?`。
+        let seq: &'static [u8] = match (up, mode.contains(TermMode::APP_CURSOR)) {
+            (true, true) => b"\x1bOA",
+            (true, false) => b"\x1b[A",
+            (false, true) => b"\x1bOB",
+            (false, false) => b"\x1b[B",
+        };
+        return WheelRoute::Arrows { seq };
+    }
+    WheelRoute::Scrollback
+}
+
 /// alacritty 那一头的事件出口。它在 PTY 线程上被调用，所以只做一件事：
 /// 把事件塞进 channel。
 #[derive(Clone)]
-struct EventProxy(mpsc::UnboundedSender<AlacEvent>);
+pub(super) struct EventProxy(mpsc::UnboundedSender<AlacEvent>);
 
 impl EventListener for EventProxy {
     fn send_event(&self, event: AlacEvent) {
         // 送不出去只可能是 `Emulator` 已经没了，这条事件也就没有意义。
         let _ = self.0.unbounded_send(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mods(shift: bool, alt: bool, control: bool) -> Modifiers {
+        Modifiers {
+            shift,
+            alt,
+            control,
+            ..Default::default()
+        }
+    }
+
+    fn none() -> Modifiers {
+        mods(false, false, false)
+    }
+
+    #[test]
+    fn sgr_report_is_one_based_decimal() {
+        // 左键按在第 0 行第 0 列 —— 报出去必须是 1;1。
+        let bytes = encode_mouse(true, 0, &none(), 0, 0, true).unwrap();
+        assert_eq!(bytes, b"\x1b[<0;1;1M");
+        // 松开只换尾字母，坐标和按钮都还在。
+        let bytes = encode_mouse(true, 2, &none(), 41, 7, false).unwrap();
+        assert_eq!(bytes, b"\x1b[<2;42;8m");
+    }
+
+    #[test]
+    fn sgr_report_carries_modifier_bits() {
+        for (m, expect) in [
+            (mods(true, false, false), 4),
+            (mods(false, true, false), 8),
+            (mods(false, false, true), 16),
+            (mods(true, true, true), 28),
+        ] {
+            let bytes = encode_mouse(true, 0, &m, 0, 0, true).unwrap();
+            let text = String::from_utf8(bytes).unwrap();
+            assert_eq!(text, format!("\x1b[<{expect};1;1M"), "{m:?}");
+        }
+    }
+
+    #[test]
+    fn sgr_report_has_no_coordinate_cap() {
+        // 传统编码在 223 上撞墙，SGR 不会 —— 宽终端全靠这一条。
+        let bytes = encode_mouse(true, 0, &none(), 300, 400, true).unwrap();
+        assert_eq!(bytes, b"\x1b[<0;301;401M");
+    }
+
+    #[test]
+    fn legacy_report_offsets_every_byte_by_32() {
+        let bytes = encode_mouse(false, 0, &none(), 0, 0, true).unwrap();
+        assert_eq!(bytes, vec![0x1b, b'[', b'M', 32, 33, 33]);
+    }
+
+    #[test]
+    fn legacy_release_does_not_name_the_button() {
+        // 传统编码里松开固定是 3，分不出是哪个键；修饰位仍然带着。
+        let right = encode_mouse(false, 2, &none(), 5, 5, false).unwrap();
+        let left = encode_mouse(false, 0, &none(), 5, 5, false).unwrap();
+        assert_eq!(right, left);
+        assert_eq!(right[3], 32 + 3);
+        let shifted = encode_mouse(false, 0, &mods(true, false, false), 5, 5, false).unwrap();
+        assert_eq!(shifted[3], 32 + 3 + 4);
+    }
+
+    #[test]
+    fn legacy_report_gives_up_past_its_coordinate_cap() {
+        // 一个字节装不下，报一个错的位置比不报更坏。
+        assert!(encode_mouse(false, 0, &none(), 223, 0, true).is_none());
+        assert!(encode_mouse(false, 0, &none(), 0, 223, true).is_none());
+        assert!(encode_mouse(false, 0, &none(), 222, 222, true).is_some());
+    }
+
+    #[test]
+    fn wheel_reports_to_the_app_while_mouse_mode_is_on() {
+        let mode = TermMode::MOUSE_REPORT_CLICK;
+        assert_eq!(
+            wheel_route(mode, false, true),
+            WheelRoute::Report { base: 64 }
+        );
+        assert_eq!(
+            wheel_route(mode, false, false),
+            WheelRoute::Report { base: 65 }
+        );
+    }
+
+    #[test]
+    fn wheel_becomes_arrow_keys_on_the_alt_screen() {
+        // btop / less / man 这一档：备用屏没有回卷区，滚轮只能翻译成方向键。
+        let mode = TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL;
+        assert_eq!(
+            wheel_route(mode, false, true),
+            WheelRoute::Arrows { seq: b"\x1b[A" }
+        );
+        assert_eq!(
+            wheel_route(mode, false, false),
+            WheelRoute::Arrows { seq: b"\x1b[B" }
+        );
+        // 开了 DECCKM 的程序要 SS3 那套。
+        let app = mode | TermMode::APP_CURSOR;
+        assert_eq!(
+            wheel_route(app, false, true),
+            WheelRoute::Arrows { seq: b"\x1bOA" }
+        );
+        assert_eq!(
+            wheel_route(app, false, false),
+            WheelRoute::Arrows { seq: b"\x1bOB" }
+        );
+    }
+
+    #[test]
+    fn shift_always_falls_back_to_local_scrollback() {
+        // 逃生门：无论对端开了什么，Shift 都滚自己的回卷区。
+        for mode in [
+            TermMode::MOUSE_REPORT_CLICK,
+            TermMode::MOUSE_MOTION,
+            TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL,
+        ] {
+            assert_eq!(wheel_route(mode, true, true), WheelRoute::Scrollback);
+            assert_eq!(wheel_route(mode, true, false), WheelRoute::Scrollback);
+        }
+    }
+
+    #[test]
+    fn plain_screen_scrolls_the_scrollback() {
+        assert_eq!(
+            wheel_route(TermMode::empty(), false, true),
+            WheelRoute::Scrollback
+        );
+        // 备用屏但对端关掉了 alternate scroll：既不报也不翻译，
+        // 而备用屏本身没有回卷区，所以最终什么都不动。
+        assert_eq!(
+            wheel_route(TermMode::ALT_SCREEN, false, true),
+            WheelRoute::Scrollback
+        );
+    }
+
+    #[test]
+    fn only_the_three_real_buttons_get_reported() {
+        assert_eq!(button_base(gpui::MouseButton::Left), Some(0));
+        assert_eq!(button_base(gpui::MouseButton::Middle), Some(1));
+        assert_eq!(button_base(gpui::MouseButton::Right), Some(2));
+        assert_eq!(
+            button_base(gpui::MouseButton::Navigate(gpui::NavigationDirection::Back)),
+            None
+        );
     }
 }

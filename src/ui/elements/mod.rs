@@ -8,6 +8,7 @@
 //! [`TerminalGridElement`] 两条都占：终端有几行几列是"这块地方放得下几个
 //! 格子"算出来的，而一屏就是几千个格子。
 
+mod boxdraw;
 mod terminal_grid;
 
-pub use terminal_grid::{TerminalGridElement, point_at};
+pub use terminal_grid::{TerminalGridElement, cell_at, point_at};
