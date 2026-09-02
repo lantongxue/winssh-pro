@@ -1044,19 +1044,42 @@ impl SftpPanel {
 
         // 丢掉把手：任务本身已经结束，这里只是把坑腾出来。
         self.running.remove(&id);
-        let direction = self.queue.read(cx).item(id).map(|item| item.direction);
+        let item_info = self
+            .queue
+            .read(cx)
+            .item(id)
+            .map(|item| (item.direction, item.filename.clone()));
         let finished = error.is_none();
         self.start_queued(cx);
-        if let Some(direction) = finished.then_some(direction).flatten() {
-            // 传完的那一栏要跟上：不然列表里那个文件还是旧大小、旧时间。
-            match direction {
-                TransferDirection::Upload => {
-                    let dir = self.remote_path.clone();
-                    self.reload_in_place(&dir, window, cx);
+
+        if let Some((direction, name)) = item_info {
+            if let Some(err) = &error {
+                if err != "已取消" {
+                    let action = match direction {
+                        TransferDirection::Upload => "上传",
+                        TransferDirection::Download => "下载",
+                    };
+                    window.push_notification(format!("{action}“{name}”失败：{err}"), cx);
                 }
-                TransferDirection::Download => {
-                    let dir = self.local_dir.clone();
-                    self.list_local(dir, window, cx);
+            } else {
+                let verb = match direction {
+                    TransferDirection::Upload => "已上传",
+                    TransferDirection::Download => "已下载",
+                };
+                window.push_notification(format!("{verb} {name}"), cx);
+            }
+
+            if finished {
+                // 传完的那一栏要跟上：不然列表里那个文件还是旧大小、旧时间。
+                match direction {
+                    TransferDirection::Upload => {
+                        let dir = self.remote_path.clone();
+                        self.reload_in_place(&dir, window, cx);
+                    }
+                    TransferDirection::Download => {
+                        let dir = self.local_dir.clone();
+                        self.list_local(dir, window, cx);
+                    }
                 }
             }
         }
