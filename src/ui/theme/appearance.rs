@@ -18,6 +18,7 @@ impl gpui::Global for FollowSystemAppearance {}
 pub fn init(cx: &mut App) {
     cx.set_global(FollowSystemAppearance(true));
     Theme::sync_system_appearance(None, cx);
+    override_colors(cx);
 }
 
 /// 订阅窗口的外观变化。返回的订阅需要保活，丢弃即取消。
@@ -25,6 +26,7 @@ pub fn observe(window: &mut Window, _: &mut App) -> Subscription {
     window.observe_window_appearance(|window, cx| {
         if follows_system(cx) {
             Theme::sync_system_appearance(Some(window), cx);
+            override_colors(cx);
         }
     })
 }
@@ -33,6 +35,22 @@ pub fn observe(window: &mut Window, _: &mut App) -> Subscription {
 pub fn set_theme_mode(mode: ThemeMode, window: &mut Window, cx: &mut App) {
     cx.set_global(FollowSystemAppearance(false));
     Theme::change(mode, Some(window), cx);
+    override_colors(cx);
+}
+
+/// 改掉组件库主题里与产品读法不符的取值。主题每次重建都会落回默认值，
+/// 所以上面三个入口后面都要补一次。
+///
+/// 只有表格的选中行：组件库默认给它叠一层蓝底加一圈蓝框，而蓝色在这个界面里
+/// 说的是「位置与主操作」，SFTP 两栏各留一个选中行时，那圈蓝框会被读成焦点框 ——
+/// 焦点在哪一栏是另一件事。把选中色压回悬停色，选中行就只剩一层底色，和悬停一样；
+/// 边框换成行分隔线的颜色，叠加层的上下边框正好落在分隔线上，行网格看不出变化。
+fn override_colors(cx: &mut App) {
+    let theme = Theme::global_mut(cx);
+    theme.colors.table_active = theme.colors.table_hover;
+    theme.colors.table_active_border = theme.colors.table_row_border;
+    theme.tokens.table_active = theme.tokens.table_hover;
+    theme.tokens.table_active_border = theme.tokens.table_row_border;
 }
 
 fn follows_system(cx: &App) -> bool {

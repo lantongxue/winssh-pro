@@ -2776,7 +2776,7 @@ impl SftpPanel {
                                 DataTable::new(&self.remote_table)
                                     .xsmall()
                                     .bordered(false)
-                                    .stripe(false),
+                                    .stripe(true),
                             )
                             .child(
                                 // 拖拽接收指示遮罩层（类似网页拖拽上传效果）
