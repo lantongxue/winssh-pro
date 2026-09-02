@@ -11205,7 +11205,3 @@ dependencies = [
  "syn 3.0.4",
  "winnow 1.0.4",
 ]
-
-[[patch.unused]]
-name = "reqwest_client"
-version = "0.1.0"

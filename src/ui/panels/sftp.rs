@@ -36,7 +36,7 @@ use std::{
 
 use gpui::{
     AnyElement, App, AppContext as _, AsyncApp, ClickEvent, ClipboardItem, Context,
-    Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, InteractiveElement as _,
+    Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, Hsla, InteractiveElement as _,
     IntoElement, ParentElement as _, Pixels, Render, SharedString, Size,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _, px, size,
@@ -149,6 +149,47 @@ pub enum SftpPanelEvent {
     SetHeight(Pixels),
     /// 空状态里那下"重试"：请宿主重新开一次 SFTP 通道。
     Reconnect,
+}
+
+/// 本地条目被拖拽时的载荷数据。
+#[derive(Clone, Debug)]
+pub struct DraggedLocalEntry {
+    pub entry: FileEntry,
+}
+
+/// 本地条目拖拽时的半透明浮动预览。
+struct LocalDragPreview {
+    entry: FileEntry,
+}
+
+impl Render for LocalDragPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let icon = entry_icon(&self.entry, cx);
+        h_flex()
+            .gap_1p5()
+            .items_center()
+            .px_2()
+            .py_1()
+            .rounded(cx.theme().radius)
+            .bg(palette::recessed(cx))
+            .border_1()
+            .border_color(palette::teal())
+            .shadow_md()
+            .text_xs()
+            .font_medium()
+            .text_color(cx.theme().foreground)
+            .child(icon.with_size(px(12.)))
+            .child(self.entry.name.clone())
+            .when(!self.entry.kind.is_dir(), |this| {
+                this.child(
+                    div()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_xs()
+                        .text_color(palette::idle(cx))
+                        .child(self.entry.size_label()),
+                )
+            })
+    }
 }
 
 /// 底部这一栏 SFTP 面板。
@@ -1845,6 +1886,7 @@ impl SftpPanel {
                                     .text_color(palette::sky()),
                             )
                             .child(div().text_xs().font_semibold().child("本地工作站"))
+                            .child(self.render_quick_jump_menu(cx))
                             .child(self.render_local_breadcrumb(cx)),
                     )
                     .child(self.render_table_header(&local_columns(), cx))
@@ -1892,6 +1934,8 @@ impl SftpPanel {
     /// 右半：这台主机的文件系统。拖进来本机文件就是往这一栏传。
     /// 和左栏一样撑满所在的 `resizable_panel`；单栏模式下就是它自己铺满。
     fn render_remote_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let current_remote_path = self.remote_path.clone();
+
         div()
             .relative()
             .size_full()
@@ -1906,12 +1950,71 @@ impl SftpPanel {
                     .child(self.render_parent_row(cx))
                     .child(
                         div()
+                            .relative()
                             .flex_1()
                             .min_h_0()
                             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                                 this.upload_paths(dropped_paths(paths), cx);
                             }))
-                            .child(self.render_pane_body(true, cx)),
+                            .on_drop(cx.listener(|this, dragged: &DraggedLocalEntry, _, cx| {
+                                let local_path = PathBuf::from(dragged.entry.path.to_string());
+                                this.upload_paths(vec![local_path], cx);
+                            }))
+                            .child(self.render_pane_body(true, cx))
+                            .child(
+                                // 拖拽接收指示遮罩层（类似网页拖拽上传效果）
+                                div()
+                                    .id("remote-drop-overlay")
+                                    .absolute()
+                                    .inset_0()
+                                    .m_1()
+                                    .rounded_lg()
+                                    .invisible()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap_2()
+                                    .bg(cx.theme().background.opacity(0.92))
+                                    .border_2()
+                                    .border_dashed()
+                                    .border_color(palette::teal())
+                                    .shadow_lg()
+                                    .drag_over::<DraggedLocalEntry>(|style, _, _, _| style.visible())
+                                    .drag_over::<ExternalPaths>(|style, _, _, _| style.visible())
+                                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                                        this.upload_paths(dropped_paths(paths), cx);
+                                    }))
+                                    .on_drop(cx.listener(|this, dragged: &DraggedLocalEntry, _, cx| {
+                                        let local_path = PathBuf::from(dragged.entry.path.to_string());
+                                        this.upload_paths(vec![local_path], cx);
+                                    }))
+                                    .child(
+                                        Icon::new(AppIcon::Upload)
+                                            .with_size(px(36.))
+                                            .text_color(palette::teal()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_semibold()
+                                            .text_color(cx.theme().foreground)
+                                            .child("释放鼠标上传到当前目录"),
+                                    )
+                                    .child(
+                                        div()
+                                            .px_2()
+                                            .py_0p5()
+                                            .rounded(cx.theme().radius)
+                                            .bg(palette::recessed(cx))
+                                            .border_1()
+                                            .border_color(palette::teal().opacity(0.4))
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                            .text_xs()
+                                            .text_color(palette::teal())
+                                            .child(SharedString::from(current_remote_path)),
+                                    ),
+                            ),
                     ),
             )
             .when(self.remote.deleting, |this| {
@@ -1950,6 +2053,81 @@ impl SftpPanel {
                                 ),
                         ),
                 )
+            })
+    }
+
+    /// 常用目录快捷跳转菜单（Home、Downloads、Documents、Desktop、Pictures等）。
+    fn render_quick_jump_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let panel = cx.entity().downgrade();
+        let current_dir = self.local_dir.clone();
+
+        Button::new("local-quick-jump")
+            .ghost()
+            .xsmall()
+            .flex_shrink_0()
+            .icon(
+                Icon::new(AppIcon::Zap)
+                    .with_size(px(11.))
+                    .text_color(palette::amber()),
+            )
+            .label("常用 ▾")
+            .tooltip("快速跳转到常用目录")
+            .dropdown_menu(move |menu, _, _| {
+                let special_dirs = special_local_directories();
+                let mut menu = menu.min_w(px(160.));
+
+                for (name, icon, color, path) in special_dirs {
+                    let is_curr = path == current_dir;
+                    let target = path.clone();
+                    let p = panel.clone();
+
+                    let item = PopupMenuItem::new(name)
+                        .icon(icon.text_color(color))
+                        .checked(is_curr)
+                        .on_click(move |_, window, app| {
+                            let target = target.clone();
+                            if let Some(panel) = p.upgrade() {
+                                panel.update(app, |this, cx| {
+                                    this.list_local(target, window, cx);
+                                });
+                            }
+                        });
+                    menu = menu.item(item);
+                }
+
+                #[cfg(windows)]
+                {
+                    let drives = available_windows_drives();
+                    if !drives.is_empty() {
+                        menu = menu.separator();
+                        for drive in drives {
+                            let target_dir = PathBuf::from(format!("{}\\", drive));
+                            let is_curr = target_dir == current_dir;
+                            let p = panel.clone();
+                            let target = target_dir.clone();
+
+                            let item = PopupMenuItem::new(SharedString::from(format!(
+                                "本地磁盘 ({})",
+                                drive
+                            )))
+                            .icon(
+                                Icon::new(IconName::HardDrive).text_color(palette::amber()),
+                            )
+                            .checked(is_curr)
+                            .on_click(move |_, window, app| {
+                                let target = target.clone();
+                                if let Some(panel) = p.upgrade() {
+                                    panel.update(app, |this, cx| {
+                                        this.list_local(target, window, cx);
+                                    });
+                                }
+                            });
+                            menu = menu.item(item);
+                        }
+                    }
+                }
+
+                menu
             })
     }
 
@@ -2002,7 +2180,7 @@ impl SftpPanel {
                                     } else {
                                         palette::idle(cx)
                                     })
-                                    .dropdown_menu(move |menu, _, cx| {
+                                    .dropdown_menu(move |menu, _, _| {
                                         drives.iter().fold(menu.min_w(px(110.)), |menu, drive| {
                                             let is_curr =
                                                 drive.eq_ignore_ascii_case(&current_drive);
@@ -2014,13 +2192,8 @@ impl SftpPanel {
                                                 format!("{} \\", drive),
                                             ))
                                             .icon(
-                                                Icon::new(IconName::HardDrive).text_color(
-                                                    if is_curr {
-                                                        palette::teal()
-                                                    } else {
-                                                        palette::idle(cx)
-                                                    },
-                                                ),
+                                                Icon::new(IconName::HardDrive)
+                                                    .text_color(palette::amber()),
                                             )
                                             .checked(is_curr)
                                             .on_click(move |_, window, app| {
@@ -2370,6 +2543,7 @@ impl SftpPanel {
         };
         let selected = self.selected_local.as_ref() == Some(&entry.path);
         let clicked = entry.clone();
+        let dragged_entry = entry.clone();
         let menu_for = entry.clone();
         let menu = self.local_handler(cx);
         let now = SystemTime::now();
@@ -2389,6 +2563,15 @@ impl SftpPanel {
             .when(!selected, |row| {
                 row.hover(|style| style.bg(palette::surface(cx)))
             })
+            .on_drag(
+                DraggedLocalEntry {
+                    entry: dragged_entry,
+                },
+                |dragged, _, _, cx| {
+                    let entry = dragged.entry.clone();
+                    cx.new(|_| LocalDragPreview { entry })
+                },
+            )
             .child(
                 TableRow::new()
                     .xsmall()
@@ -2531,7 +2714,7 @@ impl SftpPanel {
                             .text_xs()
                             .text_color(palette::idle(cx))
                             .truncate()
-                            .child("双击文件即可打开编辑；把本机文件拖到右栏就是往这一格上传；右键一行看更多操作。"),
+                            .child("双击文件即可打开编辑；从左栏拖拽文件/目录到右栏即可上传；右键一行看更多操作。"),
                     ),
             )
             .when(has_active, |this| {
@@ -2790,6 +2973,37 @@ fn local_breadcrumbs(path: &str) -> Vec<(String, String)> {
     segments
 }
 
+/// 获取本地常用特殊目录列表（名称、图标、色彩、路径）。
+fn special_local_directories() -> Vec<(&'static str, Icon, Hsla, PathBuf)> {
+    let mut dirs = Vec::new();
+    if let Some(p) = dirs::home_dir() {
+        if p.exists() {
+            dirs.push(("用户主目录 (Home)", Icon::new(AppIcon::Home), palette::sky(), p));
+        }
+    }
+    if let Some(p) = dirs::download_dir() {
+        if p.exists() {
+            dirs.push(("下载 (Downloads)", Icon::new(AppIcon::Download), palette::teal(), p));
+        }
+    }
+    if let Some(p) = dirs::document_dir() {
+        if p.exists() {
+            dirs.push(("文档 (Documents)", Icon::new(IconName::FileText), palette::blue(), p));
+        }
+    }
+    if let Some(p) = dirs::desktop_dir() {
+        if p.exists() {
+            dirs.push(("桌面 (Desktop)", Icon::new(AppIcon::Laptop), palette::coral(), p));
+        }
+    }
+    if let Some(p) = dirs::picture_dir() {
+        if p.exists() {
+            dirs.push(("图片 (Pictures)", Icon::new(IconName::Folder), palette::magenta(), p));
+        }
+    }
+    dirs
+}
+
 /// 判断给定的字符串是否是 Windows 盘符（如 "C:"、"D:"）。
 fn is_windows_drive(label: &str) -> bool {
     let bytes = label.as_bytes();
@@ -2852,5 +3066,15 @@ mod tests {
         let root_crumbs = local_breadcrumbs("D:\\");
         assert_eq!(root_crumbs, vec![("D:".to_string(), "D:\\".to_string())]);
     }
+
+    #[test]
+    fn test_special_local_directories() {
+        let list = special_local_directories();
+        // 主目录在大多数支持的操作系统环境中都应该存在
+        if dirs::home_dir().is_some() {
+            assert!(!list.is_empty(), "至少应包含用户主目录");
+        }
+    }
 }
+
 

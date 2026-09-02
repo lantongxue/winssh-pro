@@ -72,4 +72,4 @@ gpui = { path = "refs/zed/crates/gpui" }
 gpui_platform = { path = "refs/zed/crates/gpui_platform" }
 gpui_macros = { path = "refs/zed/crates/gpui_macros" }
 gpui_web = { path = "refs/zed/crates/gpui_web" }
-reqwest_client = { path = "refs/zed/crates/reqwest_client" }
+
