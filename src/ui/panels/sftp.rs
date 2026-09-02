@@ -28,7 +28,7 @@
 //!   在往那个目录里写，是最难查的那种问题。
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     rc::Rc,
     time::SystemTime,
@@ -37,8 +37,8 @@ use std::{
 use gpui::{
     AnyElement, App, AppContext as _, AsyncApp, ClipboardItem, Context, Div, Entity,
     EventEmitter, ExternalPaths, FocusHandle, Focusable, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Pixels, Point, Render, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
+    IntoElement, Modifiers, MouseButton, ParentElement as _, Pixels, Point, Render, SharedString,
+    Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
@@ -70,7 +70,7 @@ use crate::{
     },
     sftp::{
         FileEntry, FileKind, TransferDirection, TransferItem, TransferStatus, breadcrumbs,
-        is_hidden, join, normalize, parent, sort_entries,
+        human_size, is_hidden, join, normalize, parent, sort_entries,
     },
     ui::{
         dialogs::{SftpFormKind, SftpNameHandler},
@@ -86,10 +86,6 @@ const ROW_HEIGHT: Pixels = px(24.);
 const NAV_HEIGHT: Pixels = px(32.);
 const PANE_HEADER_HEIGHT: Pixels = px(28.);
 const FOOTER_HEIGHT: Pixels = px(28.);
-
-/// 传输队列抽屉的初始高度（原型 h-20，这里多留一点，好一次看见三行）。拖过它上沿
-/// 那根线之后，高度就归 [`ResizableState`] 记了。
-const QUEUE_HEIGHT: Pixels = px(96.);
 
 /// 队列能被拖到的最矮：一个抽屉头加一行传输，再矮就没有内容可看了。
 const QUEUE_MIN_HEIGHT: Pixels = px(64.);
@@ -139,99 +135,138 @@ pub enum SftpPanelEvent {
     Reconnect,
 }
 
-/// 本地条目被拖拽时的载荷数据。
+gpui::actions!(
+    sftp,
+    [
+        /// 全选当前那一栏里的条目（Ctrl/Cmd+A）。
+        SelectAllEntries,
+        /// Shift+↑：把选中区间往上扩一行。
+        ExtendSelectionUp,
+        /// Shift+↓：把选中区间往下扩一行。
+        ExtendSelectionDown,
+        /// 回车：打开选中的那一个条目（目录进它、远端文件开编辑器、本地文件传上去）。
+        OpenSelection,
+    ]
+);
+
+/// 本地条目被拖拽时的载荷数据。拖的是选中集：拖一个已选中的行，整份选中集
+/// 一起走；拖一个没选中的行，按下那一刻它就成了唯一的选中项（见 [`RowPress::Down`]）。
+///
+/// 载荷是 `Rc` 而不是 `Vec`：每一行都要在渲染时先把自己的那一份备好
+/// （`on_drag` 要的是值，不是拖起来才算的闭包），选中一大片时逐行克隆一遍
+/// 就是每帧几万次 —— 所以整栏共用 delegate 那一份（见
+/// [`LocalTableDelegate::selection_targets`]）。
 #[derive(Clone, Debug)]
-pub struct DraggedLocalEntry {
-    pub entry: FileEntry,
+pub struct DraggedLocalEntries {
+    pub entries: Rc<Vec<FileEntry>>,
 }
 
 /// 本地条目拖拽时的半透明浮动预览。
 struct LocalDragPreview {
-    entry: FileEntry,
+    entries: Rc<Vec<FileEntry>>,
     click_offset: Point<Pixels>,
 }
 
 impl Render for LocalDragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let icon = entry_icon(&self.entry, cx);
-        h_flex()
-            .pl(self.click_offset.x + px(10.))
-            .pt(self.click_offset.y + px(10.))
-            .child(
-                h_flex()
-                    .gap_1p5()
-                    .items_center()
-                    .px_2()
-                    .py_1()
-                    .rounded(cx.theme().radius)
-                    .bg(palette::recessed(cx))
-                    .border_1()
-                    .border_color(palette::teal())
-                    .shadow_md()
-                    .text_xs()
-                    .font_medium()
-                    .text_color(cx.theme().foreground)
-                    .child(icon.with_size(px(12.)))
-                    .child(self.entry.name.clone())
-                    .when(!self.entry.kind.is_dir(), |this| {
-                        this.child(
-                            div()
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .text_xs()
-                                .text_color(palette::idle(cx))
-                                .child(self.entry.size_label()),
-                        )
-                    }),
-            )
+        drag_preview(&self.entries, self.click_offset, palette::teal(), cx)
     }
 }
 
-/// 远端条目被拖拽时的载荷数据。
+/// 远端条目被拖拽时的载荷数据。同 [`DraggedLocalEntries`]：拖的是选中集。
 #[derive(Clone, Debug)]
-pub struct DraggedRemoteEntry {
-    pub entry: FileEntry,
+pub struct DraggedRemoteEntries {
+    pub entries: Rc<Vec<FileEntry>>,
 }
 
 /// 远端条目拖拽时的半透明浮动预览。
 struct RemoteDragPreview {
-    entry: FileEntry,
+    entries: Rc<Vec<FileEntry>>,
     click_offset: Point<Pixels>,
 }
 
 impl Render for RemoteDragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let icon = entry_icon(&self.entry, cx);
-        h_flex()
-            .pl(self.click_offset.x + px(10.))
-            .pt(self.click_offset.y + px(10.))
-            .child(
-                h_flex()
-                    .gap_1p5()
-                    .items_center()
-                    .px_2()
-                    .py_1()
-                    .rounded(cx.theme().radius)
-                    .bg(palette::recessed(cx))
-                    .border_1()
-                    .border_color(palette::sky())
-                    .shadow_md()
-                    .text_xs()
-                    .font_medium()
-                    .text_color(cx.theme().foreground)
-                    .child(icon.with_size(px(12.)))
-                    .child(self.entry.name.clone())
-                    .when(!self.entry.kind.is_dir(), |this| {
-                        this.child(
-                            div()
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .text_xs()
-                                .text_color(palette::idle(cx))
-                                .child(self.entry.size_label()),
-                        )
-                    }),
-            )
+        drag_preview(&self.entries, self.click_offset, palette::sky(), cx)
     }
 }
+
+/// 跟着鼠标走的那一小块。两栏只差一个描边色，所以合在这里画。
+///
+/// 拖一批条目时只画头一个的名字，后面跟一个"共 N 项" —— 把十几个名字堆在鼠标
+/// 边上，既挡住落点又读不完。大小也只在单个文件时画：一批条目的总大小要数完
+/// 目录树才知道，那是 worker 的活。
+fn drag_preview(
+    entries: &[FileEntry],
+    click_offset: Point<Pixels>,
+    accent: Hsla,
+    cx: &App,
+) -> impl IntoElement {
+    let count = entries.len();
+    let Some(first) = entries.first() else {
+        return div().into_any_element();
+    };
+    let icon = entry_icon(first, cx);
+    h_flex()
+        .pl(click_offset.x + px(10.))
+        .pt(click_offset.y + px(10.))
+        .child(
+            h_flex()
+                .gap_1p5()
+                .items_center()
+                .px_2()
+                .py_1()
+                .rounded(cx.theme().radius)
+                .bg(palette::recessed(cx))
+                .border_1()
+                .border_color(accent)
+                .shadow_md()
+                .text_xs()
+                .font_medium()
+                .text_color(cx.theme().foreground)
+                .child(icon.with_size(px(12.)))
+                .child(first.name.clone())
+                .when(count == 1 && !first.kind.is_dir(), |this| {
+                    this.child(
+                        div()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_xs()
+                            .text_color(palette::idle(cx))
+                            .child(first.size_label()),
+                    )
+                })
+                .when(count > 1, |this| {
+                    this.child(
+                        div()
+                            .px_1p5()
+                            .rounded(cx.theme().radius)
+                            .bg(accent.opacity(0.18))
+                            .text_xs()
+                            .text_color(accent)
+                            .child(SharedString::from(format!("共 {count} 项"))),
+                    )
+                }),
+        )
+        .into_any_element()
+}
+
+/// 点在一行上的鼠标动作。表格 delegate 只报"哪一行、按着什么键"，
+/// 怎么改选中集在面板里（见 [`SftpPanel::on_row_press`]）。
+#[derive(Clone, Copy, Debug)]
+pub enum RowPress {
+    /// 左键按下。拖拽带走的是"按下那一刻的选中集"，所以按在一个还没选中的行上
+    /// 要先把它选上 —— 资源管理器也是按下就选。带修饰键的按下要放过：
+    /// Ctrl 切换与 Shift 连选都在松开那一步算，先选上会把它们要读的选中集改掉。
+    Down(usize, Modifiers),
+    /// 左键点击（松开）。只用来处理带 Ctrl/Cmd 的那两种：普通单击与 Shift 单击
+    /// 走表格自己的 [`TableEvent::SelectRow`]，那条路和方向键是同一条。
+    Click(usize, Modifiers),
+    /// 右键按下。点在选中集外面就先只选这一行 —— 菜单要对着它说话。
+    RightDown(usize),
+}
+
+/// [`RowPress`] 的收件人。两栏各自绑一份（闭包里记着自己是哪一栏）。
+pub type RowPressHandler = Rc<dyn Fn(&RowPress, &mut Window, &mut App)>;
 
 /// 按列和排序方向对条目排序（目录始终置顶）。
 fn sort_by_column(entries: &mut [FileEntry], col_key: &str, sort: ColumnSort) {
@@ -344,6 +379,66 @@ fn sort_by_column(entries: &mut [FileEntry], col_key: &str, sort: ColumnSort) {
     }
 }
 
+/// 选中的那些条目本身，按画出来的顺序。
+fn selected_in_order(entries: &[FileEntry], selected: &HashSet<SharedString>) -> Vec<FileEntry> {
+    entries
+        .iter()
+        .filter(|entry| selected.contains(&entry.path))
+        .cloned()
+        .collect()
+}
+
+/// 右键或拖拽落在 `row_ix` 上时，动作对着的那些条目：落在选中集里，说的是整份
+/// 选中集；落在选中集外面，说的就是它自己 —— 资源管理器也是这样。
+fn targets_for_row(
+    entries: &[FileEntry],
+    selection: &[FileEntry],
+    row_ix: usize,
+) -> Vec<FileEntry> {
+    let Some(entry) = entries.get(row_ix) else {
+        return Vec::new();
+    };
+    if selection.len() > 1 && selection.iter().any(|picked| picked.path == entry.path) {
+        return selection.to_vec();
+    }
+    vec![entry.clone()]
+}
+
+/// 这一行拖起来带走的那些条目：选中的行带走整份选中集（整栏共用同一个 `Rc`），
+/// 没选中的行只带它自己。
+fn drag_targets(
+    selection: &Rc<Vec<FileEntry>>,
+    entry: &FileEntry,
+    selected: bool,
+) -> Rc<Vec<FileEntry>> {
+    match selected && selection.len() > 1 {
+        true => Rc::clone(selection),
+        false => Rc::new(vec![entry.clone()]),
+    }
+}
+
+/// 一行上那三个监听。两栏的行画得不一样，收拾选中集的规矩却是同一套。
+///
+/// 表格自己也在这一行上挂了 click（移动光标行、双击开条目）与右键（弹菜单），
+/// 三个监听都不截断冒泡 —— 两边各收一份，谁也不挡谁。
+fn row_press_listeners(
+    row: Stateful<Div>,
+    row_ix: usize,
+    handler: RowPressHandler,
+) -> Stateful<Div> {
+    let on_down = handler.clone();
+    let on_click = handler.clone();
+    row.on_mouse_down(MouseButton::Left, move |event, window, cx| {
+        on_down(&RowPress::Down(row_ix, event.modifiers), window, cx);
+    })
+    .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+        handler(&RowPress::RightDown(row_ix), window, cx);
+    })
+    .on_click(move |event, window, cx| {
+        on_click(&RowPress::Click(row_ix, event.modifiers()), window, cx);
+    })
+}
+
 /// 本地文件数据表格 Delegate。
 pub struct LocalTableDelegate {
     pub entries: Vec<FileEntry>,
@@ -351,6 +446,14 @@ pub struct LocalTableDelegate {
     pub sort_col: Option<usize>,
     pub sort_dir: ColumnSort,
     pub menu_handler: Option<LocalEntryActionHandler>,
+    /// 选中的那些条目，按路径记。真正的选中集归面板（见 [`Pane::selected`]），
+    /// 这里是它推过来的一份副本 —— 行是 delegate 画的，得由它知道哪几行选中了。
+    /// 只经 [`Self::set_selection`] 改，好让 `selection_targets` 跟着重算。
+    selected: HashSet<SharedString>,
+    /// 选中的那些条目本身，按画出来的顺序。每一帧里可见的每一行都要拿它当拖拽载荷，
+    /// 所以算一次存下来（见 [`DraggedLocalEntries`]）。
+    selection_targets: Rc<Vec<FileEntry>>,
+    pub row_handler: Option<RowPressHandler>,
 }
 
 impl LocalTableDelegate {
@@ -376,6 +479,9 @@ impl LocalTableDelegate {
             sort_col: None,
             sort_dir: ColumnSort::Default,
             menu_handler: None,
+            selected: HashSet::new(),
+            selection_targets: Rc::new(Vec::new()),
+            row_handler: None,
         }
     }
 
@@ -387,6 +493,23 @@ impl LocalTableDelegate {
                 sort_by_column(&mut self.entries, &key, self.sort_dir);
             }
         }
+        self.refresh_targets();
+    }
+
+    /// 换一份选中集（面板每改一次就推过来一次，见 [`SftpPanel::sync_selection`]）。
+    pub fn set_selection(&mut self, selected: HashSet<SharedString>) {
+        self.selected = selected;
+        self.refresh_targets();
+    }
+
+    fn refresh_targets(&mut self) {
+        self.selection_targets = Rc::new(selected_in_order(&self.entries, &self.selected));
+    }
+
+    /// 这次动作对着的那些条目：右键（或拖拽）落在选中集里的一行，说的就是整份
+    /// 选中集；落在选中集外面，说的就是它自己。
+    fn targets(&self, row_ix: usize) -> Vec<FileEntry> {
+        targets_for_row(&self.entries, &self.selection_targets, row_ix)
     }
 }
 
@@ -483,20 +606,29 @@ impl TableDelegate for LocalTableDelegate {
         &mut self,
         row_ix: usize,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
-        let entry = self.entries.get(row_ix).cloned();
+        let Some(entry) = self.entries.get(row_ix).cloned() else {
+            // 铺满表格下沿的那些空行：没有条目，也就没有选中、拖拽与菜单。
+            return div().id(("local-table-row", row_ix));
+        };
+        let selected = self.selected.contains(&entry.path);
+        // ".." 那一行不是条目：拖它等于拖一个字面的 ".." 路径。
+        let dragged =
+            (!entry.is_parent()).then(|| drag_targets(&self.selection_targets, &entry, selected));
         div()
             .id(("local-table-row", row_ix))
-            .when_some(entry, |this, entry| {
+            .when(selected, |this| this.bg(palette::selected_row(cx)))
+            .when_some(self.row_handler.clone(), |this, handler| {
+                row_press_listeners(this, row_ix, handler)
+            })
+            .when_some(dragged, |this, entries| {
                 this.on_drag(
-                    DraggedLocalEntry {
-                        entry: entry.clone(),
-                    },
+                    DraggedLocalEntries { entries },
                     |dragged, click_offset, _, cx| {
-                        let entry = dragged.entry.clone();
+                        let entries = dragged.entries.clone();
                         cx.new(|_| LocalDragPreview {
-                            entry,
+                            entries,
                             click_offset,
                         })
                     },
@@ -511,13 +643,13 @@ impl TableDelegate for LocalTableDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
-        let Some(entry) = self.entries.get(row_ix).cloned() else {
+        if self.entries.get(row_ix).is_none() {
             return menu;
-        };
+        }
         let Some(handler) = self.menu_handler.clone() else {
             return menu;
         };
-        LocalEntryMenu::build(menu, &entry, &handler, cx)
+        LocalEntryMenu::build(menu, &self.targets(row_ix), &handler, cx)
     }
 
     fn render_empty(
@@ -554,6 +686,12 @@ pub struct RemoteTableDelegate {
     pub sort_dir: ColumnSort,
     pub menu_handler: Option<SftpEntryActionHandler>,
     pub service_active: bool,
+    /// 选中的那些条目，按路径记。同 [`LocalTableDelegate::selected`]：面板推过来的副本，
+    /// 只经 [`Self::set_selection`] 改。
+    selected: HashSet<SharedString>,
+    /// 同 [`LocalTableDelegate::selection_targets`]。
+    selection_targets: Rc<Vec<FileEntry>>,
+    pub row_handler: Option<RowPressHandler>,
 }
 
 impl RemoteTableDelegate {
@@ -594,6 +732,9 @@ impl RemoteTableDelegate {
             sort_dir: ColumnSort::Default,
             menu_handler: None,
             service_active: false,
+            selected: HashSet::new(),
+            selection_targets: Rc::new(Vec::new()),
+            row_handler: None,
         }
     }
 
@@ -605,6 +746,22 @@ impl RemoteTableDelegate {
                 sort_by_column(&mut self.entries, &key, self.sort_dir);
             }
         }
+        self.refresh_targets();
+    }
+
+    /// 同 [`LocalTableDelegate::set_selection`]。
+    pub fn set_selection(&mut self, selected: HashSet<SharedString>) {
+        self.selected = selected;
+        self.refresh_targets();
+    }
+
+    fn refresh_targets(&mut self) {
+        self.selection_targets = Rc::new(selected_in_order(&self.entries, &self.selected));
+    }
+
+    /// 同 [`LocalTableDelegate::targets`]。
+    fn targets(&self, row_ix: usize) -> Vec<FileEntry> {
+        targets_for_row(&self.entries, &self.selection_targets, row_ix)
     }
 }
 
@@ -728,7 +885,10 @@ impl TableDelegate for RemoteTableDelegate {
                                     .icon(Icon::new(AppIcon::Download).text_color(palette::teal()))
                                     .tooltip("下载到本地")
                                     .on_click(move |_, window, cx| {
-                                        handler(&entry, &SftpEntryAction::Download, window, cx);
+                                        // 行里那几个按钮说的永远是"这一行"，
+                                        // 不跟着选中集走 —— 它们就画在这一行上。
+                                        let target = std::slice::from_ref(&entry);
+                                        handler(target, &SftpEntryAction::Download, window, cx);
                                     }),
                             )
                         })
@@ -742,7 +902,8 @@ impl TableDelegate for RemoteTableDelegate {
                                     .icon(Icon::new(IconName::Folder).text_color(palette::coral()))
                                     .tooltip("进到这个目录")
                                     .on_click(move |_, window, cx| {
-                                        handler(&entry, &SftpEntryAction::OpenFolder, window, cx);
+                                        let target = std::slice::from_ref(&entry);
+                                        handler(target, &SftpEntryAction::OpenFolder, window, cx);
                                     }),
                             )
                         })
@@ -756,7 +917,8 @@ impl TableDelegate for RemoteTableDelegate {
                                     .icon(Icon::new(AppIcon::Trash).text_color(cx.theme().danger))
                                     .tooltip("删掉这个条目")
                                     .on_click(move |_, window, cx| {
-                                        handler(&entry, &SftpEntryAction::Delete, window, cx);
+                                        let target = std::slice::from_ref(&entry);
+                                        handler(target, &SftpEntryAction::Delete, window, cx);
                                     }),
                             )
                         })
@@ -771,20 +933,29 @@ impl TableDelegate for RemoteTableDelegate {
         &mut self,
         row_ix: usize,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
-        let entry = self.entries.get(row_ix).cloned();
+        let Some(entry) = self.entries.get(row_ix).cloned() else {
+            // 铺满表格下沿的那些空行：没有条目，也就没有选中、拖拽与菜单。
+            return div().id(("remote-table-row", row_ix));
+        };
+        let selected = self.selected.contains(&entry.path);
+        // ".." 那一行不是条目：拖它等于拖一个字面的 ".." 路径。
+        let dragged =
+            (!entry.is_parent()).then(|| drag_targets(&self.selection_targets, &entry, selected));
         div()
             .id(("remote-table-row", row_ix))
-            .when_some(entry, |this, entry| {
+            .when(selected, |this| this.bg(palette::selected_row(cx)))
+            .when_some(self.row_handler.clone(), |this, handler| {
+                row_press_listeners(this, row_ix, handler)
+            })
+            .when_some(dragged, |this, entries| {
                 this.on_drag(
-                    DraggedRemoteEntry {
-                        entry: entry.clone(),
-                    },
+                    DraggedRemoteEntries { entries },
                     |dragged, click_offset, _, cx| {
-                        let entry = dragged.entry.clone();
+                        let entries = dragged.entries.clone();
                         cx.new(|_| RemoteDragPreview {
-                            entry,
+                            entries,
                             click_offset,
                         })
                     },
@@ -799,13 +970,13 @@ impl TableDelegate for RemoteTableDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
-        let Some(entry) = self.entries.get(row_ix).cloned() else {
+        if self.entries.get(row_ix).is_none() {
             return menu;
-        };
+        }
         let Some(handler) = self.menu_handler.clone() else {
             return menu;
         };
-        SftpEntryMenu::build(menu, &entry, &handler, cx)
+        SftpEntryMenu::build(menu, &self.targets(row_ix), &handler, cx)
     }
 
     fn render_empty(
@@ -877,9 +1048,9 @@ pub struct SftpPanel {
     /// 被碰，所以收起再拉开，拖出来的高度还在。
     queue_state: Entity<ResizableState>,
 
-    /// 两栏各自的选中项，按路径记。
-    selected_local: Option<SharedString>,
-    selected_remote: Option<SharedString>,
+    /// 键盘落在哪一栏：最后被点过的那一栏（Ctrl+A、Shift+方向键、回车都看它）。
+    /// 单栏模式下只有远端那一栏，见 [`Self::active_pane_local`]。
+    active_local: bool,
 
     /// 传输队列抽屉：行模型与展开状态都在它里面（见 [`TransferQueueDrawer`]）。
     queue: Entity<TransferQueueDrawer>,
@@ -901,8 +1072,8 @@ pub struct SftpPanel {
     _subscriptions: Vec<Subscription>,
 }
 
-/// 一栏的状态：从数据入口拿到的条目、按当前过滤与排序算好要画的那些，
-/// 以及为什么没画上。
+/// 一栏的状态：从数据入口拿到的条目、按当前过滤与排序算好要画的那些、
+/// 为什么没画上，以及选中了哪些。
 struct Pane {
     entries: Vec<FileEntry>,
     view: Vec<FileEntry>,
@@ -913,6 +1084,13 @@ struct Pane {
     error: Option<SharedString>,
     /// 被 [`PANE_LIMIT`] 截断过。
     truncated: bool,
+    /// 选中的那些条目，按路径记：过滤、重列、点表头排序之后行号都会变，路径不会。
+    /// 这里只记"有谁"，不记顺序 —— 要按顺序拿时照画出来的那一份走
+    /// （见 [`SftpPanel::selected_entries`]）。
+    selected: HashSet<SharedString>,
+    /// Shift 连选的锚点，同样按路径记。普通单击与 Ctrl 单击会把它挪到刚点的那行，
+    /// Shift 连选不动它 —— 所以来回 Shift 点是同一个起点。
+    anchor: Option<SharedString>,
 }
 
 impl Default for Pane {
@@ -924,7 +1102,109 @@ impl Default for Pane {
             deleting: false,
             error: None,
             truncated: false,
+            selected: HashSet::new(),
+            anchor: None,
         }
+    }
+}
+
+/// 一栏里画出来的那些行，每行给它的路径；`None` 是不能选的行（开头那个 ".."）。
+///
+/// 行序归表格 delegate —— 点过表头排序之后，它和 `Pane::view` 就不是同一个顺序了，
+/// 所以连选、全选这些跟顺序有关的事都从这一份算（见 [`SftpPanel::row_paths`]）。
+type RowPaths = Vec<Option<SharedString>>;
+
+/// 把画出来的那些行折成 [`RowPaths`]。
+fn row_paths(entries: &[FileEntry]) -> RowPaths {
+    entries
+        .iter()
+        .map(|entry| (!entry.is_parent()).then(|| entry.path.clone()))
+        .collect()
+}
+
+impl Pane {
+    /// 只选这一行：普通单击、方向键。落在不能选的行上（".."）就清空 ——
+    /// 点在"回上级"那一行上，等于点在了一个不是条目的东西上。
+    fn select_only(&mut self, rows: &RowPaths, row: usize) {
+        let Some(Some(path)) = rows.get(row) else {
+            self.clear_selection();
+            return;
+        };
+        self.selected.clear();
+        self.selected.insert(path.clone());
+        self.anchor = Some(path.clone());
+    }
+
+    /// 切换这一行：Ctrl/Cmd 单击。锚点跟着走，接下来的 Shift 连选从这儿起算。
+    fn toggle(&mut self, rows: &RowPaths, row: usize) {
+        let Some(Some(path)) = rows.get(row) else {
+            return;
+        };
+        if !self.selected.remove(path) {
+            self.selected.insert(path.clone());
+        }
+        self.anchor = Some(path.clone());
+    }
+
+    /// 从锚点连选到这一行：Shift 单击、Shift+方向键。`add` 为真时并上原来的选中集
+    /// （Ctrl+Shift 单击），否则替换。没有锚点就退化成只选这一行。
+    fn select_range(&mut self, rows: &RowPaths, row: usize, add: bool) {
+        if !matches!(rows.get(row), Some(Some(_))) {
+            return;
+        }
+        let anchor = self
+            .anchor
+            .as_ref()
+            .and_then(|anchor| rows.iter().position(|path| path.as_ref() == Some(anchor)));
+        let Some(anchor) = anchor else {
+            self.select_only(rows, row);
+            return;
+        };
+        if !add {
+            self.selected.clear();
+        }
+        let (from, to) = if anchor <= row {
+            (anchor, row)
+        } else {
+            (row, anchor)
+        };
+        for path in rows[from..=to].iter().flatten() {
+            self.selected.insert(path.clone());
+        }
+    }
+
+    /// 全选这一栏（Ctrl/Cmd+A）。锚点不动：全选之后再 Shift 点一下，
+    /// 起点还是上一次点过的那行。
+    fn select_all(&mut self, rows: &RowPaths) {
+        self.selected = rows.iter().flatten().cloned().collect();
+    }
+
+    fn clear_selection(&mut self) {
+        self.selected.clear();
+        self.anchor = None;
+    }
+
+    /// 重列之后把已经不在列表里的路径丢掉：选中集要能直接当"这些条目"用，
+    /// 留着删掉的、被过滤掉的那些，计数就开始说假话。
+    fn prune_selection(&mut self) {
+        let present: HashSet<&SharedString> = self.view.iter().map(|entry| &entry.path).collect();
+        self.selected.retain(|path| present.contains(path));
+        if self
+            .anchor
+            .as_ref()
+            .is_some_and(|anchor| !present.contains(anchor))
+        {
+            self.anchor = None;
+        }
+    }
+
+    /// 选中的那些文件一共多大。目录不算（它的 size 是 inode 的大小，不是内容多少）。
+    fn selected_bytes(&self) -> u64 {
+        self.view
+            .iter()
+            .filter(|entry| !entry.kind.is_dir() && self.selected.contains(&entry.path))
+            .map(|entry| entry.size)
+            .sum()
     }
 }
 
@@ -1000,16 +1280,12 @@ impl SftpPanel {
                     window,
                     |this: &mut Self, _, event: &TableEvent, window, cx| match event {
                         TableEvent::SelectRow(row_ix) => {
-                            let entry = this
-                                .local_table
-                                .read(cx)
-                                .delegate()
-                                .entries
-                                .get(*row_ix)
-                                .cloned();
-                            if let Some(entry) = entry {
-                                this.select(&entry, true, cx);
-                            }
+                            this.on_cursor_row(*row_ix, true, window, cx)
+                        }
+                        // Esc：表格把自己的光标行清了，选中集跟着清。
+                        TableEvent::ClearSelection => {
+                            this.local.clear_selection();
+                            this.sync_selection(cx);
                         }
                         TableEvent::DoubleClickedRow(row_ix) => {
                             let entry = this
@@ -1031,16 +1307,11 @@ impl SftpPanel {
                     window,
                     |this: &mut Self, _, event: &TableEvent, window, cx| match event {
                         TableEvent::SelectRow(row_ix) => {
-                            let entry = this
-                                .remote_table
-                                .read(cx)
-                                .delegate()
-                                .entries
-                                .get(*row_ix)
-                                .cloned();
-                            if let Some(entry) = entry {
-                                this.select(&entry, false, cx);
-                            }
+                            this.on_cursor_row(*row_ix, false, window, cx)
+                        }
+                        TableEvent::ClearSelection => {
+                            this.remote.clear_selection();
+                            this.sync_selection(cx);
                         }
                         TableEvent::DoubleClickedRow(row_ix) => {
                             let entry = this
@@ -1082,8 +1353,7 @@ impl SftpPanel {
                 filter,
                 resizable_state,
                 queue_state,
-                selected_local: None,
-                selected_remote: None,
+                active_local: false,
                 queue,
                 transfer_seq: 0,
                 queue_drawer: false,
@@ -1255,7 +1525,8 @@ impl SftpPanel {
         self.remote_path = dir.clone();
         self.remote.loading = true;
         self.remote.error = None;
-        self.selected_remote = None;
+        // 换了一格目录，上一格里选中的那些条目就不在这儿了。
+        self.remote.clear_selection();
         self.path_input
             .update(cx, |state, cx| state.set_value(dir.clone(), window, cx));
         cx.notify();
@@ -1292,7 +1563,7 @@ impl SftpPanel {
     fn list_local(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.local.loading = true;
         self.local.error = None;
-        self.selected_local = None;
+        self.local.clear_selection();
         cx.notify();
 
         let service = LocalFileService;
@@ -1343,22 +1614,33 @@ impl SftpPanel {
         let remote_at_root = self.at_root();
         rebuild_pane(&mut self.local, &needle, show_hidden, true, local_at_root);
         rebuild_pane(&mut self.remote, &needle, show_hidden, true, remote_at_root);
+        // 过滤词一改、目录一重列，选中集里可能有些路径已经不在列表上了。
+        self.local.prune_selection();
+        self.remote.prune_selection();
 
         let local_entries = self.local.view.clone();
         let remote_entries = self.remote.view.clone();
+        let local_selected = self.local.selected.clone();
+        let remote_selected = self.remote.selected.clone();
         let local_menu = self.local_handler(cx);
         let remote_menu = self.entry_handler(cx);
+        let local_rows = self.row_handler(true, cx);
+        let remote_rows = self.row_handler(false, cx);
         let service_active = self.service.is_some();
 
         self.local_table.update(cx, |table, cx| {
             table.delegate_mut().menu_handler = Some(local_menu);
+            table.delegate_mut().row_handler = Some(local_rows);
             table.delegate_mut().set_entries(local_entries);
+            table.delegate_mut().set_selection(local_selected);
             table.refresh(cx);
         });
         self.remote_table.update(cx, |table, cx| {
             table.delegate_mut().menu_handler = Some(remote_menu);
+            table.delegate_mut().row_handler = Some(remote_rows);
             table.delegate_mut().service_active = service_active;
             table.delegate_mut().set_entries(remote_entries);
+            table.delegate_mut().set_selection(remote_selected);
             table.refresh(cx);
         });
         cx.notify();
@@ -1403,12 +1685,212 @@ impl SftpPanel {
         }
     }
 
-    fn select(&mut self, entry: &FileEntry, local: bool, cx: &mut Context<Self>) {
+    // ------------------------------------------------------------------ 选中集
+    //
+    // 两栏都能多选，规矩照 Windows 资源管理器：
+    //
+    // - 单击只选一行，Ctrl/Cmd 单击切换一行，Shift 单击从锚点连选，
+    //   Ctrl+Shift 单击把这一段并进来；
+    // - 方向键移动并只选一行，Shift+方向键把区间往那个方向扩一行，
+    //   Ctrl/Cmd+A 全选这一栏，Esc 清空，回车打开选中的那一个；
+    // - 右键选中集里的一行，菜单对着整份选中集；右键选中集外的一行，先只选它；
+    // - 拖拽带走的是选中集（拖一个没选中的行，按下那一刻它就成了唯一选中项）。
+    //
+    // 鼠标与键盘在 [`Self::on_cursor_row`] 汇合：表格自己那套"光标行"（单击、
+    // Shift 单击、方向键都会把它挪一格）每挪一次报一个 `SelectRow`，按事件到达时
+    // 按着的修饰键决定是替换选中集还是扩展。带 Ctrl/Cmd 的那两种在
+    // [`Self::on_row_press`] 里已经处理完了，到那儿要放过 —— 否则一次点击算两遍。
+    //
+    // 选中集归面板（[`Pane::selected`]），行却是表格 delegate 画的，所以每次改完
+    // 都要 [`Self::sync_selection`] 推一份副本过去。
+
+    fn pane_mut(&mut self, local: bool) -> &mut Pane {
         match local {
-            true => self.selected_local = Some(entry.path.clone()),
-            false => self.selected_remote = Some(entry.path.clone()),
+            true => &mut self.local,
+            false => &mut self.remote,
         }
+    }
+
+    /// 键盘动作落在哪一栏。单栏时本地栏根本没画出来，键盘只能对着远端栏说话。
+    fn active_pane_local(&self) -> bool {
+        self.dual && self.active_local
+    }
+
+    /// 一栏当前画出来的那些行，见 [`RowPaths`]。
+    fn row_paths(&self, local: bool, cx: &App) -> RowPaths {
+        let entries = match local {
+            true => &self.local_table.read(cx).delegate().entries,
+            false => &self.remote_table.read(cx).delegate().entries,
+        };
+        row_paths(entries)
+    }
+
+    /// 选中的那些条目，按画出来的顺序 —— 不是 `Pane::view` 的顺序，点过表头排序
+    /// 之后两者就不一样了。delegate 那边已经按顺序存了一份，直接借它。
+    fn selected_entries(&self, local: bool, cx: &App) -> Rc<Vec<FileEntry>> {
+        match local {
+            true => Rc::clone(&self.local_table.read(cx).delegate().selection_targets),
+            false => Rc::clone(&self.remote_table.read(cx).delegate().selection_targets),
+        }
+    }
+
+    /// 把两栏的选中集推给表格 delegate。
+    fn sync_selection(&mut self, cx: &mut Context<Self>) {
+        let local = self.local.selected.clone();
+        let remote = self.remote.selected.clone();
+        self.local_table.update(cx, |table, cx| {
+            table.delegate_mut().set_selection(local);
+            cx.notify();
+        });
+        self.remote_table.update(cx, |table, cx| {
+            table.delegate_mut().set_selection(remote);
+            cx.notify();
+        });
         cx.notify();
+    }
+
+    /// 一行上的鼠标动作，见本节开头。
+    fn on_row_press(&mut self, press: &RowPress, local: bool, cx: &mut Context<Self>) {
+        self.active_local = local;
+        let rows = self.row_paths(local, cx);
+        let pane = self.pane_mut(local);
+        match *press {
+            RowPress::Down(row, modifiers) => {
+                // 带修饰键的按下留给 click 那一步（Ctrl 切换、Shift 连选）：
+                // 在这儿先选上会把它们要读的那份选中集改掉。
+                if modifiers.secondary() || modifiers.shift {
+                    return;
+                }
+                if !press_outside_selection(pane, &rows, row) {
+                    return;
+                }
+                pane.select_only(&rows, row);
+            }
+            RowPress::RightDown(row) => {
+                if !press_outside_selection(pane, &rows, row) {
+                    return;
+                }
+                pane.select_only(&rows, row);
+            }
+            RowPress::Click(row, modifiers) => {
+                if !modifiers.secondary() {
+                    return;
+                }
+                if modifiers.shift {
+                    pane.select_range(&rows, row, true);
+                } else {
+                    pane.toggle(&rows, row);
+                }
+            }
+        }
+        self.sync_selection(cx);
+    }
+
+    /// 表格把光标行挪到了某一行，见本节开头。
+    fn on_cursor_row(
+        &mut self,
+        row: usize,
+        local: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let modifiers = window.modifiers();
+        if modifiers.secondary() {
+            return;
+        }
+        self.active_local = local;
+        let rows = self.row_paths(local, cx);
+        let pane = self.pane_mut(local);
+        match modifiers.shift {
+            true => pane.select_range(&rows, row, false),
+            false => pane.select_only(&rows, row),
+        }
+        self.sync_selection(cx);
+    }
+
+    /// 行上那三个监听要的回调。同 [`Self::entry_handler`]：行活在表格里，
+    /// 只能拿一个能回头找的 weak 引用。
+    fn row_handler(&self, local: bool, cx: &mut Context<Self>) -> RowPressHandler {
+        let panel = cx.entity().downgrade();
+        Rc::new(move |press: &RowPress, _, app| {
+            let Some(entity) = panel.upgrade() else {
+                return;
+            };
+            entity.update(app, |this, cx| this.on_row_press(press, local, cx));
+        })
+    }
+
+    fn on_select_all(&mut self, _: &SelectAllEntries, _: &mut Window, cx: &mut Context<Self>) {
+        let local = self.active_pane_local();
+        let rows = self.row_paths(local, cx);
+        self.pane_mut(local).select_all(&rows);
+        self.sync_selection(cx);
+    }
+
+    fn on_extend_up(&mut self, _: &ExtendSelectionUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(-1, cx);
+    }
+
+    fn on_extend_down(&mut self, _: &ExtendSelectionDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_cursor(1, cx);
+    }
+
+    /// Shift+方向键：只把表格的光标行挪一格。挪动会让表格报一次 `SelectRow`，
+    /// 而那时 Shift 还按着 —— 于是 [`Self::on_cursor_row`] 把区间扩到新的那一行，
+    /// 顺带把它滚进可见区。所以这里不碰选中集。
+    fn move_cursor(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let local = self.active_pane_local();
+        let rows = self.row_paths(local, cx).len();
+        if rows == 0 {
+            return;
+        }
+        let last = rows.saturating_sub(1) as isize;
+        match local {
+            true => {
+                let target = target_row(self.local_table.read(cx).selected_row(), delta, last);
+                self.local_table
+                    .update(cx, |table, cx| table.set_selected_row(target, cx));
+            }
+            false => {
+                let target = target_row(self.remote_table.read(cx).selected_row(), delta, last);
+                self.remote_table
+                    .update(cx, |table, cx| table.set_selected_row(target, cx));
+            }
+        }
+    }
+
+    /// 回车：打开选中的那一个。一次只开一个 —— 进目录、开编辑器都不是能对一批
+    /// 条目做的事；要一次搬一批，走拖拽或右键菜单里的下载 / 上传。
+    fn on_open_selection(&mut self, _: &OpenSelection, window: &mut Window, cx: &mut Context<Self>) {
+        let local = self.active_pane_local();
+        let selected = self.selected_entries(local, cx);
+        if let [entry] = selected.as_slice() {
+            let entry = entry.clone();
+            self.open_entry(&entry, local, window, cx);
+        }
+    }
+
+    /// 动作栏上那句"选了什么"。两栏都有选中时只报数目 —— 那一格没那么宽。
+    /// 单栏模式下本地栏没画出来，它那份选中集留着但不报（切回双栏还在）。
+    fn selection_label(&self) -> Option<SharedString> {
+        let local = match self.dual {
+            true => self.local.selected.len(),
+            false => 0,
+        };
+        let remote = self.remote.selected.len();
+        let label = match (local, remote) {
+            (0, 0) => return None,
+            (n, 0) => format!(
+                "本地已选 {n} 项{}",
+                size_suffix(self.local.selected_bytes())
+            ),
+            (0, n) => format!(
+                "远端已选 {n} 项{}",
+                size_suffix(self.remote.selected_bytes())
+            ),
+            (local, remote) => format!("本地已选 {local} 项 · 远端已选 {remote} 项"),
+        };
+        Some(SharedString::from(label))
     }
 
     /// 新建文件 / 新建目录。落点永远是当前那一格，名字由对话框校验。
@@ -1518,27 +2000,49 @@ impl SftpPanel {
         SftpChmodDialog::open(entry.name.clone(), entry.octal_mode(), handler, window, cx);
     }
 
-    /// 删一个远端条目。这一步不可逆，所以先确认一次再发。
-    fn delete_entry(&mut self, entry: &FileEntry, window: &mut Window, cx: &mut Context<Self>) {
+    /// 删一批远端条目。这一步不可逆，所以先确认一次再发。
+    ///
+    /// 一批是一条一条删的，中间失败就停在那儿并把对端那句话报出来 —— 后面几条
+    /// 大概会因为同一个原因失败（权限、目录非空之外的错），继续发只是把同一句话
+    /// 再听几遍。删到哪儿了看重列出来的列表。
+    fn delete_entries(
+        &mut self,
+        entries: &[FileEntry],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(service) = self.service.clone() else {
             return;
         };
+        let victims: Vec<FileEntry> = entries
+            .iter()
+            .filter(|entry| !entry.is_parent())
+            .cloned()
+            .collect();
+        let Some(first) = victims.first().cloned() else {
+            return;
+        };
         let panel = cx.entity().downgrade();
-        let victim = entry.clone();
-        let name = victim.name.to_string();
+        let count = victims.len();
+        let title = match (count, first.kind.is_dir()) {
+            (1, true) => "删除这个目录？".to_owned(),
+            (1, false) => "删除这个文件？".to_owned(),
+            (count, _) => format!("删除这 {count} 个条目？"),
+        };
+        let names = names_preview(&victims);
+        let done = match count {
+            1 => format!("已删除 {}", first.name),
+            count => format!("已删除 {count} 项"),
+        };
         window.open_alert_dialog(cx, move |alert, _, _| {
             let panel = panel.clone();
             let service = service.clone();
-            let victim = victim.clone();
-            let name = name.clone();
+            let victims = victims.clone();
+            let done = done.clone();
             alert
-                .title(if victim.kind.is_dir() {
-                    "删除这个目录？"
-                } else {
-                    "删除这个文件？"
-                })
+                .title(title.clone())
                 .description(format!(
-                    "{name} 会从远端文件系统里去掉。目录会连同里面的所有内容一并递归删除，\
+                    "{names} 会从远端文件系统里去掉。目录会连同里面的所有内容一并递归删除，\
                      这一步不可恢复。"
                 ))
                 .button_props(
@@ -1552,15 +2056,20 @@ impl SftpPanel {
                 .on_ok(move |_, window, app| {
                     if let Some(entity) = panel.upgrade() {
                         entity.update(app, |this, cx| {
-                            let victim = victim.clone();
+                            let victims = victims.clone();
                             // 开始删除前先把遮罩立起来。
                             this.remote.deleting = true;
                             cx.notify();
                             let work = {
                                 let service = service.clone();
-                                async move { service.remove(&victim).await }
+                                async move {
+                                    for victim in &victims {
+                                        service.remove(victim).await?;
+                                    }
+                                    anyhow::Ok(())
+                                }
                             };
-                            this.run(work, format!("已删除 {name}"), window, cx);
+                            this.run(work, done.clone(), window, cx);
                         });
                     }
                     true
@@ -1667,27 +2176,44 @@ impl SftpPanel {
 
     // ------------------------------------------------------------------ 传输
 
-    fn download_entry(&mut self, entry: &FileEntry, window: &mut Window, cx: &mut Context<Self>) {
-        if !entry.is_downloadable() || self.service.is_none() {
+    /// 把一批远端条目下载到当前本地目录。落点只问一次 —— 一批文件不该被问 N 次
+    /// "那个目录还能不能写"，何况答案对整批都是同一个。
+    fn download_entries(
+        &mut self,
+        entries: &[FileEntry],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.service.is_none() {
+            return;
+        }
+        let targets: Vec<FileEntry> = entries
+            .iter()
+            .filter(|entry| !entry.is_parent() && entry.is_downloadable())
+            .cloned()
+            .collect();
+        if targets.is_empty() {
             return;
         }
         let Some(local_dir) = self.writable_local_dir(window, cx) else {
             return;
         };
-        let target = unique_local_path(&local_dir, entry.name.as_str());
-        let filename = SharedString::from(
-            target
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| entry.name.to_string()),
-        );
-        let job = TransferJob {
-            id: self.next_id(),
-            direction: TransferDirection::Download,
-            local: target,
-            remote: entry.path.to_string(),
-        };
-        self.enqueue(job, filename, entry.size, cx);
+        for entry in targets {
+            let target = unique_local_path(&local_dir, entry.name.as_str());
+            let filename = SharedString::from(
+                target
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| entry.name.to_string()),
+            );
+            let job = TransferJob {
+                id: self.next_id(),
+                direction: TransferDirection::Download,
+                local: target,
+                remote: entry.path.to_string(),
+            };
+            self.enqueue(job, filename, entry.size, cx);
+        }
     }
 
     /// 把本地路径们传到当前那一格远端目录。文件与目录都收（目录由 service 走树）。
@@ -1954,9 +2480,22 @@ impl SftpPanel {
 
     // ------------------------------------------------------------------ 其它
 
-    fn copy_path(&mut self, path: &str, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(path.to_owned()));
-        self.copied = Some(SharedString::from(path.to_owned()));
+    /// 复制一批条目的路径：一行一条，跟往终端里粘一样。角标上多条时只报数目 ——
+    /// 那一格摆不下几十条路径。
+    fn copy_paths(&mut self, entries: &[FileEntry], cx: &mut Context<Self>) {
+        let paths: Vec<&str> = entries
+            .iter()
+            .filter(|entry| !entry.is_parent())
+            .map(|entry| entry.path.as_ref())
+            .collect();
+        let label = match paths.as_slice() {
+            [] => return,
+            [path] => SharedString::from((*path).to_owned()),
+            paths => SharedString::from(format!("{} 条路径", paths.len())),
+        };
+        let text = paths.join("\n");
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.copied = Some(label);
         let panel = cx.entity().downgrade();
         self.copied_task = cx.spawn(async move |_, cx: &mut AsyncApp| {
             cx.background_executor()
@@ -1971,17 +2510,25 @@ impl SftpPanel {
     }
 
     /// 右键菜单（以及行内悬停按钮）共用的分发：菜单只报"要干什么"，怎么做在这儿。
+    ///
+    /// `entries` 是菜单对着的那些条目。只对单个条目成立的动作（编辑、改名、chmod、
+    /// `cd`、进目录）在菜单那一层就已经按数目筛掉了（见 [`SftpEntryMenu`]），
+    /// 所以这里取头一个就够。
     fn on_entry_action(
         &mut self,
-        entry: &FileEntry,
+        entries: &[FileEntry],
         action: &SftpEntryAction,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(entry) = entries.first().cloned() else {
+            return;
+        };
         match action {
-            SftpEntryAction::Edit => self.open_editor(entry, window, cx),
-            SftpEntryAction::Download => self.download_entry(entry, window, cx),
-            SftpEntryAction::OpenFolder => self.load_remote(entry.path.as_str(), window, cx),
+            SftpEntryAction::Edit => self.open_editor(&entry, window, cx),
+            SftpEntryAction::Download => self.download_entries(entries, window, cx),
+            // ".." 那一行的 path 是字面的 ".."，得由 `open_entry` 换成上级目录。
+            SftpEntryAction::OpenFolder => self.open_entry(&entry, false, window, cx),
             SftpEntryAction::CdHere => {
                 let dir = if entry.kind.is_dir() {
                     entry.path.to_string()
@@ -1992,61 +2539,68 @@ impl SftpPanel {
                     "cd {dir}"
                 ))));
             }
-            SftpEntryAction::CopyPath => self.copy_path(entry.path.as_str(), cx),
-            SftpEntryAction::Rename => self.rename_entry(entry, window, cx),
-            SftpEntryAction::Chmod => self.chmod_entry(entry, window, cx),
-            SftpEntryAction::Delete => self.delete_entry(entry, window, cx),
+            SftpEntryAction::CopyPath => self.copy_paths(entries, cx),
+            SftpEntryAction::Rename => self.rename_entry(&entry, window, cx),
+            SftpEntryAction::Chmod => self.chmod_entry(&entry, window, cx),
+            SftpEntryAction::Delete => self.delete_entries(entries, window, cx),
         }
     }
 
     /// 条目菜单要的回调。菜单活在弹层里，所以只能拿一个能回头找的 weak 引用。
     fn entry_handler(&self, cx: &mut Context<Self>) -> SftpEntryActionHandler {
         let panel = cx.entity().downgrade();
-        Rc::new(move |entry: &FileEntry, action, window, app| {
+        Rc::new(move |entries: &[FileEntry], action, window, app| {
             let Some(entity) = panel.upgrade() else {
                 return;
             };
             entity.update(app, |this, cx| {
-                this.on_entry_action(entry, action, window, cx)
+                this.on_entry_action(entries, action, window, cx)
             });
         })
     }
 
     /// 本地右键菜单的分发：只报"要干什么"，怎么做在这儿。与 [`Self::on_entry_action`]
-    /// 同一套结构，只是动作是本地这一侧的。
+    /// 同一套结构（含"只取头一个"的那条口径），只是动作是本地这一侧的。
     fn on_local_action(
         &mut self,
-        entry: &FileEntry,
+        entries: &[FileEntry],
         action: &LocalEntryAction,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(entry) = entries.first().cloned() else {
+            return;
+        };
         match action {
             LocalEntryAction::Upload => {
-                self.upload_paths(vec![PathBuf::from(entry.path.as_str())], cx);
+                let paths = entries
+                    .iter()
+                    .filter(|entry| !entry.is_parent())
+                    .map(|entry| PathBuf::from(entry.path.as_str()))
+                    .collect();
+                self.upload_paths(paths, cx);
             }
-            LocalEntryAction::OpenWithDefault => self.open_local_with_default(entry, window, cx),
-            LocalEntryAction::OpenFolder => {
-                self.list_local(PathBuf::from(entry.path.as_str()), window, cx);
-            }
-            LocalEntryAction::CopyPath => self.copy_path(entry.path.as_str(), cx),
+            LocalEntryAction::OpenWithDefault => self.open_local_with_default(&entry, window, cx),
+            // 同远端那一侧：".." 要由 `open_entry` 换成上级目录。
+            LocalEntryAction::OpenFolder => self.open_entry(&entry, true, window, cx),
+            LocalEntryAction::CopyPath => self.copy_paths(entries, cx),
             LocalEntryAction::Refresh => {
                 let dir = self.local_dir.clone();
                 self.list_local(dir, window, cx);
             }
-            LocalEntryAction::Delete => self.delete_local_entry(entry, window, cx),
+            LocalEntryAction::Delete => self.delete_local_entries(entries, window, cx),
         }
     }
 
     /// 本地菜单要的回调。同 [`Self::entry_handler`]：菜单活在弹层里，只能拿 weak 引用回头找。
     fn local_handler(&self, cx: &mut Context<Self>) -> LocalEntryActionHandler {
         let panel = cx.entity().downgrade();
-        Rc::new(move |entry: &FileEntry, action, window, app| {
+        Rc::new(move |entries: &[FileEntry], action, window, app| {
             let Some(entity) = panel.upgrade() else {
                 return;
             };
             entity.update(app, |this, cx| {
-                this.on_local_action(entry, action, window, cx)
+                this.on_local_action(entries, action, window, cx)
             });
         })
     }
@@ -2063,24 +2617,43 @@ impl SftpPanel {
         }
     }
 
-    /// 删一个本地条目。这一步不可逆，删的是本机文件 —— 所以先确认一次。目录会连整棵
+    /// 删一批本地条目。这一步不可逆，删的是本机文件 —— 所以先确认一次。目录会连整棵
     /// 子树一并删掉（[`LocalFileService::remove`] 交给系统的 `remove_dir_all`）。
-    fn delete_local_entry(&mut self, entry: &FileEntry, window: &mut Window, cx: &mut Context<Self>) {
-        let victim = entry.clone();
-        let name = victim.name.to_string();
+    /// 中间失败就停下并报出来，同 [`Self::delete_entries`]。
+    fn delete_local_entries(
+        &mut self,
+        entries: &[FileEntry],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let victims: Vec<FileEntry> = entries
+            .iter()
+            .filter(|entry| !entry.is_parent())
+            .cloned()
+            .collect();
+        let Some(first) = victims.first().cloned() else {
+            return;
+        };
         let panel = cx.entity().downgrade();
+        let count = victims.len();
+        let title = match (count, first.kind.is_dir()) {
+            (1, true) => "删除这个本地目录？".to_owned(),
+            (1, false) => "删除这个本地文件？".to_owned(),
+            (count, _) => format!("删除本地这 {count} 个条目？"),
+        };
+        let names = names_preview(&victims);
+        let done = match count {
+            1 => format!("已删除 {}", first.name),
+            count => format!("已删除 {count} 项"),
+        };
         window.open_alert_dialog(cx, move |alert, _, _| {
             let panel = panel.clone();
-            let victim = victim.clone();
-            let name = name.clone();
+            let victims = victims.clone();
+            let done = done.clone();
             alert
-                .title(if victim.kind.is_dir() {
-                    "删除这个本地目录？"
-                } else {
-                    "删除这个本地文件？"
-                })
+                .title(title.clone())
                 .description(format!(
-                    "{name} 会从你的电脑上直接删掉，不进回收站。这一步不可逆；\
+                    "{names} 会从你的电脑上直接删掉，不进回收站。这一步不可逆；\
                      目录会连同里面的所有内容一并删除。"
                 ))
                 .button_props(
@@ -2094,12 +2667,20 @@ impl SftpPanel {
                 .on_ok(move |_, window, app| {
                     if let Some(entity) = panel.upgrade() {
                         entity.update(app, |this, cx| {
-                            let target = PathBuf::from(victim.path.as_str());
-                            let done = format!("已删除 {name}");
+                            let targets: Vec<PathBuf> = victims
+                                .iter()
+                                .map(|victim| PathBuf::from(victim.path.as_str()))
+                                .collect();
                             // 开始删除前先把遮罩立起来。
                             this.local.deleting = true;
                             cx.notify();
-                            this.run_local(LocalFileService::remove(target), done, window, cx);
+                            let work = async move {
+                                for target in targets {
+                                    LocalFileService::remove(target).await?;
+                                }
+                                anyhow::Ok(())
+                            };
+                            this.run_local(work, done.clone(), window, cx);
                         });
                     }
                     true
@@ -2143,6 +2724,57 @@ impl SftpPanel {
 fn take_limit(mut entries: Vec<FileEntry>) -> Vec<FileEntry> {
     entries.truncate(PANE_LIMIT);
     entries
+}
+
+/// 按下的这一行是不是落在选中集外面 —— 落在外面才要先把它选上。落在里面不动：
+/// 那是在拖 / 右键整份选中集。不能选的行（".."）也答"不是"，点它清空选中集这件事
+/// 走松开那一步（见 [`SftpPanel::on_cursor_row`]），不必在按下时抢着做。
+fn press_outside_selection(pane: &Pane, rows: &RowPaths, row: usize) -> bool {
+    match rows.get(row) {
+        Some(Some(path)) => !pane.selected.contains(path),
+        _ => false,
+    }
+}
+
+/// Shift+方向键要把光标行挪到哪儿。还没有光标行时，往下从第一行起、往上从最后一行起。
+fn target_row(cursor: Option<usize>, delta: isize, last: isize) -> usize {
+    let from = match cursor {
+        Some(row) => row as isize,
+        None if delta > 0 => -1,
+        None => last + 1,
+    };
+    (from + delta).clamp(0, last) as usize
+}
+
+/// 删除确认框里那句"删的是谁"。名字多了只报前两个再加总数 —— 十几个名字堆在
+/// 对话框里，读的人只会跳过去，而这一步不可逆，那句话必须真被读到。
+fn names_preview(entries: &[FileEntry]) -> String {
+    const HEAD: usize = 2;
+    let head = entries
+        .iter()
+        .take(HEAD)
+        .map(|entry| entry.name.as_ref())
+        .collect::<Vec<_>>()
+        .join("、");
+    match entries.len() {
+        count if count <= HEAD => head,
+        count => format!("{head} 等 {count} 项"),
+    }
+}
+
+/// 传输队列第一次拉开时占多高，见 [`SftpPanel::queue_initial_height`]。
+fn queue_initial_height(panel_height: Pixels) -> Pixels {
+    // 队列拉开时动作栏不画（见 [`SftpPanel::render_body`]），导航条以下整块都是这个分栏的。
+    let body = (panel_height - NAV_HEIGHT).max(QUEUE_MIN_HEIGHT + FILES_MIN_HEIGHT);
+    (panel_height / 2.).clamp(QUEUE_MIN_HEIGHT, body - FILES_MIN_HEIGHT)
+}
+
+/// 选中项的总大小，写成动作栏上那半句。选的全是目录（没有可信大小）时就不写。
+fn size_suffix(bytes: u64) -> String {
+    match bytes {
+        0 => String::new(),
+        bytes => format!("（{}）", human_size(bytes)),
+    }
 }
 
 /// 按当前的过滤词与隐藏文件开关，重算一栏要画的那些行。顺序固定按名称，目录在前。
@@ -2213,6 +2845,16 @@ fn dropped_paths(event: &ExternalPaths) -> Vec<PathBuf> {
     event.0.iter().cloned().collect()
 }
 
+/// 从本地栏拖过来的那些条目的本地路径。
+fn dragged_local_paths(dragged: &DraggedLocalEntries) -> Vec<PathBuf> {
+    dragged
+        .entries
+        .iter()
+        .filter(|entry| !entry.is_parent())
+        .map(|entry| PathBuf::from(entry.path.as_str()))
+        .collect()
+}
+
 /// 一栏底下那行"N items"。被截断过时说实话，不然人以为目录就只有这些。
 fn count_label(shown: usize, truncated: bool) -> SharedString {
     match truncated {
@@ -2230,6 +2872,14 @@ impl Render for SftpPanel {
             .overflow_hidden()
             .bg(cx.theme().sidebar)
             .track_focus(&self.focus_handle)
+            // 多选那几个快捷键挂在整个面板上：焦点落在表格里（它自己是可聚焦的），
+            // 面板是它的上级，动作照样收得到。方向键、Esc 归表格自己
+            // （`DataTable` 上下文里已经绑了），这里只补它没有的那几个。
+            .key_context("SftpPanel")
+            .on_action(cx.listener(Self::on_select_all))
+            .on_action(cx.listener(Self::on_extend_up))
+            .on_action(cx.listener(Self::on_extend_down))
+            .on_action(cx.listener(Self::on_open_selection))
             .child(self.render_nav(cx))
             .child(self.render_body(cx))
     }
@@ -2268,12 +2918,28 @@ impl SftpPanel {
             )
             .child(
                 resizable_panel()
-                    .size(QUEUE_HEIGHT)
+                    .size(self.queue_initial_height())
                     .size_range(QUEUE_MIN_HEIGHT..Pixels::MAX)
                     // 抽屉整个（头、表、行）都是那份组件，这里只负责把它装进来。
                     .child(self.queue.clone()),
             );
         div().flex_1().min_h_0().child(group).into_any_element()
+    }
+
+    /// 传输队列第一次拉开时占多高：整条 SFTP 面板的一半。
+    ///
+    /// 原来是个写死的 96px。可面板自己能从 200 拉到 420 —— 高面板上那 96px 只剩
+    /// 五分之一，而会去拉开队列的人正是要看队列；矮面板上它又显得占地方。按比例给
+    /// 两头都合适。
+    ///
+    /// 只是"第一次"：分栏一量到高度就把它记进 [`ResizableState`]（`resizable_panel`
+    /// 的 `size` 只在分栏状态还没有尺寸时作数），之后拖出来的、收起再拉开的都还在，
+    /// 这个值不再插手。
+    ///
+    /// 两头让一让：不低于 [`QUEUE_MIN_HEIGHT`]，也不高到把文件区压到
+    /// [`FILES_MIN_HEIGHT`] 以下 —— 面板矮的时候，"一半"可能比这两条下限还紧。
+    fn queue_initial_height(&self) -> Pixels {
+        queue_initial_height(self.height)
     }
 
     /// 双栏表格那一块。怎么撑满由调用方给：直接挂在面板上时是 `flex_1`，进
@@ -2645,9 +3311,11 @@ impl SftpPanel {
                             .relative()
                             .flex_1()
                             .min_h_0()
-                            .on_drop(cx.listener(|this, dragged: &DraggedRemoteEntry, window, cx| {
-                                this.download_entry(&dragged.entry, window, cx);
-                            }))
+                            .on_drop(cx.listener(
+                                |this, dragged: &DraggedRemoteEntries, window, cx| {
+                                    this.download_entries(&dragged.entries, window, cx);
+                                },
+                            ))
                             .child(
                                 DataTable::new(&self.local_table)
                                     .xsmall()
@@ -2673,10 +3341,14 @@ impl SftpPanel {
                                     .border_dashed()
                                     .border_color(palette::sky())
                                     .shadow_lg()
-                                    .drag_over::<DraggedRemoteEntry>(|style, _, _, _| style.visible())
-                                    .on_drop(cx.listener(|this, dragged: &DraggedRemoteEntry, window, cx| {
-                                        this.download_entry(&dragged.entry, window, cx);
-                                    }))
+                                    .drag_over::<DraggedRemoteEntries>(|style, _, _, _| {
+                                        style.visible()
+                                    })
+                                    .on_drop(cx.listener(
+                                        |this, dragged: &DraggedRemoteEntries, window, cx| {
+                                            this.download_entries(&dragged.entries, window, cx);
+                                        },
+                                    ))
                                     .child(
                                         Icon::new(AppIcon::Download)
                                             .with_size(px(36.))
@@ -2768,9 +3440,8 @@ impl SftpPanel {
                             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                                 this.upload_paths(dropped_paths(paths), cx);
                             }))
-                            .on_drop(cx.listener(|this, dragged: &DraggedLocalEntry, _, cx| {
-                                let local_path = PathBuf::from(dragged.entry.path.to_string());
-                                this.upload_paths(vec![local_path], cx);
+                            .on_drop(cx.listener(|this, dragged: &DraggedLocalEntries, _, cx| {
+                                this.upload_paths(dragged_local_paths(dragged), cx);
                             }))
                             .child(
                                 DataTable::new(&self.remote_table)
@@ -2797,15 +3468,18 @@ impl SftpPanel {
                                     .border_dashed()
                                     .border_color(palette::teal())
                                     .shadow_lg()
-                                    .drag_over::<DraggedLocalEntry>(|style, _, _, _| style.visible())
+                                    .drag_over::<DraggedLocalEntries>(|style, _, _, _| {
+                                        style.visible()
+                                    })
                                     .drag_over::<ExternalPaths>(|style, _, _, _| style.visible())
                                     .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                                         this.upload_paths(dropped_paths(paths), cx);
                                     }))
-                                    .on_drop(cx.listener(|this, dragged: &DraggedLocalEntry, _, cx| {
-                                        let local_path = PathBuf::from(dragged.entry.path.to_string());
-                                        this.upload_paths(vec![local_path], cx);
-                                    }))
+                                    .on_drop(cx.listener(
+                                        |this, dragged: &DraggedLocalEntries, _, cx| {
+                                            this.upload_paths(dragged_local_paths(dragged), cx);
+                                        },
+                                    ))
                                     .child(
                                         Icon::new(AppIcon::Upload)
                                             .with_size(px(36.))
@@ -3140,7 +3814,7 @@ impl SftpPanel {
                         .text_color(palette::teal())
                         .truncate()
                         .max_w(px(180.))
-                        .child(SharedString::from(format!("已复制路径：{path}"))),
+                        .child(SharedString::from(format!("已复制 {path}"))),
                 )
             })
     }
@@ -3184,9 +3858,13 @@ impl SftpPanel {
 
     /// 底下一条：一句用法提示，加右边的整体传输进度与速度（面板收起时）和传输队列开关。
     /// 选中条目能做的动作都收在行右键菜单里，这里不再重复摆一排按钮。
+    ///
+    /// 有选中项时那句提示换成"选了什么"（资源管理器的状态栏也是这样）：本地栏没有
+    /// 自己的底栏，选中计数只能落在这一条上，而它正好是两栏共用的。
     fn render_action_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let summary = self.queue.read(cx).summary();
         let has_active = summary.active_count > 0;
+        let selection = self.selection_label();
 
         h_flex()
             .id("sftp-panel-action-bar")
@@ -3199,16 +3877,21 @@ impl SftpPanel {
             .border_color(cx.theme().border)
             .bg(palette::recessed(cx))
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette::idle(cx))
-                            .truncate()
-                            .child("双击文件即可打开编辑；支持左右栏双向拖拽上传/下载；右键一行看更多操作。"),
-                    ),
+                div().flex_1().min_w_0().child(match selection {
+                    Some(selection) => div()
+                        .text_xs()
+                        .text_color(cx.theme().foreground)
+                        .truncate()
+                        .child(selection),
+                    None => div()
+                        .text_xs()
+                        .text_color(palette::idle(cx))
+                        .truncate()
+                        .child(
+                            "双击文件即可打开编辑；Ctrl/Shift 点选可多选；\
+                             支持左右栏双向拖拽上传/下载；右键一行看更多操作。",
+                        ),
+                }),
             )
             .when(has_active, |this| {
                 this.child(
@@ -3467,6 +4150,263 @@ mod tests {
         if dirs::home_dir().is_some() {
             assert!(!list.is_empty(), "至少应包含用户主目录");
         }
+    }
+
+    /// 一行普通条目。名字即路径的最后一段，断言里直接按名字读。
+    fn entry(name: &str) -> FileEntry {
+        FileEntry {
+            name: name.into(),
+            path: SharedString::from(format!("/tmp/{name}")),
+            kind: FileKind::File,
+            size: 0,
+            mode: None,
+            uid: None,
+            owner: None,
+            modified: None,
+        }
+    }
+
+    /// 列表开头那个 ".."，同 [`rebuild_pane`] 插进去的那一行。
+    fn parent_row() -> FileEntry {
+        FileEntry {
+            name: "..".into(),
+            path: "..".into(),
+            kind: FileKind::Dir,
+            size: 0,
+            mode: None,
+            uid: None,
+            owner: None,
+            modified: None,
+        }
+    }
+
+    /// 一栏：开头一行 "..", 后面 a…e 五个条目。
+    fn pane() -> (Pane, RowPaths) {
+        let view = vec![
+            parent_row(),
+            entry("a"),
+            entry("b"),
+            entry("c"),
+            entry("d"),
+            entry("e"),
+        ];
+        let rows = row_paths(&view);
+        (
+            Pane {
+                view,
+                ..Pane::default()
+            },
+            rows,
+        )
+    }
+
+    /// 一批条目的名字，断言里读它。
+    fn names(entries: &[FileEntry]) -> Vec<&str> {
+        entries.iter().map(|entry| entry.name.as_ref()).collect()
+    }
+
+    /// 选中集按名字读出来，顺序照列表走。
+    fn selected(pane: &Pane) -> Vec<&str> {
+        pane.view
+            .iter()
+            .filter(|entry| pane.selected.contains(&entry.path))
+            .map(|entry| entry.name.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn test_click_selects_only_that_row() {
+        let (mut pane, rows) = pane();
+        pane.select_only(&rows, 2);
+        assert_eq!(selected(&pane), ["b"]);
+        pane.select_only(&rows, 4);
+        assert_eq!(selected(&pane), ["d"], "普通单击不累加");
+    }
+
+    #[test]
+    fn test_ctrl_click_toggles_and_moves_the_anchor() {
+        let (mut pane, rows) = pane();
+        pane.toggle(&rows, 1);
+        pane.toggle(&rows, 3);
+        assert_eq!(selected(&pane), ["a", "c"]);
+        pane.toggle(&rows, 1);
+        assert_eq!(selected(&pane), ["c"], "再点一次是取消");
+        // 锚点跟着最后点的那一行走：从 a（第 1 行）连到 e。
+        pane.toggle(&rows, 1);
+        pane.select_range(&rows, 5, false);
+        assert_eq!(selected(&pane), ["a", "b", "c", "d", "e"]);
+    }
+
+    #[test]
+    fn test_shift_click_replaces_the_range_and_keeps_the_anchor() {
+        let (mut pane, rows) = pane();
+        pane.select_only(&rows, 4);
+        pane.select_range(&rows, 2, false);
+        assert_eq!(selected(&pane), ["b", "c", "d"], "反着连也是这一段");
+        // 锚点还在 d 上：再 Shift 点一次是同一个起点，不是接着上次的结果长。
+        pane.select_range(&rows, 5, false);
+        assert_eq!(selected(&pane), ["d", "e"]);
+    }
+
+    #[test]
+    fn test_ctrl_shift_click_adds_the_range() {
+        let (mut pane, rows) = pane();
+        pane.toggle(&rows, 1);
+        pane.toggle(&rows, 5);
+        pane.select_range(&rows, 3, true);
+        assert_eq!(
+            selected(&pane),
+            ["a", "c", "d", "e"],
+            "从锚点 e 连到 c，原来的 a 留着"
+        );
+    }
+
+    #[test]
+    fn test_shift_click_without_anchor_falls_back_to_single() {
+        let (mut pane, rows) = pane();
+        pane.select_range(&rows, 3, false);
+        assert_eq!(selected(&pane), ["c"]);
+    }
+
+    #[test]
+    fn test_parent_row_is_never_selected() {
+        let (mut pane, rows) = pane();
+        pane.select_only(&rows, 3);
+        // 点 ".." 等于点在一个不是条目的东西上：选中集清空。
+        pane.select_only(&rows, 0);
+        assert!(selected(&pane).is_empty());
+        assert_eq!(pane.anchor, None);
+
+        pane.toggle(&rows, 0);
+        assert!(selected(&pane).is_empty(), "Ctrl 点 “..” 也不选它");
+
+        pane.select_only(&rows, 5);
+        pane.select_range(&rows, 0, false);
+        assert_eq!(selected(&pane), ["e"], "连选连不到 “..” 上");
+
+        pane.select_all(&rows);
+        assert_eq!(selected(&pane), ["a", "b", "c", "d", "e"]);
+    }
+
+    #[test]
+    fn test_prune_selection_drops_paths_that_left_the_list() {
+        let (mut pane, rows) = pane();
+        pane.select_only(&rows, 2);
+        pane.select_range(&rows, 4, false);
+        assert_eq!(selected(&pane), ["b", "c", "d"]);
+
+        // 过滤词一改，列表只剩 b 与 e；锚点（b）还在，选中集只留 b。
+        pane.view = vec![entry("b"), entry("e")];
+        pane.prune_selection();
+        assert_eq!(selected(&pane), ["b"]);
+        assert_eq!(pane.anchor.as_deref(), Some("/tmp/b"));
+
+        // 连 b 也没了，锚点跟着丢掉 —— 不然下一次 Shift 连选会从一个看不见的行起算。
+        pane.view = vec![entry("e")];
+        pane.prune_selection();
+        assert!(selected(&pane).is_empty());
+        assert_eq!(pane.anchor, None);
+    }
+
+    #[test]
+    fn test_selected_bytes_skips_directories() {
+        let mut file = entry("f");
+        file.size = 2048;
+        let mut dir = entry("g");
+        dir.kind = FileKind::Dir;
+        dir.size = 4096;
+        let view = vec![file, dir];
+        let rows = row_paths(&view);
+        let mut pane = Pane {
+            view,
+            ..Pane::default()
+        };
+        pane.select_all(&rows);
+        assert_eq!(pane.selected_bytes(), 2048);
+        assert_eq!(size_suffix(pane.selected_bytes()), "（2 KB）");
+        assert_eq!(size_suffix(0), "", "选的全是目录就不写大小");
+    }
+
+    #[test]
+    fn test_targets_follow_the_selection() {
+        let entries = vec![entry("a"), entry("b"), entry("c")];
+        let mut selected = HashSet::new();
+        selected.insert(entries[0].path.clone());
+        selected.insert(entries[2].path.clone());
+        // delegate 存的就是这一份：选中集按画出来的顺序摊开。
+        let selection = selected_in_order(&entries, &selected);
+        assert_eq!(names(&selection), ["a", "c"], "顺序照列表，不照选中的次序");
+
+        assert_eq!(
+            names(&targets_for_row(&entries, &selection, 0)),
+            ["a", "c"],
+            "落在选中集里：整份选中集"
+        );
+        assert_eq!(
+            names(&targets_for_row(&entries, &selection, 1)),
+            ["b"],
+            "落在选中集外：只有它自己"
+        );
+        assert!(targets_for_row(&entries, &selection, 9).is_empty());
+    }
+
+    #[test]
+    fn test_drag_targets_share_one_allocation() {
+        let entries = vec![entry("a"), entry("b"), entry("c")];
+        let selection = Rc::new(entries[..2].to_vec());
+
+        let picked = drag_targets(&selection, &entries[0], true);
+        assert_eq!(names(&picked), ["a", "b"], "拖选中的行：带走整份选中集");
+        assert!(
+            Rc::ptr_eq(&picked, &selection),
+            "整栏共用同一份，不是每行克隆一遍"
+        );
+
+        let single = drag_targets(&selection, &entries[2], false);
+        assert_eq!(names(&single), ["c"], "拖没选中的行：只带它自己");
+    }
+
+    #[test]
+    fn test_press_outside_selection() {
+        let (mut pane, rows) = pane();
+        pane.select_only(&rows, 2);
+        assert!(!press_outside_selection(&pane, &rows, 2), "按在选中的行上");
+        assert!(press_outside_selection(&pane, &rows, 3), "按在别的行上");
+        assert!(
+            !press_outside_selection(&pane, &rows, 0),
+            "“..” 不算在外面：清空走松开那一步"
+        );
+    }
+
+    #[test]
+    fn test_target_row_clamps_and_starts_from_the_edges() {
+        assert_eq!(target_row(Some(2), 1, 5), 3);
+        assert_eq!(target_row(Some(2), -1, 5), 1);
+        assert_eq!(target_row(Some(0), -1, 5), 0, "顶到头就停住");
+        assert_eq!(target_row(Some(5), 1, 5), 5);
+        assert_eq!(target_row(None, 1, 5), 0, "还没有光标行：往下从第一行起");
+        assert_eq!(target_row(None, -1, 5), 5, "往上从最后一行起");
+    }
+
+    #[test]
+    fn test_queue_initial_height_is_half_the_panel() {
+        // 高面板：一半就是一半。
+        assert_eq!(queue_initial_height(HEIGHT_TALL), px(210.));
+        assert_eq!(queue_initial_height(px(900.)), px(450.));
+        // 紧凑档：一半（100）会把文件区压到 68，让到文件区的下限为止。
+        assert_eq!(queue_initial_height(HEIGHT_COMPACT), px(88.));
+        // 比两条下限之和还矮的面板：给队列它自己的下限，剩下的归文件区。
+        assert_eq!(queue_initial_height(px(100.)), QUEUE_MIN_HEIGHT);
+    }
+
+    #[test]
+    fn test_names_preview() {
+        assert_eq!(names_preview(&[entry("a")]), "a");
+        assert_eq!(names_preview(&[entry("a"), entry("b")]), "a、b");
+        assert_eq!(
+            names_preview(&[entry("a"), entry("b"), entry("c")]),
+            "a、b 等 3 项"
+        );
     }
 }
 

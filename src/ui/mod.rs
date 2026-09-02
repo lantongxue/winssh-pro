@@ -36,7 +36,10 @@ pub use workspace::Workspace;
 use gpui::{App, KeyBinding};
 use gpui_component::dock::{ClosePanel, ToggleZoom};
 
-use panels::{BackTab, CopySelection, PasteClipboard, Tab, ToggleMonitor, ToggleSftp};
+use panels::{
+    BackTab, CopySelection, ExtendSelectionDown, ExtendSelectionUp, OpenSelection, PasteClipboard,
+    SelectAllEntries, Tab, ToggleMonitor, ToggleSftp,
+};
 use workspace::{ToggleCommandPalette, ToggleRightDock, ToggleSidebar};
 
 /// 主修饰键：macOS 用 Command，其余平台用 Ctrl。
@@ -61,6 +64,14 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("alt-m", ToggleMonitor, Some("Terminal")),
         KeyBinding::new("alt-t", ToggleMonitor, Some("Terminal")),
         KeyBinding::new("alt-f", ToggleSftp, Some("Terminal")),
+        // SFTP 文件列表里的多选。方向键、Esc 归表格自己（`DataTable` 上下文里
+        // 已经绑过），这里只补它没有的那几个。绑在 `SftpPanel` 上下文而不是全局：
+        // 焦点落在面板里的输入框（路径栏、过滤框）时，输入框自己的 `cmd-a`
+        // 更靠里，全选文字仍然归它。
+        KeyBinding::new(&format!("{CMD}-a"), SelectAllEntries, Some("SftpPanel")),
+        KeyBinding::new("shift-up", ExtendSelectionUp, Some("SftpPanel")),
+        KeyBinding::new("shift-down", ExtendSelectionDown, Some("SftpPanel")),
+        KeyBinding::new("enter", OpenSelection, Some("SftpPanel")),
         // 终端里的复制粘贴。`ctrl-c` / `ctrl-v` 在终端里是中断和控制字符，
         // 不能拿来当复制粘贴，所以非 macOS 平台也走 `ctrl-shift-*`
         // —— 各家终端都是这么让开的。

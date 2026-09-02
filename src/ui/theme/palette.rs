@@ -75,3 +75,10 @@ pub fn surface_strong(cx: &App) -> Hsla {
 pub fn recessed(cx: &App) -> Hsla {
     cx.theme().sidebar
 }
+
+/// 文件列表里被选中的那一行。和悬停同色 —— 选中不该比"鼠标正好停在这儿"更响，
+/// 多选时也就不会有一片抢眼的色块。表格自己那层选中样式已经在
+/// [`crate::ui::theme::appearance`] 里按透明关掉了，选中底色由文件列表自己画。
+pub fn selected_row(cx: &App) -> Hsla {
+    cx.theme().table_hover
+}

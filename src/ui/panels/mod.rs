@@ -18,7 +18,10 @@ mod welcome;
 pub use host_info::HostInfoPanel;
 pub use monitor::{MonitorEvent, MonitorPanel};
 pub use settings::SettingsPanel;
-pub use sftp::{SftpPanel, SftpPanelEvent};
+pub use sftp::{
+    ExtendSelectionDown, ExtendSelectionUp, OpenSelection, SelectAllEntries, SftpPanel,
+    SftpPanelEvent,
+};
 pub use terminal::{
     BackTab, CopySelection, PasteClipboard, Tab, TerminalPanel, ToggleMonitor, ToggleSftp,
 };
