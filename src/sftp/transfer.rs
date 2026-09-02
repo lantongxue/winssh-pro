@@ -130,6 +130,9 @@ impl TransferItem {
     /// 攒起来，满 [`SPEED_UPDATE_INTERVAL`] 才折成这一段的平均速率发出去；
     /// 完成与失败不再算速率，留下的那个数字就是最后发布的。
     pub fn record_progress(&mut self, transferred: u64, at: SystemTime) {
+        if transferred <= self.transferred && self.transferred > 0 {
+            return;
+        }
         let delta_bytes = transferred.saturating_sub(self.transferred) as f64;
         let delta_secs = match self.last_update {
             Some(previous) => at
@@ -176,8 +179,10 @@ impl TransferItem {
 
 /// 目录传输里一个子文件自己的搬运状态，展开目录行时铺在下面。
 ///
-/// 聚合进度（整棵树一条）仍归 [`TransferItem`]；子行只回答"这一个文件走到哪了"。
-/// 速率不在子行算 —— 单个文件几十毫秒就过去了，差分出来的数字只会抖。
+/// 聚合进度（整棵树一条）仍归 [`TransferItem`]；子行既回答"这一个文件走到哪了"，
+/// 也算自己那一份速率。目录并发后每个文件都在一个持续的窗口里搬（不再是几十毫秒
+/// 一闪而过），逐子项差分有意义了 —— 口径与 [`TransferItem`] 一致，满一个发布窗口
+/// 才刷一次，免得数字抖。
 #[derive(Clone, Debug)]
 pub struct TransferChild {
     /// 相对上传根目录的路径（`docs/img.png`），一行一个文件。
@@ -186,9 +191,27 @@ pub struct TransferChild {
     pub total: u64,
     pub transferred: u64,
     pub status: TransferStatus,
+    speed_bps: Option<f64>,
+    last_update: Option<SystemTime>,
+    last_speed_at: Option<SystemTime>,
+    speed_window_bytes: f64,
 }
 
 impl TransferChild {
+    /// 新排进目录的一个子文件：还没动过，速率空着。
+    pub fn new(filename: SharedString, total: u64) -> Self {
+        Self {
+            filename,
+            total,
+            transferred: 0,
+            status: TransferStatus::Queued,
+            speed_bps: None,
+            last_update: None,
+            last_speed_at: None,
+            speed_window_bytes: 0.0,
+        }
+    }
+
     /// 0.0 ~ 1.0，口径与 [`TransferItem::fraction`] 相同。
     pub fn fraction(&self) -> f32 {
         fraction_of(self.total, self.transferred, self.status)
@@ -199,12 +222,60 @@ impl TransferChild {
         self.fraction() * 100.0
     }
 
-    /// 收下一个进度事件：字节数只进不退，排队中的算"在传"。
-    pub fn record_progress(&mut self, transferred: u64) {
+    /// 速率文案，单位与 [`TransferItem::speed_label`] 一致（1024 进制）。从没
+    /// 算出过速率就是 `—`。
+    pub fn speed_label(&self) -> String {
+        match self.speed_bps {
+            Some(speed) => format!("{}/s", human_size(speed as u64)),
+            None => "—".to_owned(),
+        }
+    }
+
+    /// 收下一个子项进度事件：`transferred` 是这一个文件自己已搬的字节。
+    /// 更新字节数并按 [`SPEED_UPDATE_INTERVAL`] 窗口折算这一份文件的速率。
+    pub fn record_progress(&mut self, transferred: u64, at: SystemTime) {
+        if transferred <= self.transferred && self.transferred > 0 {
+            return;
+        }
+        let delta_bytes = transferred.saturating_sub(self.transferred) as f64;
+        let delta_secs = match self.last_update {
+            Some(previous) => at
+                .duration_since(previous)
+                .unwrap_or(Duration::ZERO)
+                .as_secs_f64(),
+            None => 0.0,
+        };
+
         self.transferred = self.transferred.max(transferred);
-        if self.status == TransferStatus::Queued {
+        self.last_update = Some(at);
+        if delta_secs > 0.0 {
+            match self.last_speed_at {
+                None => {
+                    self.speed_bps = Some(delta_bytes / delta_secs);
+                    self.last_speed_at = Some(at);
+                }
+                Some(published) => {
+                    self.speed_window_bytes += delta_bytes;
+                    let elapsed = at.duration_since(published).unwrap_or(Duration::ZERO);
+                    if elapsed >= SPEED_UPDATE_INTERVAL {
+                        self.speed_bps = Some(self.speed_window_bytes / elapsed.as_secs_f64());
+                        self.last_speed_at = Some(at);
+                        self.speed_window_bytes = 0.0;
+                    }
+                }
+            }
+        }
+        if self.status == TransferStatus::Queued && transferred > 0 {
             self.status = TransferStatus::Transferring;
         }
+    }
+
+    /// 把速率观测重置干净：整条目录传输暂停后恢复时用 —— 暂停的时长不能摊进
+    /// 某个子文件下一段的速率里。
+    pub fn reset_rate(&mut self) {
+        self.last_update = None;
+        self.last_speed_at = None;
+        self.speed_window_bytes = 0.0;
     }
 
     /// 这个文件落定了（改名成功）：字节数补齐，状态落成"已完成"。
@@ -248,12 +319,10 @@ mod tests {
     }
 
     fn child(name: &str, total: u64, transferred: u64, status: TransferStatus) -> TransferChild {
-        TransferChild {
-            filename: name.into(),
-            total,
-            transferred,
-            status,
-        }
+        let mut entry = TransferChild::new(name.into(), total);
+        entry.transferred = transferred;
+        entry.status = status;
+        entry
     }
 
     #[test]
@@ -267,13 +336,18 @@ mod tests {
     #[test]
     fn a_child_keeps_counting_and_never_goes_backwards() {
         let mut one = child("a", 10, 0, TransferStatus::Queued);
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
 
-        one.record_progress(4);
+        one.record_progress(4, start);
         assert_eq!(one.status, TransferStatus::Transferring, "动了就算在传");
         assert_eq!(one.progress(), 40.0);
 
-        one.record_progress(2);
-        assert_eq!(one.transferred, 4, "字节数只进不退");
+        // 隔一秒再来一次：差分出这一份文件自己的速率，跟兄弟子项互不相干。
+        one.record_progress(6, start + Duration::from_secs(1));
+        assert_eq!(one.speed_bps, Some(2.0), "2 字节 / 1 秒");
+
+        one.record_progress(2, start + Duration::from_millis(1_100));
+        assert_eq!(one.transferred, 6, "字节数只进不退");
 
         one.mark_done();
         assert_eq!(

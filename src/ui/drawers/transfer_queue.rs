@@ -216,6 +216,13 @@ impl TransferQueueDrawer {
         if let Some(item) = self.items.iter_mut().find(|item| item.id == id) {
             item.status = TransferStatus::Transferring;
             item.reset_rate();
+            // 子项各算各的速率：整条目录传输暂停再恢复，暂停时长不该摊进
+            // 任何一个还在跑的子文件的下一段速率里，一起清零。
+            for child in &mut item.children {
+                if child.status == TransferStatus::Transferring {
+                    child.reset_rate();
+                }
+            }
         }
         self.rebuild_rows(cx);
         cx.notify();
@@ -273,7 +280,7 @@ impl TransferQueueDrawer {
                 transferred,
             } => {
                 if let Some(child) = self.child_mut(*id, *index) {
-                    child.record_progress(*transferred);
+                    child.record_progress(*transferred, SystemTime::now());
                 }
             }
             TransferEvent::ChildDone { id, index } => {
@@ -867,9 +874,11 @@ impl TransferQueueDrawer {
     /// 子行：相对路径、自己的大小与进度；传输中的那个子项借用父行的速率
     /// —— 同一时刻只搬一个文件，速率就是它的。
     fn render_child_row(&self, parent: usize, child: usize, cx: &mut Context<Self>) -> AnyElement {
-        let Some((id, item, entry)) = self.items.get(parent).and_then(|item| {
-            item.children.get(child).map(|entry| (item.id, item, entry))
-        }) else {
+        let Some((id, entry)) = self
+            .items
+            .get(parent)
+            .and_then(|item| item.children.get(child).map(|entry| (item.id, entry)))
+        else {
             return div().h(CHILD_ROW_HEIGHT).into_any_element();
         };
         let tone = status_tone(entry.status, cx);
@@ -879,7 +888,7 @@ impl TransferQueueDrawer {
         let percent = SharedString::from(format!("{}%", entry.progress() as u64));
         let size_label = size_transferred_label(entry.transferred, entry.total);
         let speed = match entry.status {
-            TransferStatus::Transferring => item.speed_label(),
+            TransferStatus::Transferring => entry.speed_label(),
             _ => "—".to_owned(),
         };
         let status = entry.status;

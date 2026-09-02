@@ -15,11 +15,12 @@
 //!   比我们能写的任何转述都准。
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use futures::stream::{self, StreamExt as _, TryStreamExt as _};
 use russh::client::Handle;
 use russh_sftp::client::SftpSession;
 use russh_sftp::client::error::Error as SftpError;
@@ -31,13 +32,24 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    sftp::{FileEntry, FileKind, TransferChild, TransferDirection, TransferStatus, path},
+    sftp::{FileEntry, FileKind, TransferChild, TransferDirection, path},
     ssh::{SshHandler, open_sftp_session},
 };
 
 /// 一次搬运的块大小。SFTP 包上限一般是 32 KiB（`limits@openssh.com` 会自己收小），
 /// 比它大的读请求会被对端截短，所以再大也只是白占内存。
 const CHUNK: usize = 32 * 1024;
+
+/// 一次目录传输内部同时搬运的文件数。一个文件夹在队列里是一行、一个任务，
+/// 里头的文件以前是一个搬完再搬下一个；这里让最多这么多文件并行走同一条 SFTP
+/// 会话（`russh-sftp` 会在一条通道上多路复用请求），小文件多的目录不再挨个干等。
+const FOLDER_CONCURRENCY: usize = 10;
+
+/// 进度上报的最小间隔。搬运是 32 KiB 一块一块走的，但**没必要每块都惊动主线程** ——
+/// 一条进度条一秒刷十几次和刷几千次看着一样，后者只把界面刷到掉帧（并发时更放大十倍）。
+/// 所以 `pump` 攒够这个间隔才发一次；块始终在累加，收尾时一定补发一次准确值，进度条
+/// 到得了 100%。调小更跟手、更耗 UI；调大更省、看着更"跳"。
+const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(80);
 
 /// 编辑远端文本文件的大小上限。超过就当二进制文件处理（提示先下载到本地打开），
 /// 把 200 MB 的日志读进一个输入框是给自己找麻烦。
@@ -504,7 +516,7 @@ fn check_mode(octal: u32) -> Result<()> {
     Ok(())
 }
 
-/// 远端 → 本地。先写 `.<name>.part`，成功后改名落到最终名字上。
+/// 远端 → 本地。先写 `.<name>.<id>.part`，成功后改名落到最终名字上。
 async fn download(session: &Arc<SftpSession>, job: &TransferJob, ctx: &PumpCtx<'_>) -> Result<()> {
     let remote_path = path::normalize(&job.remote);
     let local = job.local.clone();
@@ -513,7 +525,7 @@ async fn download(session: &Arc<SftpSession>, job: &TransferJob, ctx: &PumpCtx<'
             .await
             .with_context(|| format!("创建本地目录 {} 失败", parent.display()))?;
     }
-    let temp = part_path(&local);
+    let temp = part_path(&local, Some(ctx.id));
 
     let mut source = session
         .open(&remote_path)
@@ -529,19 +541,29 @@ async fn download(session: &Arc<SftpSession>, job: &TransferJob, ctx: &PumpCtx<'
         .await
         .with_context(|| format!("创建本地临时文件 {} 失败", temp.display()))?;
 
-    let moved = pump(&mut source, &mut sink, total, 0, None, ctx).await?;
+    let agg = AtomicU64::new(0);
+    let pump_res = pump(&mut source, &mut sink, total, &agg, None, ctx).await;
+    let _ = sink.shutdown().await;
+    drop(sink);
+    let _ = source.close().await;
+
+    let moved = match pump_res {
+        Ok(moved) => moved,
+        Err(err) => {
+            let _ = tokio::fs::remove_file(&temp).await;
+            return Err(err);
+        }
+    };
+
     if total > 0 && moved < total {
+        let _ = tokio::fs::remove_file(&temp).await;
         bail!("下载不完整：{} / {} 字节", moved, total);
     }
 
-    // 落盘顺序：写完 → 关（等在途写确认）→ 改名。名字就是"完成"的标志。
-    sink.shutdown().await.context("写入本地临时文件失败")?;
-    drop(sink);
-    source
-        .close()
-        .await
-        .map_err(|error| remote("关闭远端文件", SftpError::IO(error.to_string())))?;
-    replace_with(&temp, &local)?;
+    if let Err(err) = replace_with(&temp, &local) {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Err(err);
+    }
 
     // 远端权限顺手带到本地：下载一个脚本，可执行位不该在搬运路上丢了。
     // Windows 上只有只读/可读写两档，跳过比硬凑一个假的强。
@@ -577,11 +599,11 @@ async fn upload(session: &Arc<SftpSession>, job: &TransferJob, ctx: &PumpCtx<'_>
         let items = plan
             .files
             .iter()
-            .map(|file| TransferChild {
-                filename: relative_remote(&file.remote, &remote_dir).into(),
-                total: file.size,
-                transferred: 0,
-                status: TransferStatus::Queued,
+            .map(|file| {
+                TransferChild::new(
+                    relative_remote(&file.remote, &remote_dir).into(),
+                    file.size,
+                )
             })
             .collect();
         let _ = ctx
@@ -589,47 +611,81 @@ async fn upload(session: &Arc<SftpSession>, job: &TransferJob, ctx: &PumpCtx<'_>
             .send(TransferEvent::Children { id: job.id, items });
     }
 
-    // 一个目录上传在界面上是**一条**进度条：分母是整棵树，偏移是前面已经搬完的。
-    let mut moved = 0u64;
-    for (index, file) in plan.files.iter().enumerate() {
-        if ctx.cancel.is_cancelled() {
-            bail!("已取消");
-        }
-        let mut source = TokioFile::open(&file.local)
-            .await
-            .with_context(|| format!("打开本地文件 {} 失败", file.local.display()))?;
-        let temp = part_path_str(&file.remote);
-        let mut sink = session
-            .create(&temp)
-            .await
-            .map_err(|error| remote(&format!("创建远端临时文件 {temp}"), error))?;
-
-        let pumped = pump(
-            &mut source,
-            &mut sink,
-            total,
-            moved,
-            folder.then_some((index, file.size)),
-            ctx,
-        )
+    // 一个目录上传在界面上是**一条**进度条：分母是整棵树。并发搬多个文件时，这条
+    // 聚合进度靠 `agg` 累加各文件已搬的字节（不再靠"前面文件搬了多少"的偏移量），
+    // 子项进度仍各报各的。同一时刻最多 [`FOLDER_CONCURRENCY`] 个文件在同一条会话上
+    // 并行走；任一文件出错就地停，没轮到的那些交给结束事件落成父行的状态。
+    let agg = AtomicU64::new(0);
+    stream::iter(plan.files.into_iter().enumerate())
+        .map(|(index, file)| upload_file_to(session, file, index, folder, total, &agg, ctx))
+        .buffer_unordered(FOLDER_CONCURRENCY)
+        .try_collect::<()>()
         .await?;
-        moved += pumped;
+    Ok(())
+}
 
-        sink.close()
-            .await
-            .map_err(|error| remote("关闭远端临时文件", SftpError::IO(error.to_string())))?;
-        // 上传是要顶掉旧文件的（用户挑了同一个名字再传一次），而协议的 rename
-        // 不覆盖，所以落到 `rename_into_place` 里去处理这件事。
-        rename_into_place(session, &temp, &file.remote)
-            .await
-            .map_err(|error| remote(&format!("落下 {}", file.remote), error))?;
+/// 把目录树里的一个文件搬到远端：开本地、在远端开 `.<name>.<id>.part`、`pump` 过去、改名落定。
+/// 供 [`upload`] 的并发调度逐文件调用；`agg` 是整条传输共享的累计字节。
+async fn upload_file_to(
+    session: &Arc<SftpSession>,
+    file: UploadFile,
+    index: usize,
+    folder: bool,
+    total: u64,
+    agg: &AtomicU64,
+    ctx: &PumpCtx<'_>,
+) -> Result<()> {
+    if ctx.cancel.is_cancelled() {
+        bail!("已取消");
+    }
+    let mut source = TokioFile::open(&file.local)
+        .await
+        .with_context(|| format!("打开本地文件 {} 失败", file.local.display()))?;
+    let temp = part_path_str(&file.remote, Some(ctx.id));
+    let mut sink = session
+        .create(&temp)
+        .await
+        .map_err(|error| remote(&format!("创建远端临时文件 {temp}"), error))?;
 
-        // 改名成功才算这个文件到了：报在收尾之后，而不是最后一块写完时。
-        if folder {
-            let _ = ctx
-                .progress
-                .send(TransferEvent::ChildDone { id: job.id, index });
+    let pump_res = pump(
+        &mut source,
+        &mut sink,
+        total,
+        agg,
+        folder.then_some((index, file.size)),
+        ctx,
+    )
+    .await;
+
+    // 先关闭远端句柄
+    let _ = sink.close().await;
+
+    let moved = match pump_res {
+        Ok(moved) => moved,
+        Err(err) => {
+            let _ = session.remove_file(&temp).await;
+            return Err(err);
         }
+    };
+
+    // 完整性校验：非空文件如果传输字节数少于预期，说明本地读取或传输不完整
+    if file.size > 0 && moved < file.size {
+        let _ = session.remove_file(&temp).await;
+        bail!("上传不完整：{moved} / {} 字节", file.size);
+    }
+
+    // 上传是要顶掉旧文件的（用户挑了同一个名字再传一次），而协议的 rename
+    // 不覆盖，所以落到 `rename_into_place` 里去处理这件事。
+    if let Err(error) = rename_into_place(session, &temp, &file.remote).await {
+        let _ = session.remove_file(&temp).await;
+        return Err(remote(&format!("落下 {}", file.remote), error));
+    }
+
+    // 改名成功才算这个文件到了：报在收尾之后，而不是最后一块写完时。
+    if folder {
+        let _ = ctx
+            .progress
+            .send(TransferEvent::ChildDone { id: ctx.id, index });
     }
     Ok(())
 }
@@ -677,10 +733,17 @@ async fn ensure_dir(session: &Arc<SftpSession>, target: &str) -> Result<()> {
     {
         return Ok(());
     }
-    session
-        .create_dir(target)
-        .await
-        .map_err(|error| remote(&format!("创建远端目录 {target}"), error))
+    match session.create_dir(target).await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            // 如果并发任务刚刚创建了该目录，再次确认存在即可，不中断传输
+            if session.try_exists(target).await.unwrap_or(false) {
+                Ok(())
+            } else {
+                Err(remote(&format!("创建远端目录 {target}"), err))
+            }
+        }
+    }
 }
 
 /// 一次目录树上传摊平出来的计划。
@@ -710,8 +773,8 @@ impl UploadPlan {
 /// 用显式队列而不是递归：`async fn` 自己调自己要装箱（递归的未来大小未知），
 /// 而一棵很深的树也不该把任务的栈吃掉。
 ///
-/// 顶层是用户自己挑的，跟着软链接走一步没问题；树**里面**的目录软链接一律按文件
-/// 处理（搬它指向的内容，不进去）—— 一个指回上层的链接，跟着走就是无限循环。
+/// 顶层是用户自己挑的，跟着软链接走一步没问题；树**里面**的目录软链接跳过，
+/// 避免死循环或当成普通文件打开报错。普通文件的有效软链接按其指向内容搬运。
 fn plan_upload(local: &Path, remote_dir: &str) -> Result<UploadPlan> {
     let mut plan = UploadPlan::default();
     let root = remote_for(local, remote_dir)?;
@@ -725,12 +788,25 @@ fn plan_upload(local: &Path, remote_dir: &str) -> Result<UploadPlan> {
     let mut pending = std::collections::VecDeque::from([(local.to_path_buf(), root)]);
     while let Some((dir, parent)) = pending.pop_front() {
         for child in sorted_children(&dir)? {
+            let Ok(symlink_meta) = child.symlink_metadata() else {
+                continue;
+            };
             let target = remote_for(&child, &parent)?;
-            if is_plain_dir(&child) {
+            if symlink_meta.is_dir() {
                 plan.dirs.push(target.clone());
                 pending.push_back((child, target));
-            } else {
+            } else if symlink_meta.is_file() {
                 plan.files.push(upload_file(&child, &target)?);
+            } else if symlink_meta.file_type().is_symlink() {
+                if let Ok(target_meta) = std::fs::metadata(&child) {
+                    if target_meta.is_dir() {
+                        log::warn!("跳过目录软链接：{}", child.display());
+                    } else if target_meta.is_file() {
+                        plan.files.push(upload_file(&child, &target)?);
+                    }
+                } else {
+                    log::warn!("跳过失效软链接：{}", child.display());
+                }
             }
         }
     }
@@ -777,18 +853,20 @@ fn upload_file(local: &Path, remote: &str) -> Result<UploadFile> {
     })
 }
 
-/// 一块一块地搬，每搬完一块报一次进度；取消与暂停都在块与块之间生效。
+/// 一块一块地搬；进度按 [`PROGRESS_EMIT_INTERVAL`] 节流上报（收尾必补一次准确值），
+/// 取消与暂停都在块与块之间生效。
 ///
 /// 读写两端都是泛型：远端是 [`russh_sftp::client::fs::File`]，本地是
 /// [`tokio::fs::File`]，两边都只要求 `AsyncRead`/`AsyncWrite`。
-/// `offset` 是给进度的起点偏移（目录树里前面那些文件已经搬了多少）。
+/// `agg` 是这一条传输的累计已搬字节（目录并发时多个文件共享同一份）：每搬一块
+/// 就往里加，聚合进度报它的最新值，`total` 是整条传输的分母。
 /// `child` 是目录上传里正在搬的那个子项（序号与它自己的大小）：聚合进度
 /// 照旧报整棵树，子项进度只在这一份文件自己的范围内报。
 async fn pump<R, W>(
     read: &mut R,
     write: &mut W,
     total: u64,
-    offset: u64,
+    agg: &AtomicU64,
     child: Option<(usize, u64)>,
     ctx: &PumpCtx<'_>,
 ) -> Result<u64>
@@ -798,6 +876,7 @@ where
 {
     let mut buffer = vec![0u8; CHUNK];
     let mut moved = 0u64;
+    let mut last_emit = Instant::now();
 
     loop {
         // 暂停就停在块与块之间：一块是最小的停顿单位，字节不会断在半截。
@@ -820,21 +899,41 @@ where
         result.context("写入数据失败")?;
 
         moved += read_len as u64;
-        let _ = ctx.progress.send(TransferEvent::Progress {
-            id: ctx.id,
-            transferred: offset + moved,
-            total,
-        });
-        if let Some((index, size)) = child {
-            let _ = ctx.progress.send(TransferEvent::ChildProgress {
-                id: ctx.id,
-                index,
-                transferred: moved.min(size),
-            });
+        agg.fetch_add(read_len as u64, Ordering::Relaxed);
+        // 攒够时间才报一次：块一直在累加，这里只是给主线程的更新限个速。
+        if last_emit.elapsed() >= PROGRESS_EMIT_INTERVAL {
+            last_emit = Instant::now();
+            emit_progress(ctx, total, agg, child, moved);
         }
     }
 
+    // 收尾补发一次准确值：末块没到上报节奏就靠这里兜住，进度条才落得到 100%、
+    // 子行才落得到自己那份大小。取消是 bail 出去的，走不到这里，正合适。
+    emit_progress(ctx, total, agg, child, moved);
     Ok(moved)
+}
+
+/// 发一条聚合进度（整条传输）+ 对应子项进度（目录传输里这一份文件）。
+/// 与 [`pump`] 里节流后的调用配对：一处发送，收尾与节流两处共用。
+fn emit_progress(
+    ctx: &PumpCtx<'_>,
+    total: u64,
+    agg: &AtomicU64,
+    child: Option<(usize, u64)>,
+    moved: u64,
+) {
+    let _ = ctx.progress.send(TransferEvent::Progress {
+        id: ctx.id,
+        transferred: agg.load(Ordering::Relaxed),
+        total,
+    });
+    if let Some((index, size)) = child {
+        let _ = ctx.progress.send(TransferEvent::ChildProgress {
+            id: ctx.id,
+            index,
+            transferred: moved.min(size),
+        });
+    }
 }
 
 /// 子项的展示名：远端绝对路径剥掉目标目录后的相对路径（`pkg/a/one`），
@@ -858,20 +957,29 @@ fn replace_with(from: &Path, to: &Path) -> Result<()> {
 }
 
 /// 本地临时名：`.` 开头，列目录时不挡道，中途死了也一眼看得出它是什么。
-fn part_path(local: &Path) -> PathBuf {
+/// `id` 标识任务，多任务并发下载/上传同名文件时避免碰撞。
+fn part_path(local: &Path, id: Option<u64>) -> PathBuf {
     let name = local
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "download".to_owned());
-    local.with_file_name(format!(".{name}.part"))
+    let part_name = match id {
+        Some(id) => format!(".{name}.{id}.part"),
+        None => format!(".{name}.part"),
+    };
+    local.with_file_name(part_name)
 }
 
-fn part_path_str(remote: &str) -> String {
+fn part_path_str(remote: &str, id: Option<u64>) -> String {
     let name = path::file_name(remote);
     let directory = path::parent(remote);
+    let part_name = match id {
+        Some(id) => format!(".{name}.{id}.part"),
+        None => format!(".{name}.part"),
+    };
     match directory.as_str() {
-        "" | "." => format!(".{name}.part"),
-        directory => path::join(directory, &format!(".{name}.part")),
+        "" | "." => part_name,
+        directory => path::join(directory, &part_name),
     }
 }
 
@@ -996,12 +1104,20 @@ mod tests {
     #[test]
     fn temp_names_stay_in_their_directory_and_hide() {
         assert_eq!(
-            part_path(Path::new("/tmp/downloads/tool.sh")),
+            part_path(Path::new("/tmp/downloads/tool.sh"), None),
             PathBuf::from("/tmp/downloads/.tool.sh.part")
         );
-        assert_eq!(part_path_str("/var/log/app.log"), "/var/log/.app.log.part");
-        assert_eq!(part_path_str("/app.log"), "/.app.log.part");
-        assert_eq!(part_path_str("app.log"), ".app.log.part");
+        assert_eq!(
+            part_path(Path::new("/tmp/downloads/tool.sh"), Some(42)),
+            PathBuf::from("/tmp/downloads/.tool.sh.42.part")
+        );
+        assert_eq!(part_path_str("/var/log/app.log", None), "/var/log/.app.log.part");
+        assert_eq!(
+            part_path_str("/var/log/app.log", Some(42)),
+            "/var/log/.app.log.42.part"
+        );
+        assert_eq!(part_path_str("/app.log", None), "/.app.log.part");
+        assert_eq!(part_path_str("app.log", None), ".app.log.part");
     }
 
     #[test]
@@ -1080,7 +1196,7 @@ mod tests {
     }
 
     #[test]
-    fn pump_moves_every_byte_and_reports_each_chunk() {
+    fn pump_moves_every_byte_and_lands_progress_on_total() {
         crate::db::runtime().block_on(async {
             let payload: Vec<u8> = (0..(CHUNK as u64 * 2 + 5)).map(|i| i as u8).collect();
             let total = payload.len() as u64;
@@ -1096,7 +1212,8 @@ mod tests {
                 pause: &pause,
                 progress: &tx,
             };
-            let moved = pump(&mut source, &mut sink, total, 0, None, &ctx)
+            let agg = AtomicU64::new(0);
+            let moved = pump(&mut source, &mut sink, total, &agg, None, &ctx)
                 .await
                 .expect("搬运应成功");
 
@@ -1118,17 +1235,19 @@ mod tests {
                     events.push(transferred);
                 }
             }
-            assert!(events.len() >= 3, "应当是一块一块报上来的：{events:?}");
+            // 节流后不再逐块上报（内存里三块远快过一个上报窗口），但收尾必补一次准确值：
+            // 至少一条、不倒退、最后一条说搬完了。
+            assert!(!events.is_empty(), "至少该有收尾那一条：{events:?}");
             assert_eq!(events.last(), Some(&total), "最后一次要说搬完了");
             assert!(
-                events.windows(2).all(|pair| pair[0] < pair[1]),
+                events.windows(2).all(|pair| pair[0] <= pair[1]),
                 "进度不倒退"
             );
         });
     }
 
     #[test]
-    fn pump_offsets_progress_so_a_tree_shows_one_bar() {
+    fn pump_reports_running_total_so_a_tree_shows_one_bar() {
         crate::db::runtime().block_on(async {
             let mut source = std::io::Cursor::new(vec![1u8; 10]);
             let mut sink: Vec<u8> = Vec::new();
@@ -1142,7 +1261,10 @@ mod tests {
                 progress: &tx,
             };
 
-            pump(&mut source, &mut sink, 100, 40, None, &ctx)
+            // `agg` 里树中前面那些文件已经搬的字节 —— 目录并发时它是多条 pump 共享的
+            // 那份累计，取代了以前"传进来的偏移"。
+            let agg = AtomicU64::new(40);
+            pump(&mut source, &mut sink, 100, &agg, None, &ctx)
                 .await
                 .expect("搬 10 个");
 
@@ -1150,7 +1272,7 @@ mod tests {
                 Some(TransferEvent::Progress {
                     transferred, total, ..
                 }) => {
-                    assert_eq!((transferred, total), (50, 100), "偏移要加进去");
+                    assert_eq!((transferred, total), (50, 100), "要把已搬的累计进去");
                 }
                 other => panic!("只该有一个进度事件：{other:?}"),
             }
@@ -1174,7 +1296,8 @@ mod tests {
                 pause: &pause,
                 progress: &tx,
             };
-            let error = pump(&mut source, &mut sink, 100, 0, None, &ctx)
+            let agg = AtomicU64::new(0);
+            let error = pump(&mut source, &mut sink, 100, &agg, None, &ctx)
                 .await
                 .expect_err("取消了就不算成功");
             assert_eq!(error.to_string(), "已取消");
@@ -1200,10 +1323,11 @@ mod tests {
     }
 
     fn temp_dir(tag: &str) -> PathBuf {
+        let raw_name = std::thread::current().name().unwrap_or("t").to_owned();
+        let safe_name = raw_name.replace(':', "_");
         std::env::temp_dir().join(format!(
-            "winssh-pro-sftp-{tag}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("t")
+            "winssh-pro-sftp-{tag}-{}-{safe_name}",
+            std::process::id()
         ))
     }
 }

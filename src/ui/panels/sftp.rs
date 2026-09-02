@@ -112,8 +112,10 @@ const HEIGHT_SPLIT: Pixels = px(350.);
 const LOCAL_PANE_MIN: Pixels = px(260.);
 const REMOTE_PANE_MIN: Pixels = px(380.);
 
-/// 同时进行的传输数。
-const MAX_ACTIVE_TRANSFERS: usize = 2;
+/// 同时进行的传输数。上传与下载各算各的坑，互不占用：一边占满不影响另一边继续开，
+/// 这样批量上传时顺手下的文件不必排在同一份预算后面干等。
+const MAX_ACTIVE_UPLOADS: usize = 10;
+const MAX_ACTIVE_DOWNLOADS: usize = 10;
 
 /// 右栏各列的宽度：名字吃掉剩下的，其余定死 —— 一列数字左右挪动就没法比了。
 const SIZE_WIDTH: Pixels = px(74.);
@@ -196,9 +198,10 @@ pub struct SftpPanel {
     queue: Entity<TransferQueueDrawer>,
     transfer_seq: u64,
     queue_drawer: bool,
-    /// 待跑的任务：同时最多两条，坑位满了就在这里排队。
+    /// 待跑的任务：按方向各有一份额度，坑满了就在这里排队。
     pending: VecDeque<TransferJob>,
-    running: HashMap<u64, TransferHandle>,
+    /// 在跑的任务：id → (方向, 把手)。方向记在这里，放行时才能分别数上传 / 下载各占了几个坑。
+    running: HashMap<u64, (TransferDirection, TransferHandle)>,
     /// 进度事件从 tokio 那一侧回来的管子。
     progress: UnboundedSender<TransferEvent>,
 
@@ -983,13 +986,29 @@ impl SftpPanel {
         self.start_queued(cx);
     }
 
-    /// 有空坑就把队列里的下一个开出去。
+    /// 有空坑就把队列里的下一个开出去。上传、下载各数各的：一条排队任务只要它那个
+    /// 方向还有富余就能开跑，另一个方向挤满了也不挡它。
     fn start_queued(&mut self, cx: &mut Context<Self>) {
         let Some(service) = self.service.clone() else {
             return;
         };
-        while self.running.len() < MAX_ACTIVE_TRANSFERS {
-            let Some(next) = self.pending.pop_front() else {
+        loop {
+            let mut uploading = 0;
+            let mut downloading = 0;
+            for (direction, _) in self.running.values() {
+                match direction {
+                    TransferDirection::Upload => uploading += 1,
+                    TransferDirection::Download => downloading += 1,
+                }
+            }
+            // 取队列里头一个"它那个方向还有坑"的任务，保持 FIFO。
+            let Some(index) = self.pending.iter().position(|job| match job.direction {
+                TransferDirection::Upload => uploading < MAX_ACTIVE_UPLOADS,
+                TransferDirection::Download => downloading < MAX_ACTIVE_DOWNLOADS,
+            }) else {
+                break;
+            };
+            let Some(next) = self.pending.remove(index) else {
                 break;
             };
             let handle = match next.direction {
@@ -1003,7 +1022,7 @@ impl SftpPanel {
             self.queue.update(cx, |drawer, cx| {
                 drawer.set_status(next.id, TransferStatus::Transferring, cx)
             });
-            self.running.insert(next.id, handle);
+            self.running.insert(next.id, (next.direction, handle));
         }
         cx.notify();
     }
@@ -1047,7 +1066,7 @@ impl SftpPanel {
     /// 行上的暂停 / 恢复。只对在跑的那条有意义：排队的还没有把手，
     /// 轮到它时自然会开始。
     fn toggle_pause(&mut self, id: u64, cx: &mut Context<Self>) {
-        let Some(handle) = self.running.get(&id) else {
+        let Some((_, handle)) = self.running.get(&id) else {
             return;
         };
         if handle.is_paused() {
@@ -1069,10 +1088,10 @@ impl SftpPanel {
         if self.running.is_empty() {
             return;
         }
-        let all_paused = self.running.values().all(|handle| handle.is_paused());
+        let all_paused = self.running.values().all(|(_, handle)| handle.is_paused());
         let ids: Vec<u64> = self.running.keys().copied().collect();
         for id in &ids {
-            let handle = &self.running[id];
+            let (_, handle) = &self.running[id];
             if all_paused {
                 handle.resume();
             } else {
@@ -1095,7 +1114,7 @@ impl SftpPanel {
 
     /// 行尾那个 ×：在跑的取消它，排队的撤下来，已经完事的从列表里去掉。
     fn cancel_or_remove(&mut self, id: u64, cx: &mut Context<Self>) {
-        if let Some(handle) = self.running.remove(&id) {
+        if let Some((_, handle)) = self.running.remove(&id) {
             // 已经跑完的那一个再 cancel 一次没意义：结束事件早就把这一行落成别的状态
             // 了，这里只是不再等它。
             if !handle.is_finished() {
@@ -1359,7 +1378,7 @@ impl Focusable for SftpPanel {
 /// 面板销毁时，在跑的传输一起停掉。
 impl Drop for SftpPanel {
     fn drop(&mut self) {
-        for (_, handle) in self.running.drain() {
+        for (_, (_, handle)) in self.running.drain() {
             handle.cancel();
         }
         self.pending.clear();
