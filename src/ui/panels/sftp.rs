@@ -946,19 +946,23 @@ impl SftpPanel {
         let resizable_state = cx.new(|_| ResizableState::default());
         let queue_state = cx.new(|_| ResizableState::default());
 
+        // TODO: 恢复 `.autofit(true)`。这个方法是 gpui-component 的本地改动
+        // (submodule commit 5491a9ce)，只存在于另一台机器上、未推到任何 remote；
+        // 本机 submodule 已前进到上游 20f8a450，不含该 API。在补回之前，列宽退回
+        // 各 delegate 里 `col()` 上写的固定 `width`/`min_width`。
         let local_table = cx.new(|cx| {
             TableState::new(LocalTableDelegate::new(), window, cx)
                 .sortable(true)
                 .col_resizable(true)
                 .row_selectable(true)
-                .autofit(true)
+                .col_selectable(false)
         });
         let remote_table = cx.new(|cx| {
             TableState::new(RemoteTableDelegate::new(), window, cx)
                 .sortable(true)
                 .col_resizable(true)
                 .row_selectable(true)
-                .autofit(true)
+                .col_selectable(false)
         });
 
         cx.new(|cx| {
