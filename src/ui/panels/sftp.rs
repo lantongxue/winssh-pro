@@ -47,7 +47,7 @@ use gpui_component::{
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex, h_resizable,
     input::{Input, InputEvent, InputState},
-    menu::ContextMenuExt as _,
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem},
     progress::Progress,
     resizable_panel,
     scroll::{ScrollableElement as _, ScrollbarAxis},
@@ -1954,10 +1954,12 @@ impl SftpPanel {
     }
 
     /// 本地面包屑：把路径拆成可点的段，点一段就跳过去。
+    /// 在 Windows 下首段盘符支持下拉选择并快速跳转到对应盘符根目录。
     fn render_local_breadcrumb(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let path_str = self.local_dir.display().to_string();
         let segments = local_breadcrumbs(&path_str);
         let last = segments.len().saturating_sub(1);
+        let panel = cx.entity().downgrade();
 
         div()
             .flex_1()
@@ -1972,6 +1974,10 @@ impl SftpPanel {
                     .flex_none()
                     .children(segments.into_iter().enumerate().map(|(ix, (label, path))| {
                         let here = ix == last;
+                        let is_drive = is_windows_drive(&label);
+                        let panel_for_menu = panel.clone();
+                        let current_drive = label.clone();
+
                         h_flex()
                             .items_center()
                             .gap_1()
@@ -1983,7 +1989,53 @@ impl SftpPanel {
                                         .text_color(palette::idle(cx)),
                                 )
                             })
-                            .child(
+                            .child(if is_drive {
+                                let drives = available_windows_drives();
+                                Button::new(SharedString::from(format!("local-crumb-drive-{}", ix)))
+                                    .ghost()
+                                    .xsmall()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .label(SharedString::from(format!("{} ▾", label)))
+                                    .tooltip(SharedString::from(path.clone()))
+                                    .text_color(if here {
+                                        cx.theme().foreground
+                                    } else {
+                                        palette::idle(cx)
+                                    })
+                                    .dropdown_menu(move |menu, _, cx| {
+                                        drives.iter().fold(menu.min_w(px(110.)), |menu, drive| {
+                                            let is_curr =
+                                                drive.eq_ignore_ascii_case(&current_drive);
+                                            let target_dir =
+                                                PathBuf::from(format!("{}\\", drive));
+                                            let p = panel_for_menu.clone();
+
+                                            let item = PopupMenuItem::new(SharedString::from(
+                                                format!("{} \\", drive),
+                                            ))
+                                            .icon(
+                                                Icon::new(IconName::HardDrive).text_color(
+                                                    if is_curr {
+                                                        palette::teal()
+                                                    } else {
+                                                        palette::idle(cx)
+                                                    },
+                                                ),
+                                            )
+                                            .checked(is_curr)
+                                            .on_click(move |_, window, app| {
+                                                let target = target_dir.clone();
+                                                if let Some(panel) = p.upgrade() {
+                                                    panel.update(app, |this, cx| {
+                                                        this.list_local(target, window, cx);
+                                                    });
+                                                }
+                                            });
+                                            menu.item(item)
+                                        })
+                                    })
+                                    .into_any_element()
+                            } else {
                                 Button::new(SharedString::from(format!("local-crumb-{}", ix)))
                                     .ghost()
                                     .xsmall()
@@ -1999,8 +2051,9 @@ impl SftpPanel {
                                         button.on_click(cx.listener(move |this, _, window, cx| {
                                             this.list_local(PathBuf::from(path.clone()), window, cx);
                                         }))
-                                    }),
-                            )
+                                    })
+                                    .into_any_element()
+                            })
                     })),
             )
     }
@@ -2705,30 +2758,99 @@ fn row_button(
 }
 
 /// 把本地路径拆成面包屑：每一段是 (显示名, 完整路径)。
-/// Windows 上盘符会作为第一段（如 "C:"），Unix 上根目录是第一段（"/"）。
+/// Windows 上盘符作为第一段（如 ("C:", "C:\\")），Unix 上根目录是第一段（("/", "/")）。
 fn local_breadcrumbs(path: &str) -> Vec<(String, String)> {
     let path = std::path::Path::new(path);
     let mut segments = Vec::new();
     let mut current = std::path::PathBuf::new();
 
-    for component in path.components() {
-        current.push(component);
-        let label = match component {
+    let mut components = path.components().peekable();
+    while let Some(component) = components.next() {
+        match component {
             std::path::Component::Prefix(prefix) => {
-                // Windows 盘符，如 "C:"
-                prefix.as_os_str().to_string_lossy().to_string()
+                let drive = prefix.as_os_str().to_string_lossy().to_string();
+                current.push(component);
+                // Windows 下 Prefix 后面通常紧跟 RootDir（"\"），合并为 "C:\" 作为盘符根路径
+                if matches!(components.peek(), Some(std::path::Component::RootDir)) {
+                    current.push(components.next().unwrap());
+                }
+                segments.push((drive, current.display().to_string()));
             }
             std::path::Component::RootDir => {
-                // Unix 根目录
-                "/".to_string()
+                current.push(component);
+                segments.push(("/".to_string(), current.display().to_string()));
             }
             std::path::Component::Normal(name) => {
-                // 普通目录名
-                name.to_string_lossy().to_string()
+                current.push(component);
+                segments.push((name.to_string_lossy().to_string(), current.display().to_string()));
             }
             _ => continue,
-        };
-        segments.push((label, current.display().to_string()));
+        }
     }
     segments
 }
+
+/// 判断给定的字符串是否是 Windows 盘符（如 "C:"、"D:"）。
+fn is_windows_drive(label: &str) -> bool {
+    let bytes = label.as_bytes();
+    bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+/// 获取 Windows 系统上所有可用的盘符（如 ["C:", "D:", "E:"]）。
+#[cfg(windows)]
+fn available_windows_drives() -> Vec<String> {
+    unsafe extern "system" {
+        fn GetLogicalDrives() -> u32;
+    }
+    let bitmask = unsafe { GetLogicalDrives() };
+    let mut drives = Vec::new();
+    for i in 0..26 {
+        if (bitmask & (1 << i)) != 0 {
+            let letter = (b'A' + i) as char;
+            drives.push(format!("{}:", letter));
+        }
+    }
+    if drives.is_empty() {
+        drives.push("C:".to_string());
+    }
+    drives
+}
+
+#[cfg(not(windows))]
+fn available_windows_drives() -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_windows_drive() {
+        assert!(is_windows_drive("C:"));
+        assert!(is_windows_drive("c:"));
+        assert!(is_windows_drive("D:"));
+        assert!(is_windows_drive("Z:"));
+        assert!(!is_windows_drive(""));
+        assert!(!is_windows_drive("/"));
+        assert!(!is_windows_drive("C:\\"));
+        assert!(!is_windows_drive("Users"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_local_breadcrumbs() {
+        let crumbs = local_breadcrumbs("C:\\Users\\mrkin\\workspace");
+        assert_eq!(crumbs[0], ("C:".to_string(), "C:\\".to_string()));
+        assert_eq!(crumbs[1], ("Users".to_string(), "C:\\Users".to_string()));
+        assert_eq!(crumbs[2], ("mrkin".to_string(), "C:\\Users\\mrkin".to_string()));
+        assert_eq!(
+            crumbs[3],
+            ("workspace".to_string(), "C:\\Users\\mrkin\\workspace".to_string())
+        );
+
+        let root_crumbs = local_breadcrumbs("D:\\");
+        assert_eq!(root_crumbs, vec![("D:".to_string(), "D:\\".to_string())]);
+    }
+}
+
