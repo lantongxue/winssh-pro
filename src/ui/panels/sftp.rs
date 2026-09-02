@@ -37,7 +37,7 @@ use std::{
 use gpui::{
     AnyElement, App, AppContext as _, AsyncApp, ClipboardItem, Context, Div, Entity,
     EventEmitter, ExternalPaths, FocusHandle, Focusable, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Pixels, Render, SharedString, Stateful,
+    IntoElement, ParentElement as _, Pixels, Point, Render, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _, px,
 };
@@ -148,35 +148,41 @@ pub struct DraggedLocalEntry {
 /// 本地条目拖拽时的半透明浮动预览。
 struct LocalDragPreview {
     entry: FileEntry,
+    click_offset: Point<Pixels>,
 }
 
 impl Render for LocalDragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let icon = entry_icon(&self.entry, cx);
         h_flex()
-            .gap_1p5()
-            .items_center()
-            .px_2()
-            .py_1()
-            .rounded(cx.theme().radius)
-            .bg(palette::recessed(cx))
-            .border_1()
-            .border_color(palette::teal())
-            .shadow_md()
-            .text_xs()
-            .font_medium()
-            .text_color(cx.theme().foreground)
-            .child(icon.with_size(px(12.)))
-            .child(self.entry.name.clone())
-            .when(!self.entry.kind.is_dir(), |this| {
-                this.child(
-                    div()
-                        .font_family(cx.theme().mono_font_family.clone())
-                        .text_xs()
-                        .text_color(palette::idle(cx))
-                        .child(self.entry.size_label()),
-                )
-            })
+            .pl(self.click_offset.x + px(10.))
+            .pt(self.click_offset.y + px(10.))
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .px_2()
+                    .py_1()
+                    .rounded(cx.theme().radius)
+                    .bg(palette::recessed(cx))
+                    .border_1()
+                    .border_color(palette::teal())
+                    .shadow_md()
+                    .text_xs()
+                    .font_medium()
+                    .text_color(cx.theme().foreground)
+                    .child(icon.with_size(px(12.)))
+                    .child(self.entry.name.clone())
+                    .when(!self.entry.kind.is_dir(), |this| {
+                        this.child(
+                            div()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_xs()
+                                .text_color(palette::idle(cx))
+                                .child(self.entry.size_label()),
+                        )
+                    }),
+            )
     }
 }
 
@@ -189,35 +195,41 @@ pub struct DraggedRemoteEntry {
 /// 远端条目拖拽时的半透明浮动预览。
 struct RemoteDragPreview {
     entry: FileEntry,
+    click_offset: Point<Pixels>,
 }
 
 impl Render for RemoteDragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let icon = entry_icon(&self.entry, cx);
         h_flex()
-            .gap_1p5()
-            .items_center()
-            .px_2()
-            .py_1()
-            .rounded(cx.theme().radius)
-            .bg(palette::recessed(cx))
-            .border_1()
-            .border_color(palette::sky())
-            .shadow_md()
-            .text_xs()
-            .font_medium()
-            .text_color(cx.theme().foreground)
-            .child(icon.with_size(px(12.)))
-            .child(self.entry.name.clone())
-            .when(!self.entry.kind.is_dir(), |this| {
-                this.child(
-                    div()
-                        .font_family(cx.theme().mono_font_family.clone())
-                        .text_xs()
-                        .text_color(palette::idle(cx))
-                        .child(self.entry.size_label()),
-                )
-            })
+            .pl(self.click_offset.x + px(10.))
+            .pt(self.click_offset.y + px(10.))
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .px_2()
+                    .py_1()
+                    .rounded(cx.theme().radius)
+                    .bg(palette::recessed(cx))
+                    .border_1()
+                    .border_color(palette::sky())
+                    .shadow_md()
+                    .text_xs()
+                    .font_medium()
+                    .text_color(cx.theme().foreground)
+                    .child(icon.with_size(px(12.)))
+                    .child(self.entry.name.clone())
+                    .when(!self.entry.kind.is_dir(), |this| {
+                        this.child(
+                            div()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_xs()
+                                .text_color(palette::idle(cx))
+                                .child(self.entry.size_label()),
+                        )
+                    }),
+            )
     }
 }
 
@@ -476,15 +488,17 @@ impl TableDelegate for LocalTableDelegate {
         let entry = self.entries.get(row_ix).cloned();
         div()
             .id(("local-table-row", row_ix))
-            .cursor_pointer()
             .when_some(entry, |this, entry| {
                 this.on_drag(
                     DraggedLocalEntry {
                         entry: entry.clone(),
                     },
-                    |dragged, _, _, cx| {
+                    |dragged, click_offset, _, cx| {
                         let entry = dragged.entry.clone();
-                        cx.new(|_| LocalDragPreview { entry })
+                        cx.new(|_| LocalDragPreview {
+                            entry,
+                            click_offset,
+                        })
                     },
                 )
             })
@@ -762,15 +776,17 @@ impl TableDelegate for RemoteTableDelegate {
         let entry = self.entries.get(row_ix).cloned();
         div()
             .id(("remote-table-row", row_ix))
-            .cursor_pointer()
             .when_some(entry, |this, entry| {
                 this.on_drag(
                     DraggedRemoteEntry {
                         entry: entry.clone(),
                     },
-                    |dragged, _, _, cx| {
+                    |dragged, click_offset, _, cx| {
                         let entry = dragged.entry.clone();
-                        cx.new(|_| RemoteDragPreview { entry })
+                        cx.new(|_| RemoteDragPreview {
+                            entry,
+                            click_offset,
+                        })
                     },
                 )
             })
