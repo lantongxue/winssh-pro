@@ -192,6 +192,47 @@ impl Render for LocalDragPreview {
     }
 }
 
+/// 远端条目被拖拽时的载荷数据。
+#[derive(Clone, Debug)]
+pub struct DraggedRemoteEntry {
+    pub entry: FileEntry,
+}
+
+/// 远端条目拖拽时的半透明浮动预览。
+struct RemoteDragPreview {
+    entry: FileEntry,
+}
+
+impl Render for RemoteDragPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let icon = entry_icon(&self.entry, cx);
+        h_flex()
+            .gap_1p5()
+            .items_center()
+            .px_2()
+            .py_1()
+            .rounded(cx.theme().radius)
+            .bg(palette::recessed(cx))
+            .border_1()
+            .border_color(palette::sky())
+            .shadow_md()
+            .text_xs()
+            .font_medium()
+            .text_color(cx.theme().foreground)
+            .child(icon.with_size(px(12.)))
+            .child(self.entry.name.clone())
+            .when(!self.entry.kind.is_dir(), |this| {
+                this.child(
+                    div()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_xs()
+                        .text_color(palette::idle(cx))
+                        .child(self.entry.size_label()),
+                )
+            })
+    }
+}
+
 /// 底部这一栏 SFTP 面板。
 pub struct SftpPanel {
     host: Host,
@@ -1864,6 +1905,8 @@ impl SftpPanel {
     /// 删除会先弹确认，且不递归删非空目录 —— 动的是用户本机上的文件，处处保守。
     /// 宽度不在这里定 —— 它撑满所在的 `resizable_panel`，分界线拖到哪儿它就多宽。
     fn render_local_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let current_local_path = self.local_dir.to_string_lossy().into_owned();
+
         div()
             .relative()
             .size_full()
@@ -1890,7 +1933,65 @@ impl SftpPanel {
                             .child(self.render_local_breadcrumb(cx)),
                     )
                     .child(self.render_table_header(&local_columns(), cx))
-                    .child(self.render_pane_body(false, cx)),
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .on_drop(cx.listener(|this, dragged: &DraggedRemoteEntry, window, cx| {
+                                this.download_entry(&dragged.entry, window, cx);
+                            }))
+                            .child(self.render_pane_body(false, cx))
+                            .child(
+                                // 拖拽接收指示遮罩层（拖拽下载效果）
+                                div()
+                                    .id("local-drop-overlay")
+                                    .absolute()
+                                    .inset_0()
+                                    .m_1()
+                                    .rounded_lg()
+                                    .invisible()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap_2()
+                                    .bg(cx.theme().background.opacity(0.92))
+                                    .border_2()
+                                    .border_dashed()
+                                    .border_color(palette::sky())
+                                    .shadow_lg()
+                                    .drag_over::<DraggedRemoteEntry>(|style, _, _, _| style.visible())
+                                    .on_drop(cx.listener(|this, dragged: &DraggedRemoteEntry, window, cx| {
+                                        this.download_entry(&dragged.entry, window, cx);
+                                    }))
+                                    .child(
+                                        Icon::new(AppIcon::Download)
+                                            .with_size(px(36.))
+                                            .text_color(palette::sky()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_semibold()
+                                            .text_color(cx.theme().foreground)
+                                            .child("释放鼠标下载到当前本地目录"),
+                                    )
+                                    .child(
+                                        div()
+                                            .px_2()
+                                            .py_0p5()
+                                            .rounded(cx.theme().radius)
+                                            .bg(palette::recessed(cx))
+                                            .border_1()
+                                            .border_color(palette::sky().opacity(0.4))
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                            .text_xs()
+                                            .text_color(palette::sky())
+                                            .child(SharedString::from(current_local_path)),
+                                    ),
+                            ),
+                    ),
             )
             .when(self.local.deleting, |this| {
                 this.child(
@@ -2605,6 +2706,7 @@ impl SftpPanel {
         };
         let selected = self.selected_remote.as_ref() == Some(&entry.path);
         let clicked = entry.clone();
+        let dragged_entry = entry.clone();
         let menu_for = entry.clone();
         let menu = self.entry_handler(cx);
         let now = SystemTime::now();
@@ -2626,6 +2728,15 @@ impl SftpPanel {
             .when(!selected, |row| {
                 row.hover(|style| style.bg(palette::surface(cx)))
             })
+            .on_drag(
+                DraggedRemoteEntry {
+                    entry: dragged_entry,
+                },
+                |dragged, _, _, cx| {
+                    let entry = dragged.entry.clone();
+                    cx.new(|_| RemoteDragPreview { entry })
+                },
+            )
             .child(
                 TableRow::new()
                     .xsmall()
@@ -2714,7 +2825,7 @@ impl SftpPanel {
                             .text_xs()
                             .text_color(palette::idle(cx))
                             .truncate()
-                            .child("双击文件即可打开编辑；从左栏拖拽文件/目录到右栏即可上传；右键一行看更多操作。"),
+                            .child("双击文件即可打开编辑；支持左右栏双向拖拽上传/下载；右键一行看更多操作。"),
                     ),
             )
             .when(has_active, |this| {
