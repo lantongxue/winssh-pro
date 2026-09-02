@@ -630,7 +630,9 @@ impl TransferQueueDrawer {
                         self.render_name_cell(
                             id, filename, items_badge, expanded, error, cx,
                         ),
-                        queue_cell(DIRECTION_WIDTH).child(direction_badge(direction, cx)),
+                        queue_cell(DIRECTION_WIDTH)
+                            .justify_center()
+                            .child(direction_badge(direction, cx)),
                         queue_cell(SIZE_WIDTH)
                             .text_right()
                             .font_family(cx.theme().mono_font_family.clone())
@@ -663,7 +665,9 @@ impl TransferQueueDrawer {
                             .font_family(cx.theme().mono_font_family.clone())
                             .text_color(palette::idle(cx))
                             .child(speed),
-                        queue_cell(STATUS_WIDTH).child(status_pill(status, cx)),
+                        queue_cell(STATUS_WIDTH)
+                            .justify_center()
+                            .child(status_pill(status, cx)),
                         queue_cell(ACTION_WIDTH)
                             .justify_end()
                             .gap_0p5()
@@ -976,6 +980,7 @@ impl TransferQueueDrawer {
                             .w(STATUS_WIDTH)
                             .min_w(STATUS_WIDTH)
                             .flex_shrink_0()
+                            .justify_center()
                             .child(status_pill(status, cx)),
                         queue_cell(ACTION_WIDTH),
                     ]),
@@ -1021,11 +1026,9 @@ fn queue_cell(width: Pixels) -> TableCell {
 /// 方向徽章：一个小箭头加一句人话，蓝底蓝字。
 fn direction_badge(direction: TransferDirection, cx: &App) -> impl IntoElement {
     h_flex()
-        .w_full()
-        .justify_center()
+        .flex_shrink_0()
         .gap_1()
         .px_1p5()
-        .py_0p5()
         .rounded(cx.theme().radius)
         .bg(palette::blue().opacity(0.14))
         .text_color(palette::sky())
@@ -1053,11 +1056,9 @@ fn status_pill(status: TransferStatus, cx: &App) -> impl IntoElement {
     };
     let tone = status_tone(status, cx);
     h_flex()
-        .w_full()
-        .justify_center()
+        .flex_shrink_0()
         .gap_1()
         .px_1p5()
-        .py_0p5()
         .rounded(cx.theme().radius)
         .bg(tone.opacity(0.15))
         .text_color(tone)
