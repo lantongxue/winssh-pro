@@ -66,9 +66,12 @@ pub struct FileEntry {
 }
 
 impl FileEntry {
-    /// 是不是能读能写的普通文件（软链接按对端给的模式算）。
+    /// 是不是可下载的条目（普通文件、软链接或目录）。
     pub fn is_downloadable(&self) -> bool {
-        matches!(self.kind, FileKind::File | FileKind::Symlink)
+        matches!(
+            self.kind,
+            FileKind::File | FileKind::Symlink | FileKind::Dir
+        )
     }
 
     /// 八进制权限，比如 `755`。缺 mode 时给 `None`，界面上就是 `—`。

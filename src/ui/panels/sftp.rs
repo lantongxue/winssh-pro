@@ -125,7 +125,7 @@ const OWNER_WIDTH: Pixels = px(62.);
 /// 修改时间要放得下 `2026-06-10 21:54` 这串绝对时间（等宽字体 16 字符）。
 /// 再窄就会因为右对齐 + truncate 把年份左半边裁掉、看着像被“大小”列盖住。
 const MODIFIED_WIDTH: Pixels = px(130.);
-const ACTION_WIDTH: Pixels = px(58.);
+const ACTION_WIDTH: Pixels = px(72.);
 
 /// 行内那排只在悬停时显形的按钮用的组名（同 `host_explorer` 的分组行）。
 const ROW_GROUP: &str = "sftp-panel-row";

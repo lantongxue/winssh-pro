@@ -65,7 +65,7 @@ impl SftpEntryAction {
     fn label(self) -> &'static str {
         match self {
             Self::Edit => "编辑文件",
-            Self::Download => "下载文件",
+            Self::Download => "下载到本地",
             Self::OpenFolder => "打开目录",
             Self::CdHere => "在终端中 cd 到此目录",
             Self::CopyPath => "复制远端路径",
@@ -107,7 +107,8 @@ impl SftpEntryAction {
     fn applies_to(self, entry: &FileEntry) -> bool {
         let is_dir = entry.kind.is_dir();
         match self {
-            Self::Edit | Self::Download => !is_dir,
+            Self::Edit => !is_dir,
+            Self::Download => true,
             Self::OpenFolder => is_dir,
             _ => true,
         }

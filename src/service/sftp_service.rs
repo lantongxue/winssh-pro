@@ -516,26 +516,53 @@ fn check_mode(octal: u32) -> Result<()> {
     Ok(())
 }
 
-/// 远端 → 本地。先写 `.<name>.<id>.part`，成功后改名落到最终名字上。
+/// 远端 → 本地。单文件写目标路径；目录则整棵树照搬到本地目标目录（并发下载）。
 async fn download(session: &Arc<SftpSession>, job: &TransferJob, ctx: &PumpCtx<'_>) -> Result<()> {
     let remote_path = path::normalize(&job.remote);
     let local = job.local.clone();
+
+    let root_attrs = session
+        .metadata(&remote_path)
+        .await
+        .map_err(|error| remote(&format!("查看远端路径 {remote_path}"), error))?;
+
+    if root_attrs.file_type() == FileType::Dir {
+        download_folder(session, job, &remote_path, &local, ctx).await
+    } else {
+        download_single_file(
+            session,
+            job,
+            &remote_path,
+            &local,
+            root_attrs.size.unwrap_or(0),
+            root_attrs.permissions,
+            ctx,
+        )
+        .await
+    }
+}
+
+/// 下载单个文件：先写本地 `.<name>.<id>.part`，成功后改名落到最终名字上。
+async fn download_single_file(
+    session: &Arc<SftpSession>,
+    _job: &TransferJob,
+    remote_path: &str,
+    local: &Path,
+    total: u64,
+    _mode: Option<u32>,
+    ctx: &PumpCtx<'_>,
+) -> Result<()> {
     if let Some(parent) = local.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .with_context(|| format!("创建本地目录 {} 失败", parent.display()))?;
     }
-    let temp = part_path(&local, Some(ctx.id));
+    let temp = part_path(local, Some(ctx.id));
 
     let mut source = session
-        .open(&remote_path)
+        .open(remote_path)
         .await
         .map_err(|error| remote(&format!("打开远端文件 {remote_path}"), error))?;
-    let attrs = source
-        .metadata()
-        .await
-        .map_err(|error| remote(&format!("查看远端文件 {remote_path}"), error))?;
-    let total = attrs.size.unwrap_or(0);
 
     let mut sink = TokioFile::create(&temp)
         .await
@@ -560,19 +587,142 @@ async fn download(session: &Arc<SftpSession>, job: &TransferJob, ctx: &PumpCtx<'
         bail!("下载不完整：{} / {} 字节", moved, total);
     }
 
-    if let Err(err) = replace_with(&temp, &local) {
+    if let Err(err) = replace_with(&temp, local) {
         let _ = tokio::fs::remove_file(&temp).await;
         return Err(err);
     }
 
     // 远端权限顺手带到本地：下载一个脚本，可执行位不该在搬运路上丢了。
-    // Windows 上只有只读/可读写两档，跳过比硬凑一个假的强。
     #[cfg(unix)]
-    if let Some(mode) = attrs.permissions {
+    if let Some(mode) = _mode {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&local, std::fs::Permissions::from_mode(mode & 0o7777))
-            .with_context(|| format!("设置 {} 的权限失败", local.display()))?;
+        let _ = std::fs::set_permissions(local, std::fs::Permissions::from_mode(mode & 0o7777));
     }
+
+    Ok(())
+}
+
+/// 远端目录树 → 本地目录树。支持最多 [`FOLDER_CONCURRENCY`] 个文件并行下载。
+async fn download_folder(
+    session: &Arc<SftpSession>,
+    job: &TransferJob,
+    remote_dir: &str,
+    local_dir: &Path,
+    ctx: &PumpCtx<'_>,
+) -> Result<()> {
+    let plan = plan_download(session, remote_dir, local_dir, ctx).await?;
+    let total = plan.total_bytes();
+
+    for dir in &plan.dirs {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .with_context(|| format!("创建本地目录 {} 失败", dir.display()))?;
+    }
+
+    let items = plan
+        .files
+        .iter()
+        .map(|file| {
+            TransferChild::new(
+                relative_local(&file.local, local_dir).into(),
+                file.size,
+            )
+        })
+        .collect();
+    let _ = ctx
+        .progress
+        .send(TransferEvent::Children { id: job.id, items });
+
+    if plan.files.is_empty() {
+        let _ = ctx.progress.send(TransferEvent::Progress {
+            id: job.id,
+            transferred: 0,
+            total: 0,
+        });
+        return Ok(());
+    }
+
+    let agg = AtomicU64::new(0);
+    stream::iter(plan.files.into_iter().enumerate())
+        .map(|(index, file)| download_file_to(session, file, index, total, &agg, ctx))
+        .buffer_unordered(FOLDER_CONCURRENCY)
+        .try_collect::<()>()
+        .await?;
+
+    Ok(())
+}
+
+/// 把远端目录树里的一个文件下载到本地：开远端、在本地写 `.<name>.<id>.part`、`pump` 回来、改名落定。
+/// 供 [`download_folder`] 的并发调度逐文件调用；`agg` 是整条传输共享的累计字节。
+async fn download_file_to(
+    session: &Arc<SftpSession>,
+    file: DownloadFile,
+    index: usize,
+    total: u64,
+    agg: &AtomicU64,
+    ctx: &PumpCtx<'_>,
+) -> Result<()> {
+    if ctx.cancel.is_cancelled() {
+        bail!("已取消");
+    }
+
+    if let Some(parent) = file.local.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("创建本地目录 {} 失败", parent.display()))?;
+    }
+
+    let temp = part_path(&file.local, Some(ctx.id));
+    let mut source = session
+        .open(&file.remote)
+        .await
+        .map_err(|error| remote(&format!("打开远端文件 {}", file.remote), error))?;
+
+    let mut sink = TokioFile::create(&temp)
+        .await
+        .with_context(|| format!("创建本地临时文件 {} 失败", temp.display()))?;
+
+    let pump_res = pump(
+        &mut source,
+        &mut sink,
+        total,
+        agg,
+        Some((index, file.size)),
+        ctx,
+    )
+    .await;
+
+    let _ = sink.shutdown().await;
+    drop(sink);
+    let _ = source.close().await;
+
+    let moved = match pump_res {
+        Ok(moved) => moved,
+        Err(err) => {
+            let _ = tokio::fs::remove_file(&temp).await;
+            return Err(err);
+        }
+    };
+
+    if file.size > 0 && moved < file.size {
+        let _ = tokio::fs::remove_file(&temp).await;
+        bail!("下载不完整：{moved} / {} 字节", file.size);
+    }
+
+    if let Err(err) = replace_with(&temp, &file.local) {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Err(err);
+    }
+
+    #[cfg(unix)]
+    if let Some(mode) = file.mode {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions(&file.local, std::fs::Permissions::from_mode(mode & 0o7777));
+    }
+
+    let _ = ctx
+        .progress
+        .send(TransferEvent::ChildDone { id: ctx.id, index });
 
     Ok(())
 }
@@ -853,6 +1003,121 @@ fn upload_file(local: &Path, remote: &str) -> Result<UploadFile> {
     })
 }
 
+/// 一次目录树下载摊平出来的计划。
+#[derive(Default)]
+struct DownloadPlan {
+    /// 要在本地创建的目录，外层在前。
+    dirs: Vec<PathBuf>,
+    files: Vec<DownloadFile>,
+}
+
+struct DownloadFile {
+    remote: String,
+    local: PathBuf,
+    size: u64,
+    #[allow(dead_code)]
+    mode: Option<u32>,
+}
+
+impl DownloadPlan {
+    /// 进度条的分母。它就是计划里这些文件的字节数之和。
+    fn total_bytes(&self) -> u64 {
+        self.files.iter().map(|file| file.size).sum()
+    }
+}
+
+/// 把一棵远端树摊平成下载计划。
+async fn plan_download(
+    session: &Arc<SftpSession>,
+    remote_dir: &str,
+    local_dir: &Path,
+    ctx: &PumpCtx<'_>,
+) -> Result<DownloadPlan> {
+    let mut plan = DownloadPlan::default();
+    plan.dirs.push(local_dir.to_path_buf());
+
+    let mut pending = std::collections::VecDeque::from([(
+        remote_dir.to_string(),
+        local_dir.to_path_buf(),
+    )]);
+
+    while let Some((current_remote, current_local)) = pending.pop_front() {
+        if ctx.cancel.is_cancelled() {
+            bail!("已取消");
+        }
+
+        let entries = session
+            .read_dir(&current_remote)
+            .await
+            .map_err(|err| remote(&format!("读取远端目录 {current_remote}"), err))?;
+
+        let mut sorted_entries: Vec<_> = entries.into_iter().collect();
+        sorted_entries.sort_by(|a, b| {
+            let a_is_dir = a.file_type() == FileType::Dir;
+            let b_is_dir = b.file_type() == FileType::Dir;
+            (a_is_dir, a.file_name()).cmp(&(b_is_dir, b.file_name()))
+        });
+
+        for entry in sorted_entries {
+            let name = entry.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let child_remote = path::join(&current_remote, &name);
+            let child_local = current_local.join(&name);
+            let file_type = entry.file_type();
+            let attrs = entry.metadata();
+
+            match file_type {
+                FileType::Dir => {
+                    plan.dirs.push(child_local.clone());
+                    pending.push_back((child_remote, child_local));
+                }
+                FileType::File => {
+                    plan.files.push(DownloadFile {
+                        remote: child_remote,
+                        local: child_local,
+                        size: attrs.size.unwrap_or(0),
+                        mode: attrs.permissions,
+                    });
+                }
+                FileType::Symlink => {
+                    if let Ok(target_attrs) = session.metadata(&child_remote).await {
+                        if target_attrs.file_type() == FileType::Dir {
+                            log::warn!("跳过远端目录软链接：{child_remote}");
+                        } else if target_attrs.file_type() == FileType::File {
+                            plan.files.push(DownloadFile {
+                                remote: child_remote,
+                                local: child_local,
+                                size: target_attrs.size.unwrap_or(0),
+                                mode: target_attrs.permissions,
+                            });
+                        }
+                    } else {
+                        log::warn!("跳过失效远端软链接：{child_remote}");
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(plan)
+}
+
+/// 子项的展示名（本地路径相对下载根目录的相对路径，如 `pkg/a/one`）。
+fn relative_local(file_local: &Path, local_root: &Path) -> String {
+    let fallback = file_local
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let base = local_root.parent().unwrap_or(local_root);
+    match file_local.strip_prefix(base) {
+        Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+        Err(_) => fallback,
+    }
+}
+
 /// 一块一块地搬；进度按 [`PROGRESS_EMIT_INTERVAL`] 节流上报（收尾必补一次准确值），
 /// 取消与暂停都在块与块之间生效。
 ///
@@ -1128,6 +1393,18 @@ mod tests {
             relative_remote("/dst/two", "/dst/elsewhere"),
             "two",
             "剥不掉就退回文件名本身"
+        );
+    }
+
+    #[test]
+    fn child_local_names_are_relative_to_the_target_directory() {
+        assert_eq!(
+            relative_local(Path::new("/tmp/downloads/pkg/two"), Path::new("/tmp/downloads/pkg")),
+            "pkg/two"
+        );
+        assert_eq!(
+            relative_local(Path::new("/tmp/downloads/pkg/a/one"), Path::new("/tmp/downloads/pkg")),
+            "pkg/a/one"
         );
     }
 
