@@ -48,6 +48,7 @@ use gpui_component::{
     h_flex, h_resizable,
     input::{Input, InputEvent, InputState},
     menu::ContextMenuExt as _,
+    progress::Progress,
     resizable_panel,
     scroll::{ScrollableElement as _, ScrollbarAxis},
     table::{Table, TableCell, TableHead, TableHeader, TableRow},
@@ -93,10 +94,10 @@ const QUEUE_HEIGHT: Pixels = px(96.);
 
 /// 队列能被拖到的最矮：一个抽屉头加一行传输，再矮就没有内容可看了。
 const QUEUE_MIN_HEIGHT: Pixels = px(64.);
-/// 文件区（表格 + 动作栏）能被压到的最矮：一个栏头、两行文件，加动作栏自己那一截。
-/// 两个下限之和恰好等于紧凑档（`HEIGHT_COMPACT`）去掉导航条的高度 —— 面板再矮，
+/// 文件区能被压到的最矮：一个栏头、两行文件。
+/// 两个下限之和小于紧凑档（`HEIGHT_COMPACT`）去掉导航条的高度 —— 面板再矮，
 /// 两边也都能守着自己的最小说法，不会把对方挤出去。
-const FILES_MIN_HEIGHT: Pixels = px(104.);
+const FILES_MIN_HEIGHT: Pixels = px(80.);
 
 /// 高度预设按钮在两档之间切。分界取原型那个 350：高于它给"压扁"，低于它给"展开"。
 const HEIGHT_COMPACT: Pixels = px(200.);
@@ -982,7 +983,6 @@ impl SftpPanel {
             );
         });
         self.pending.push_back(job);
-        self.queue_drawer = true;
         self.start_queued(cx);
     }
 
@@ -1428,9 +1428,9 @@ impl Render for SftpPanel {
 }
 
 impl SftpPanel {
-    /// 导航条以下那一块。队列拉开时是上下可拖的分栏：上面文件区（表格 + 动作栏），
-    /// 下面传输队列，中间那根线拖的就是两者各占多高（原型也是这个叠法：动作栏在
-    /// 队列之上）。
+    /// 导航条以下那一块。队列拉开时是上下可拖的分栏：上面文件区，
+    /// 下面传输队列（含队列头标题栏与列表），分界线位于传输队列标题栏上方
+    /// 用于拖动调整传输面板高度。
     ///
     /// 队列收起时不画 `v_resizable`：藏起来的那一栏仍会在上缘留一根拖不动的把手。
     /// 不画它还有个好处 —— [`ResizableState`] 只在分栏画出来时才被碰，收起再拉开，
@@ -1456,12 +1456,7 @@ impl SftpPanel {
             .child(
                 resizable_panel()
                     .size_range(FILES_MIN_HEIGHT..Pixels::MAX)
-                    .child(
-                        v_flex()
-                            .size_full()
-                            .child(self.render_files(cx))
-                            .child(self.render_action_bar(cx)),
-                    ),
+                    .child(self.render_files(cx)),
             )
             .child(
                 resizable_panel()
@@ -2435,44 +2430,132 @@ impl SftpPanel {
             .into_any_element()
     }
 
-    /// 底下一条：一句用法提示，加右边的传输队列开关。
+    /// 底下一条：一句用法提示，加右边的整体传输进度与速度（面板收起时）和传输队列开关。
     /// 选中条目能做的动作都收在行右键菜单里，这里不再重复摆一排按钮。
     fn render_action_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let active = self.queue.read(cx).active_count();
+        let summary = self.queue.read(cx).summary();
+        let has_active = summary.active_count > 0;
+
         h_flex()
             .id("sftp-panel-action-bar")
             .h(FOOTER_HEIGHT)
             .flex_shrink_0()
             .px_2()
             .items_center()
-            .gap_1()
+            .gap_2()
             .border_t_1()
             .border_color(cx.theme().border)
             .bg(palette::recessed(cx))
             .child(
                 div()
-                    .text_xs()
-                    .text_color(palette::idle(cx))
-                    .truncate()
-                    .child("双击文件即可打开编辑；把本机文件拖到右栏就是往这一格上传；右键一行看更多操作。"),
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette::idle(cx))
+                            .truncate()
+                            .child("双击文件即可打开编辑；把本机文件拖到右栏就是往这一格上传；右键一行看更多操作。"),
+                    ),
             )
-            .child(div().flex_1().min_w_0())
+            .when(has_active, |this| {
+                this.child(
+                    h_flex()
+                        .id("sftp-action-bar-summary")
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap_2()
+                        .px_1p5()
+                        .py_0p5()
+                        .rounded(cx.theme().radius)
+                        .bg(palette::surface(cx).opacity(0.5))
+                        .border_1()
+                        .border_color(cx.theme().border.opacity(0.6))
+                        // 整体速率
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    Icon::new(summary.icon())
+                                        .with_size(px(11.))
+                                        .text_color(if summary.transferring_count > 0 {
+                                            palette::teal()
+                                        } else if summary.paused_count > 0 {
+                                            palette::amber()
+                                        } else {
+                                            palette::idle(cx)
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_family(cx.theme().mono_font_family.clone())
+                                        .text_color(if summary.transferring_count > 0 {
+                                            palette::teal()
+                                        } else if summary.paused_count > 0 {
+                                            palette::amber()
+                                        } else {
+                                            palette::idle(cx)
+                                        })
+                                        .child(summary.speed_label()),
+                                ),
+                        )
+                        // 进度条
+                        .child(
+                            Progress::new("sftp-action-bar-progress")
+                                .xsmall()
+                                .w(px(72.))
+                                .value(summary.progress)
+                                .color(if summary.paused_count > 0 && summary.transferring_count == 0 {
+                                    palette::amber()
+                                } else {
+                                    palette::blue()
+                                })
+                                .loading(summary.transferring_count > 0 && summary.total_bytes == 0),
+                        )
+                        // 进度百分比与大小
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_color(palette::idle(cx))
+                                .child(if summary.total_bytes > 0 {
+                                    SharedString::from(format!(
+                                        "{} ({})",
+                                        summary.percent_label(),
+                                        summary.size_label()
+                                    ))
+                                } else {
+                                    SharedString::from(summary.percent_label())
+                                }),
+                        ),
+                )
+            })
             .child(
                 Button::new("sftp-panel-transfers")
                     .ghost()
                     .xsmall()
                     .flex_shrink_0()
-                    .icon(Icon::new(AppIcon::Download).with_size(px(12.)).text_color(
-                        if active > 0 {
+                    .icon(
+                        Icon::new(if has_active {
+                            summary.icon()
+                        } else {
+                            AppIcon::FolderSync
+                        })
+                        .with_size(px(12.))
+                        .text_color(if has_active {
                             palette::blue()
                         } else {
                             palette::idle(cx)
-                        },
-                    ))
-                    .label(SharedString::from(
-                        format!("传输 ({})", self.queue.read(cx).count()),
-                    ))
-                    .tooltip("传输队列")
+                        }),
+                    )
+                    .label(SharedString::from(if has_active {
+                        format!("传输 ({}/{})", summary.active_count, summary.total_count)
+                    } else {
+                        format!("传输 ({})", summary.total_count)
+                    }))
+                    .tooltip(if self.queue_drawer { "收起传输队列" } else { "展开传输队列" })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.queue_drawer = !this.queue_drawer;
                         cx.notify();

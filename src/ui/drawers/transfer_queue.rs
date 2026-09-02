@@ -107,6 +107,76 @@ impl QueueFilter {
     }
 }
 
+/// 传输队列的整体汇总统计（进度、速度、任务数）
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TransferSummary {
+    /// 队列中总任务数
+    pub total_count: usize,
+    /// 进行中（未结束：排队中、传输中、已暂停）的任务数
+    pub active_count: usize,
+    /// 处于传输中状态的任务数
+    pub transferring_count: usize,
+    /// 处于已暂停状态的任务数
+    pub paused_count: usize,
+    /// 活跃的上传任务数
+    pub active_uploads: usize,
+    /// 活跃的下载任务数
+    pub active_downloads: usize,
+    /// 整体已传输字节数（所有未取消/未失败的任务已传输的字节）
+    pub transferred_bytes: u64,
+    /// 整体总字节数（所有未取消/未失败的任务的总字节）
+    pub total_bytes: u64,
+    /// 整体传输进度百分比（0.0 ~ 100.0）
+    pub progress: f32,
+    /// 整体实时速率（字节/秒），所有处于传输中状态任务的实时速率之和
+    pub total_speed_bps: f64,
+}
+
+impl TransferSummary {
+    /// 根据当前活跃传输的方向返回对应图标：
+    /// - 仅上传：`AppIcon::Upload`
+    /// - 仅下载：`AppIcon::Download`
+    /// - 双向/混合或默认：`AppIcon::FolderSync`
+    pub fn icon(&self) -> AppIcon {
+        if self.active_uploads > 0 && self.active_downloads == 0 {
+            AppIcon::Upload
+        } else if self.active_downloads > 0 && self.active_uploads == 0 {
+            AppIcon::Download
+        } else {
+            AppIcon::FolderSync
+        }
+    }
+
+    /// 速率展示文案（如 "24.5 MB/s"、"已暂停"、"—"）。
+    pub fn speed_label(&self) -> String {
+        if self.paused_count > 0 && self.transferring_count == 0 {
+            "已暂停".to_string()
+        } else if self.total_speed_bps > 0.0 {
+            format!("{}/s", human_size(self.total_speed_bps as u64))
+        } else {
+            "—".to_string()
+        }
+    }
+
+    /// 进度百分比文本（如 "45%"）。
+    pub fn percent_label(&self) -> String {
+        format!("{:.0}%", self.progress)
+    }
+
+    /// 字节大小文本（如 "12.4 MB / 45.2 MB"）。
+    pub fn size_label(&self) -> String {
+        if self.total_bytes > 0 {
+            format!(
+                "{} / {}",
+                human_size(self.transferred_bytes),
+                human_size(self.total_bytes)
+            )
+        } else {
+            human_size(self.transferred_bytes)
+        }
+    }
+}
+
 /// 传输队列抽屉。行模型与展开状态都在这里，面板只管任务调度。
 pub struct TransferQueueDrawer {
     /// 队列里的行，新起的在最前（原型也是这个顺序）。
@@ -179,6 +249,7 @@ impl TransferQueueDrawer {
     }
 
     /// 队列里的行数（不含展开的子项）。
+    #[allow(dead_code)]
     pub fn count(&self) -> usize {
         self.items.len()
     }
@@ -189,6 +260,64 @@ impl TransferQueueDrawer {
             .iter()
             .filter(|item| item.status.is_active())
             .count()
+    }
+
+    /// 计算传输队列的整体汇总信息（进度、速率、活跃数等）。
+    pub fn summary(&self) -> TransferSummary {
+        let total_count = self.items.len();
+        let mut active_count = 0;
+        let mut transferring_count = 0;
+        let mut paused_count = 0;
+        let mut active_uploads = 0;
+        let mut active_downloads = 0;
+        let mut transferred_bytes = 0u64;
+        let mut total_bytes = 0u64;
+        let mut total_speed_bps = 0.0f64;
+
+        for item in &self.items {
+            if item.status.is_active() {
+                active_count += 1;
+                match item.direction {
+                    TransferDirection::Upload => active_uploads += 1,
+                    TransferDirection::Download => active_downloads += 1,
+                }
+                if item.status == TransferStatus::Transferring {
+                    transferring_count += 1;
+                    if let Some(speed) = item.speed_bps {
+                        total_speed_bps += speed;
+                    }
+                } else if item.status == TransferStatus::Paused {
+                    paused_count += 1;
+                }
+            }
+
+            // 统计总进度：跳过已取消或失败的任务，累计完成和进行中的任务
+            if item.status != TransferStatus::Canceled && item.status != TransferStatus::Failed {
+                transferred_bytes = transferred_bytes.saturating_add(item.transferred);
+                total_bytes = total_bytes.saturating_add(item.total);
+            }
+        }
+
+        let progress = if total_bytes > 0 {
+            (transferred_bytes as f32 / total_bytes as f32 * 100.0).clamp(0.0, 100.0)
+        } else if active_count == 0 && total_count > 0 {
+            100.0
+        } else {
+            0.0
+        };
+
+        TransferSummary {
+            total_count,
+            active_count,
+            transferring_count,
+            paused_count,
+            active_uploads,
+            active_downloads,
+            transferred_bytes,
+            total_bytes,
+            progress,
+            total_speed_bps,
+        }
     }
 
     pub fn item(&self, id: u64) -> Option<&TransferItem> {
@@ -1106,3 +1235,55 @@ fn status_tone(status: TransferStatus, cx: &App) -> Hsla {
         TransferStatus::Queued | TransferStatus::Canceled => palette::idle(cx),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summary_empty_queue() {
+        let summary = TransferSummary::default();
+        assert_eq!(summary.total_count, 0);
+        assert_eq!(summary.active_count, 0);
+        assert_eq!(summary.progress, 0.0);
+        assert_eq!(summary.speed_label(), "—");
+        assert_eq!(summary.percent_label(), "0%");
+    }
+
+    #[test]
+    fn summary_speed_and_size_labels() {
+        let summary = TransferSummary {
+            total_count: 3,
+            active_count: 2,
+            transferring_count: 1,
+            paused_count: 0,
+            active_uploads: 2,
+            active_downloads: 0,
+            transferred_bytes: 50 * 1024 * 1024,
+            total_bytes: 100 * 1024 * 1024,
+            progress: 50.0,
+            total_speed_bps: 10.0 * 1024.0 * 1024.0,
+        };
+        assert_eq!(summary.percent_label(), "50%");
+        assert_eq!(summary.speed_label(), "10 MB/s");
+        assert_eq!(summary.size_label(), "50 MB / 100 MB");
+        assert_eq!(summary.icon(), AppIcon::Upload);
+
+        let paused = TransferSummary {
+            total_count: 1,
+            active_count: 1,
+            transferring_count: 0,
+            paused_count: 1,
+            active_uploads: 0,
+            active_downloads: 1,
+            transferred_bytes: 10,
+            total_bytes: 100,
+            progress: 10.0,
+            total_speed_bps: 0.0,
+        };
+        assert_eq!(paused.speed_label(), "已暂停");
+        assert_eq!(paused.icon(), AppIcon::Download);
+    }
+}
+
+
