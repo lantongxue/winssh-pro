@@ -23,7 +23,7 @@ use std::{
 
 use gpui::{
     App, AppContext as _, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render,
+    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, Render,
     SharedString, Size, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px, size,
 };
@@ -150,31 +150,37 @@ enum DropTarget {
 /// 插入线和分组头一起盖住，而那两样正是这时候要看的东西。
 struct HostDragPreview {
     host: Host,
+    click_offset: Point<Pixels>,
 }
 
 impl Render for HostDragPreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
-            .gap_2()
-            .items_center()
-            .px_2()
-            .py_1()
-            .rounded(cx.theme().radius)
-            .bg(palette::recessed(cx))
-            .border_1()
-            .border_color(palette::blue())
-            .shadow_md()
-            .text_sm()
-            .font_semibold()
-            .text_color(cx.theme().sidebar_foreground)
-            .child(self.host.name.clone())
+            .pl(self.click_offset.x + px(10.))
+            .pt(self.click_offset.y + px(10.))
             .child(
-                div()
-                    .font_family("monospace")
-                    .text_xs()
-                    .font_normal()
-                    .text_color(palette::idle(cx))
-                    .child(SharedString::from(self.host.address())),
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .px_2()
+                    .py_1()
+                    .rounded(cx.theme().radius)
+                    .bg(palette::recessed(cx))
+                    .border_1()
+                    .border_color(palette::blue())
+                    .shadow_md()
+                    .text_sm()
+                    .font_semibold()
+                    .text_color(cx.theme().sidebar_foreground)
+                    .child(self.host.name.clone())
+                    .child(
+                        div()
+                            .font_family("monospace")
+                            .text_xs()
+                            .font_normal()
+                            .text_color(palette::idle(cx))
+                            .child(SharedString::from(self.host.address())),
+                    ),
             )
     }
 }
@@ -1026,9 +1032,12 @@ impl HostExplorerView {
                     DraggedHost {
                         host: dragged.clone(),
                     },
-                    |dragged, _, _, cx| {
+                    |dragged, click_offset, _, cx| {
                         let host = dragged.host.clone();
-                        cx.new(|_| HostDragPreview { host })
+                        cx.new(|_| HostDragPreview {
+                            host,
+                            click_offset,
+                        })
                     },
                 )
                 .on_drag_move(cx.listener(
