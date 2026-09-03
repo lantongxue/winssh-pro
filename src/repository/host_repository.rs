@@ -215,6 +215,24 @@ impl HostRepository {
         Ok(result.rows_affected)
     }
 
+    /// 只改一台主机的端口转发规则那一列。
+    ///
+    /// 与 [`Self::update_host_intervals`] 同一个道理：调用方（会话里的端口转发
+    /// 对话框）手上只有这一串规则，别的列它既不知道也不该动。
+    pub async fn update_host_forwards(
+        &self,
+        conn: &impl ConnectionTrait,
+        id: &str,
+        forwards: &str,
+    ) -> Result<u64, DbErr> {
+        let result = host::Entity::update_many()
+            .col_expr(host::Column::Forwards, Expr::value(forwards))
+            .filter(host::Column::Id.eq(id))
+            .exec(conn)
+            .await?;
+        Ok(result.rows_affected)
+    }
+
     /// 改一台主机的落位：换到哪个分组、排在第几位。
     pub async fn update_host_position(
         &self,

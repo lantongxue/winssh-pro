@@ -2,6 +2,7 @@
 
 mod assets;
 mod db;
+mod forward;
 mod host;
 mod monitor;
 mod repository;

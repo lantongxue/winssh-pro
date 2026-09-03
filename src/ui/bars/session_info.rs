@@ -58,7 +58,7 @@ pub struct SessionInfoBar {
     split: SplitLayout,
     monitor_active: bool,
     sftp_active: bool,
-    tunnels_count: u32,
+    tunnels_count: usize,
 }
 
 impl SessionInfoBar {
@@ -77,7 +77,7 @@ impl SessionInfoBar {
             split: SplitLayout::default(),
             monitor_active: false,
             sftp_active: false,
-            tunnels_count: 2,
+            tunnels_count: 0,
         }
     }
 
@@ -156,9 +156,9 @@ impl SessionInfoBar {
         self
     }
 
-    /// Tunnels 角标数量，默认 2。
-    #[allow(dead_code)]
-    pub fn tunnels_count(mut self, count: u32) -> Self {
+    /// 此刻有几条隧道在跑。0 条时按钮上只写 "Tunnels" ——
+    /// 一个灰着的 0 会让人以为那是个坏掉的计数。
+    pub fn tunnels_count(mut self, count: usize) -> Self {
         self.tunnels_count = count;
         self
     }
@@ -276,14 +276,37 @@ impl RenderOnce for SessionInfoBar {
                     .gap_1()
                     .child(split_group)
                     .child({
-                        let label = SharedString::from(format!("Tunnels {}", self.tunnels_count));
-                        Button::new("session-info-tunnels")
-                            .ghost()
+                        // 有隧道在跑的时候整颗按钮点亮 —— 转发是一件"背后一直
+                        // 在发生"的事，它在不在跑得从余光里看得见。
+                        let active = self.tunnels_count > 0;
+                        let tone = palette::green();
+                        let label = match self.tunnels_count {
+                            0 => SharedString::from("Tunnels"),
+                            count => SharedString::from(format!("Tunnels {count}")),
+                        };
+                        let mut btn = Button::new("session-info-tunnels")
                             .xsmall()
-                            .icon(Icon::new(IconName::Network).with_size(ICON_SIZE))
+                            .icon(
+                                Icon::new(IconName::Network)
+                                    .with_size(ICON_SIZE)
+                                    .text_color(if active { tone } else { palette::idle(cx) }),
+                            )
                             .label(label)
-                            .tooltip("Session Port Forwarding (Alt+P)")
-                            .when_some(self.on_tunnels, |this, handler| this.on_click(handler))
+                            .tooltip("Session Port Forwarding (Alt+P)");
+                        btn = if active {
+                            btn.custom(
+                                ButtonCustomVariant::new(cx)
+                                    .color(tone.opacity(0.15))
+                                    .foreground(tone)
+                                    .hover(tone.opacity(0.22))
+                                    .active(tone.opacity(0.28)),
+                            )
+                            .border_1()
+                            .border_color(tone.opacity(0.4))
+                        } else {
+                            btn.ghost()
+                        };
+                        btn.when_some(self.on_tunnels, |this, handler| this.on_click(handler))
                     })
                     .child({
                         // 展开时整颗按钮点亮：这一栏就贴在下面，亮着的是"下面那栏开着"

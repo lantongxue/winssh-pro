@@ -130,6 +130,11 @@ pub struct Host {
     /// 不进 [`HostDraft`]：主机表单管的是"怎么连上去"，采集节奏是连上之后
     /// 在监控面板里调的，两处各写各的列，互不覆盖。
     pub monitor_intervals: MonitorIntervals,
+    /// 这台机器上的端口转发规则。见 [`crate::forward::PortForward`]。
+    ///
+    /// 和采集节奏一样不进 [`HostDraft`]：这些规则是连上之后在端口转发对话框
+    /// （`Alt+P`）里加的，主机表单不认这一列。
+    pub forwards: Vec<crate::forward::PortForward>,
 }
 
 impl Host {

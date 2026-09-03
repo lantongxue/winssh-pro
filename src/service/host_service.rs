@@ -14,6 +14,7 @@ use sea_orm::{
 
 use crate::{
     db::{self, entities::host, entities::host_group},
+    forward::{self, PortForward},
     host::{AuthMethod, Host, HostDraft, HostGroup, MonitorIntervals},
     repository::HostRepository,
 };
@@ -107,6 +108,9 @@ impl HostService {
                         // 监控面板的设置页（[`Self::update_monitor_intervals`]）。
                         monitor_interval_secs: Set(MonitorIntervals::default().monitor_secs),
                         status_interval_secs: Set(MonitorIntervals::default().status_secs),
+                        // 转发规则也不在表单里，新主机是空的；加它们的地方是
+                        // 会话里的端口转发对话框（[`Self::update_forwards`]）。
+                        forwards: Set(String::new()),
                     },
                 )
                 .await?;
@@ -124,6 +128,7 @@ impl HostService {
                 key_path: draft.key_path.into(),
                 jump_host_id: draft.jump_host_id.map(|value| value.into()),
                 monitor_intervals: MonitorIntervals::default(),
+                forwards: Vec::new(),
             })
         })
         .await
@@ -154,10 +159,12 @@ impl HostService {
                         password: Set(draft.password.clone()),
                         key_path: Set(draft.key_path.clone()),
                         jump_host_id: Set(draft.jump_host_id.clone()),
-                        // 表单不认这两列，别把用户在监控面板里调好的节奏
-                        // 顺手抹回默认值。`NotSet` 的列不会进 UPDATE 语句。
+                        // 表单不认这三列，别把用户在监控面板里调好的节奏、
+                        // 在端口转发对话框里加的规则顺手抹掉。
+                        // `NotSet` 的列不会进 UPDATE 语句。
                         monitor_interval_secs: ActiveValue::NotSet,
                         status_interval_secs: ActiveValue::NotSet,
+                        forwards: ActiveValue::NotSet,
                     },
                 )
                 .await;
@@ -235,9 +242,11 @@ impl HostService {
                         password: Set(source.password.clone()),
                         key_path: Set(source.key_path.clone()),
                         jump_host_id: Set(source.jump_host_id.clone()),
-                        // 副本是"同一台机器的另一份配置"，盯多紧一并照抄。
+                        // 副本是"同一台机器的另一份配置"，盯多紧、转发什么
+                        // 一并照抄。
                         monitor_interval_secs: Set(source.monitor_interval_secs),
                         status_interval_secs: Set(source.status_interval_secs),
+                        forwards: Set(source.forwards.clone()),
                     },
                 )
                 .await?;
@@ -259,6 +268,7 @@ impl HostService {
                     status_secs: source.status_interval_secs,
                 }
                 .clamped(),
+                forwards: forward::decode(&source.forwards),
             })
         })
         .await
@@ -284,6 +294,32 @@ impl HostService {
                 .await?;
             ensure!(affected == 1, "主机 {id} 不存在");
             Ok(intervals)
+        })
+        .await
+    }
+
+    /// 把一台主机的端口转发规则整份写回去。
+    ///
+    /// 整份重写而不是按条增删：这几条规则只在对话框里整份编辑，一次写回就
+    /// 没有"改了三条其中一条失败"这种半截状态。规则本身在存之前过一道
+    /// [`PortForward::check`] —— 存进去一条监听端口是 0 的规则，下次开会话
+    /// 时它会自动去绑一个随机端口，而用户并没有要求那个。
+    pub async fn update_forwards(&self, id: &str, forwards: &[PortForward]) -> Result<()> {
+        for rule in forwards {
+            if let Err(reason) = rule.check() {
+                return Err(anyhow!("转发规则“{}”不完整：{reason}", rule.name));
+            }
+        }
+        let this = self.clone();
+        let id = id.to_owned();
+        let encoded = forward::encode(forwards);
+        db::run(async move {
+            let affected = this
+                .repo
+                .update_host_forwards(&this.db, &id, &encoded)
+                .await?;
+            ensure!(affected == 1, "主机 {id} 不存在");
+            Ok(())
         })
         .await
     }
@@ -346,6 +382,7 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                         status_secs: host.status_interval_secs,
                     }
                     .clamped(),
+                    forwards: forward::decode(&host.forwards),
                 })
                 .collect(),
         })
@@ -760,6 +797,122 @@ mod tests {
         });
     }
 
+    fn forward(name: &str, port: u16) -> PortForward {
+        PortForward {
+            id: SharedString::from(format!("fwd-{port}")),
+            name: name.into(),
+            kind: crate::forward::ForwardKind::Local,
+            bind_address: "127.0.0.1".into(),
+            listen_port: port,
+            target_host: "10.0.4.15".into(),
+            target_port: 5432,
+            enabled: true,
+            description: "".into(),
+        }
+    }
+
+    /// 转发规则存得住、读得回。
+    #[test]
+    fn forwards_round_trip() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            assert!(host.forwards.is_empty(), "新主机没有转发规则");
+
+            let rules = vec![forward("pg", 15432), forward("dash", 8443)];
+            service.update_forwards(&host.id, &rules).await.unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].forwards, rules);
+        });
+    }
+
+    /// 主机表单不认这一列，改一次连接配置不该把转发规则抹掉 ——
+    /// 和采集节奏是同一条边界。
+    #[test]
+    fn editing_a_host_keeps_its_forwards() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            let rules = vec![forward("pg", 15432)];
+            service.update_forwards(&host.id, &rules).await.unwrap();
+
+            service
+                .update_host(&host.id, "分组", draft("web-01-renamed"))
+                .await
+                .unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].forwards, rules, "转发规则被表单抹掉了");
+        });
+    }
+
+    /// 副本是同一台机器的另一份配置，转发规则一并照抄。
+    #[test]
+    fn a_duplicate_copies_the_forwards() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            let rules = vec![forward("pg", 15432)];
+            service.update_forwards(&host.id, &rules).await.unwrap();
+
+            let copy = service.duplicate_host(&host.id).await.unwrap();
+            assert_eq!(copy.forwards, rules);
+        });
+    }
+
+    /// 空列表要写得进去 —— 删掉最后一条规则也是一次保存。
+    #[test]
+    fn clearing_the_forwards_is_a_save_too() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            service
+                .update_forwards(&host.id, &[forward("pg", 15432)])
+                .await
+                .unwrap();
+
+            service.update_forwards(&host.id, &[]).await.unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert!(groups[0].hosts[0].forwards.is_empty());
+        });
+    }
+
+    /// 不完整的规则进不了库：存进去之后下次开会话它会去绑一个随机端口，
+    /// 而那时候已经没有界面拦得住了。
+    #[test]
+    fn an_incomplete_rule_never_reaches_the_db() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            let mut broken = forward("pg", 15432);
+            broken.listen_port = 0;
+
+            let error = service
+                .update_forwards(&host.id, &[broken])
+                .await
+                .expect_err("端口 0 的规则必须被挡住");
+            assert!(format!("{error}").contains("不完整"), "实际：{error}");
+
+            let groups = service.load_groups().await.unwrap();
+            assert!(groups[0].hosts[0].forwards.is_empty(), "一条都不该存进去");
+        });
+    }
+
+    #[test]
+    fn forwards_for_a_missing_host_fail() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            assert!(
+                service
+                    .update_forwards("nope", &[forward("pg", 15432)])
+                    .await
+                    .is_err()
+            );
+        });
+    }
+
     #[test]
     fn intervals_for_a_missing_host_fail() {
         db::runtime().block_on(async {
@@ -778,8 +931,19 @@ mod tests {
     #[test]
     fn disk_file_roundtrip() {
         db::runtime().block_on(async {
-            let dir =
-                std::env::temp_dir().join(format!("winssh-pro-disk-test-{}", std::process::id()));
+            // 目录名每次都不一样，不能只按进程号取。Windows 上 SQLite 的文件
+            // 句柄未必在 `drop` 的那一刻就还给系统，收尾的 `remove_dir_all`
+            // 于是会悄悄失败（那一行是 `let _ =`），留下一个带库文件的目录；
+            // 而 Windows 的 pid 复用很快，下一次跑到同一个号就会读到上次留下
+            // 的那台主机，断言看到两行 —— 一条时有时无的红。
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default();
+            let dir = std::env::temp_dir().join(format!(
+                "winssh-pro-disk-test-{}-{unique}",
+                std::process::id()
+            ));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("winssh-pro.db");
 
@@ -801,6 +965,9 @@ mod tests {
             let groups = service.load_groups().await.unwrap();
             assert_eq!(names(&groups[0]), vec!["web-01".to_string()]);
 
+            // 先放掉连接再删目录，能删掉的概率高一些；删不掉也不算失败，
+            // 目录名已经保证下一次不会撞上它。
+            drop(service);
             let _ = std::fs::remove_dir_all(&dir);
         });
     }

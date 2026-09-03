@@ -4,14 +4,11 @@
 //! 数据（`Host`）来自 `HostService`，连接与认证由 `crate::ssh` 完成，
 //! 会话状态（`HostStatus` / `SessionTelemetry`）后续会由此处回填。
 
-use std::sync::Arc;
-
 use anyhow::Result;
-use russh::client::Handle;
 
 use crate::{
     host::Host,
-    ssh::{SshConnection, SshHandler, WindowSize},
+    ssh::{SshConnection, SshSession, WindowSize},
 };
 
 /// SSH 连接的业务入口。无状态，廉价克隆。
@@ -43,10 +40,10 @@ impl SshService {
     /// 另一次登录。不重新认证也就没有第二次密码提示，开出来是立刻的。
     pub async fn open_shell(
         &self,
-        handle: Arc<Handle<SshHandler>>,
+        session: SshSession,
         window: WindowSize,
     ) -> Result<SshConnection> {
-        crate::db::run(async move { SshConnection::open_shell(handle, window).await }).await
+        crate::db::run(async move { SshConnection::open_shell(session, window).await }).await
     }
 }
 
@@ -68,6 +65,7 @@ mod tests {
             key_path: "".into(),
             jump_host_id: None,
             monitor_intervals: Default::default(),
+            forwards: Vec::new(),
         }
     }
 

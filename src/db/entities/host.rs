@@ -32,6 +32,14 @@ pub struct Model {
     /// 面板收起后只喂状态栏的那一档采集间隔，秒。
     #[sea_orm(default_value = 8)]
     pub status_interval_secs: u32,
+    /// 这台主机上的端口转发规则，JSON 编码的一串
+    /// [`crate::forward::PortForward`]。空串表示一条都没有。
+    ///
+    /// 一列存一个列表而不是另开一张表：这几条规则只在"打开这台主机的会话"
+    /// 时整份读出来、整份写回去，没有任何一处要按规则查主机，拆表只会多一次
+    /// join 和一套外键。
+    #[sea_orm(default_value = "")]
+    pub forwards: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

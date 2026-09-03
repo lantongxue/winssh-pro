@@ -18,7 +18,7 @@
 //! 由面板决定那意味着什么 —— 同一句"我要关掉"，在单屏时是关标签页，
 //! 分屏时只是收掉这一半。
 
-use std::{rc::Rc, sync::Arc};
+use std::rc::Rc;
 
 use alacritty_terminal::selection::SelectionType;
 use gpui::{
@@ -38,7 +38,7 @@ use gpui_component::{
 
 use crate::{
     host::Host,
-    ssh::SshHandler,
+    ssh::SshSession,
     terminal::{
         Emulator, EmulatorEvent, GridPoint, SearchQuery, TerminalBounds, rows_under_the_bar,
     },
@@ -103,7 +103,7 @@ pub enum PaneOrigin {
     Dial,
     /// 在一条已经认证过的连接上再开一条 shell。分屏出来的窗格走这条 ——
     /// 用户要的是"同一台机器上的另一个 shell"，不是再登录一次。
-    Share(Arc<russh::client::Handle<SshHandler>>),
+    Share(SshSession),
     /// 本机 PTY，不经过 SSH。
     Local,
     /// 一个什么都不连的空终端。
@@ -117,8 +117,9 @@ pub enum PaneOrigin {
 
 /// 窗格对标签页说的话。
 pub enum TerminalPaneEvent {
-    /// SSH 通了，把这条连接交出去 —— SFTP 和监控都要在它上面另开通道。
-    Connected(Arc<russh::client::Handle<SshHandler>>),
+    /// SSH 通了，把这条连接交出去 —— SFTP、监控与端口转发都要在它上面
+    /// 另开通道。
+    Connected(SshSession),
     /// 有东西变了（标题、目录、退出状态、焦点），上下两条 chrome 要重画。
     Changed,
     /// 用户点了右键菜单里的"关闭"。关掉的是标签页还是这半边，窗格不管。
@@ -181,7 +182,7 @@ impl TerminalPane {
             match origin {
                 PaneOrigin::Local => this.spawn_local(cx),
                 PaneOrigin::Dial => this.dial(window, cx),
-                PaneOrigin::Share(handle) => this.share(handle, window, cx),
+                PaneOrigin::Share(session) => this.share(session, window, cx),
                 #[cfg(test)]
                 PaneOrigin::Detached => {
                     this.show_placeholder("detached\r\n", cx);
@@ -274,12 +275,7 @@ impl TerminalPane {
     ///
     /// 失败**不**回退到本机：用户要的是这台机器上的第二个 shell，
     /// 悄悄给一个本地 shell 是答非所问，而且看不出来。
-    fn share(
-        &mut self,
-        handle: Arc<russh::client::Handle<SshHandler>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn share(&mut self, session: SshSession, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.host.name.clone();
         let placeholder = self.show_placeholder(
             &format!("\x1b[90m正在 {name} 上打开第二个 Shell...\x1b[0m\r\n"),
@@ -288,7 +284,7 @@ impl TerminalPane {
 
         cx.spawn_in(window, async move |this, cx| {
             let service = crate::service::SshService::new();
-            let outcome = service.open_shell(handle, window_size()).await;
+            let outcome = service.open_shell(session, window_size()).await;
 
             this.update(cx, |this, cx| match outcome {
                 Ok(conn) => this.adopt(conn, cx),
@@ -324,15 +320,15 @@ impl TerminalPane {
     /// 连接本身不留在这儿。要用它的三方（SFTP、监控采集、分屏出来的第二个
     /// shell）都在标签页那一层，窗格自己只管这一条通道的字节。
     fn adopt(&mut self, conn: crate::ssh::SshConnection, cx: &mut Context<Self>) {
-        let handle = conn.handle.clone();
-        let emulator = Emulator::from_ssh(conn.handle, conn.channel, cx);
+        let session = conn.session();
+        let emulator = Emulator::from_ssh(conn.handle(), conn.channel, cx);
         self.attach_emulator(&emulator, cx);
         emulator.update(cx, |em, cx| {
             em.write_output(self.ssh_banner().as_bytes(), cx);
         });
         self.emulator = Some(emulator);
         self.error = None;
-        cx.emit(TerminalPaneEvent::Connected(handle));
+        cx.emit(TerminalPaneEvent::Connected(session));
         cx.notify();
     }
 

@@ -45,12 +45,15 @@ use self::{
     split::{SplitState, render_split},
 };
 use crate::{
+    forward::PortForward,
     host::Host,
-    service::HostService,
+    service::{ForwardService, HostService},
     session::SessionTelemetry,
+    ssh::SshSession,
     terminal::TerminalBounds,
     ui::{
         bars::{SessionInfoBar, SessionStatusBar},
+        dialogs::{ForwardsHandler, PortForwardDialog},
         panels::{MonitorEvent, MonitorPanel, SftpPanel, SftpPanelEvent},
         theme::palette,
     },
@@ -63,6 +66,8 @@ actions!(
         ToggleMonitor,
         /// 切换底部 SFTP 栏（Alt+F）。
         ToggleSftp,
+        /// 打开这条会话的端口转发对话框（Alt+P）。
+        ToggleForwards,
     ]
 );
 
@@ -121,9 +126,18 @@ pub struct TerminalPanel {
     sftp_panel: Entity<SftpPanel>,
     sftp_resizable_state: Entity<ResizableState>,
     sftp_resizable_id: SharedString,
-    /// 这条会话的 SSH 句柄。SFTP 与监控走的是同一条连接上另开的子系统通道，
-    /// 分屏出来的第二个 shell 也是，"重试"还要拿它再来一次，所以留一份。
-    ssh_handle: Option<Arc<russh::client::Handle<crate::ssh::SshHandler>>>,
+    /// 这条会话的 SSH 连接。SFTP 与监控走的是同一条连接上另开的子系统通道，
+    /// 分屏出来的第二个 shell、端口转发的每一条隧道也是，"重试"还要拿它再来
+    /// 一次，所以留一份。
+    ssh: Option<SshSession>,
+    /// 主机库。端口转发对话框改完规则要写回这台主机那一行。
+    /// 本机 Shell 没有对应的库记录，那时是 `None`。
+    hosts: Option<HostService>,
+    /// 这条会话的端口转发。连上之后才有 —— 隧道要开在真的连接上。
+    ///
+    /// 它归标签页而不是归对话框：转发是会话的设施，对话框只是看它的一扇窗。
+    /// 关掉窗口隧道照旧在跑，关掉标签页它们才停（[`ForwardService`] 的 `Drop`）。
+    forwards: Option<ForwardService>,
 }
 
 impl TerminalPanel {
@@ -164,6 +178,7 @@ impl TerminalPanel {
             key_path: "".into(),
             jump_host_id: None,
             monitor_intervals: crate::host::MonitorIntervals::default(),
+            forwards: Vec::new(),
         };
         Self::build(host, Source::Local, None, window, cx)
     }
@@ -184,6 +199,7 @@ impl TerminalPanel {
             key_path: "".into(),
             jump_host_id: None,
             monitor_intervals: crate::host::MonitorIntervals::default(),
+            forwards: Vec::new(),
         };
         Self::build(host, Source::Detached, None, window, cx)
     }
@@ -196,7 +212,7 @@ impl TerminalPanel {
         cx: &mut App,
     ) -> Entity<Self> {
         cx.new(|cx| {
-            let monitor_panel = MonitorPanel::new(host.clone(), hosts, window, cx);
+            let monitor_panel = MonitorPanel::new(host.clone(), hosts.clone(), window, cx);
             let sftp_panel = SftpPanel::new(host.clone(), window, cx);
             // 第一个窗格没有连接可借，SSH 那一档只能自己拨号。
             let origin = match source {
@@ -224,7 +240,9 @@ impl TerminalPanel {
                 sftp_panel: sftp_panel.clone(),
                 sftp_resizable_state: cx.new(|_| ResizableState::default()),
                 sftp_resizable_id: SharedString::from(format!("terminal-sftp-{}", host.id)),
-                ssh_handle: None,
+                ssh: None,
+                hosts,
+                forwards: None,
                 host,
             };
             this.adopt_pane(pane, window, cx);
@@ -262,15 +280,15 @@ impl TerminalPanel {
         cx: &mut Context<Self>,
     ) {
         match event {
-            TerminalPaneEvent::Connected(handle) => {
+            TerminalPaneEvent::Connected(session) => {
                 // 第一个连上的窗格提供这条会话的连接。第二个窗格是在同一条上
-                // 开出来的，报的是同一个句柄，接不接都一样 —— 但监控与 SFTP
+                // 开出来的，报的是同一条连接，接不接都一样 —— 但监控与 SFTP
                 // 已经挂好了，不能再挂一遍。
-                if self.ssh_handle.is_some() {
+                if self.ssh.is_some() {
                     return;
                 }
-                self.ssh_handle = Some(handle.clone());
-                let service = crate::service::MonitorService::new(handle.clone());
+                self.ssh = Some(session.clone());
+                let service = crate::service::MonitorService::new(session.handle.clone());
                 let expanded = self.monitor_open;
                 self.monitor_panel.update(cx, |monitor, cx| {
                     monitor.attach(service, cx);
@@ -278,7 +296,8 @@ impl TerminalPanel {
                 });
                 // SFTP 通道与终端不同一条：连上就开，用户什么时候展开这一栏都用得着，
                 // 而它失败的原因（对端没配 sftp-server）也该早点拿到。
-                self.open_sftp(handle.clone(), window, cx);
+                self.open_sftp(session.handle.clone(), window, cx);
+                self.start_saved_forwards(session.clone(), window, cx);
                 cx.notify();
             }
             TerminalPaneEvent::Changed => {
@@ -353,8 +372,8 @@ impl TerminalPanel {
             Source::Local => PaneOrigin::Local,
             #[cfg(test)]
             Source::Detached => PaneOrigin::Detached,
-            Source::Ssh => match self.ssh_handle.clone() {
-                Some(handle) => PaneOrigin::Share(handle),
+            Source::Ssh => match self.ssh.clone() {
+                Some(session) => PaneOrigin::Share(session),
                 None => PaneOrigin::Dial,
             },
         }
@@ -443,8 +462,8 @@ impl TerminalPanel {
                     state.update(cx, |state, cx| state.resize_panel(1, *height, window, cx));
                 }
                 SftpPanelEvent::Reconnect => {
-                    if let Some(handle) = this.ssh_handle.clone() {
-                        this.open_sftp(handle, window, cx);
+                    if let Some(session) = this.ssh.clone() {
+                        this.open_sftp(session.handle, window, cx);
                     }
                 }
             },
@@ -498,6 +517,146 @@ impl TerminalPanel {
         // 吞掉这一下。GPUI 先派发按键绑定、再走 `on_key_down`（见
         // `Window::dispatch_key_event`），不拦住的话 Alt+F 既开了这一栏，
         // 又作为 `\x1bf` 进了远端 shell —— 在 readline 里那是"往后跳一个词"。
+        cx.stop_propagation();
+    }
+
+    // ─── 端口转发 ───────────────────────────────────────────────────────────
+
+    /// 连上了：把这台主机上标着"要跑"的转发规则都起起来。
+    ///
+    /// 自动起而不是等用户点一遍，是因为规则里的 `enabled` 存的就是"这条该在
+    /// 跑"（见 [`PortForward::enabled`]）。转发是一台机器的常备设施 —— 昨天
+    /// 开着数据库隧道干活，今天开同一台主机的会话，它该已经在那儿了。
+    ///
+    /// 一条起不来不影响别的：端口被占、对端不许转发都只是这一条的事。失败的
+    /// 那几条攒成一条通知说清楚，而不是弹三次。
+    fn start_saved_forwards(
+        &mut self,
+        session: SshSession,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let service = ForwardService::new(session);
+        self.forwards = Some(service.clone());
+
+        let rules: Vec<PortForward> = self
+            .host
+            .forwards
+            .iter()
+            .filter(|rule| rule.enabled)
+            .cloned()
+            .collect();
+        if rules.is_empty() {
+            return;
+        }
+
+        cx.spawn_in(window, async move |this, cx| {
+            let mut failures = Vec::new();
+            for rule in rules {
+                if let Err(error) = service.start(&rule).await {
+                    failures.push(format!("{}：{error:#}", rule.name));
+                }
+            }
+            this.update_in(cx, |_, window, cx| {
+                if !failures.is_empty() {
+                    window.push_notification(
+                        format!(
+                            "有 {} 条端口转发没起来 —— {}",
+                            failures.len(),
+                            failures.join("；")
+                        ),
+                        cx,
+                    );
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// 现在有几条隧道在跑。会话信息栏上 "Tunnels N" 那个数。
+    fn active_forwards(&self) -> usize {
+        self.forwards
+            .as_ref()
+            .map(|service| service.active_count())
+            .unwrap_or(0)
+    }
+
+    /// 打开端口转发对话框（信息栏上那颗按钮，或者 Alt+P）。
+    ///
+    /// 还没连上就不开：那一屏上的每一颗按钮都要一条活着的连接才有意义，
+    /// 开一个全是灰按钮的框不如直说。
+    fn open_forwards(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 已经有一层对话框盖着就不再叠一层。Alt+P 连按两次、或者框开着还点了
+        // 信息栏上那颗按钮，都会走到这儿 —— 叠出来的第二个框长得和第一个一样，
+        // 关掉一个还剩一个，看着像关不掉。
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        let Some(service) = self.forwards.clone() else {
+            window.push_notification("SSH 还没连上，端口转发要等连接建好。", cx);
+            return;
+        };
+
+        // 规则改完由这里落库：对话框只管改，主机那一行的正本归标签页。
+        let panel = cx.entity().downgrade();
+        let on_change: ForwardsHandler = std::rc::Rc::new(
+            move |rules: Vec<PortForward>, window: &mut Window, cx: &mut App| {
+                panel
+                    .update(cx, |this, cx| this.save_forwards(rules, window, cx))
+                    .ok();
+            },
+        );
+
+        PortForwardDialog::open(
+            self.host.clone(),
+            service,
+            self.host.forwards.clone(),
+            on_change,
+            window,
+            cx,
+        );
+    }
+
+    /// 把改好的转发规则记在这台主机上，并写回库里。
+    ///
+    /// 顺序和监控面板保存采集节奏一样：先在本会话里生效，再落库。写库是异步的、
+    /// 可能失败，但"我刚加了一条转发"这件事应当立刻看得见。
+    fn save_forwards(
+        &mut self,
+        rules: Vec<PortForward>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.host.forwards = rules.clone();
+        cx.notify();
+
+        let Some(hosts) = self.hosts.clone() else {
+            // 本机 Shell 没有主机记录。规则仍然在这条会话里生效，只是不留存。
+            return;
+        };
+        let id = self.host.id.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = hosts.update_forwards(&id, &rules).await;
+            this.update_in(cx, |_, window, cx| {
+                if let Err(error) = outcome {
+                    window.push_notification(format!("保存端口转发规则失败：{error:#}"), cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn on_toggle_forwards(
+        &mut self,
+        _: &ToggleForwards,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_forwards(window, cx);
+        // 同 [`Self::on_toggle_sftp`]：不拦住的话 Alt+P 还会当成 `\x1bp` 进终端。
         cx.stop_propagation();
     }
 
@@ -727,6 +886,7 @@ impl Render for TerminalPanel {
             // 所以焦点不在任何一个窗格里时压根不会走到这儿。
             .on_action(cx.listener(Self::on_toggle_monitor))
             .on_action(cx.listener(Self::on_toggle_sftp))
+            .on_action(cx.listener(Self::on_toggle_forwards))
             .child(
                 SessionInfoBar::new(
                     SharedString::from(format!("{}@{}", self.host.user, self.host.hostname)),
@@ -737,9 +897,10 @@ impl Render for TerminalPanel {
                 .on_split(cx.listener(move |this, layout: &SplitLayout, window, cx| {
                     this.set_split(*layout, window, cx);
                 }))
-                .on_tunnels(|_, window, cx| {
-                    window.push_notification("端口转发面板还在开发中。", cx);
-                })
+                .tunnels_count(self.active_forwards())
+                .on_tunnels(cx.listener(|this, _, window, cx| {
+                    this.open_forwards(window, cx);
+                }))
                 .sftp_active(self.sftp_open)
                 .on_sftp(cx.listener(|this, _, window, cx| {
                     this.toggle_sftp(window, cx);

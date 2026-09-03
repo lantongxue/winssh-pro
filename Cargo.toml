@@ -37,6 +37,13 @@ tokio-util = { version = "0.7", features = ["rt"] }
 # （`russh-sftp` 用它），这里只是把它变成直接依赖，不多编译一份东西。
 chrono = "0.4"
 
+# `hosts.forwards` 那一列存的是一串端口转发规则（见 src/forward.rs）。一列存一个
+# 列表就得挑个编码，选 JSON：库文件用 sqlite3 打开时那一列还是读得懂的，加字段
+# 也只是多一个 `#[serde(default)]`，不必再动一次表结构。serde 与 serde_json 本来
+# 就在依赖树里（sea-orm 用它们），变成直接依赖不多编译一份东西。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
 # 主机配置的数据层：SeaORM 负责 SQLite 的访问，sqlx 自带静态编译的 SQLite，
 # 不依赖系统安装的库；异步操作跑在应用级 tokio runtime 上（见 src/db/mod.rs）。
 sea-orm = { version = "2.0", features = ["sqlx-sqlite", "runtime-tokio", "macros"] }

@@ -41,13 +41,14 @@ const SCHEMA: [&str; 2] = [
         key_path     TEXT    NOT NULL DEFAULT '',
         jump_host_id TEXT,
         monitor_interval_secs INTEGER NOT NULL DEFAULT 3,
-        status_interval_secs  INTEGER NOT NULL DEFAULT 8
+        status_interval_secs  INTEGER NOT NULL DEFAULT 8,
+        forwards     TEXT    NOT NULL DEFAULT ''
     )",
 ];
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 6] = [
+const MIGRATIONS: [&str; 7] = [
     "ALTER TABLE hosts ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'password'",
     "ALTER TABLE hosts ADD COLUMN password TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE hosts ADD COLUMN key_path TEXT NOT NULL DEFAULT ''",
@@ -56,6 +57,9 @@ const MIGRATIONS: [&str; 6] = [
     // 就是新主机的出厂节奏，两边不一致的话，同一台机器在升级前后表现不同。
     "ALTER TABLE hosts ADD COLUMN monitor_interval_secs INTEGER NOT NULL DEFAULT 3",
     "ALTER TABLE hosts ADD COLUMN status_interval_secs INTEGER NOT NULL DEFAULT 8",
+    // 端口转发规则（见 [`crate::forward`]）。老库补出来的是空串，
+    // 读回来就是"这台主机还没有转发规则"，与新库一致。
+    "ALTER TABLE hosts ADD COLUMN forwards TEXT NOT NULL DEFAULT ''",
 ];
 
 /// 数据层专用的 tokio runtime，进程生命周期内只建一次。

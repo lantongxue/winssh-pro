@@ -9,21 +9,27 @@
 //! GPUI (write_output) ◀──output_rx─── Tokio bridge ◀──channel.wait ── sshd
 //! ```
 //!
-//! 终端那条通道之外还有两类用法：[`exec`] 在同一条连接上另开通道跑一次性
+//! 终端那条通道之外还有三类用法：[`exec`] 在同一条连接上另开通道跑一次性
 //! 命令（监控采集、`kill`、`docker`），[`sftp`] 再开一条走 SFTP 子系统
-//! （文件面板）。互不干扰 —— 所以 [`SshConnection::handle`] 是
-//! [`std::sync::Arc`] 共享的。
+//! （文件面板），[`forward`] 按需开若干条 `direct-tcpip`（端口转发）。
+//! 互不干扰 —— 所以 [`SshSession::handle`] 是 [`std::sync::Arc`] 共享的。
+//!
+//! 端口转发里的远端转发（`-R`）是唯一一档**对端主动开通道**的用法，那条通道
+//! 只落在 [`client::SshHandler`] 上；因此连接凭据是 [`SshSession`]（句柄 +
+//! 那份转发登记处）而不是一个裸的句柄。
 
 pub mod bridge;
 pub mod client;
 pub mod connection;
 pub mod exec;
+pub mod forward;
 pub mod sftp;
 
 pub use bridge::{SshBridge, SshOutputReceiver, spawn_bridge};
 pub use client::SshHandler;
-pub use connection::{SshConnection, WindowSize};
+pub use connection::{SshConnection, SshSession, WindowSize};
 pub use exec::exec_script;
+pub use forward::{ForwardMeter, LocalMode, RemoteTarget};
 pub use sftp::open_session as open_sftp_session;
 
 use anyhow::Result;

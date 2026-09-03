@@ -10614,6 +10614,8 @@ dependencies = [
  "russh",
  "russh-sftp",
  "sea-orm",
+ "serde",
+ "serde_json",
  "ssh-key",
  "tokio",
  "tokio-util",

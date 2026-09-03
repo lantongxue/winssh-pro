@@ -17,16 +17,43 @@ use russh::{Channel, Disconnect, Pty};
 use crate::host::Host;
 
 use super::client::SshHandler;
+use super::forward::ForwardRegistry;
 
-/// 一次已认证的 SSH 会话：`Handle` 管连接，`Channel` 管这条交互式 Shell。
+/// 一条已认证的 SSH 连接，作为"还能在它上面开东西"的凭据传来传去。
 ///
 /// `handle` 用 [`Arc`] 共享，因为一条连接上不只有终端那条通道：右侧监控面板要
-/// 在同一条连接上另开 `session` 通道跑采集命令（见 [`super::exec`]），
-/// 两边都得能 `channel_open_session`。SSH 本来就是多路复用的，共享句柄是它
-/// 原本的用法，不是绕过什么限制。
-pub struct SshConnection {
+/// 在同一条连接上另开 `session` 通道跑采集命令（见 [`super::exec`]），SFTP 再
+/// 开一条子系统通道，端口转发还要开若干条 `direct-tcpip`。SSH 本来就是多路
+/// 复用的，共享句柄是它原本的用法，不是绕过什么限制。
+///
+/// `forwards` 跟着句柄一起走，因为它是**这条连接**的东西：远端转发（`-R`）的
+/// 通道由对端发起，只会落在建连时交给 `russh` 的那个
+/// [`SshHandler`] 上（见 [`super::client`]），而登记处就在那个 Handler 里。
+/// 换一条连接就是换一份登记 —— 分开传的话，迟早会有人把 A 连接的登记配上 B
+/// 连接的句柄，那时候转发是"请求成功了但永远收不到连接"。
+#[derive(Clone)]
+pub struct SshSession {
     pub handle: Arc<Handle<SshHandler>>,
+    pub forwards: ForwardRegistry,
+}
+
+/// 一次已认证的 SSH 会话：[`SshSession`] 管连接，`Channel` 管这条交互式 Shell。
+pub struct SshConnection {
+    pub session: SshSession,
     pub channel: Channel<ClientMsg>,
+}
+
+impl SshConnection {
+    /// 这条连接本身。终端之外要用它的都拿这个：监控采集、SFTP、端口转发，
+    /// 以及分屏出来的第二个 shell。
+    pub fn session(&self) -> SshSession {
+        self.session.clone()
+    }
+
+    /// 交互式 Shell 那条通道的句柄。
+    pub fn handle(&self) -> Arc<Handle<SshHandler>> {
+        self.session.handle.clone()
+    }
 }
 
 impl SshConnection {
@@ -36,7 +63,10 @@ impl SshConnection {
     /// 之后窗口大小变化由 [`Self::window_change`] 另行通知。
     pub async fn connect(host: &Host, window: WindowSize) -> Result<Self> {
         let config = build_config();
-        let handler = SshHandler;
+        // 登记处要在建连之前就造好：Handler 会被 `russh` 拿走，之后再没有
+        // 途径拿回它，所以这里留一份克隆，两边指向同一张表。
+        let forwards = ForwardRegistry::default();
+        let handler = SshHandler::new(forwards.clone());
         let addr = (host.hostname.as_ref().to_owned(), host.port);
         let user = host.user.to_string();
 
@@ -49,7 +79,10 @@ impl SshConnection {
         let handle = Arc::new(handle);
         let channel = shell_channel(&handle, window).await?;
 
-        Ok(Self { handle, channel })
+        Ok(Self {
+            session: SshSession { handle, forwards },
+            channel,
+        })
     }
 
     /// 在一条**已经认证过**的连接上再开一条交互式 Shell。
@@ -61,9 +94,9 @@ impl SshConnection {
     ///
     /// 代价也要说清楚：**两个窗格共命运**。主连接断了，它们一起断。
     /// 这正是"同一台机器的两个窗格"该有的语义。
-    pub async fn open_shell(handle: Arc<Handle<SshHandler>>, window: WindowSize) -> Result<Self> {
-        let channel = shell_channel(&handle, window).await?;
-        Ok(Self { handle, channel })
+    pub async fn open_shell(session: SshSession, window: WindowSize) -> Result<Self> {
+        let channel = shell_channel(&session.handle, window).await?;
+        Ok(Self { session, channel })
     }
 
     /// 通知远端 PTY 尺寸变化。
@@ -81,6 +114,7 @@ impl SshConnection {
     pub async fn disconnect(self) -> Result<()> {
         let _ = self.channel.eof().await;
         let _ = self
+            .session
             .handle
             .disconnect(Disconnect::ByApplication, "", "en")
             .await;
@@ -274,6 +308,7 @@ mod tests {
             key_path: "".into(),
             jump_host_id: None,
             monitor_intervals: Default::default(),
+            forwards: Vec::new(),
         }
     }
 
