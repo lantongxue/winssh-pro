@@ -851,9 +851,10 @@ mod tests {
     /// RUST_MIN_STACK=1048576 cargo test --bin winssh-pro ui::panels::terminal::tests
     /// ```
     ///
-    /// 写下这段时的答案是 1.1~1.2 MiB，而 MSVC 给可执行文件的默认栈正好是
-    /// 1 MiB —— 这就是当时崩的原因。现在 [`build.rs`] 把它抬到了 8 MiB；
-    /// 哪天这个数字又逼近上限，用上面那行就能看出来。
+    /// 崩的那天量出来是 1.0~1.25 MiB，而 MSVC 给可执行文件的默认栈正好 1 MiB
+    /// —— 那就是原因。之后两头都动了：`Cargo.toml` 把自己这个 crate 开到
+    /// `opt-level=1`（帧瘦下来，需求落到 0.38~0.5 MiB），`build.rs` 把栈抬到
+    /// 8 MiB。哪天这个数字又开始爬，上面那行就能看出来。
     #[gpui::test]
     fn the_panel_draws_all_the_way_through(cx: &mut gpui::TestAppContext) {
         let (_panel, cx) = draw_panel(cx);

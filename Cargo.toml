@@ -64,9 +64,29 @@ gpui = { git = "https://github.com/zed-industries/zed", features = ["test-suppor
 
 # 依赖全部按发布级优化编译。gpui 与 alacritty_terminal 是每一帧真正在跑的代码，
 # dev 默认的 opt-level=0 会让它们慢出一个数量级 —— 界面卡、CPU 占用高，多半就是
-# 这个，而不是逻辑本身。自己的 crate 仍留 opt-level=0，断点和调试信息不受影响。
+# 这个，而不是逻辑本身。
 [profile.dev.package."*"]
 opt-level = 3
+
+# 自己的 crate 也开一档。
+#
+# opt-level=0 最直接的代价不是慢，是**栈**：那一档下每个中间临时值都占一个
+# 独立槽位，不复用也不内联，而这里的 `render` 全是巨型 builder 链
+# （`TerminalPanel::render` 是一整个表达式，`sftp.rs` 4400 行），一个函数
+# 就是一个很胖的帧。实测画一次"Dock + 终端标签页"要多少栈：
+#
+#     opt-level=0  →  1.0 ~ 1.25 MiB
+#     opt-level=1  →  0.38 ~ 0.5 MiB
+#
+# 而 Windows 上 MSVC 给可执行文件的默认栈只有 1 MiB。0 那一档是贴着崖边在跑，
+# 界面再嵌一层就是 `has overflowed its stack` —— 这不是假想，分屏那次真崩过
+# （见 `build.rs`，量尺在 `ui::panels::terminal` 的绘制测试里）。
+#
+# 停在 1 不往上加：2 和 3 的栈需求和 1 是一个量级（内联多了，帧反而合并变大），
+# 换来的只有更长的编译和更难跟的单步。改一次代码重编的时间，1 和 0 基本一样
+# （~9s），2 要 11s，3 要 16s。
+[profile.dev.package.winssh-pro]
+opt-level = 1
 
 # The reference checkouts under `refs/` are the sources of truth for both the
 # GPUI runtime and the component library, so the git coordinates above resolve
