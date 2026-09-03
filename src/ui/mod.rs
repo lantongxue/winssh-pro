@@ -93,5 +93,14 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-shift-c", CopySelection, None),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-shift-v", PasteClipboard, None),
+        // Shift+Insert 也是粘贴：xterm、PuTTY、Windows Terminal 都认它，
+        // 从别的终端过来的人手指记得的就是这一下。绑在 `Terminal` 上下文里
+        // 而不是全局 —— 别处的输入框各有各的粘贴键位，这一下不该被终端吃掉。
+        //
+        // 它抢在 `to_esc_str` 前面：那边 Shift+Insert 编出来的是
+        // `\x1b[2;2~`（带修饰键的 Insert）。GPUI 先派 action，冒泡阶段的
+        // action 默认停掉传播，所以按下去只粘贴一次，不会顺带再送一个
+        // 转义序列给对端。裸 Insert 不受影响，照旧是 `\x1b[2~`。
+        KeyBinding::new("shift-insert", PasteClipboard, Some("Terminal")),
     ]);
 }
