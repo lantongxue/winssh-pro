@@ -358,7 +358,6 @@ impl TerminalPane {
         } = &self.host;
         [
             format!("\x1b[32m✓ 已连接到 {name}\x1b[0m（{user}@{hostname}:{port}，{platform}）\r\n"),
-            "\x1b[90m远端输出如下，输入直接送往对端。\x1b[0m\r\n\r\n".to_string(),
         ]
         .concat()
     }
