@@ -2482,18 +2482,7 @@ impl SftpPanel {
 
     /// 复制一批条目的路径：一行一条，跟往终端里粘一样。角标上多条时只报数目 ——
     /// 那一格摆不下几十条路径。
-    fn copy_paths(&mut self, entries: &[FileEntry], cx: &mut Context<Self>) {
-        let paths: Vec<&str> = entries
-            .iter()
-            .filter(|entry| !entry.is_parent())
-            .map(|entry| entry.path.as_ref())
-            .collect();
-        let label = match paths.as_slice() {
-            [] => return,
-            [path] => SharedString::from((*path).to_owned()),
-            paths => SharedString::from(format!("{} 条路径", paths.len())),
-        };
-        let text = paths.join("\n");
+    fn set_copied(&mut self, text: String, label: SharedString, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         self.copied = Some(label);
         let panel = cx.entity().downgrade();
@@ -2507,6 +2496,34 @@ impl SftpPanel {
             });
         });
         cx.notify();
+    }
+
+    fn copy_paths(&mut self, entries: &[FileEntry], cx: &mut Context<Self>) {
+        let paths: Vec<&str> = entries
+            .iter()
+            .filter(|entry| !entry.is_parent())
+            .map(|entry| entry.path.as_ref())
+            .collect();
+        let label = match paths.as_slice() {
+            [] => return,
+            [path] => SharedString::from((*path).to_owned()),
+            paths => SharedString::from(format!("{} 条路径", paths.len())),
+        };
+        let text = paths.join("\n");
+        self.set_copied(text, label, cx);
+    }
+
+    fn copy_current_path(&mut self, cx: &mut Context<Self>) {
+        let path = if !self.remote_path.is_empty() {
+            self.remote_path.clone()
+        } else {
+            self.path_input.read(cx).value().to_string()
+        };
+        if path.is_empty() {
+            return;
+        }
+        let label = SharedString::from(path.clone());
+        self.set_copied(path, label, cx);
     }
 
     /// 右键菜单（以及行内悬停按钮）共用的分发：菜单只报"要干什么"，怎么做在这儿。
@@ -3075,6 +3092,7 @@ impl SftpPanel {
 
     fn render_path_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let ready = self.service.is_some();
+        let has_path = !self.remote_path.is_empty() || !self.path_input.read(cx).value().is_empty();
         h_flex()
             .id("sftp-panel-path-bar")
             .flex_1()
@@ -3094,6 +3112,18 @@ impl SftpPanel {
                         this.navigate_remote(raw, window, cx);
                     },
                 )),
+            )
+            .child(
+                nav_button(
+                    "sftp-panel-copy-path",
+                    Icon::new(IconName::Copy).with_size(px(12.)),
+                    "复制当前路径",
+                    cx,
+                )
+                .disabled(!ready || !has_path)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.copy_current_path(cx);
+                })),
             )
             .child(
                 nav_button(
