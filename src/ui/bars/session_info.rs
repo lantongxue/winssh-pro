@@ -167,8 +167,11 @@ impl SessionInfoBar {
     ///
     /// 做成三颗并排的按钮而不是一颗循环切换的，也不是一个下拉：
     /// 现在是哪一档，看一眼就知道；想去哪一档，一下就到。循环切换要按两次才
-    /// 走得到第三档，下拉则是"点开才知道自己在哪儿"。三颗按钮共用一个凹槽底，
-    /// 读起来是一个单选组，不是三个各管各的开关。
+    /// 走得到第三档，下拉则是"点开才知道自己在哪儿"。三颗挨得比条上别的按钮更近，
+    /// 读起来就是一个单选组，不必再垫一层凹槽底 —— 这条上其余按钮都是透明的，
+    /// 多出来的那块底会让分屏组看着像另一个控件。
+    ///
+    /// 选中那一档的点亮方式和右边几颗一致：同色淡底加一圈同色描边。
     ///
     /// 没接 [`Self::on_split`] 时整组不画 —— 点不动的控件比没有更让人困惑。
     fn render_split_group(&self, cx: &App) -> AnyElement {
@@ -178,36 +181,35 @@ impl SessionInfoBar {
             .items_center()
             .gap_px()
             .when_some(self.on_split.clone(), |bar, handler| {
-                bar.p_px()
-                    .rounded_md()
-                    .bg(cx.theme().muted.opacity(0.5))
-                    .children(SplitLayout::ALL.map(|layout| {
-                        let active = layout == self.split;
-                        let handler = handler.clone();
-                        let mut btn = Button::new(layout.button_id())
-                            .xsmall()
-                            .icon(Icon::new(layout.icon()).with_size(ICON_SIZE).text_color(
-                                match active {
-                                    true => tone,
-                                    false => palette::idle(cx),
-                                },
-                            ))
-                            .tooltip(layout.tooltip())
-                            .accessibility_id(layout.tooltip())
-                            .on_click(move |_, window, cx| handler(&layout, window, cx));
-                        btn = if active {
-                            btn.custom(
-                                ButtonCustomVariant::new(cx)
-                                    .color(cx.theme().background)
-                                    .foreground(tone)
-                                    .hover(cx.theme().background)
-                                    .active(cx.theme().background),
-                            )
-                        } else {
-                            btn.ghost()
-                        };
-                        btn
-                    }))
+                bar.children(SplitLayout::ALL.map(|layout| {
+                    let active = layout == self.split;
+                    let handler = handler.clone();
+                    let mut btn = Button::new(layout.button_id())
+                        .xsmall()
+                        .icon(Icon::new(layout.icon()).with_size(ICON_SIZE).text_color(
+                            match active {
+                                true => tone,
+                                false => palette::idle(cx),
+                            },
+                        ))
+                        .tooltip(layout.tooltip())
+                        .accessibility_id(layout.tooltip())
+                        .on_click(move |_, window, cx| handler(&layout, window, cx));
+                    btn = if active {
+                        btn.custom(
+                            ButtonCustomVariant::new(cx)
+                                .color(tone.opacity(0.15))
+                                .foreground(tone)
+                                .hover(tone.opacity(0.22))
+                                .active(tone.opacity(0.28)),
+                        )
+                        .border_1()
+                        .border_color(tone.opacity(0.4))
+                    } else {
+                        btn.ghost()
+                    };
+                    btn
+                }))
             })
             .into_any_element()
     }
