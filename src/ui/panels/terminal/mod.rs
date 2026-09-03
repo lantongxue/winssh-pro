@@ -46,6 +46,7 @@ use self::{
 };
 use crate::{
     host::Host,
+    service::HostService,
     session::SessionTelemetry,
     terminal::TerminalBounds,
     ui::{
@@ -92,7 +93,7 @@ enum Source {
 pub struct TerminalPanel {
     host: Host,
     source: Source,
-    /// 状态栏中间那三个数字。来自监控面板的采集（[`MonitorEvent::Reading`]），
+    /// 状态栏那几个数字。来自监控面板的采集（[`MonitorEvent::Reading`]），
     /// 第一次采到之前是 `None`，状态栏显示破折号而不是 0。
     telemetry: Option<SessionTelemetry>,
     /// 这个标签页里的终端。单屏时一个，分屏时两个 —— 长度由
@@ -126,8 +127,11 @@ pub struct TerminalPanel {
 }
 
 impl TerminalPanel {
-    pub fn new(host: Host, window: &mut Window, cx: &mut App) -> Entity<Self> {
-        Self::build(host, Source::Ssh, window, cx)
+    /// `hosts` 只为一件事传进来：监控面板的设置页要把采集节奏写回这台主机的
+    /// 那一行。本机 shell 没有对应的库记录，走 [`Self::new_local`] 的那一档
+    /// 就是 `None`。
+    pub fn new(host: Host, hosts: HostService, window: &mut Window, cx: &mut App) -> Entity<Self> {
+        Self::build(host, Source::Ssh, Some(hosts), window, cx)
     }
 
     /// 直接在本机开一条登录 shell，不经过 SSH。
@@ -159,8 +163,9 @@ impl TerminalPanel {
             password: "".into(),
             key_path: "".into(),
             jump_host_id: None,
+            monitor_intervals: crate::host::MonitorIntervals::default(),
         };
-        Self::build(host, Source::Local, window, cx)
+        Self::build(host, Source::Local, None, window, cx)
     }
 
     /// 只在测试里用：窗格拿一个不连任何东西的空终端。理由见
@@ -178,13 +183,20 @@ impl TerminalPanel {
             password: "".into(),
             key_path: "".into(),
             jump_host_id: None,
+            monitor_intervals: crate::host::MonitorIntervals::default(),
         };
-        Self::build(host, Source::Detached, window, cx)
+        Self::build(host, Source::Detached, None, window, cx)
     }
 
-    fn build(host: Host, source: Source, window: &mut Window, cx: &mut App) -> Entity<Self> {
+    fn build(
+        host: Host,
+        source: Source,
+        hosts: Option<HostService>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<Self> {
         cx.new(|cx| {
-            let monitor_panel = MonitorPanel::new(host.clone(), window, cx);
+            let monitor_panel = MonitorPanel::new(host.clone(), hosts, window, cx);
             let sftp_panel = SftpPanel::new(host.clone(), window, cx);
             // 第一个窗格没有连接可借，SSH 那一档只能自己拨号。
             let origin = match source {
@@ -746,13 +758,9 @@ impl Render for TerminalPanel {
                     .min_h_0()
                     .child(div().flex_1().min_h_0().child(terminal))
                     .child(
-                        SessionStatusBar::new(
-                            self.host.name.clone(),
-                            SharedString::from(self.host.address()),
-                            self.telemetry,
-                        )
-                        .connected(connected)
-                        .grid(grid.num_columns(), grid.num_lines()),
+                        SessionStatusBar::new(self.telemetry)
+                            .connected(connected)
+                            .grid(grid.num_columns(), grid.num_lines()),
                     );
                 let body = if monitor_open {
                     div()

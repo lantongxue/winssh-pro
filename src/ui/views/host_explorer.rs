@@ -383,7 +383,7 @@ impl HostExplorerView {
         // 连接层还没接上，会话指示点先由这里点亮 —— 有一个打开的终端就算活着。
         self.statuses.entry(host.id.clone()).or_default().connected = true;
 
-        let panel = TerminalPanel::new(host.clone(), window, cx);
+        let panel = TerminalPanel::new(host.clone(), self.service.clone(), window, cx);
         _ = self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
         });

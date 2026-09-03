@@ -1,8 +1,8 @@
 //! 会话右侧监控面板：贴在终端右侧，展示对端主机的实时资源。
 //!
 //! 对应原型的 `SessionRightMonitorPanel`：顶部是主机名 + 活力点 + 关闭 / 刷新，
-//! 下一条是 Uptime/Load，再往下是四段 Tab（Metrics / Procs / Docker / Diag），
-//! 内容区按当前 Tab 渲染不同的卡片与列表。
+//! 下一条是 Uptime/Load，再往下是 Tab 条（Metrics / Procs / Docker / Diag，
+//! 末尾一个齿轮是设置页），内容区按当前 Tab 渲染不同的卡片与列表。
 //!
 //! 它不是一个 Dock `Panel`，而是每个终端会话自己持有的一块侧栏，生命周期跟着
 //! `TerminalPanel` 走。
@@ -14,6 +14,9 @@
 //!
 //! 轮询在面板收起时也继续，但用的是轻量脚本 —— 终端下沿的状态栏要那几个数，
 //! 而它一直看得见；进程列表与容器只在真的显示着的时候才采。
+//!
+//! 展开与收起这两档各有各的间隔，跟着主机走（[`crate::host::MonitorIntervals`]），
+//! 在末尾那个齿轮页里改：一台跳板机和一台数据库该盯多紧本来就不一样。
 
 use std::{rc::Rc, time::Duration};
 
@@ -30,44 +33,59 @@ use gpui_component::{
     chart::AreaChart,
     dialog::DialogButtonProps,
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, NumberInput},
     scroll::{ScrollableElement as _, ScrollbarAxis},
+    tooltip::Tooltip,
     v_flex, v_virtual_list,
 };
 
 use crate::{
-    host::Host,
+    host::{Host, MonitorIntervals},
     monitor::{MonitorTelemetry, ProbeOptions, ProcessItem, diag_commands},
-    service::{ContainerAction, MonitorService},
+    service::{ContainerAction, HostService, MonitorService},
     session::SessionTelemetry,
     ui::theme::{AppIcon, palette},
 };
 
-/// 面板展开时的采集间隔。再快远端的开销就开始明显（每次要读一遍全部
-/// `/proc/[pid]/stat`），再慢曲线就不像"实时"了。
-const ACTIVE_INTERVAL: Duration = Duration::from_secs(3);
-
-/// 面板收起时的采集间隔。这时只为状态栏那三个数字，采得起但不必勤。
-const IDLE_INTERVAL: Duration = Duration::from_secs(8);
-
 /// 采集失败之后隔多久再试。比正常间隔长一点：对端正忙或者刚断，
-/// 立刻重试只是再堵一次。
+/// 立刻重试只是再堵一次。这一档不给调 —— 它不是"多久看一眼"，
+/// 而是"出错之后别追着捶"，那是个技术判断，不是偏好。
 const RETRY_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Procs 页每一行的高度。虚拟列表按这个数算滚动范围与可见区间，所以行必须
 /// **真的**是这么高 —— 对不上就会错行。一行是 `text_xs` 加上下各 6px 内边距。
 const PROCESS_ROW_HEIGHT: Pixels = px(28.);
 
-/// 监控面板的四个子 Tab。
+/// 监控面板的子 Tab。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MonitorTab {
     Metrics,
     Processes,
     Docker,
     Diagnostics,
+    /// 采集节奏的设置页。排在最后，只有一个齿轮图标 —— 见 [`MonitorTab::ALL`]。
+    Settings,
 }
 
 impl MonitorTab {
+    /// Tab 条上的顺序。
+    const ALL: [Self; 5] = [
+        Self::Metrics,
+        Self::Processes,
+        Self::Docker,
+        Self::Diagnostics,
+        Self::Settings,
+    ];
+
+    /// 这一页占不占 Tab 条的等分宽度。
+    ///
+    /// 设置页不占：这一栏才 360 宽，四个带字的页签已经把它排满了
+    /// （`Procs (128)` 本来就险些放不下）。设置是"偶尔来一次改个数"的页，
+    /// 给它一个齿轮宽的固定位置，剩下的宽度还留给天天要看的那四页。
+    fn stretches(&self) -> bool {
+        !matches!(self, Self::Settings)
+    }
+
     /// 计数只在真的采到了之后才写 —— `Procs (0)` 和"还不知道有几个"是两回事。
     /// `counts` 是 `(进程数, 容器数)`，后者在这次没问 docker 时是 `None`。
     fn label(&self, counts: Option<(usize, Option<usize>)>) -> SharedString {
@@ -83,6 +101,8 @@ impl MonitorTab {
             }
             (Self::Docker, _) => "Docker".into(),
             (Self::Diagnostics, _) => "Diag".into(),
+            // 只有图标，见 [`Self::stretches`]。
+            (Self::Settings, _) => "".into(),
         }
     }
 
@@ -92,6 +112,7 @@ impl MonitorTab {
             Self::Processes => Icon::new(IconName::Cpu),
             Self::Docker => Icon::new(IconName::GalleryVerticalEnd),
             Self::Diagnostics => Icon::new(AppIcon::Zap),
+            Self::Settings => Icon::new(IconName::Settings),
         }
     }
 }
@@ -109,6 +130,16 @@ pub enum MonitorEvent {
 /// 贴在终端右侧的那一块监控侧栏。
 pub struct MonitorPanel {
     host: Host,
+    /// 主机库。设置页把改好的采集节奏写回这台主机那一行时要用。
+    /// 本机 Shell 没有对应的库记录，那时是 `None`，改动只在当前会话里生效。
+    hosts: Option<HostService>,
+    /// 这台主机现在的采集节奏。轮询循环每一轮都读它（见 [`Self::interval`]），
+    /// 所以在设置页里改完下一轮就换了节奏。
+    intervals: MonitorIntervals,
+    /// 设置页那两个输入框。它们是"正在编辑的值"，[`Self::intervals`] 是
+    /// "正在生效的值" —— 两者不等时保存按钮才亮。
+    monitor_input: Entity<InputState>,
+    status_input: Entity<InputState>,
     /// 采集入口。`None` 表示这条会话没有可采的对端（本地 Shell，或 SSH 还没连上）。
     service: Option<MonitorService>,
     /// 最近一次成功的读数。没采到过就是 `None`，界面显示空状态而不是 0。
@@ -139,9 +170,33 @@ pub struct MonitorPanel {
 }
 
 impl MonitorPanel {
-    pub fn new(host: Host, window: &mut Window, cx: &mut App) -> Entity<Self> {
+    pub fn new(
+        host: Host,
+        hosts: Option<HostService>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<Self> {
         let process_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Filter PID, user, cmd..."));
+        // 库里读回来的值已经夹过一道，这里再夹一次是为了兜住"本机 Shell 自己
+        // 造的那个 Host"这类没走过服务层的来路。
+        let intervals = host.monitor_intervals.clamped();
+        let monitor_input = cx.new(|cx| {
+            seconds_input(
+                window,
+                cx,
+                intervals.monitor_secs,
+                MonitorIntervals::MONITOR_RANGE,
+            )
+        });
+        let status_input = cx.new(|cx| {
+            seconds_input(
+                window,
+                cx,
+                intervals.status_secs,
+                MonitorIntervals::STATUS_RANGE,
+            )
+        });
         cx.new(|cx| {
             // 筛选词变了就重算一次要显示的行，而不是每帧重算。
             cx.subscribe(&process_search, |this: &mut Self, _, _: &InputEvent, cx| {
@@ -149,8 +204,24 @@ impl MonitorPanel {
                 cx.notify();
             })
             .detach();
+            // 两个输入框：敲字要让保存按钮跟着亮/灭，敲回车等于按保存。
+            for input in [&monitor_input, &status_input] {
+                cx.subscribe_in(
+                    input,
+                    window,
+                    |this: &mut Self, _, event: &InputEvent, window, cx| match event {
+                        InputEvent::PressEnter { .. } => this.save_intervals(window, cx),
+                        _ => cx.notify(),
+                    },
+                )
+                .detach();
+            }
             Self {
                 host,
+                hosts,
+                intervals,
+                monitor_input,
+                status_input,
                 service: None,
                 telemetry: None,
                 error: None,
@@ -205,12 +276,81 @@ impl MonitorPanel {
         }
     }
 
+    /// 下一轮隔多久。两档正常节奏都跟着主机走，见 [`MonitorIntervals`]。
     fn interval(&self) -> Duration {
         match (self.error.is_some(), self.expanded) {
             (true, _) => RETRY_INTERVAL,
-            (false, true) => ACTIVE_INTERVAL,
-            (false, false) => IDLE_INTERVAL,
+            (false, true) => Duration::from_secs(self.intervals.monitor_secs as u64),
+            (false, false) => Duration::from_secs(self.intervals.status_secs as u64),
         }
+    }
+
+    /// 设置页那两个输入框里此刻填着的值，夹回合法区间之后交出来。
+    /// 任一格不是整数就是 `None` —— 保存按钮跟着灰掉，而不是猜一个数存进去。
+    fn typed_intervals(&self, cx: &App) -> Option<MonitorIntervals> {
+        let monitor_secs = self.monitor_input.read(cx).value().trim().parse().ok()?;
+        let status_secs = self.status_input.read(cx).value().trim().parse().ok()?;
+        Some(
+            MonitorIntervals {
+                monitor_secs,
+                status_secs,
+            }
+            .clamped(),
+        )
+    }
+
+    /// 保存设置页里改的采集节奏：先在本会话里生效，再写回这台主机那一行。
+    ///
+    /// 顺序是有意的。写库是异步的，可能失败（库在只读目录上、主机行被别处删了），
+    /// 但"我刚把它调成 1 秒"这件事应当立刻看得见 —— 先应用，写库失败了再弹一条
+    /// 说没存住。反过来的话，一次磁盘抖动就会让用户觉得这个设置根本没接上。
+    fn save_intervals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(intervals) = self.typed_intervals(cx) else {
+            window.push_notification("采集间隔要填一个整数秒。", cx);
+            return;
+        };
+        self.apply_intervals(intervals, window, cx);
+
+        let Some(hosts) = self.hosts.clone() else {
+            window.push_notification("本机 Shell 没有主机配置，这次改动只在当前会话里生效。", cx);
+            return;
+        };
+        let id = self.host.id.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = hosts.update_monitor_intervals(&id, intervals).await;
+            this.update_in(cx, |_, window, cx| match result {
+                Ok(_) => window.push_notification("采集频率已保存到这台主机。", cx),
+                Err(error) => window.push_notification(format!("保存采集频率失败：{error:#}"), cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// 让改好的节奏当场生效。
+    ///
+    /// 三件事：记下来、把夹过的值写回输入框（敲了 999 要看见它被夹成 60，
+    /// 不然会以为存进去的就是 999）、重开一轮采集。最后那件是关键 ——
+    /// 不重开的话，改动要等当前这一轮的定时器走完才生效，而它可能正是
+    /// 刚被改掉的那个 300 秒。
+    fn apply_intervals(
+        &mut self,
+        intervals: MonitorIntervals,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.intervals = intervals;
+        self.host.monitor_intervals = intervals;
+        self.monitor_input.update(cx, |state, cx| {
+            state.set_value(intervals.monitor_secs.to_string(), window, cx)
+        });
+        self.status_input.update(cx, |state, cx| {
+            state.set_value(intervals.status_secs.to_string(), window, cx)
+        });
+        if self.service.is_some() {
+            self.start_polling(cx);
+        }
+        cx.notify();
     }
 
     /// 开一条轮询任务：采一次 → 等一个间隔 → 再采。
@@ -593,65 +733,65 @@ impl MonitorPanel {
             .px_2()
             .gap_0()
             .text_xs()
-            .children(
-                [
-                    MonitorTab::Metrics,
-                    MonitorTab::Processes,
-                    MonitorTab::Docker,
-                    MonitorTab::Diagnostics,
-                ]
-                .into_iter()
-                .enumerate()
-                .map(|(ix, tab)| {
-                    let is_active = tab == active;
-                    let label = tab.label(counts);
-                    let icon = tab.icon();
-                    div()
-                        .id(SharedString::from(format!("monitor-tab-{ix}")))
-                        .flex_1()
-                        .h(px(28.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .gap_1()
-                        .border_b_2()
-                        .border_color(if is_active {
-                            palette::blue()
-                        } else {
-                            Hsla::transparent_black()
-                        })
-                        .bg(if is_active {
-                            palette::surface(cx)
-                        } else {
-                            Hsla::transparent_black()
-                        })
-                        .text_color(if is_active {
-                            cx.theme().foreground
-                        } else {
-                            cx.theme().muted_foreground
-                        })
-                        .cursor_pointer()
-                        .child(icon.with_size(px(12.)).text_color(if is_active {
-                            palette::teal()
-                        } else {
-                            palette::idle(cx)
-                        }))
-                        .child(div().font_medium().child(label))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if this.active_tab == tab {
-                                return;
-                            }
-                            this.active_tab = tab;
-                            // 有些页要的东西上一次没采全：Docker 的容器（`docker
-                            // stats` 慢，不显示就不采），Procs 的全部进程（默认档位
-                            // 截断到前 N 条）。切过去立刻补采一次，不然要等下个周期。
-                            if matches!(tab, MonitorTab::Docker | MonitorTab::Processes) {
-                                this.refresh(cx);
-                            }
-                            cx.notify();
-                        }))
-                }),
-            )
+            .children(MonitorTab::ALL.into_iter().enumerate().map(|(ix, tab)| {
+                let is_active = tab == active;
+                let label = tab.label(counts);
+                let icon = tab.icon();
+                div()
+                    .id(SharedString::from(format!("monitor-tab-{ix}")))
+                    // 带字的四页等分剩下的宽度，齿轮那页只占一个图标。
+                    .map(|this| match tab.stretches() {
+                        true => this.flex_1(),
+                        false => this.flex_shrink_0().w(px(30.)),
+                    })
+                    .h(px(28.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap_1()
+                    .border_b_2()
+                    .border_color(if is_active {
+                        palette::blue()
+                    } else {
+                        Hsla::transparent_black()
+                    })
+                    .bg(if is_active {
+                        palette::surface(cx)
+                    } else {
+                        Hsla::transparent_black()
+                    })
+                    .text_color(if is_active {
+                        cx.theme().foreground
+                    } else {
+                        cx.theme().muted_foreground
+                    })
+                    .cursor_pointer()
+                    .child(icon.with_size(px(12.)).text_color(if is_active {
+                        palette::teal()
+                    } else {
+                        palette::idle(cx)
+                    }))
+                    // 齿轮那页没有文字，别在它旁边留一个空的文字节点。
+                    .when(!label.is_empty(), |this| {
+                        this.child(div().font_medium().child(label))
+                    })
+                    .when(!tab.stretches(), |this| {
+                        this.tooltip(|window, cx| Tooltip::new("采集设置").build(window, cx))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.active_tab == tab {
+                            return;
+                        }
+                        this.active_tab = tab;
+                        // 有些页要的东西上一次没采全：Docker 的容器（`docker
+                        // stats` 慢，不显示就不采），Procs 的全部进程（默认档位
+                        // 截断到前 N 条）。切过去立刻补采一次，不然要等下个周期。
+                        if matches!(tab, MonitorTab::Docker | MonitorTab::Processes) {
+                            this.refresh(cx);
+                        }
+                        cx.notify();
+                    }))
+            }))
     }
 
     fn render_metrics(
@@ -1515,6 +1655,148 @@ impl MonitorPanel {
                     )
             }))
     }
+
+    /// 设置页：这台主机的两档采集节奏。
+    ///
+    /// 只有采集频率这一组。别的能调的东西（排序、筛选）都在它们各自那一页上，
+    /// 就近改就近看见效果；采集节奏没有"就近"的位置 —— 它同时管着这一栏和
+    /// 终端下沿那一条，所以单开一页。
+    fn render_settings_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let typed = self.typed_intervals(cx);
+        // 输入框里的数和正在生效的数不一样时才让保存亮起来。填了非数字时
+        // `typed` 是 `None`，按钮也是灰的 —— 这两种"不能保存"长得一样，
+        // 底下那行提示负责说清楚是哪一种。
+        let dirty = typed.is_some_and(|typed| typed != self.intervals);
+
+        v_flex()
+            .gap_3()
+            .p_2()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("采集频率跟着这台主机走，下次打开还是这个节奏。"),
+            )
+            .child(self.render_interval_row(
+                "监控面板",
+                "这一栏展开着的时候采全量：曲线、进程表、容器。",
+                MonitorIntervals::MONITOR_RANGE,
+                &self.monitor_input,
+                cx,
+            ))
+            .child(self.render_interval_row(
+                "终端状态栏",
+                "这一栏收起之后只采轻量的一份，喂终端下沿那条状态栏。",
+                MonitorIntervals::STATUS_RANGE,
+                &self.status_input,
+                cx,
+            ))
+            .child(
+                h_flex().justify_end().child(
+                    Button::new("monitor-settings-save")
+                        .small()
+                        .primary()
+                        .label("保存")
+                        .disabled(!dirty)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.save_intervals(window, cx)),
+                        ),
+                ),
+            )
+            .when(typed.is_none(), |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child("间隔要填整数秒。"),
+                )
+            })
+            .when(self.hosts.is_none(), |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("本机 Shell 没有主机配置，这里改的只在当前会话里生效。"),
+                )
+            })
+    }
+
+    /// 设置页里的一行：标题、一句说明、一个秒数输入框，外加合法区间。
+    ///
+    /// 区间写在界面上而不是等用户越界之后再纠正：输入框会把 999 夹成 60，
+    /// 但一个悄悄被改掉的数字比一开始就说"1–60"更让人疑惑。
+    fn render_interval_row(
+        &self,
+        title: &'static str,
+        hint: &'static str,
+        (low, high): (u32, u32),
+        input: &Entity<InputState>,
+        cx: &App,
+    ) -> impl IntoElement {
+        v_flex()
+            .gap_1()
+            .p_2()
+            .rounded(cx.theme().radius)
+            .bg(cx.theme().background)
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(cx.theme().foreground)
+                            .child(title),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .gap_1()
+                            .child(div().w(px(92.)).child(NumberInput::new(input).small()))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("秒"),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(hint),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(format!("{low}–{high} 秒"))),
+            )
+    }
+}
+
+/// 设置页那两个秒数输入框都长一个样：整数、带上下箭头、越界自动夹回。
+///
+/// 夹在组件里做（`min`/`max`），所以点箭头点到头就停住了；手敲进去的越界值
+/// 由 [`MonitorPanel::typed_intervals`] 再夹一道，两条路都收得住。
+fn seconds_input(
+    window: &mut Window,
+    cx: &mut Context<InputState>,
+    value: u32,
+    (low, high): (u32, u32),
+) -> InputState {
+    InputState::new(window, cx)
+        .default_value(value.to_string())
+        .step(1.)
+        .min(low as f64)
+        .max(high as f64)
 }
 
 impl EventEmitter<MonitorEvent> for MonitorPanel {}
@@ -1544,8 +1826,8 @@ impl Render for MonitorPanel {
                     .map(|error| self.render_error(error, cx).into_any_element()),
             )
             .children(telemetry.map(|t| self.render_banner(t, cx).into_any_element()))
-            // Tab 条一直在：Diag 那一页是一串固定命令，不依赖采集，本地会话与
-            // 还没采到读数的时候也该点得动。
+            // Tab 条一直在：Diag 那一页是一串固定命令、设置页是这台主机的配置，
+            // 两页都不依赖采集，本地会话与还没采到读数的时候也该点得动。
             .child(self.render_tabs(cx))
             .child(match (tab, telemetry) {
                 // Procs 页自己就是一条虚拟列表，滚动归它自己管。外面再套一层
@@ -1563,6 +1845,9 @@ impl Render for MonitorPanel {
                     .overflow_y_scroll()
                     .child(match (tab, telemetry) {
                         (MonitorTab::Diagnostics, _) => self.render_diag_tab(cx).into_any_element(),
+                        (MonitorTab::Settings, _) => {
+                            self.render_settings_tab(cx).into_any_element()
+                        }
                         (_, None) => self.render_empty(cx).into_any_element(),
                         (MonitorTab::Metrics, Some(t)) => {
                             self.render_metrics(t, cx).into_any_element()
@@ -1624,5 +1909,151 @@ mod tests {
         assert!(matches_query(&item, "root"));
         assert!(matches_query(&item, "142"), "pid 按子串匹配");
         assert!(!matches_query(&item, "postgres"));
+    }
+
+    fn host(intervals: MonitorIntervals) -> Host {
+        Host {
+            id: "settings-test".into(),
+            name: "web-01".into(),
+            user: "root".into(),
+            hostname: "10.0.0.1".into(),
+            port: 22,
+            platform: "Linux".into(),
+            auth_method: crate::host::AuthMethod::Password,
+            password: "".into(),
+            key_path: "".into(),
+            jump_host_id: None,
+            monitor_intervals: intervals,
+        }
+    }
+
+    /// 主机身上的节奏要落到轮询上：展开时用 `monitor_secs`，收起时用
+    /// `status_secs`。这两条是整个设置页存在的理由，接错了界面上看不出来。
+    #[gpui::test]
+    fn each_interval_drives_its_own_phase(cx: &mut gpui::TestAppContext) {
+        let (panel, cx) = draw_settings(
+            cx,
+            MonitorIntervals {
+                monitor_secs: 5,
+                status_secs: 30,
+            },
+        );
+
+        panel.update(cx, |panel, _| {
+            panel.expanded = true;
+            assert_eq!(
+                panel.interval(),
+                Duration::from_secs(5),
+                "展开时按监控面板那一档"
+            );
+            panel.expanded = false;
+            assert_eq!(
+                panel.interval(),
+                Duration::from_secs(30),
+                "收起后按状态栏那一档"
+            );
+            // 采集出错那一档不跟着主机走，见 `RETRY_INTERVAL`。
+            panel.error = Some("boom".into());
+            assert_eq!(panel.interval(), RETRY_INTERVAL);
+        });
+    }
+
+    /// 手敲一个越界的数按保存：当场夹回区间，而且输入框里也要看得见被夹过了 ——
+    /// 悄悄改掉用户填的数字比拒绝它更让人困惑。
+    #[gpui::test]
+    fn saving_an_out_of_range_interval_clamps_it_in_place(cx: &mut gpui::TestAppContext) {
+        let (panel, cx) = draw_settings(cx, MonitorIntervals::default());
+
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel
+                    .monitor_input
+                    .update(cx, |state, cx| state.set_value("999", window, cx));
+                panel
+                    .status_input
+                    .update(cx, |state, cx| state.set_value("0", window, cx));
+                panel.save_intervals(window, cx);
+            });
+        });
+
+        panel.read_with(cx, |panel, cx| {
+            assert_eq!(
+                panel.intervals.monitor_secs,
+                MonitorIntervals::MONITOR_RANGE.1
+            );
+            assert_eq!(
+                panel.intervals.status_secs,
+                MonitorIntervals::STATUS_RANGE.0
+            );
+            assert_eq!(
+                panel.monitor_input.read(cx).value(),
+                MonitorIntervals::MONITOR_RANGE.1.to_string(),
+                "夹过的值要写回输入框"
+            );
+        });
+    }
+
+    /// 把那一格清空就不保存，正在生效的那一档原样不动。
+    ///
+    /// 空格子是这条路上唯一真的会出现的"不是数字"：输入框自己带着数字模式，
+    /// 字母根本敲不进去。所以界面上那句红字守的是这一种。
+    #[gpui::test]
+    fn an_empty_interval_is_not_saved(cx: &mut gpui::TestAppContext) {
+        let (panel, cx) = draw_settings(cx, MonitorIntervals::default());
+
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel
+                    .monitor_input
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+                assert!(panel.typed_intervals(cx).is_none());
+                panel.save_intervals(window, cx);
+            });
+        });
+
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.intervals, MonitorIntervals::default());
+        });
+    }
+
+    /// 把设置页真的画一遍。这一页全是新搭的元素，画不出来只有在这儿才会红。
+    ///
+    /// 外面套一层 [`Root`]：保存要弹通知，而通知是挂在 `Root` 那一层的 ——
+    /// 少了它，`push_notification` 会在测试里直接 panic。
+    fn draw_settings(
+        cx: &mut gpui::TestAppContext,
+        intervals: MonitorIntervals,
+    ) -> (Entity<MonitorPanel>, &mut gpui::VisualTestContext) {
+        use gpui_component::Root;
+
+        cx.update(gpui_component::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            // `hosts` 给 `None`：这条测试只管界面与轮询节奏，落库那一半在
+            // `HostService` 自己的测试里验。
+            let panel = MonitorPanel::new(host(intervals), None, window, cx);
+            panel.update(cx, |panel, _| panel.active_tab = MonitorTab::Settings);
+            Root::new(cx.new(|_| Harness { panel }), window, cx)
+        });
+        let panel = root.read_with(cx, |root, cx| {
+            root.view()
+                .clone()
+                .downcast::<Harness>()
+                .expect("harness")
+                .read(cx)
+                .panel
+                .clone()
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (panel, cx)
+    }
+
+    struct Harness {
+        panel: Entity<MonitorPanel>,
+    }
+
+    impl Render for Harness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.panel.clone())
+        }
     }
 }

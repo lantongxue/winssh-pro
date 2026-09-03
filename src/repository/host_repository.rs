@@ -189,6 +189,32 @@ impl HostRepository {
         Ok(())
     }
 
+    /// 只改一台主机的采集间隔。
+    ///
+    /// 走 `update_many` 而不是拼一个 `ActiveModel`：那条路要把整行的列都摆出来，
+    /// 而调用方（监控面板里的设置页）手上只有这两个数，别的列它既不知道也不该动。
+    pub async fn update_host_intervals(
+        &self,
+        conn: &impl ConnectionTrait,
+        id: &str,
+        monitor_secs: u32,
+        status_secs: u32,
+    ) -> Result<u64, DbErr> {
+        let result = host::Entity::update_many()
+            .col_expr(
+                host::Column::MonitorIntervalSecs,
+                Expr::value(monitor_secs as i64),
+            )
+            .col_expr(
+                host::Column::StatusIntervalSecs,
+                Expr::value(status_secs as i64),
+            )
+            .filter(host::Column::Id.eq(id))
+            .exec(conn)
+            .await?;
+        Ok(result.rows_affected)
+    }
+
     /// 改一台主机的落位：换到哪个分组、排在第几位。
     pub async fn update_host_position(
         &self,

@@ -51,6 +51,58 @@ impl AuthMethod {
     }
 }
 
+/// 一台主机的采集节奏，单位秒。
+///
+/// 两条线各走各的，因为看的人不一样：
+///
+/// - `monitor_secs` 是**监控面板展开着**的时候采全量的间隔。那一屏有曲线、
+///   进程表、容器，采一次要在对端跑一遍 `/proc` 全表，贵；但面板开着就是
+///   在盯它，慢了曲线就不像"实时"。
+/// - `status_secs` 是**面板收起来之后**采轻量那一份的间隔，只喂终端下沿的
+///   [`crate::ui::bars::SessionStatusBar`]。那几个数字用余光扫，采得起
+///   但不必勤；而它一直看得见，所以也不能停。
+///
+/// 两个数跟着主机走（存在 `hosts` 表里）：一台跳板机和一台数据库该有的节奏
+/// 本来就不一样，而"这台机器要盯多紧"是主机的属性，不是这次开的窗口的属性。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MonitorIntervals {
+    pub monitor_secs: u32,
+    pub status_secs: u32,
+}
+
+impl Default for MonitorIntervals {
+    fn default() -> Self {
+        Self {
+            monitor_secs: 3,
+            status_secs: 8,
+        }
+    }
+}
+
+impl MonitorIntervals {
+    /// 监控面板那一档的上下界。下界 1 秒：再快远端光是跑采集脚本就占住一个核，
+    /// 而且上一次还没回来下一次就该发了。上界 60 秒：比这还慢的话面板开着也
+    /// 没有"实时"可言，那种需求应该是把面板收起来走状态栏那一档。
+    pub const MONITOR_RANGE: (u32, u32) = (1, 60);
+
+    /// 状态栏那一档的上下界。下界 2 秒 —— 它是后台一直在跑的那条，比监控面板
+    /// 更该克制；上界 300 秒，再长状态栏上的数字就旧到不该再摆出来了。
+    pub const STATUS_RANGE: (u32, u32) = (2, 300);
+
+    /// 夹回合法区间。库里读出来的值、输入框里敲进来的值都过这一道 ——
+    /// 老库里没有这两列时补的是 0，直接拿去当间隔就是一个死循环般的忙轮询。
+    pub fn clamped(self) -> Self {
+        Self {
+            monitor_secs: self
+                .monitor_secs
+                .clamp(Self::MONITOR_RANGE.0, Self::MONITOR_RANGE.1),
+            status_secs: self
+                .status_secs
+                .clamp(Self::STATUS_RANGE.0, Self::STATUS_RANGE.1),
+        }
+    }
+}
+
 /// 一台主机的连接配置。
 #[derive(Clone, Debug)]
 pub struct Host {
@@ -73,6 +125,11 @@ pub struct Host {
     /// 跳板机主机 id（`Some` 时经由该主机 ProxyJump）。
     #[allow(dead_code)]
     pub jump_host_id: Option<SharedString>,
+    /// 这台机器要盯多紧。见 [`MonitorIntervals`]。
+    ///
+    /// 不进 [`HostDraft`]：主机表单管的是"怎么连上去"，采集节奏是连上之后
+    /// 在监控面板里调的，两处各写各的列，互不覆盖。
+    pub monitor_intervals: MonitorIntervals,
 }
 
 impl Host {

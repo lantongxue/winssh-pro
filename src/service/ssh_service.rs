@@ -67,6 +67,7 @@ mod tests {
             password: "wrong".into(),
             key_path: "".into(),
             jump_host_id: None,
+            monitor_intervals: Default::default(),
         }
     }
 

@@ -14,7 +14,7 @@ use sea_orm::{
 
 use crate::{
     db::{self, entities::host, entities::host_group},
-    host::{AuthMethod, Host, HostDraft, HostGroup},
+    host::{AuthMethod, Host, HostDraft, HostGroup, MonitorIntervals},
     repository::HostRepository,
 };
 
@@ -103,6 +103,10 @@ impl HostService {
                         password: Set(draft.password.clone()),
                         key_path: Set(draft.key_path.clone()),
                         jump_host_id: Set(draft.jump_host_id.clone()),
+                        // 采集节奏不在表单里，新主机先拿出厂值；改它的地方是
+                        // 监控面板的设置页（[`Self::update_monitor_intervals`]）。
+                        monitor_interval_secs: Set(MonitorIntervals::default().monitor_secs),
+                        status_interval_secs: Set(MonitorIntervals::default().status_secs),
                     },
                 )
                 .await?;
@@ -119,6 +123,7 @@ impl HostService {
                 password: draft.password.into(),
                 key_path: draft.key_path.into(),
                 jump_host_id: draft.jump_host_id.map(|value| value.into()),
+                monitor_intervals: MonitorIntervals::default(),
             })
         })
         .await
@@ -149,6 +154,10 @@ impl HostService {
                         password: Set(draft.password.clone()),
                         key_path: Set(draft.key_path.clone()),
                         jump_host_id: Set(draft.jump_host_id.clone()),
+                        // 表单不认这两列，别把用户在监控面板里调好的节奏
+                        // 顺手抹回默认值。`NotSet` 的列不会进 UPDATE 语句。
+                        monitor_interval_secs: ActiveValue::NotSet,
+                        status_interval_secs: ActiveValue::NotSet,
                     },
                 )
                 .await;
@@ -226,6 +235,9 @@ impl HostService {
                         password: Set(source.password.clone()),
                         key_path: Set(source.key_path.clone()),
                         jump_host_id: Set(source.jump_host_id.clone()),
+                        // 副本是"同一台机器的另一份配置"，盯多紧一并照抄。
+                        monitor_interval_secs: Set(source.monitor_interval_secs),
+                        status_interval_secs: Set(source.status_interval_secs),
                     },
                 )
                 .await?;
@@ -242,7 +254,36 @@ impl HostService {
                 password: source.password.into(),
                 key_path: source.key_path.into(),
                 jump_host_id: source.jump_host_id.map(|value| value.into()),
+                monitor_intervals: MonitorIntervals {
+                    monitor_secs: source.monitor_interval_secs,
+                    status_secs: source.status_interval_secs,
+                }
+                .clamped(),
             })
+        })
+        .await
+    }
+
+    /// 改一台主机的采集节奏。
+    ///
+    /// 独立于 [`Self::update_host`]：那一条是主机表单整行重写，而这两个数是
+    /// 连上之后在监控面板里调的，两处各写各的列。写进去之前先夹回合法区间，
+    /// 免得界面上一个手滑的 0 变成一条忙轮询。
+    pub async fn update_monitor_intervals(
+        &self,
+        id: &str,
+        intervals: MonitorIntervals,
+    ) -> Result<MonitorIntervals> {
+        let this = self.clone();
+        let id = id.to_owned();
+        let intervals = intervals.clamped();
+        db::run(async move {
+            let affected = this
+                .repo
+                .update_host_intervals(&this.db, &id, intervals.monitor_secs, intervals.status_secs)
+                .await?;
+            ensure!(affected == 1, "主机 {id} 不存在");
+            Ok(intervals)
         })
         .await
     }
@@ -298,6 +339,13 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                     password: host.password.into(),
                     key_path: host.key_path.into(),
                     jump_host_id: host.jump_host_id.map(|value| value.into()),
+                    // 老库补出来的列可能是 0，夹一道再交给界面 —— 轮询间隔
+                    // 是拿去当定时器用的，0 会变成一条不停歇的采集。
+                    monitor_intervals: MonitorIntervals {
+                        monitor_secs: host.monitor_interval_secs,
+                        status_secs: host.status_interval_secs,
+                    }
+                    .clamped(),
                 })
                 .collect(),
         })
@@ -594,6 +642,134 @@ mod tests {
             let loaded = &groups[0].hosts[0];
             assert_eq!(loaded.auth_method, AuthMethod::PublicKey);
             assert_eq!(loaded.key_path.to_string(), "/home/user/.ssh/id_ed25519");
+        });
+    }
+
+    /// 采集节奏存得住、读得回，而且是夹过区间的。
+    #[test]
+    fn monitor_intervals_round_trip() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            assert_eq!(
+                host.monitor_intervals,
+                MonitorIntervals::default(),
+                "新主机先拿出厂值"
+            );
+
+            let saved = service
+                .update_monitor_intervals(
+                    &host.id,
+                    MonitorIntervals {
+                        monitor_secs: 5,
+                        status_secs: 60,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(saved.monitor_secs, 5);
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(
+                groups[0].hosts[0].monitor_intervals,
+                MonitorIntervals {
+                    monitor_secs: 5,
+                    status_secs: 60,
+                }
+            );
+        });
+    }
+
+    /// 越界的值在服务层就夹住，不能让它进库 —— 存进去的 0 秒下次开会话
+    /// 就是一条忙轮询，那时候已经没有界面拦得住了。
+    #[test]
+    fn out_of_range_intervals_are_clamped_before_they_reach_the_db() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+
+            service
+                .update_monitor_intervals(
+                    &host.id,
+                    MonitorIntervals {
+                        monitor_secs: 0,
+                        status_secs: 99_999,
+                    },
+                )
+                .await
+                .unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(
+                groups[0].hosts[0].monitor_intervals,
+                MonitorIntervals {
+                    monitor_secs: MonitorIntervals::MONITOR_RANGE.0,
+                    status_secs: MonitorIntervals::STATUS_RANGE.1,
+                }
+            );
+        });
+    }
+
+    /// 主机表单不认这两列，改一次连接配置不该把调好的节奏抹回默认值。
+    /// 两处各写各的列，这条钉的就是那个边界。
+    #[test]
+    fn editing_a_host_keeps_its_monitor_intervals() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            let tuned = MonitorIntervals {
+                monitor_secs: 10,
+                status_secs: 120,
+            };
+            service
+                .update_monitor_intervals(&host.id, tuned)
+                .await
+                .unwrap();
+
+            service
+                .update_host(&host.id, "分组", draft("web-01-renamed"))
+                .await
+                .unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].name, "web-01-renamed");
+            assert_eq!(
+                groups[0].hosts[0].monitor_intervals, tuned,
+                "节奏被表单抹掉了"
+            );
+        });
+    }
+
+    /// 副本是同一台机器的另一份配置，盯多紧一并照抄。
+    #[test]
+    fn a_duplicate_copies_the_monitor_intervals() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            let tuned = MonitorIntervals {
+                monitor_secs: 15,
+                status_secs: 45,
+            };
+            service
+                .update_monitor_intervals(&host.id, tuned)
+                .await
+                .unwrap();
+
+            let copy = service.duplicate_host(&host.id).await.unwrap();
+            assert_eq!(copy.monitor_intervals, tuned);
+        });
+    }
+
+    #[test]
+    fn intervals_for_a_missing_host_fail() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            assert!(
+                service
+                    .update_monitor_intervals("nope", MonitorIntervals::default())
+                    .await
+                    .is_err()
+            );
         });
     }
 

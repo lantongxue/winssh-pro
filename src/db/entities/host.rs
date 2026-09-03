@@ -26,6 +26,12 @@ pub struct Model {
     /// 跳板机主机 id，空表示直连。
     #[sea_orm(nullable)]
     pub jump_host_id: Option<String>,
+    /// 监控面板展开时的采集间隔，秒。见 [`crate::host::MonitorIntervals`]。
+    #[sea_orm(default_value = 3)]
+    pub monitor_interval_secs: u32,
+    /// 面板收起后只喂状态栏的那一档采集间隔，秒。
+    #[sea_orm(default_value = 8)]
+    pub status_interval_secs: u32,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

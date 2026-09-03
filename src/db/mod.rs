@@ -39,17 +39,23 @@ const SCHEMA: [&str; 2] = [
         auth_method  TEXT    NOT NULL DEFAULT 'password',
         password     TEXT    NOT NULL DEFAULT '',
         key_path     TEXT    NOT NULL DEFAULT '',
-        jump_host_id TEXT
+        jump_host_id TEXT,
+        monitor_interval_secs INTEGER NOT NULL DEFAULT 3,
+        status_interval_secs  INTEGER NOT NULL DEFAULT 8
     )",
 ];
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 4] = [
+const MIGRATIONS: [&str; 6] = [
     "ALTER TABLE hosts ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'password'",
     "ALTER TABLE hosts ADD COLUMN password TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE hosts ADD COLUMN key_path TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE hosts ADD COLUMN jump_host_id TEXT",
+    // 默认值要和 `MonitorIntervals::default()` 对得上：老库里补出来的那一列
+    // 就是新主机的出厂节奏，两边不一致的话，同一台机器在升级前后表现不同。
+    "ALTER TABLE hosts ADD COLUMN monitor_interval_secs INTEGER NOT NULL DEFAULT 3",
+    "ALTER TABLE hosts ADD COLUMN status_interval_secs INTEGER NOT NULL DEFAULT 8",
 ];
 
 /// 数据层专用的 tokio runtime，进程生命周期内只建一次。

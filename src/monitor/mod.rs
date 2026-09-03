@@ -148,15 +148,18 @@ impl MonitorTelemetry {
     }
 }
 
-/// 状态栏那三个数字是这份遥测的一个子集 —— 同一次采集出来的，不另外去问一遍。
+/// 状态栏那几个数字是这份遥测的一个子集 —— 同一次采集出来的，不另外去问一遍。
 impl From<&MonitorTelemetry> for SessionTelemetry {
     fn from(telemetry: &MonitorTelemetry) -> Self {
         Self {
             latency_ms: telemetry.latency_ms,
             cpu_percent: telemetry.cpu_percent,
-            load_average: telemetry.load_avg,
             memory_used_gb: telemetry.memory_used_gb,
             memory_total_gb: telemetry.memory_total_gb,
+            disk_used_gb: telemetry.disk_used_gb,
+            disk_total_gb: telemetry.disk_total_gb,
+            net_in_kbps: telemetry.net_in_kbps,
+            net_out_kbps: telemetry.net_out_kbps,
         }
     }
 }
