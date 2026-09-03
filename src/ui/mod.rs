@@ -70,7 +70,7 @@ pub fn init(cx: &mut App) {
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-f", Find, Some("Terminal")),
         #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-f", Find, Some("Terminal")),
+        KeyBinding::new("ctrl-f", Find, Some("Terminal")),
         KeyBinding::new("escape", CloseSearch, Some("Terminal")),
         // SFTP 文件列表里的多选。方向键、Esc 归表格自己（`DataTable` 上下文里
         // 已经绑过），这里只补它没有的那几个。绑在 `SftpPanel` 上下文而不是全局：
