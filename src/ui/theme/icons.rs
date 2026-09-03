@@ -15,8 +15,12 @@ pub enum AppIcon {
     Activity,
     /// 打包箱：`.tar.gz`、`.zip` 这类归档。
     Archive,
-    /// 一分为二的方框：双栏布局。
+    /// 竖着一分为二的方框：左右分屏。
     Columns2,
+    /// 横着一分为二的方框：上下分屏。
+    Rows2,
+    /// 完整的方框：不分屏，一个终端占满。
+    Square,
     /// `</>`：命令片段，也是源码文件的类型图标。
     CodeXml,
     /// 向下箭头入盘：下载到本地。
@@ -57,6 +61,8 @@ impl IconNamed for AppIcon {
             Self::Activity => "icons/activity.svg",
             Self::Archive => "icons/archive.svg",
             Self::Columns2 => "icons/columns-2.svg",
+            Self::Rows2 => "icons/rows-2.svg",
+            Self::Square => "icons/square.svg",
             Self::CodeXml => "icons/code-xml.svg",
             Self::Download => "icons/download.svg",
             Self::FilePlus => "icons/file-plus.svg",

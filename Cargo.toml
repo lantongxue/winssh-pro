@@ -57,6 +57,10 @@ aws-lc-rs = { version = "1.16.2", features = ["prebuilt-nasm"] }
 # `russh` 里面），所以只在测试里依赖，不进二进制。
 [dev-dependencies]
 rand = "0.10"
+# 让界面能在无窗口的测试里真的画一遍（`TestAppContext` + `window.draw`）。
+# 有些错只在完整的 layout/prepaint/paint 走完之后才暴露 —— 比如元素树自己
+# 套自己，编译期看不出来，跑起来是栈溢出。
+gpui = { git = "https://github.com/zed-industries/zed", features = ["test-support"] }
 
 # 依赖全部按发布级优化编译。gpui 与 alacritty_terminal 是每一帧真正在跑的代码，
 # dev 默认的 opt-level=0 会让它们慢出一个数量级 —— 界面卡、CPU 占用高，多半就是

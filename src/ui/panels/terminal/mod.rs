@@ -1,0 +1,946 @@
+//! 终端面板：一台主机上的一个已打开会话，停靠在 Dock 中心区，可拖拽、可分屏。
+//!
+//! 设计稿里这一块自上而下四层，这里对应四段：
+//!
+//! | 层 | 归谁 |
+//! | --- | --- |
+//! | 标签页（名字、颜色点、关闭） | [`Panel::title`]，画在 Dock 的标签条上 |
+//! | 会话基本信息栏 | [`SessionInfoBar`] |
+//! | 终端网格 | [`TerminalPane`]（一个或两个） |
+//! | 会话状态栏 | [`SessionStatusBar`] |
+//!
+//! **真正的终端在 [`TerminalPane`] 里**，这里只是围着它的那层壳：上下两条
+//! chrome、右边的监控面板、底下的 SFTP 栏，以及分屏。分开的理由见那个模块的
+//! 文档 —— 一句话：选区、搜索、焦点这些东西是"每个终端一份"的。
+//!
+//! **一个标签页 = 一台主机上的一条 SSH 连接。** 分屏出来的第二个窗格走
+//! [`crate::ssh::SshConnection::open_shell`]，在同一条连接上再开一个 shell，
+//! 不重新拨号也不再认证一次；SFTP 与监控采集本来就是这么做的。所以标签页
+//! 关掉时两个窗格一起没，这也正是"同一台机器的两半"该有的语义。
+//!
+//! 分屏只有三档（单屏 / 上下 / 左右），不是任意布局 —— 取舍写在 [`split`]
+//! 的模块文档里。
+
+mod pane;
+mod split;
+
+pub use pane::{BackTab, CloseSearch, CopySelection, Find, PasteClipboard, Tab};
+pub use split::SplitLayout;
+
+use gpui::{
+    App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    WeakEntity, Window, actions, div, px,
+};
+use gpui_component::{
+    ActiveTheme as _, IconName, ResizableState, Sizable as _, WindowExt as _,
+    button::{Button, ButtonVariants as _},
+    dock::{BasePanel, Panel, PanelEvent, PanelId, TabGroup},
+    h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
+};
+use std::sync::Arc;
+
+use self::{
+    pane::{PaneOrigin, TerminalPane, TerminalPaneEvent},
+    split::{SplitState, render_split},
+};
+use crate::{
+    host::Host,
+    session::SessionTelemetry,
+    terminal::TerminalBounds,
+    ui::{
+        bars::{SessionInfoBar, SessionStatusBar},
+        panels::{MonitorEvent, MonitorPanel, SftpPanel, SftpPanelEvent},
+        theme::palette,
+    },
+};
+
+actions!(
+    terminal,
+    [
+        /// 切换右侧监控面板（Alt+M）。
+        ToggleMonitor,
+        /// 切换底部 SFTP 栏（Alt+F）。
+        ToggleSftp,
+    ]
+);
+
+/// 标签页上那个颜色点的直径。
+const TAB_DOT_SIZE: gpui::Pixels = px(6.);
+
+/// 右侧监控面板的固定宽度。
+const MONITOR_WIDTH: gpui::Pixels = px(360.);
+
+/// 底部 SFTP 栏展开时的初始高度，以及能拖到多高/多矮。展开时给到三行的目录加一条
+/// 队列（原型是 h-20 那一档），拖拽范围则由"还能看见一两行"到"半屏"。
+const SFTP_HEIGHT: gpui::Pixels = px(300.);
+const SFTP_MIN_HEIGHT: gpui::Pixels = px(120.);
+const SFTP_MAX_HEIGHT: gpui::Pixels = px(560.);
+
+/// 这个标签页的终端从哪儿拿字节。分屏出来的第二个窗格要照着第一个开。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Source {
+    /// SSH：第一个窗格拨号，之后的在同一条连接上开 shell。
+    Ssh,
+    /// 本机 PTY。
+    Local,
+    /// 空终端，什么都不连。只在测试里用，理由见 [`PaneOrigin::Detached`]。
+    #[cfg(test)]
+    Detached,
+}
+
+pub struct TerminalPanel {
+    host: Host,
+    source: Source,
+    /// 状态栏中间那三个数字。来自监控面板的采集（[`MonitorEvent::Reading`]），
+    /// 第一次采到之前是 `None`，状态栏显示破折号而不是 0。
+    telemetry: Option<SessionTelemetry>,
+    /// 这个标签页里的终端。单屏时一个，分屏时两个 —— 长度由
+    /// [`SplitLayout::panes`] 说了算，两者不同步就会画出空的一半。
+    panes: Vec<Entity<TerminalPane>>,
+    /// 活动窗格的下标。上下两条 chrome 说的是它的事，监控和 SFTP 送的命令
+    /// 也进它。焦点在哪一半，它就是哪一半（[`Self::sync_active`]）。
+    active: usize,
+    split: SplitLayout,
+    split_state: SplitState,
+    /// 所在的标签组。标签页上的关闭按钮要通过它把自己摘掉 ——
+    /// 面板不知道自己在布局树的哪个位置，只有标签组知道。
+    group: Option<WeakEntity<TabGroup>>,
+    /// 面板自己的焦点句柄。**只是个兜底** —— [`Focusable`] 实际交出去的是
+    /// 活动窗格的句柄，见那边的说明。
+    focus_handle: FocusHandle,
+    /// 右侧监控面板是否展开。
+    monitor_open: bool,
+    monitor_panel: Entity<MonitorPanel>,
+    /// 终端与监控面板之间的可拖拽分隔状态。
+    resizable_state: Entity<ResizableState>,
+    resizable_id: SharedString,
+    /// 底部 SFTP 栏。它和监控面板一样是这一栏终端自己的子面板，不进 Dock。
+    sftp_open: bool,
+    sftp_panel: Entity<SftpPanel>,
+    sftp_resizable_state: Entity<ResizableState>,
+    sftp_resizable_id: SharedString,
+    /// 这条会话的 SSH 句柄。SFTP 与监控走的是同一条连接上另开的子系统通道，
+    /// 分屏出来的第二个 shell 也是，"重试"还要拿它再来一次，所以留一份。
+    ssh_handle: Option<Arc<russh::client::Handle<crate::ssh::SshHandler>>>,
+}
+
+impl TerminalPanel {
+    pub fn new(host: Host, window: &mut Window, cx: &mut App) -> Entity<Self> {
+        Self::build(host, Source::Ssh, window, cx)
+    }
+
+    /// 直接在本机开一条登录 shell，不经过 SSH。
+    ///
+    /// 用于标题栏"本地 Shell"按钮。`Host` 仅用于展示（名字、地址、状态栏读数），
+    /// 字节源就是 [`crate::terminal::Emulator::spawn`] 的本机 PTY。
+    pub fn new_local(window: &mut Window, cx: &mut App) -> Entity<Self> {
+        let counter = {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static LOCAL_COUNTER: AtomicUsize = AtomicUsize::new(1);
+            LOCAL_COUNTER.fetch_add(1, Ordering::Relaxed)
+        };
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "local".to_string());
+        let name: SharedString = if counter == 1 {
+            "本地 Shell".into()
+        } else {
+            SharedString::from(format!("本地 Shell {counter}"))
+        };
+        let host = Host {
+            id: SharedString::from(format!("local-{counter}")),
+            name,
+            user: SharedString::from(user),
+            hostname: SharedString::from("localhost"),
+            port: 22,
+            platform: SharedString::from("本机"),
+            auth_method: crate::host::AuthMethod::Password,
+            password: "".into(),
+            key_path: "".into(),
+            jump_host_id: None,
+        };
+        Self::build(host, Source::Local, window, cx)
+    }
+
+    /// 只在测试里用：窗格拿一个不连任何东西的空终端。理由见
+    /// [`PaneOrigin::Detached`]。
+    #[cfg(test)]
+    fn new_detached(window: &mut Window, cx: &mut App) -> Entity<Self> {
+        let host = Host {
+            id: "detached".into(),
+            name: "detached".into(),
+            user: "tester".into(),
+            hostname: "localhost".into(),
+            port: 22,
+            platform: "本机".into(),
+            auth_method: crate::host::AuthMethod::Password,
+            password: "".into(),
+            key_path: "".into(),
+            jump_host_id: None,
+        };
+        Self::build(host, Source::Detached, window, cx)
+    }
+
+    fn build(host: Host, source: Source, window: &mut Window, cx: &mut App) -> Entity<Self> {
+        cx.new(|cx| {
+            let monitor_panel = MonitorPanel::new(host.clone(), window, cx);
+            let sftp_panel = SftpPanel::new(host.clone(), window, cx);
+            // 第一个窗格没有连接可借，SSH 那一档只能自己拨号。
+            let origin = match source {
+                Source::Ssh => PaneOrigin::Dial,
+                Source::Local => PaneOrigin::Local,
+                #[cfg(test)]
+                Source::Detached => PaneOrigin::Detached,
+            };
+            let pane = TerminalPane::new(host.clone(), origin, window, cx);
+
+            let mut this = Self {
+                telemetry: None,
+                source,
+                panes: Vec::new(),
+                active: 0,
+                split: SplitLayout::Single,
+                split_state: SplitState::default(),
+                group: None,
+                focus_handle: cx.focus_handle(),
+                monitor_open: false,
+                monitor_panel: monitor_panel.clone(),
+                resizable_state: cx.new(|_| ResizableState::default()),
+                resizable_id: SharedString::from(format!("terminal-monitor-{}", host.id)),
+                sftp_open: false,
+                sftp_panel: sftp_panel.clone(),
+                sftp_resizable_state: cx.new(|_| ResizableState::default()),
+                sftp_resizable_id: SharedString::from(format!("terminal-sftp-{}", host.id)),
+                ssh_handle: None,
+                host,
+            };
+            this.adopt_pane(pane, window, cx);
+            Self::subscribe_monitor(&monitor_panel, cx);
+            Self::subscribe_sftp(&sftp_panel, window, cx);
+            this
+        })
+    }
+
+    // ─── 窗格 ───────────────────────────────────────────────────────────────
+
+    /// 活动窗格。`panes` 永远非空（[`Self::close_pane`] 守着这件事），
+    /// 但下标可能因为刚关掉一个而越界，所以这里兜一次底。
+    fn active_pane(&self) -> Option<&Entity<TerminalPane>> {
+        self.panes.get(self.active).or_else(|| self.panes.first())
+    }
+
+    /// 把新窗格接进来：订阅它要说的话，并让它成为活动的那个。
+    fn adopt_pane(
+        &mut self,
+        pane: Entity<TerminalPane>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.subscribe_in(&pane, window, Self::on_pane_event).detach();
+        self.panes.push(pane);
+        self.active = self.panes.len() - 1;
+    }
+
+    fn on_pane_event(
+        &mut self,
+        pane: &Entity<TerminalPane>,
+        event: &TerminalPaneEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            TerminalPaneEvent::Connected(handle) => {
+                // 第一个连上的窗格提供这条会话的连接。第二个窗格是在同一条上
+                // 开出来的，报的是同一个句柄，接不接都一样 —— 但监控与 SFTP
+                // 已经挂好了，不能再挂一遍。
+                if self.ssh_handle.is_some() {
+                    return;
+                }
+                self.ssh_handle = Some(handle.clone());
+                let service = crate::service::MonitorService::new(handle.clone());
+                let expanded = self.monitor_open;
+                self.monitor_panel.update(cx, |monitor, cx| {
+                    monitor.attach(service, cx);
+                    monitor.set_expanded(expanded, cx);
+                });
+                // SFTP 通道与终端不同一条：连上就开，用户什么时候展开这一栏都用得着，
+                // 而它失败的原因（对端没配 sftp-server）也该早点拿到。
+                self.open_sftp(handle.clone(), window, cx);
+                cx.notify();
+            }
+            TerminalPaneEvent::Changed => {
+                self.sync_active(window, cx);
+                cx.notify();
+            }
+            TerminalPaneEvent::CloseRequested => {
+                let id = pane.entity_id();
+                self.close_pane(id, window, cx);
+            }
+            TerminalPaneEvent::Notify(message) => {
+                window.push_notification(message.to_string(), cx);
+            }
+        }
+    }
+
+    /// 焦点落在哪一半，哪一半就是活动的。
+    ///
+    /// 用 `contains_focused` 而不是 `is_focused`：在这一半的搜索框里打字时，
+    /// 活动的仍然是这一半 —— 上下两条 chrome 不该因为光标进了搜索框就改说
+    /// 另一个终端的事。
+    fn sync_active(&mut self, window: &Window, cx: &App) {
+        if let Some(at) = self
+            .panes
+            .iter()
+            .position(|pane| pane.read(cx).contains_focused(window, cx))
+        {
+            self.active = at;
+        }
+    }
+
+    /// 换一档分屏。
+    ///
+    /// 三档之间六种走法，归成三件事：加一个窗格、去掉一个窗格、只换方向。
+    /// 换方向时把比例复位 —— 上下拖成 9:1 之后切到左右，那个 9:1 是对着另一个
+    /// 方向拖出来的，接着用没有道理。
+    fn set_split(&mut self, layout: SplitLayout, window: &mut Window, cx: &mut Context<Self>) {
+        if self.split == layout {
+            return;
+        }
+        let was = self.split;
+        self.split = layout;
+
+        match (was.panes(), layout.panes()) {
+            (1, 2) => {
+                let pane = TerminalPane::new(self.host.clone(), self.pane_origin(), window, cx);
+                self.split_state.reset();
+                self.adopt_pane(pane, window, cx);
+                self.focus_active(window, cx);
+            }
+            (2, 1) => {
+                // 收回单屏时留下的是**活动的**那一半：用户正看着它。
+                let keep = self.active.min(self.panes.len().saturating_sub(1));
+                self.panes = self.panes.drain(keep..=keep).collect();
+                self.active = 0;
+                self.split_state.reset();
+                self.focus_active(window, cx);
+            }
+            // 上下 ↔ 左右：窗格不动，只是排法换了。
+            _ => self.split_state.reset(),
+        }
+        cx.notify();
+    }
+
+    /// 新窗格的字节源从哪儿来。
+    ///
+    /// 有连接就在它上面再开一个 shell —— 那是"同一台机器上的第二个终端"最
+    /// 便宜也最准确的做法。还没连上（正在拨号）或者第一个窗格已经回退到本机时，
+    /// 才各自去开：让第二个窗格悄悄变成本机 shell 是答非所问，而且看不出来。
+    fn pane_origin(&self) -> PaneOrigin {
+        match self.source {
+            Source::Local => PaneOrigin::Local,
+            #[cfg(test)]
+            Source::Detached => PaneOrigin::Detached,
+            Source::Ssh => match self.ssh_handle.clone() {
+                Some(handle) => PaneOrigin::Share(handle),
+                None => PaneOrigin::Dial,
+            },
+        }
+    }
+
+    /// 关掉一个窗格：分屏时收回单屏，单屏时关掉整个标签页。
+    fn close_pane(
+        &mut self,
+        pane: gpui::EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.panes.len() <= 1 {
+            self.close(window, cx);
+            return;
+        }
+        let Some(at) = self.panes.iter().position(|p| p.entity_id() == pane) else {
+            return;
+        };
+        self.panes.remove(at);
+        self.active = 0;
+        self.split = SplitLayout::Single;
+        self.split_state.reset();
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    fn focus_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.active_pane().cloned() else {
+            return;
+        };
+        // 挪到帧末：这个方法的调用方（信息栏上的按钮、右键菜单）正借着面板，
+        // 而聚焦会同步走一遍窗格的 render。
+        window.defer(cx, move |window, cx| {
+            let handle = pane.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+        });
+    }
+
+    /// 往活动窗格里打一行命令并回车。
+    fn send_line(&self, cmd: &str, cx: &mut App) {
+        let Some(pane) = self.active_pane().cloned() else {
+            return;
+        };
+        pane.update(cx, |pane, cx| pane.send_line(cmd, cx));
+    }
+
+    // ─── 子面板 ─────────────────────────────────────────────────────────────
+
+    /// 监控面板的三件事：关掉自己、把诊断命令送进终端、报一份新读数。
+    ///
+    /// 读数走事件而不是让状态栏自己去采：那是同一次采集里已经带回来的数字，
+    /// 为三个数再往对端跑一趟没有道理。
+    fn subscribe_monitor(monitor_panel: &Entity<MonitorPanel>, cx: &mut Context<Self>) {
+        cx.subscribe(
+            monitor_panel,
+            |this: &mut Self, _, event: &MonitorEvent, cx| match event {
+                MonitorEvent::Close => {
+                    this.set_monitor_open(false, cx);
+                }
+                MonitorEvent::Reading(telemetry) => {
+                    this.telemetry = Some(*telemetry);
+                    cx.notify();
+                }
+                MonitorEvent::SendCommand(cmd) => this.send_line(cmd.as_str(), cx),
+            },
+        )
+        .detach();
+    }
+
+    /// 底部 SFTP 栏的四件事：关掉自己、把命令送进终端、要一个新高度、通道没了要重来。
+    ///
+    /// 它不碰传输也不碰目录：那些都在面板里。宿主只负责布局（这一栏多高、开不开）
+    /// 和它自己要不到两样东西 —— 用户的终端，和那条 SSH 连接。
+    fn subscribe_sftp(sftp_panel: &Entity<SftpPanel>, window: &mut Window, cx: &mut Context<Self>) {
+        cx.subscribe_in(
+            sftp_panel,
+            window,
+            |this: &mut Self, _, event: &SftpPanelEvent, window, cx| match event {
+                SftpPanelEvent::Close => this.set_sftp_open(false, window, cx),
+                SftpPanelEvent::SendCommand(cmd) => this.send_line(cmd.as_str(), cx),
+                SftpPanelEvent::SetHeight(height) => {
+                    // 面板自己不知道多高，也不该知道：它只说"给我这一档"，
+                    // 剩下的是分隔条那一侧的事（超范围会被夹住）。
+                    let state = this.sftp_resizable_state.clone();
+                    state.update(cx, |state, cx| state.resize_panel(1, *height, window, cx));
+                }
+                SftpPanelEvent::Reconnect => {
+                    if let Some(handle) = this.ssh_handle.clone() {
+                        this.open_sftp(handle, window, cx);
+                    }
+                }
+            },
+        )
+        .detach();
+    }
+
+    /// 在同一条 SSH 连接上开一条 SFTP 子系统通道，交给底部那一栏。
+    ///
+    /// 开不起来不算这一栏的失败，而是它的一个状态：面板拿着原因画自己的空状态，
+    /// 那里有一颗"重试"按钮，走的还是这个函数。
+    fn open_sftp(
+        &mut self,
+        handle: Arc<russh::client::Handle<crate::ssh::SshHandler>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let panel = self.sftp_panel.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let outcome = crate::service::SftpService::connect(handle).await;
+            let _ = panel.update_in(cx, |this, window, cx| match outcome {
+                Ok(service) => this.attach(Some(service), None, window, cx),
+                Err(error) => this.attach(
+                    None,
+                    Some(SharedString::from(format!("{error:#}"))),
+                    window,
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    /// 展开或收起底部这一栏。收起不取消在跑的传输 —— 队列里的东西该继续搬完。
+    fn set_sftp_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sftp_open == open {
+            return;
+        }
+        self.sftp_open = open;
+        self.sftp_panel
+            .update(cx, |panel, cx| panel.set_open(open, window, cx));
+        cx.notify();
+    }
+
+    fn toggle_sftp(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_sftp_open(!self.sftp_open, window, cx);
+    }
+
+    fn on_toggle_sftp(&mut self, _: &ToggleSftp, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_sftp(window, cx);
+        // 吞掉这一下。GPUI 先派发按键绑定、再走 `on_key_down`（见
+        // `Window::dispatch_key_event`），不拦住的话 Alt+F 既开了这一栏，
+        // 又作为 `\x1bf` 进了远端 shell —— 在 readline 里那是"往后跳一个词"。
+        cx.stop_propagation();
+    }
+
+    /// 展开或收起右侧监控面板。
+    ///
+    /// 收起之后采集不停 —— 状态栏中间那三个数字一直看得见，而它们来自同一次
+    /// 采集。面板只是换成轻量脚本（不采进程列表），见 `MonitorPanel::set_expanded`。
+    fn set_monitor_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.monitor_open == open {
+            return;
+        }
+        self.monitor_open = open;
+        self.monitor_panel
+            .update(cx, |monitor, cx| monitor.set_expanded(open, cx));
+        cx.notify();
+    }
+
+    fn toggle_monitor(&mut self, cx: &mut Context<Self>) {
+        self.set_monitor_open(!self.monitor_open, cx);
+    }
+
+    fn on_toggle_monitor(&mut self, _: &ToggleMonitor, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_monitor(cx);
+        // 同 [`Self::on_toggle_sftp`]：不拦住的话 Alt+M 还会当成 `\x1bm` 进终端。
+        cx.stop_propagation();
+    }
+
+    // ─── 标签页 ─────────────────────────────────────────────────────────────
+
+    /// 关掉自己这个标签页。
+    ///
+    /// 走标签组而不是自己发个事件出去：能不能关是容器的规矩（一个 dock 的
+    /// 最后一组不许关空），面板只有请求权。
+    ///
+    /// 挪到帧末执行，不在这次更新里做：标签组处理关闭时要回头读这个面板
+    /// （问它 `closable`、通知它 `on_removed`），而调用这个方法的按钮回调
+    /// 正借着它 —— 同一个 `Entity` 借两次会 panic。
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = PanelId::from(cx.entity_id());
+        let Some(group) = self.group.clone() else {
+            return;
+        };
+
+        window.defer(cx, move |_, cx| {
+            _ = group.update(cx, |group, cx| group.close_panel(panel, cx));
+        });
+    }
+
+    /// 上下两条 chrome 说的是活动窗格的事。
+    fn directory(&self, cx: &App) -> SharedString {
+        self.active_pane()
+            .map(|pane| pane.read(cx).directory(cx))
+            .unwrap_or_else(|| SharedString::from("—"))
+    }
+
+    fn connected(&self, cx: &App) -> bool {
+        self.active_pane()
+            .is_some_and(|pane| pane.read(cx).connected(cx))
+    }
+
+    fn grid(&self, cx: &App) -> TerminalBounds {
+        self.active_pane()
+            .map(|pane| pane.read(cx).grid())
+            .unwrap_or_default()
+    }
+
+    fn copy_all(&mut self, cx: &mut Context<Self>) {
+        if let Some(pane) = self.active_pane().cloned() {
+            pane.update(cx, |pane, cx| pane.copy_all(cx));
+        }
+    }
+
+    fn clear(&mut self, cx: &mut Context<Self>) {
+        if let Some(pane) = self.active_pane().cloned() {
+            pane.update(cx, |pane, cx| pane.clear(cx));
+        }
+    }
+
+    // ─── 渲染 ───────────────────────────────────────────────────────────────
+
+    /// 终端那一块：一个窗格，或者两个加一条拖得动的分隔条。
+    fn render_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        // 布局和窗格数对不上是画不出来的（少一半会是空白）。分屏那一步失败时
+        // （比如新窗格没建起来）就按实际有几个来画，而不是相信那个枚举。
+        let Some(axis) = self.split.axis().filter(|_| self.panes.len() >= 2) else {
+            return match self.active_pane() {
+                Some(pane) => pane.clone().into_any_element(),
+                None => div().size_full().into_any_element(),
+            };
+        };
+
+        let a = self.render_pane_cell(0, window, cx);
+        let b = self.render_pane_cell(1, window, cx);
+        render_split(axis, &self.split_state, a, b, cx)
+    }
+
+    /// 分屏时的一格：窗格外面套一圈描边，标出焦点在哪一半。
+    ///
+    /// tty7 是把没聚焦的那半调暗（`INACTIVE_DIM`）。这里不那么做 —— 那要终端
+    /// 把自己的每一种颜色都往背景混一次（tty7 的 `TerminalView::dim`），
+    /// 我们的 [`crate::ui::elements::TerminalGridElement`] 没有那一层，而给整块
+    /// 元素加 `opacity` 会连光标和选区一起变淡，读起来是"这一半坏了"。
+    /// 描边只花一像素，还不动任何一个字的颜色。
+    fn render_pane_cell(
+        &self,
+        at: usize,
+        window: &Window,
+        cx: &App,
+    ) -> gpui::AnyElement {
+        let Some(pane) = self.panes.get(at) else {
+            return div().size_full().into_any_element();
+        };
+        // 两半都描一圈，只是颜色不同 —— 只给聚焦的那半加边框的话，切换焦点会
+        // 让两边的终端各差一像素，一屏能放下的行数跟着跳。
+        let focused = pane.read(cx).contains_focused(window, cx);
+        div()
+            .size_full()
+            .overflow_hidden()
+            .border_1()
+            .border_color(match focused {
+                true => cx.theme().primary.opacity(0.55),
+                false => cx.theme().border,
+            })
+            .child(pane.clone())
+            .into_any_element()
+    }
+}
+
+impl EventEmitter<PanelEvent> for TerminalPanel {}
+
+impl Focusable for TerminalPanel {
+    /// 交出去的是**活动窗格**的句柄，不是面板自己的。
+    ///
+    /// Dock 激活一个标签页时会聚焦它拿到的这个句柄；给面板自己的那个，
+    /// 焦点就停在窗格外面，敲字没地方去。面板自己那个只在还没有窗格时兜底。
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.active_pane()
+            .map(|pane| pane.read(cx).focus_handle(cx))
+            .unwrap_or_else(|| self.focus_handle.clone())
+    }
+}
+
+impl BasePanel for TerminalPanel {
+    fn panel_name(&self) -> &'static str {
+        "TerminalPanel"
+    }
+
+    fn on_added_to(
+        &mut self,
+        group: WeakEntity<TabGroup>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.group = Some(group);
+        // 新开的会话直接获得焦点，否则 Tab 会落在活动栏或其它按钮上
+        cx.focus_self(window);
+        cx.notify();
+    }
+}
+
+impl Panel for TerminalPanel {
+    /// 标签页的样子：一个颜色点、会话名、一个关闭按钮。
+    ///
+    /// 刻意不实现 `tab_name` —— 那个方法给的是一串纯文本，Dock 会把它直接
+    /// 当标签内容，点和关闭按钮就没地方放了。返回一整块元素才排得出设计稿
+    /// 里那三段。
+    fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let connected = self.connected(cx);
+
+        h_flex()
+            .items_center()
+            .gap_1p5()
+            .child(
+                // 会话活着是品牌洋红（和主机卡片上"这台机器有会话"那个点同色），
+                // 退出之后落成安静的灰。
+                div()
+                    .flex_shrink_0()
+                    .size(TAB_DOT_SIZE)
+                    .rounded_full()
+                    .bg(match connected {
+                        true => palette::magenta(),
+                        false => palette::idle(cx),
+                    }),
+            )
+            .child(div().min_w_0().truncate().child(self.host.name.clone()))
+            .child(
+                Button::new("terminal-panel-close")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Close)
+                    .tooltip("关闭会话")
+                    .accessibility_id("关闭会话")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        // 按钮吞掉这一下：不然点关闭会顺带把这个标签页选中，
+                        // 而它下一刻就不存在了。
+                        cx.stop_propagation();
+                        this.close(window, cx);
+                    })),
+            )
+    }
+
+    /// 面板自己贴着 chrome 排（信息栏在最上、状态栏在最下），
+    /// 所以不要 Dock 再给一层内边距。
+    fn inner_padding(&self, _: &App) -> bool {
+        false
+    }
+}
+
+impl Render for TerminalPanel {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 焦点这一帧可能落到了另一半上（用户点了过去）。上下两条 chrome 在
+        // 下面几行就要读"活动窗格是谁"，所以先对一次。
+        self.sync_active(window, cx);
+
+        let connected = self.connected(cx);
+        let grid = self.grid(cx);
+        let monitor_open = self.monitor_open;
+        let split = self.split;
+        let terminal = self.render_panes(window, cx);
+
+        v_flex()
+            .id("terminal-panel")
+            .size_full()
+            .bg(cx.theme().background)
+            // 按键归窗格自己收（它才知道是哪一个终端）。留在这一层的只有
+            // 作用于整个标签页的那两个 —— 它们是从窗格那边冒上来的，
+            // 所以焦点不在任何一个窗格里时压根不会走到这儿。
+            .on_action(cx.listener(Self::on_toggle_monitor))
+            .on_action(cx.listener(Self::on_toggle_sftp))
+            .child(
+                SessionInfoBar::new(
+                    SharedString::from(format!("{}@{}", self.host.user, self.host.hostname)),
+                    self.directory(cx),
+                )
+                .connected(connected)
+                .split(split)
+                .on_split(cx.listener(move |this, layout: &SplitLayout, window, cx| {
+                    this.set_split(*layout, window, cx);
+                }))
+                .on_tunnels(|_, window, cx| {
+                    window.push_notification("端口转发面板还在开发中。", cx);
+                })
+                .sftp_active(self.sftp_open)
+                .on_sftp(cx.listener(|this, _, window, cx| {
+                    this.toggle_sftp(window, cx);
+                }))
+                .on_monitor(
+                    monitor_open,
+                    cx.listener(|this, _, _, cx| this.toggle_monitor(cx)),
+                )
+                .on_copy(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_all(cx)))
+                .on_clear(cx.listener(|this, _: &ClickEvent, _, cx| this.clear(cx))),
+            )
+            .child({
+                let terminal_view = v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .child(div().flex_1().min_h_0().child(terminal))
+                    .child(
+                        SessionStatusBar::new(
+                            self.host.name.clone(),
+                            SharedString::from(self.host.address()),
+                            self.telemetry,
+                        )
+                        .connected(connected)
+                        .grid(grid.num_columns(), grid.num_lines()),
+                    );
+                let body = if monitor_open {
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .child(
+                            h_resizable(self.resizable_id.clone())
+                                .with_state(&self.resizable_state)
+                                .child(resizable_panel().child(terminal_view))
+                                .child(
+                                    resizable_panel()
+                                        .size(MONITOR_WIDTH)
+                                        .size_range(px(280.)..px(700.))
+                                        .child(
+                                            div()
+                                                .size_full()
+                                                .overflow_hidden()
+                                                .border_l_1()
+                                                .border_color(cx.theme().border)
+                                                .child(self.monitor_panel.clone()),
+                                        ),
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    h_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .items_stretch()
+                        .child(terminal_view)
+                        .into_any_element()
+                };
+                if self.sftp_open {
+                    // 底部这一栏的高度是拖出来的，所以走 `v_resizable`；面板那边只需要知道
+                    // 现在多高（它按高度决定"展开/压扁"那颗按钮给哪一档），以及终端此刻
+                    // 在哪个目录（开着"跟随"时它就顺手翻过去）。
+                    let height = self
+                        .sftp_resizable_state
+                        .read(cx)
+                        .sizes()
+                        .last()
+                        .copied()
+                        .unwrap_or(SFTP_HEIGHT);
+                    let cwd = self.directory(cx);
+                    self.sftp_panel.update(cx, |panel, cx| {
+                        panel.set_height(height);
+                        panel.set_terminal_cwd(cwd.as_str(), window, cx);
+                    });
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .child(
+                            v_resizable(self.sftp_resizable_id.clone())
+                                .with_state(&self.sftp_resizable_state)
+                                .child(resizable_panel().child(body))
+                                .child(
+                                    resizable_panel()
+                                        .size(SFTP_HEIGHT)
+                                        .size_range(SFTP_MIN_HEIGHT..SFTP_MAX_HEIGHT)
+                                        .child(
+                                            div()
+                                                .size_full()
+                                                .overflow_hidden()
+                                                .border_t_1()
+                                                .border_color(cx.theme().border)
+                                                .child(self.sftp_panel.clone()),
+                                        ),
+                                ),
+                        )
+                        .into_any_element()
+                } else {
+                    body
+                }
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 把这一栏完整画一遍：layout → prepaint → paint 全走完。
+    ///
+    /// 存在的理由是一次真的翻车：把终端拆成 [`TerminalPane`] 之后元素树深了
+    /// 一层，`cargo check`、clippy、单元测试全绿，一连主机就
+    /// `has overflowed its stack`。那种错编译期看不见，只有把树真的走一遍
+    /// 才掉得出来 —— 所以这个测试不断言任何具体样式，它断言的是"画得完"。
+    ///
+    /// **它也是那条线的量尺。** libtest 每个测试跑在自己的线程上，栈大小听
+    /// `RUST_MIN_STACK` 的，所以画一帧到底要多少栈可以直接卡出来：
+    ///
+    /// ```text
+    /// RUST_MIN_STACK=1048576 cargo test --bin winssh-pro ui::panels::terminal::tests
+    /// ```
+    ///
+    /// 写下这段时的答案是 1.1~1.2 MiB，而 MSVC 给可执行文件的默认栈正好是
+    /// 1 MiB —— 这就是当时崩的原因。现在 [`build.rs`] 把它抬到了 8 MiB；
+    /// 哪天这个数字又逼近上限，用上面那行就能看出来。
+    #[gpui::test]
+    fn the_panel_draws_all_the_way_through(cx: &mut gpui::TestAppContext) {
+        let (_panel, cx) = draw_panel(cx);
+        // 再画一帧：第一帧和后续帧走的不是同一条路（元素状态、焦点、
+        // 上一帧量出来的网格尺寸都只有第二帧才读得到）。
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// 三档分屏都要画得出来，包括中间那条拖得动的分隔条。
+    #[gpui::test]
+    fn every_split_layout_draws(cx: &mut gpui::TestAppContext) {
+        let (panel, cx) = draw_panel(cx);
+        for layout in [
+            SplitLayout::Columns,
+            SplitLayout::Rows,
+            SplitLayout::Single,
+            SplitLayout::Rows,
+        ] {
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| panel.set_split(layout, window, cx));
+                window.draw(cx).clear(cx);
+            });
+            let panes = panel.read_with(cx, |panel, _| panel.panes.len());
+            assert_eq!(panes, layout.panes(), "{layout:?} 的窗格数不对");
+        }
+    }
+
+    /// 收回单屏时留下的必须是**活动的**那一半，而不是排在前面的那一半。
+    #[gpui::test]
+    fn collapsing_keeps_the_active_pane(cx: &mut gpui::TestAppContext) {
+        let (panel, cx) = draw_panel(cx);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.set_split(SplitLayout::Rows, window, cx))
+        });
+        let second = panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.active, 1, "新开的那一半应当是活动的");
+            panel.panes[1].entity_id()
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_split(SplitLayout::Single, window, cx)
+            })
+        });
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.panes.len(), 1);
+            assert_eq!(panel.panes[0].entity_id(), second, "留错了那一半");
+        });
+    }
+
+    /// 把面板放进真正的 Dock 里画。
+    ///
+    /// 光把面板当根视图画是不够的：标签条那条路（[`Panel::title`]）、
+    /// `on_added_to` 的取焦、以及 Dock 交给 [`Focusable`] 的那次问询，
+    /// 都只有真的挂进 `DockArea` 才会走到。
+    fn draw_panel(
+        cx: &mut gpui::TestAppContext,
+    ) -> (Entity<TerminalPanel>, &mut gpui::VisualTestContext) {
+        use gpui_component::dock::{DockPlacement, DockSkin, panel_handle};
+
+        cx.update(gpui_component::init);
+        let (harness, cx) = cx.add_window_view(|window, cx| {
+            let (dock_area, _skin) = DockSkin::dock_area("test-dock", Some(1), window, cx);
+            let panel = TerminalPanel::new_detached(window, cx);
+            dock_area.update(cx, |area, cx| {
+                area.add_panel_view(
+                    panel_handle(panel.clone()),
+                    DockPlacement::Center,
+                    None,
+                    window,
+                    cx,
+                );
+            });
+            Harness { dock_area, panel }
+        });
+        let panel = harness.read_with(cx, |harness, _| harness.panel.clone());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (panel, cx)
+    }
+
+    struct Harness {
+        dock_area: Entity<gpui_component::dock::DockArea>,
+        panel: Entity<TerminalPanel>,
+    }
+
+    impl Render for Harness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.dock_area.clone())
+        }
+    }
+}

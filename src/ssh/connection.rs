@@ -46,33 +46,24 @@ impl SshConnection {
 
         authenticate(&mut handle, host, &user).await?;
 
-        let channel = handle
-            .channel_open_session()
-            .await
-            .context("打开 SSH 会话通道失败")?;
+        let handle = Arc::new(handle);
+        let channel = shell_channel(&handle, window).await?;
 
-        channel
-            .request_pty(
-                false,
-                "xterm-256color",
-                window.cols,
-                window.rows,
-                window.width_px,
-                window.height_px,
-                &[(Pty::TTY_OP_ISPEED, 14400), (Pty::TTY_OP_OSPEED, 14400)],
-            )
-            .await
-            .context("请求远端 PTY 失败（对端可能禁用了 PTY）")?;
+        Ok(Self { handle, channel })
+    }
 
-        channel
-            .request_shell(true)
-            .await
-            .context("请求远端 Shell 失败")?;
-
-        Ok(Self {
-            handle: Arc::new(handle),
-            channel,
-        })
+    /// 在一条**已经认证过**的连接上再开一条交互式 Shell。
+    ///
+    /// 分屏走这条路而不是 [`Self::connect`]：那条会重新拨号并再认证一次
+    /// —— 多一次握手、多一次密码/密钥校验，而在对端的 `MaxSessions` 之外
+    /// 还多占一条连接。SSH 本来就是多路复用的，同一条连接上开第二个 shell
+    /// 才是它原本的用法（监控和 SFTP 已经是这么做的，见结构体文档）。
+    ///
+    /// 代价也要说清楚：**两个窗格共命运**。主连接断了，它们一起断。
+    /// 这正是"同一台机器的两个窗格"该有的语义。
+    pub async fn open_shell(handle: Arc<Handle<SshHandler>>, window: WindowSize) -> Result<Self> {
+        let channel = shell_channel(&handle, window).await?;
+        Ok(Self { handle, channel })
     }
 
     /// 通知远端 PTY 尺寸变化。
@@ -135,6 +126,40 @@ impl WindowSize {
             cell_height as u32 * rows as u32,
         )
     }
+}
+
+/// 开一条带 PTY 的交互式 Shell 通道。
+///
+/// [`SshConnection::connect`] 和 [`SshConnection::open_shell`] 的公共尾巴：
+/// 认证之后要做的三件事一模一样，分开写迟早会有一边少请求一样东西。
+async fn shell_channel(
+    handle: &Handle<SshHandler>,
+    window: WindowSize,
+) -> Result<Channel<ClientMsg>> {
+    let channel = handle
+        .channel_open_session()
+        .await
+        .context("打开 SSH 会话通道失败")?;
+
+    channel
+        .request_pty(
+            false,
+            "xterm-256color",
+            window.cols,
+            window.rows,
+            window.width_px,
+            window.height_px,
+            &[(Pty::TTY_OP_ISPEED, 14400), (Pty::TTY_OP_OSPEED, 14400)],
+        )
+        .await
+        .context("请求远端 PTY 失败（对端可能禁用了 PTY）")?;
+
+    channel
+        .request_shell(true)
+        .await
+        .context("请求远端 Shell 失败")?;
+
+    Ok(channel)
 }
 
 fn build_config() -> client::Config {

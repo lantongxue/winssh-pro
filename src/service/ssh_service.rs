@@ -4,9 +4,15 @@
 //! 数据（`Host`）来自 `HostService`，连接与认证由 `crate::ssh` 完成，
 //! 会话状态（`HostStatus` / `SessionTelemetry`）后续会由此处回填。
 
-use anyhow::Result;
+use std::sync::Arc;
 
-use crate::{host::Host, ssh::SshConnection, ssh::WindowSize};
+use anyhow::Result;
+use russh::client::Handle;
+
+use crate::{
+    host::Host,
+    ssh::{SshConnection, SshHandler, WindowSize},
+};
 
 /// SSH 连接的业务入口。无状态，廉价克隆。
 #[derive(Clone, Default, Debug)]
@@ -29,6 +35,18 @@ impl SshService {
     pub async fn connect(&self, host: &Host, window: WindowSize) -> Result<SshConnection> {
         let host = host.clone();
         crate::db::run(async move { SshConnection::connect(&host, window).await }).await
+    }
+
+    /// 在一条已经建立好的连接上再开一条交互式 Shell。
+    ///
+    /// 分屏用这条：第二个窗格要的是"同一台机器上的另一个 shell"，不是
+    /// 另一次登录。不重新认证也就没有第二次密码提示，开出来是立刻的。
+    pub async fn open_shell(
+        &self,
+        handle: Arc<Handle<SshHandler>>,
+        window: WindowSize,
+    ) -> Result<SshConnection> {
+        crate::db::run(async move { SshConnection::open_shell(handle, window).await }).await
     }
 }
 

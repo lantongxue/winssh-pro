@@ -10,9 +10,11 @@
 //! 无状态：显示什么由 [`crate::ui::panels::TerminalPanel`] 每帧给，
 //! 两个动作也只是把意图发回去。
 
+use std::rc::Rc;
+
 use gpui::{
-    App, ClickEvent, Hsla, IntoElement, ParentElement as _, Pixels, RenderOnce, SharedString,
-    Styled as _, Window, div, prelude::FluentBuilder as _, px, rgb,
+    AnyElement, App, ClickEvent, Hsla, IntoElement, ParentElement as _, Pixels, RenderOnce,
+    SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px, rgb,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
@@ -20,7 +22,10 @@ use gpui_component::{
     h_flex,
 };
 
-use crate::ui::theme::{AppIcon, palette};
+use crate::ui::{
+    panels::SplitLayout,
+    theme::{AppIcon, palette},
+};
 
 /// 条的高度。和会话状态栏一样高：它们是同一条会话的上下两个边框，
 /// 一高一矮会让中间的终端看着没落在正中。
@@ -34,6 +39,10 @@ const ICON_SIZE: Pixels = px(12.);
 
 type Handler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
+/// 点了分屏那一组里的某一档。参数是**点中的那一档**，不是"下一档"
+/// —— 三颗按钮是一个单选组，不是一个循环切换的按钮。
+type SplitHandler = Box<dyn Fn(&SplitLayout, &mut Window, &mut App)>;
+
 /// 终端上沿那一条。
 #[derive(IntoElement)]
 pub struct SessionInfoBar {
@@ -45,6 +54,8 @@ pub struct SessionInfoBar {
     on_tunnels: Option<Handler>,
     on_sftp: Option<Handler>,
     on_monitor: Option<Handler>,
+    on_split: Option<Rc<SplitHandler>>,
+    split: SplitLayout,
     monitor_active: bool,
     sftp_active: bool,
     tunnels_count: u32,
@@ -62,6 +73,8 @@ impl SessionInfoBar {
             on_tunnels: None,
             on_sftp: None,
             on_monitor: None,
+            on_split: None,
+            split: SplitLayout::default(),
             monitor_active: false,
             sftp_active: false,
             tunnels_count: 2,
@@ -90,6 +103,21 @@ impl SessionInfoBar {
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_clear = Some(Box::new(handler));
+        self
+    }
+
+    /// 现在是哪一档分屏。那一档的按钮会点亮。
+    pub fn split(mut self, split: SplitLayout) -> Self {
+        self.split = split;
+        self
+    }
+
+    /// 点了分屏那一组里的某一档。
+    pub fn on_split(
+        mut self,
+        handler: impl Fn(&SplitLayout, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_split = Some(Rc::new(Box::new(handler)));
         self
     }
 
@@ -134,10 +162,63 @@ impl SessionInfoBar {
         self.tunnels_count = count;
         self
     }
+
+    /// 分屏那一组：单屏 / 上下 / 左右，三选一。
+    ///
+    /// 做成三颗并排的按钮而不是一颗循环切换的，也不是一个下拉：
+    /// 现在是哪一档，看一眼就知道；想去哪一档，一下就到。循环切换要按两次才
+    /// 走得到第三档，下拉则是"点开才知道自己在哪儿"。三颗按钮共用一个凹槽底，
+    /// 读起来是一个单选组，不是三个各管各的开关。
+    ///
+    /// 没接 [`Self::on_split`] 时整组不画 —— 点不动的控件比没有更让人困惑。
+    fn render_split_group(&self, cx: &App) -> AnyElement {
+        let tone = palette::sky();
+        h_flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap_px()
+            .when_some(self.on_split.clone(), |bar, handler| {
+                bar.p_px()
+                    .rounded_md()
+                    .bg(cx.theme().muted.opacity(0.5))
+                    .children(SplitLayout::ALL.map(|layout| {
+                        let active = layout == self.split;
+                        let handler = handler.clone();
+                        let mut btn = Button::new(layout.button_id())
+                            .xsmall()
+                            .icon(Icon::new(layout.icon()).with_size(ICON_SIZE).text_color(
+                                match active {
+                                    true => tone,
+                                    false => palette::idle(cx),
+                                },
+                            ))
+                            .tooltip(layout.tooltip())
+                            .accessibility_id(layout.tooltip())
+                            .on_click(move |_, window, cx| handler(&layout, window, cx));
+                        btn = if active {
+                            btn.custom(
+                                ButtonCustomVariant::new(cx)
+                                    .color(cx.theme().background)
+                                    .foreground(tone)
+                                    .hover(cx.theme().background)
+                                    .active(cx.theme().background),
+                            )
+                        } else {
+                            btn.ghost()
+                        };
+                        btn
+                    }))
+            })
+            .into_any_element()
+    }
 }
 
 impl RenderOnce for SessionInfoBar {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        // 先把这一组画出来：下面那条链会一段段把 `self` 拆开搬进元素里，
+        // 到右半边的时候就借不到 `&self` 了。
+        let split_group = self.render_split_group(cx);
+
         h_flex()
             .flex_shrink_0()
             .h(HEIGHT)
@@ -193,6 +274,7 @@ impl RenderOnce for SessionInfoBar {
                     .flex_shrink_0()
                     .items_center()
                     .gap_1()
+                    .child(split_group)
                     .child({
                         let label = SharedString::from(format!("Tunnels {}", self.tunnels_count));
                         Button::new("session-info-tunnels")

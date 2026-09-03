@@ -18,18 +18,43 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use super::client::SshHandler;
 
+/// 收到收工信号之后，留给后台任务把通道关干净的时间。
+///
+/// 它要做的只是往 `russh` 的 mpsc 里塞一条 `Close`，正常是微秒级；这个数是
+/// 给"卡在某个 await 上"准备的上限，到点就强收，免得任务永远留在 runtime 里。
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// 前台持有它就能往远端发数据、改窗口大小；丢掉它，后台任务随之结束。
 #[derive(Debug)]
 pub struct SshBridge {
     pub input_tx: UnboundedSender<Vec<u8>>,
     pub window_tx: UnboundedSender<(u32, u32)>,
-    /// 后台 I/O 任务的句柄。`Emulator` 丢弃时 abort 它。
-    pub io_handle: tokio::task::JoinHandle<()>,
+    /// 收工信号。丢弃这个桥时发出去，后台任务收到就关掉**自己那条通道**再退。
+    ///
+    /// 不直接 `abort`：abort 会在某个 `await` 上把任务掐断，`russh` 的
+    /// [`Channel`] 又**不会**在 `Drop` 里替我们发 `Close`（只有
+    /// `ChannelCloseOnDrop` 会，那是 `into_stream` 用的），于是远端那个
+    /// shell 会一直挂到整条连接断掉为止。分屏之后这件事看得见了：收回单屏
+    /// 之后 `who` 里还留着一个 pts。
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// 后台 I/O 任务的句柄。等它自己收尾，超时才 abort。
+    io_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for SshBridge {
     fn drop(&mut self) {
-        self.io_handle.abort();
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        let Some(io) = self.io_handle.take() else {
+            return;
+        };
+        let abort = io.abort_handle();
+        crate::db::runtime().spawn(async move {
+            if tokio::time::timeout(SHUTDOWN_GRACE, io).await.is_err() {
+                abort.abort();
+            }
+        });
     }
 }
 
@@ -50,14 +75,17 @@ pub fn spawn_bridge(
     let (input_tx, input_rx) = unbounded_channel::<Vec<u8>>();
     let (window_tx, window_rx) = unbounded_channel::<(u32, u32)>();
     let (output_tx, output_rx) = unbounded_channel::<Vec<u8>>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-    let io_handle =
-        crate::db::runtime().spawn(bridge_task(handle, channel, output_tx, input_rx, window_rx));
+    let io_handle = crate::db::runtime().spawn(bridge_task(
+        handle, channel, output_tx, input_rx, window_rx, shutdown_rx,
+    ));
 
     let bridge = SshBridge {
         input_tx,
         window_tx,
-        io_handle,
+        shutdown_tx: Some(shutdown_tx),
+        io_handle: Some(io_handle),
     };
     (bridge, output_rx)
 }
@@ -68,10 +96,14 @@ async fn bridge_task(
     output_tx: SshOutputSender,
     mut input_rx: UnboundedReceiver<Vec<u8>>,
     mut window_rx: UnboundedReceiver<(u32, u32)>,
+    mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
     loop {
         tokio::select! {
             biased;
+
+            // 前台不要这条通道了。排在最前面：已经决定收工，就别再往里塞字节。
+            _ = &mut shutdown_rx => break,
 
             Some(data) = input_rx.recv() => {
                 if let Err(error) = channel.data(&data[..]).await {
@@ -125,10 +157,17 @@ async fn bridge_task(
         }
     }
 
-    // 尽力优雅关闭，失败也不再扰动 UI
-    let _ = handle
-        .disconnect(russh::Disconnect::ByApplication, "", "en")
-        .await;
+    // 只收自己这条通道，**不动整条连接**。
+    //
+    // 这里原本是 `handle.disconnect(..)`。一条连接上不止这一条通道：另一半
+    // 分屏的 shell、SFTP 子系统、监控采集的 exec 通道都在上面（见
+    // [`crate::ssh::SshConnection`] 的文档），断连接会把它们一起带走 ——
+    // 在一半里敲个 `exit`，另一半跟着黑掉。
+    //
+    // 连接本身归引用计数管：`Arc<Handle>` 的最后一个持有者（标签页、各个
+    // 通道任务）丢掉它时，`russh` 的会话循环自然结束。所以这里只 `drop`。
+    let _ = channel.close().await;
+    drop(handle);
 }
 
 // 仅保留底层桥接，`Emulator` 侧自行把 `SshOutputReceiver` 的字节
