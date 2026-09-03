@@ -37,6 +37,7 @@ use crate::{
     service::ForwardService,
     ui::theme::{AppIcon, palette},
 };
+use rust_i18n::t;
 
 /// 流量那几个数字多久重读一次。一秒是"看得出在动"与"别为几个数字每帧重画
 /// 一整屏"之间的那一档；隧道本身不受它影响，它只是这扇窗的刷新率。
@@ -135,12 +136,12 @@ impl PortForwardDialog {
                                 .text_xs()
                                 .text_color(palette::idle(cx))
                                 .font_family(cx.theme().mono_font_family.clone())
-                                .child("快捷键：Alt+P 打开这一屏"),
+                                .child(SharedString::from(t!("port_forward.shortcut_hint"))),
                         )
                         .child(
                             Button::new("port-forward-close")
                                 .ghost()
-                                .label("关闭")
+                                .label(t!("port_forward.close"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         ),
                 )
@@ -221,7 +222,14 @@ impl PortForwardDialog {
             };
             this.update_in(cx, |_, window, cx| {
                 if let Err(error) = outcome {
-                    window.push_notification(format!("{} 起不来：{error:#}", rule.name), cx);
+                    window.push_notification(
+                        t!(
+                            "port_forward.start_failed",
+                            name => rule.name,
+                            error => format!("{error:#}"),
+                        ),
+                        cx,
+                    );
                 }
                 cx.notify();
             })
@@ -266,7 +274,9 @@ impl PortForwardDialog {
         let draft = ForwardDraft {
             editing: None,
             kind: ForwardKind::Local,
-            name: cx.new(|cx| InputState::new(window, cx).placeholder("例如 生产库 或 K8s 面板")),
+            name: cx.new(|cx| {
+                InputState::new(window, cx).placeholder(t!("port_forward.name_placeholder"))
+            }),
             bind: cx
                 .new(|cx| InputState::new(window, cx).default_value(crate::forward::DEFAULT_BIND)),
             listen_port: cx.new(|cx| InputState::new(window, cx).placeholder("15432")),
@@ -370,7 +380,7 @@ impl PortForwardDialog {
     /// 上的每一处都按它对齐），`enabled` 也一样。
     fn build_draft(&self, cx: &App) -> Result<PortForward, SharedString> {
         let Some(draft) = &self.draft else {
-            return Err("表单没开着".into());
+            return Err(t!("port_forward.form_closed").into());
         };
         let port = |input: &Entity<InputState>| -> u16 {
             input.read(cx).value().trim().parse().unwrap_or(0)
@@ -400,11 +410,11 @@ impl PortForwardDialog {
             rule.target_port = rule.listen_port;
         }
         rule.description = match PRESETS.iter().find(|preset| preset.kind == rule.kind) {
-            Some(preset) if preset.listen_port == rule.listen_port => preset.description.into(),
+            Some(preset) if preset.listen_port == rule.listen_port => preset.description(),
             _ => SharedString::default(),
         };
 
-        rule.check().map_err(SharedString::from)?;
+        rule.check()?;
         // 同一个本机端口上不能有两条规则：第二条一定绑不上，而失败要等到起的
         // 时候才知道 —— 那时候用户已经以为存好了。
         // 改的时候要把自己排除掉，不然"只改个名字"会被自己挡下来。
@@ -415,9 +425,9 @@ impl PortForwardDialog {
                 && existing.bind_address == rule.bind_address
         });
         if clash {
-            return Err(SharedString::from(format!(
-                "{} 上已经有一条转发了。",
-                rule.listen_endpoint()
+            return Err(SharedString::from(t!(
+                "port_forward.port_taken",
+                endpoint => rule.listen_endpoint(),
             )));
         }
         Ok(rule)
@@ -449,7 +459,7 @@ impl PortForwardDialog {
         if let Some(id) = &editing
             && self.service.snapshot().contains_key(id)
         {
-            window.push_notification("这条转发又跑起来了，先按 Stop 停下再保存改动。", cx);
+            window.push_notification(t!("port_forward.running_stop_first"), cx);
             return;
         }
 
@@ -475,7 +485,14 @@ impl PortForwardDialog {
                         stored.enabled = false;
                     }
                     this.commit(window, cx);
-                    window.push_notification(format!("{} 起不来：{error:#}", rule.name), cx);
+                    window.push_notification(
+                        t!(
+                            "port_forward.start_failed",
+                            name => rule.name,
+                            error => format!("{error:#}"),
+                        ),
+                        cx,
+                    );
                 }
                 cx.notify();
             })
@@ -579,10 +596,10 @@ impl PortForwardDialog {
                                         },
                                     ),
                                 )
-                                .child(match editing {
-                                    true => "修改这条转发规则",
-                                    false => "新建一条转发规则",
-                                }),
+                                .child(SharedString::from(match editing {
+                                    true => t!("port_forward.draft_title_edit"),
+                                    false => t!("port_forward.draft_title_new"),
+                                })),
                         )
                         .child(
                             h_flex()
@@ -592,7 +609,7 @@ impl PortForwardDialog {
                                     div()
                                         .text_xs()
                                         .text_color(palette::idle(cx))
-                                        .child("预设："),
+                                        .child(SharedString::from(t!("port_forward.presets"))),
                                 )
                                 .children(PRESETS.iter().enumerate().map(|(ix, preset)| {
                                     Button::new(("port-forward-preset", ix))
@@ -600,7 +617,7 @@ impl PortForwardDialog {
                                         .xsmall()
                                         .label(preset.label)
                                         .text_color(palette::coral())
-                                        .tooltip(preset.description)
+                                        .tooltip(preset.description())
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.apply_preset(ix, window, cx)
                                         }))
@@ -613,12 +630,12 @@ impl PortForwardDialog {
                         .gap_3()
                         .items_start()
                         .child(div().flex_grow(1.).min_w_0().child(field(
-                            "规则名称",
+                            t!("port_forward.field_name").into(),
                             Input::new(&draft.name).small().w_full(),
                             cx,
                         )))
                         .child(div().flex_grow(1.).min_w_0().child(field(
-                            "转发类型",
+                            t!("port_forward.field_kind").into(),
                             self.render_kind_group(cx),
                             cx,
                         ))),
@@ -631,7 +648,7 @@ impl PortForwardDialog {
                         .items_start()
                         .child(
                             div().flex_grow(1.).min_w_0().child(field(
-                                "监听地址",
+                                t!("port_forward.field_bind").into(),
                                 Input::new(&draft.bind)
                                     .small()
                                     .font_family(cx.theme().mono_font_family.clone())
@@ -652,7 +669,7 @@ impl PortForwardDialog {
                         .when(kind.needs_target(), |row| {
                             row.child(
                                 div().flex_grow(2.).min_w_0().child(field(
-                                    "目标（地址:端口）",
+                                    t!("port_forward.field_target").into(),
                                     h_flex()
                                         .w_full()
                                         .items_center()
@@ -697,7 +714,7 @@ impl PortForwardDialog {
                             Button::new("port-forward-draft-cancel")
                                 .ghost()
                                 .small()
-                                .label("取消")
+                                .label(t!("port_forward.cancel"))
                                 .on_click(cx.listener(|this, _, _, cx| this.close_draft(cx))),
                         )
                         .child(
@@ -705,8 +722,8 @@ impl PortForwardDialog {
                                 .primary()
                                 .small()
                                 .label(match editing {
-                                    true => "保存修改并启用",
-                                    false => "保存并启用",
+                                    true => t!("port_forward.save_edit"),
+                                    false => t!("port_forward.save_new"),
                                 })
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.save_draft(window, cx)),
@@ -863,7 +880,7 @@ impl PortForwardDialog {
                         // 徽章上写的是 `LOCAL FORWARD` 这样的行话。鼠标停上去
                         // 给一句人话 —— 已经存下来的规则也该说得清它在干什么，
                         // 而不是只有新建的时候才有说明。
-                        let tagline = SharedString::from(rule.kind.tagline());
+                        let tagline = rule.kind.tagline();
                         div()
                             .id(("port-forward-badge", at))
                             .flex_shrink_0()
@@ -913,7 +930,7 @@ impl PortForwardDialog {
                         // 与其让用户走到那一步，不如这颗先按不动。
                         btn.disabled(editing)
                             .when(editing, |btn| {
-                                btn.tooltip("正在改这一条，存下或取消之后再起")
+                                btn.tooltip(t!("port_forward.editing_cannot_start"))
                             })
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.toggle(id.clone(), window, cx)
@@ -934,10 +951,10 @@ impl PortForwardDialog {
                             // 看一眼就该知道的事。
                             .disabled(active)
                             .tooltip(match active {
-                                true => "要改先按 Stop 停下这条转发",
-                                false => "修改这条转发规则",
+                                true => t!("port_forward.stop_before_edit"),
+                                false => t!("port_forward.edit_rule"),
                             })
-                            .accessibility_id("修改这条转发规则")
+                            .accessibility_id(t!("port_forward.edit_rule"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.start_edit(edit_id.clone(), window, cx)
                             })),
@@ -951,8 +968,8 @@ impl PortForwardDialog {
                                     .with_size(px(12.))
                                     .text_color(palette::idle(cx)),
                             )
-                            .tooltip("删除这条转发规则")
-                            .accessibility_id("删除这条转发规则")
+                            .tooltip(t!("port_forward.delete_rule"))
+                            .accessibility_id(t!("port_forward.delete_rule"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.remove(remove_id.clone(), window, cx)
                             })),
@@ -1061,7 +1078,7 @@ impl PortForwardDialog {
                         None => side.child(
                             div()
                                 .text_color(palette::magenta())
-                                .child("每条连接自己指定"),
+                                .child(SharedString::from(t!("port_forward.dynamic_target"))),
                         ),
                     }),
             )
@@ -1093,9 +1110,15 @@ impl PortForwardDialog {
                     .min_w_0()
                     .items_center()
                     .gap_3()
-                    .child(div().child(format!("流量：{}", format_traffic(runtime.bytes))))
+                    .child(div().child(SharedString::from(t!(
+                        "port_forward.traffic",
+                        amount => format_traffic(runtime.bytes),
+                    ))))
                     .when(runtime.connections > 0, |row| {
-                        row.child(div().child(format!("连接：{}", runtime.connections)))
+                        row.child(div().child(SharedString::from(t!(
+                            "port_forward.connections",
+                            count => runtime.connections,
+                        ))))
                     })
                     .when(can_browse, |row| {
                         row.child(
@@ -1103,7 +1126,7 @@ impl PortForwardDialog {
                                 .ghost()
                                 .xsmall()
                                 .icon(Icon::new(IconName::ExternalLink).with_size(px(11.)))
-                                .label("在浏览器里打开")
+                                .label(t!("port_forward.open_in_browser"))
                                 .text_color(palette::blue())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.open_in_browser(&browser_id, cx)
@@ -1120,8 +1143,8 @@ impl PortForwardDialog {
                         Button::new(("port-forward-test", at))
                             .secondary()
                             .xsmall()
-                            .label("测试端口")
-                            .tooltip("连一次这个端口，看隧道通不通")
+                            .label(t!("port_forward.test_port"))
+                            .tooltip(t!("port_forward.test_port_tooltip"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.test_socket(test_id.clone(), window, cx)
                             })),
@@ -1141,8 +1164,8 @@ impl PortForwardDialog {
                                     false => palette::idle(cx),
                                 }),
                             )
-                            .label("复制 CLI")
-                            .tooltip("复制等价的 ssh 命令行")
+                            .label(t!("port_forward.copy_cli"))
+                            .tooltip(t!("port_forward.copy_cli_tooltip"))
                             .on_click(
                                 cx.listener(move |this, _, _, cx| this.copy_cli(id.clone(), cx)),
                             ),
@@ -1199,17 +1222,14 @@ impl PortForwardDialog {
                     .text_sm()
                     .font_medium()
                     .text_color(cx.theme().foreground)
-                    .child("这台主机还没有端口转发规则"),
+                    .child(SharedString::from(t!("port_forward.empty_title"))),
             )
             .child(
                 div()
                     .max_w(px(420.))
                     .text_xs()
                     .text_color(palette::idle(cx))
-                    .child(
-                        "把远端的数据库、Web 面板映到本机，或者把本机的服务开给远端网络 —— \
-                         都走这条已经认证过的 SSH 连接，不必再开一个端口给外面。",
-                    ),
+                    .child(SharedString::from(t!("port_forward.empty_body"))),
             )
             .child(render_kind_legend(cx))
             .child(
@@ -1217,7 +1237,7 @@ impl PortForwardDialog {
                     .primary()
                     .small()
                     .icon(Icon::new(IconName::Plus).with_size(ICON))
-                    .label("建第一条转发规则")
+                    .label(t!("port_forward.empty_add"))
                     .on_click(cx.listener(|this, _, window, cx| this.open_draft(window, cx))),
             )
             .into_any_element()
@@ -1293,7 +1313,12 @@ fn render_header(host: &Host, dialog: &Entity<PortForwardDialog>, cx: &App) -> A
                             h_flex()
                                 .items_center()
                                 .gap_2()
-                                .child(div().text_sm().font_semibold().child("会话端口转发"))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_semibold()
+                                        .child(SharedString::from(t!("port_forward.title"))),
+                                )
                                 .child({
                                     let tone = match active {
                                         0 => palette::idle(cx),
@@ -1312,7 +1337,10 @@ fn render_header(host: &Host, dialog: &Entity<PortForwardDialog>, cx: &App) -> A
                                         .font_family(cx.theme().mono_font_family.clone())
                                         .text_size(px(11.))
                                         .child(div().size(px(6.)).rounded_full().bg(tone))
-                                        .child(format!("{active} 条在跑"))
+                                        .child(SharedString::from(t!(
+                                            "port_forward.running_count",
+                                            count => active,
+                                        )))
                                 }),
                         )
                         .child(
@@ -1322,7 +1350,11 @@ fn render_header(host: &Host, dialog: &Entity<PortForwardDialog>, cx: &App) -> A
                                 .text_xs()
                                 .text_color(palette::idle(cx))
                                 .font_family(cx.theme().mono_font_family.clone())
-                                .child(format!("{}（{}）", host.name, host.address())),
+                                .child(SharedString::from(t!(
+                                    "port_forward.host_line",
+                                    name => host.name,
+                                    address => host.address(),
+                                ))),
                         ),
                 ),
         )
@@ -1333,7 +1365,7 @@ fn render_header(host: &Host, dialog: &Entity<PortForwardDialog>, cx: &App) -> A
                 .rounded(cx.theme().radius)
                 .small()
                 .icon(Icon::new(IconName::Plus).with_size(ICON))
-                .label("新增转发")
+                .label(t!("port_forward.add"))
                 .on_click(move |_, window, cx| {
                     add.update(cx, |this, cx| this.open_draft(window, cx));
                 }),
@@ -1342,7 +1374,7 @@ fn render_header(host: &Host, dialog: &Entity<PortForwardDialog>, cx: &App) -> A
 }
 
 /// 一个字段：标签 + 控件。和主机表单里那个是同一种排法。
-fn field(label: &str, control: impl IntoElement, cx: &App) -> impl IntoElement {
+fn field(label: SharedString, control: impl IntoElement, cx: &App) -> impl IntoElement {
     v_flex()
         .gap_1()
         .w_full()
@@ -1351,7 +1383,7 @@ fn field(label: &str, control: impl IntoElement, cx: &App) -> impl IntoElement {
                 .text_xs()
                 .font_medium()
                 .text_color(cx.theme().muted_foreground)
-                .child(label.to_owned()),
+                .child(label),
         )
         .child(control)
 }

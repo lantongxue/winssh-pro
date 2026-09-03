@@ -33,6 +33,7 @@ use crate::{
     service::{MAX_TEXT_BYTES, SftpService},
     ui::theme::{AppIcon, palette},
 };
+use rust_i18n::t;
 
 gpui::actions!(
     sftp_editor,
@@ -114,10 +115,10 @@ impl SftpEditorDialog {
                                 .text_xs()
                                 .font_family(cx.theme().mono_font_family.clone())
                                 .text_color(palette::idle(cx))
-                                .child(format!(
-                                    "整篇覆盖保存，上限 {}",
-                                    crate::sftp::human_size(MAX_TEXT_BYTES)
-                                )),
+                                .child(SharedString::from(t!(
+                                    "sftp_editor.footer_hint",
+                                    limit => crate::sftp::human_size(MAX_TEXT_BYTES),
+                                ))),
                         )
                         .child(
                             h_flex()
@@ -126,7 +127,7 @@ impl SftpEditorDialog {
                                 .child(
                                     Button::new("sftp-editor-cancel")
                                         .ghost()
-                                        .label("取消")
+                                        .label(t!("sftp_editor.cancel"))
                                         .on_click(|_, window, cx| window.close_dialog(cx)),
                                 )
                                 .child(
@@ -134,8 +135,8 @@ impl SftpEditorDialog {
                                         .custom(variant)
                                         .bg(blue)
                                         .rounded(cx.theme().radius)
-                                        .label("保存")
-                                        .tooltip("保存（⌘S / Ctrl+S）")
+                                        .label(t!("sftp_editor.save"))
+                                        .tooltip(t!("sftp_editor.save_tooltip"))
                                         .on_click(move |_, window, cx| {
                                             save.update(cx, |this, cx| this.save(window, cx));
                                         }),
@@ -207,7 +208,7 @@ impl SftpEditorDialog {
                 this.saving = false;
                 match outcome {
                     Ok(()) => {
-                        window.push_notification(format!("已保存 {name}"), cx);
+                        window.push_notification(t!("sftp_editor.saved", name => name), cx);
                         let handler = this.on_saved.clone();
                         // 先收壳再回调：回调里若要再弹一层（重列目录之后的提示），
                         // 不会被这一下关掉。
@@ -216,7 +217,10 @@ impl SftpEditorDialog {
                     }
                     Err(error) => {
                         // 留着这个框：内容还在里面，改完可以直接再点一次。
-                        this.save_error = Some(SharedString::from(format!("保存失败：{error:#}")));
+                        this.save_error = Some(SharedString::from(t!(
+                            "sftp_editor.save_failed",
+                            error => format!("{error:#}"),
+                        )));
                     }
                 }
             });
@@ -268,7 +272,7 @@ impl Render for SftpEditorDialog {
                         .text_sm()
                         .text_center()
                         .text_color(cx.theme().muted_foreground)
-                        .child("正在从远端读取…"),
+                        .child(SharedString::from(t!("sftp_editor.loading"))),
                 )
             })
             .when(!loading, |this| {
@@ -317,7 +321,7 @@ fn render_header(name: &SharedString, cx: &App) -> impl IntoElement {
                         .text_xs()
                         .font_family(cx.theme().mono_font_family.clone())
                         .text_color(cx.theme().muted_foreground)
-                        .child("编辑的是远端那份文件本身"),
+                        .child(SharedString::from(t!("sftp_editor.header_note"))),
                 ),
         )
 }

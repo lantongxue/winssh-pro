@@ -13,6 +13,7 @@ use gpui_component::{
     dock::{BasePanel, Panel, PanelEvent},
     h_flex, v_flex,
 };
+use rust_i18n::t;
 
 /// 一条日志的级别。颜色只用于强调级别本身，不承担其他含义。
 #[derive(Clone, Copy)]
@@ -58,22 +59,22 @@ impl EventLogPanel {
                 LogEntry {
                     level: LogLevel::Info,
                     time: "09:12:03".into(),
-                    message: "已加载 6 个主机配置".into(),
+                    message: t!("event_log.sample_hosts_loaded").into(),
                 },
                 LogEntry {
                     level: LogLevel::Info,
                     time: "09:12:04".into(),
-                    message: "密钥代理已就绪：2 个可用身份".into(),
+                    message: t!("event_log.sample_agent_ready").into(),
                 },
                 LogEntry {
                     level: LogLevel::Warning,
                     time: "09:12:07".into(),
-                    message: "db-01 的主机密钥指纹与本地记录不同，等待确认".into(),
+                    message: t!("event_log.sample_fingerprint_changed").into(),
                 },
                 LogEntry {
                     level: LogLevel::Danger,
                     time: "09:12:19".into(),
-                    message: "web-02 连接超时（10s），未建立会话".into(),
+                    message: t!("event_log.sample_timeout").into(),
                 },
             ],
             focus_handle: cx.focus_handle(),
@@ -97,7 +98,7 @@ impl BasePanel for EventLogPanel {
 
 impl Panel for EventLogPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("事件日志")
+        SharedString::from(t!("event_log.title"))
     }
 }
 

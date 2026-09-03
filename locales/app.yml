@@ -1,0 +1,1796 @@
+_version: 2
+
+# 这个程序自己的文案。key 按"模块.位置.用途"分段，和 `src/` 下的目录对得上，
+# 找一条文案在哪儿用的时候直接 grep key 就行。
+#
+# `%{name}` 是占位符，对应 `t!("key", name => value)`。同一条文案里占位符的
+# 名字两种语言必须一致 —— 少一个不会编译报错，只会在界面上留下一段 `%{name}`。
+
+app.name:
+  en: WinSSH Pro
+  zh-CN: WinSSH Pro
+
+# ── 活动栏（窗口最左那一竖条） ───────────────────────────────────────────
+activity.assistant:
+  en: AI Assistant
+  zh-CN: AI 助手
+activity.quick_connect:
+  en: Quick Connect
+  zh-CN: 快速连接
+activity.settings:
+  en: Settings
+  zh-CN: 设置
+
+# ── 命令中心（标题栏中间的搜索框） ───────────────────────────────────────
+command_center.search:
+  en: Search hosts, views and actions
+  zh-CN: 搜索主机、视图与动作
+command_center.open:
+  en: Open command palette
+  zh-CN: 打开命令面板
+
+# ── 侧边栏视图 ───────────────────────────────────────────────────────────
+sidebar.hosts:
+  en: Hosts
+  zh-CN: 主机
+sidebar.snippets:
+  en: Snippets
+  zh-CN: 命令片段
+sidebar.keys:
+  en: Keys
+  zh-CN: 密钥
+sidebar.monitor:
+  en: Monitor
+  zh-CN: 资源监控
+sidebar.collapse:
+  en: Collapse sidebar
+  zh-CN: 收起侧边栏
+sidebar.snippets_hint:
+  en: Frequently used commands and scripts will show up here, ready to send straight to the current session.
+  zh-CN: 常用命令与脚本会显示在这里，可以直接发到当前会话。
+sidebar.keys_hint:
+  en: Private keys, passphrases and known_hosts will show up here.
+  zh-CN: 私钥、口令与 known_hosts 会显示在这里。
+sidebar.monitor_hint:
+  en: CPU, memory and network usage of connected hosts will show up here.
+  zh-CN: 已连接主机的 CPU、内存与网络占用会显示在这里。
+
+# ── 欢迎面板 ─────────────────────────────────────────────────────────────
+welcome.title:
+  en: Welcome
+  zh-CN: 欢迎
+welcome.tagline:
+  en: A fast, native SSH client
+  zh-CN: 原生高性能 SSH 客户端
+welcome.browse_hosts:
+  en: Browse hosts
+  zh-CN: 浏览主机
+welcome.toggle_sidebar:
+  en: Toggle sidebar
+  zh-CN: 打开侧边栏
+welcome.toggle_host_info:
+  en: Toggle host info
+  zh-CN: 打开主机信息
+
+# ── 会话信息栏（终端上沿） ───────────────────────────────────────────────
+session_info.tunnels:
+  en: Tunnels
+  zh-CN: 端口转发
+session_info.tunnels_count:
+  en: Tunnels %{count}
+  zh-CN: 端口转发 %{count}
+session_info.tunnels_tooltip:
+  en: Session port forwarding (Alt+P)
+  zh-CN: 会话端口转发（Alt+P）
+session_info.sftp:
+  en: SFTP Panel
+  zh-CN: SFTP 面板
+session_info.sftp_hide:
+  en: Hide bottom SFTP panel (Alt+F)
+  zh-CN: 隐藏底部 SFTP 面板（Alt+F）
+session_info.sftp_show:
+  en: Show bottom SFTP panel (Alt+F)
+  zh-CN: 显示底部 SFTP 面板（Alt+F）
+session_info.monitor:
+  en: Top Monitor
+  zh-CN: 资源监控
+session_info.monitor_hide:
+  en: Hide right-side monitor (Alt+M)
+  zh-CN: 隐藏右侧资源监控（Alt+M）
+session_info.monitor_show:
+  en: Show right-side monitor (Alt+M)
+  zh-CN: 显示右侧资源监控（Alt+M）
+session_info.copy_all:
+  en: Copy all output
+  zh-CN: 复制全部输出
+session_info.clear:
+  en: Clear screen
+  zh-CN: 清屏
+
+# ── 分屏档位 ─────────────────────────────────────────────────────────────
+split.single:
+  en: Single pane
+  zh-CN: 单屏
+split.rows:
+  en: Split top/bottom
+  zh-CN: 上下分屏
+split.columns:
+  en: Split left/right
+  zh-CN: 左右分屏
+
+# ── 会话状态栏（终端下沿） ───────────────────────────────────────────────
+session_status.disconnected:
+  en: Offline
+  zh-CN: 已断开
+session_status.memory:
+  en: Memory
+  zh-CN: 内存
+session_status.root_volume:
+  en: Root volume
+  zh-CN: 根分区
+session_status.capacity_detail:
+  en: "%{subject} %{used} GiB / %{total} GiB"
+  zh-CN: "%{subject} %{used} GiB / %{total} GiB"
+session_status.rate_tooltip:
+  en: Send/receive rate of the remote NIC — throughput for the whole machine, not just this session
+  zh-CN: 对端网卡的收发速率，整台机器的吞吐，不只是这条会话
+
+# ── 主机信息面板 ─────────────────────────────────────────────────────────
+host_info.title:
+  en: Host Info
+  zh-CN: 主机信息
+host_info.empty:
+  en: Select a host to see its connection details
+  zh-CN: 选中一台主机后显示它的连接信息
+host_info.address:
+  en: Address
+  zh-CN: 地址
+host_info.user:
+  en: User
+  zh-CN: 用户
+host_info.port:
+  en: Port
+  zh-CN: 端口
+host_info.platform:
+  en: Platform
+  zh-CN: 系统
+host_info.auth:
+  en: Authentication
+  zh-CN: 认证方式
+host_info.auth_public_key:
+  en: Public key (ed25519)
+  zh-CN: 公钥（ed25519）
+
+# ── 事件日志面板 ─────────────────────────────────────────────────────────
+event_log.title:
+  en: Event Log
+  zh-CN: 事件日志
+event_log.sample_hosts_loaded:
+  en: Loaded 6 host configurations
+  zh-CN: 已加载 6 个主机配置
+event_log.sample_agent_ready:
+  en: "Key agent ready: 2 identities available"
+  zh-CN: 密钥代理已就绪：2 个可用身份
+event_log.sample_fingerprint_changed:
+  en: Host key fingerprint for db-01 differs from the local record, awaiting confirmation
+  zh-CN: db-01 的主机密钥指纹与本地记录不同，等待确认
+event_log.sample_timeout:
+  en: web-02 connection timed out (10s), no session established
+  zh-CN: web-02 连接超时（10s），未建立会话
+
+# ── 设置面板 ─────────────────────────────────────────────────────────────
+settings.title:
+  en: Settings
+  zh-CN: 设置
+settings.appearance:
+  en: Appearance
+  zh-CN: 外观
+settings.dark_theme:
+  en: Dark theme
+  zh-CN: 深色主题
+settings.language:
+  en: Language
+  zh-CN: 语言
+settings.more_hint:
+  en: Connection, key and terminal settings will open up alongside the matching features.
+  zh-CN: 连接、密钥与终端设置会随对应功能一起开放。
+
+# ── 右键菜单公用 ─────────────────────────────────────────────────────────
+menu.more:
+  en: More
+  zh-CN: 更多
+menu.label_with_count:
+  en: "%{label} (%{count} items)"
+  zh-CN: "%{label}（%{count} 项）"
+
+# ── 终端右键菜单 ─────────────────────────────────────────────────────────
+terminal_menu.copy:
+  en: Copy
+  zh-CN: 复制
+terminal_menu.paste:
+  en: Paste
+  zh-CN: 粘贴
+terminal_menu.select_all:
+  en: Select All
+  zh-CN: 全选
+terminal_menu.find:
+  en: Find…
+  zh-CN: 查找…
+terminal_menu.copy_all:
+  en: Copy All Output
+  zh-CN: 复制全部输出
+terminal_menu.clear:
+  en: Clear Screen
+  zh-CN: 清屏
+terminal_menu.close:
+  en: Close Session
+  zh-CN: 关闭会话
+
+# ── 主机右键菜单 ─────────────────────────────────────────────────────────
+host_menu.open_terminal:
+  en: Open Terminal
+  zh-CN: 打开终端
+host_menu.edit_config:
+  en: Edit Configuration
+  zh-CN: 编辑配置
+host_menu.duplicate:
+  en: Duplicate
+  zh-CN: 创建副本
+host_menu.delete:
+  en: Delete Host
+  zh-CN: 删除主机
+
+# ── SFTP 远端条目右键菜单 ────────────────────────────────────────────────
+sftp_menu.edit:
+  en: Edit File
+  zh-CN: 编辑文件
+sftp_menu.download:
+  en: Download
+  zh-CN: 下载到本地
+sftp_menu.open_folder:
+  en: Open Folder
+  zh-CN: 打开目录
+sftp_menu.cd_here:
+  en: cd Here in Terminal
+  zh-CN: 在终端中 cd 到此目录
+sftp_menu.copy_path:
+  en: Copy Remote Path
+  zh-CN: 复制远端路径
+sftp_menu.rename:
+  en: Rename
+  zh-CN: 重命名
+sftp_menu.chmod:
+  en: Permissions (chmod)
+  zh-CN: 权限（chmod）
+sftp_menu.delete:
+  en: Delete
+  zh-CN: 删除
+
+# ── 本地条目右键菜单 ─────────────────────────────────────────────────────
+local_menu.upload:
+  en: Upload
+  zh-CN: 上传到远端
+local_menu.open_with_default:
+  en: Open With Default App
+  zh-CN: 用系统默认程序打开
+local_menu.open_folder:
+  en: Open Folder
+  zh-CN: 进入目录
+local_menu.copy_path:
+  en: Copy Local Path
+  zh-CN: 复制本地路径
+local_menu.refresh:
+  en: Refresh Local Pane
+  zh-CN: 刷新本地栏
+local_menu.delete:
+  en: Delete
+  zh-CN: 删除
+
+# ── 工作区（标题栏与全局通知） ───────────────────────────────────────────
+workspace.host_db_failed:
+  en: Could not open the host database; changes will only apply to this session.
+  zh-CN: 主机配置库打开失败，本次的改动只在当前会话里生效。
+workspace.assistant_wip:
+  en: The AI assistant is still under development.
+  zh-CN: AI 助手还在开发中。
+workspace.quick_connect_wip:
+  en: Quick connect is still under development.
+  zh-CN: 快速连接还在开发中。
+workspace.local_shell:
+  en: Local Shell
+  zh-CN: 本地 Shell
+workspace.local_shell_tooltip:
+  en: Open a local terminal (this machine's PTY)
+  zh-CN: 打开本地终端（本机 PTY）
+workspace.local_shell_a11y:
+  en: Open local shell
+  zh-CN: 打开本地 Shell
+
+# ── 命令面板 ─────────────────────────────────────────────────────────────
+palette.empty:
+  en: No matching host or action.
+  zh-CN: 没有匹配的主机或动作。
+palette.hint_select:
+  en: ↑↓ Select
+  zh-CN: ↑↓ 选择
+palette.hint_run:
+  en: Enter Run
+  zh-CN: Enter 执行
+palette.hint_close:
+  en: Esc Close
+  zh-CN: Esc 关闭
+palette.section_hosts:
+  en: Hosts
+  zh-CN: 主机
+palette.section_views:
+  en: Views
+  zh-CN: 视图
+palette.section_actions:
+  en: Actions
+  zh-CN: 动作
+palette.new_host:
+  en: New host
+  zh-CN: 新建主机
+palette.toggle_sidebar:
+  en: Toggle sidebar
+  zh-CN: 切换侧边栏
+palette.toggle_right_dock:
+  en: Toggle host info and settings
+  zh-CN: 切换主机信息与设置
+
+# ── 主机浏览器（侧边栏主机列表） ─────────────────────────────────────────
+host_explorer.search_placeholder:
+  en: Search hosts by name, address or group
+  zh-CN: 按名称、地址或分组搜索主机
+host_explorer.load_failed:
+  en: "Could not read the host configuration: %{error}"
+  zh-CN: 读取主机配置失败：%{error}
+host_explorer.duplicate_failed:
+  en: "Could not duplicate “%{name}”: %{error}"
+  zh-CN: 复制“%{name}”失败：%{error}
+host_explorer.delete_title:
+  en: Delete host
+  zh-CN: 删除主机
+host_explorer.delete_confirm:
+  en: Delete “%{name}”? This cannot be undone.
+  zh-CN: 确定要删除“%{name}”吗？删除后无法恢复。
+host_explorer.delete:
+  en: Delete
+  zh-CN: 删除
+host_explorer.cancel:
+  en: Cancel
+  zh-CN: 取消
+host_explorer.delete_failed:
+  en: "Could not delete the host: %{error}"
+  zh-CN: 删除主机失败：%{error}
+host_explorer.group_not_empty:
+  en: Group “%{name}” still holds %{count} host(s). Move or delete them before deleting the group.
+  zh-CN: 分组“%{name}”下还有 %{count} 台主机，请先移出或删除这些主机，再删除分组。
+host_explorer.delete_group_failed:
+  en: "Could not delete the group: %{error}"
+  zh-CN: 删除分组失败：%{error}
+host_explorer.save_order_failed:
+  en: "Could not save the host order: %{error}"
+  zh-CN: 保存主机顺序失败：%{error}
+host_explorer.new_host:
+  en: New host
+  zh-CN: 新建主机
+host_explorer.filter_all:
+  en: All (%{count})
+  zh-CN: 全部（%{count}）
+host_explorer.filter_recent:
+  en: Recent
+  zh-CN: 最近
+host_explorer.delete_group:
+  en: Delete group
+  zh-CN: 删除分组
+host_explorer.group_empty:
+  en: This group has no hosts yet.
+  zh-CN: 这个分组下还没有主机。
+host_explorer.no_match:
+  en: No matching host.
+  zh-CN: 没有匹配的主机。
+
+# ── 主机表单（新建 / 编辑主机的对话框） ──────────────────────────────────
+host_form.title_new:
+  en: New host
+  zh-CN: 新建主机
+host_form.title_edit:
+  en: Edit host
+  zh-CN: 编辑主机
+host_form.subtitle_new:
+  en: Set up connection details, authentication, jump host and tags
+  zh-CN: 配置连接信息、认证方式、跳板机与标签
+host_form.subtitle_edit:
+  en: Change connection details, authentication, jump host and tags
+  zh-CN: 修改连接信息、认证方式、跳板机与标签
+host_form.cancel:
+  en: Cancel
+  zh-CN: 取消
+host_form.create:
+  en: Create host
+  zh-CN: 创建主机
+host_form.save:
+  en: Save changes
+  zh-CN: 保存修改
+host_form.save_failed:
+  en: "Could not save the host: %{error}"
+  zh-CN: 保存主机失败：%{error}
+host_form.auth_password:
+  en: Password
+  zh-CN: 密码认证
+host_form.auth_public_key:
+  en: SSH key pair (private key)
+  zh-CN: SSH 密钥对(私钥)
+host_form.auth_agent:
+  en: SSH agent forwarding
+  zh-CN: SSH Agent 转发
+host_form.field_name:
+  en: Display name *
+  zh-CN: 节点显示名称 *
+host_form.field_group:
+  en: Group / folder
+  zh-CN: 分组 / 目录
+host_form.field_hostname:
+  en: Host IP / domain *
+  zh-CN: 主机 IP / 域名 *
+host_form.field_port:
+  en: Port
+  zh-CN: 端口
+host_form.field_username:
+  en: Login user *
+  zh-CN: 登录用户名 *
+host_form.field_auth:
+  en: Authentication
+  zh-CN: 认证方式
+host_form.field_password:
+  en: SSH password
+  zh-CN: SSH 密码
+host_form.field_platform:
+  en: Target operating system
+  zh-CN: 目标操作系统
+host_form.field_proxy_jump:
+  en: Jump host (ProxyJump)
+  zh-CN: 跳板机(ProxyJump)
+host_form.field_badge_color:
+  en: Badge accent colour
+  zh-CN: 徽章强调色
+host_form.field_tags:
+  en: Tags
+  zh-CN: 标签
+host_form.name_placeholder:
+  en: e.g. US-East K8s control plane
+  zh-CN: 例如 US-East K8s 主节点
+host_form.group_placeholder:
+  en: e.g. Production
+  zh-CN: 例如 生产环境
+host_form.hostname_placeholder:
+  en: 192.168.1.100 or example.com
+  zh-CN: 192.168.1.100 或 example.com
+host_form.tag_placeholder:
+  en: Add a tag (e.g. AWS, Production)…
+  zh-CN: 添加标签(例如 AWS、生产环境)…
+host_form.default_group:
+  en: Production
+  zh-CN: 生产环境
+host_form.ungrouped:
+  en: Ungrouped
+  zh-CN: 未分组
+host_form.bastion_none:
+  en: Direct connection (no jump host)
+  zh-CN: 直接连接(不经跳板)
+host_form.bastion_item:
+  en: "Jump: %{name} (%{hostname})"
+  zh-CN: "跳板:%{name} (%{hostname})"
+host_form.required_fields:
+  en: Fill in the display name, host address and login user.
+  zh-CN: 请填写节点显示名称、主机地址与登录用户名。
+host_form.key_vault_wip:
+  en: The key vault is still under development; saved keys cannot be picked yet.
+  zh-CN: 密钥保管库还在开发中，暂时无法选择已保存的密钥。
+host_form.color_custom:
+  en: Custom
+  zh-CN: 自定义
+host_form.add_tag:
+  en: Add
+  zh-CN: 添加
+
+# ── SFTP 新建 / 重命名对话框 ─────────────────────────────────────────────
+sftp_form.title_new_file:
+  en: New remote file
+  zh-CN: 新建远端文件
+sftp_form.title_new_folder:
+  en: New remote folder
+  zh-CN: 新建远端目录
+sftp_form.title_rename:
+  en: Rename entry
+  zh-CN: 重命名条目
+sftp_form.label_new_file:
+  en: File name inside %{subject}
+  zh-CN: "%{subject} 内的文件名"
+sftp_form.label_new_folder:
+  en: Folder name inside %{subject}
+  zh-CN: "%{subject} 内的目录名"
+sftp_form.label_rename:
+  en: New name for %{subject}
+  zh-CN: "%{subject} 的新名称"
+sftp_form.placeholder_new_file:
+  en: e.g. app.config.json or script.sh
+  zh-CN: 例如 app.config.json 或 script.sh
+sftp_form.placeholder_new_folder:
+  en: e.g. backups or releases
+  zh-CN: 例如 backups 或 releases
+sftp_form.ok_new_file:
+  en: Create & edit
+  zh-CN: 创建并编辑
+sftp_form.ok_new_folder:
+  en: Create folder
+  zh-CN: 创建目录
+sftp_form.ok_rename:
+  en: Save
+  zh-CN: 保存
+sftp_form.cancel:
+  en: Cancel
+  zh-CN: 取消
+sftp_form.hint_new_file:
+  en: An empty file is created and the editor opens right after. An existing file with the same name is never overwritten.
+  zh-CN: 新建的是空文件，创建完直接进编辑器。同名文件已存在时不会覆盖。
+sftp_form.hint_new_folder:
+  en: The folder is created in this level only; intermediate levels are not filled in.
+  zh-CN: 只在当前这一层建目录，不会顺路补出中间层级。
+sftp_form.hint_rename:
+  en: Renaming applies within this level only; if an entry with the new name already exists, the remote rejects the rename.
+  zh-CN: 重命名只在当前这一层生效；新名字已经有同名条目时，对端会拒绝这次改名。
+sftp_form.header_note:
+  en: This acts directly on the remote file system.
+  zh-CN: 这一步会直接作用在远端的文件系统上。
+sftp_form.error_empty:
+  en: The entry name cannot be empty.
+  zh-CN: 条目名不能是空的。
+sftp_form.error_slash:
+  en: "The entry name cannot contain `/`: this only changes a name inside one directory."
+  zh-CN: "条目名里不能有 `/`：这里改的只是一个目录内的名字。"
+sftp_form.error_dot:
+  en: "`.` and `..` mean the directory itself and its parent; they cannot be used as an entry name."
+  zh-CN: "`/.` 和 `..` 指的是目录本身与上级，不能当条目名。"
+
+# ── SFTP 文本编辑对话框 ──────────────────────────────────────────────────
+sftp_editor.footer_hint:
+  en: Saves by overwriting the whole file, up to %{limit}
+  zh-CN: 整篇覆盖保存，上限 %{limit}
+sftp_editor.cancel:
+  en: Cancel
+  zh-CN: 取消
+sftp_editor.save:
+  en: Save
+  zh-CN: 保存
+sftp_editor.save_tooltip:
+  en: Save (⌘S / Ctrl+S)
+  zh-CN: 保存（⌘S / Ctrl+S）
+sftp_editor.saved:
+  en: Saved %{name}
+  zh-CN: 已保存 %{name}
+sftp_editor.save_failed:
+  en: "Save failed: %{error}"
+  zh-CN: 保存失败：%{error}
+sftp_editor.loading:
+  en: Reading from the remote…
+  zh-CN: 正在从远端读取…
+sftp_editor.header_note:
+  en: You are editing the remote file itself
+  zh-CN: 编辑的是远端那份文件本身
+
+# ── SFTP 权限（chmod）对话框 ─────────────────────────────────────────────
+sftp_chmod.title:
+  en: Change permissions
+  zh-CN: 修改权限
+sftp_chmod.header_note:
+  en: The remote receives this setstat immediately and the listing refreshes right after.
+  zh-CN: 远端会立刻收到这次 setstat，改完列表跟着刷新。
+sftp_chmod.cancel:
+  en: Cancel
+  zh-CN: 取消
+sftp_chmod.apply:
+  en: Apply
+  zh-CN: 应用
+sftp_chmod.placeholder:
+  en: e.g. 644 or 755
+  zh-CN: 例如 644 或 755
+sftp_chmod.invalid:
+  en: Permissions must be 3–4 octal digits (each no greater than 7), e.g. 644 or 755.
+  zh-CN: 权限得是 3~4 位八进制数字（每一位不超过 7），例如 644 或 755。
+sftp_chmod.target:
+  en: "Target:"
+  zh-CN: 目标：
+sftp_chmod.preview:
+  en: Will run chmod %{mode} on %{target} (%{description})
+  zh-CN: 将对 %{target} 执行 chmod %{mode}（%{description}）
+sftp_chmod.digits_hint:
+  en: Each digit is r=4, w=2, x=1, for user, group and others in turn.
+  zh-CN: 每一位是 r=4、w=2、x=1，三位分别对应用户、组、其他。
+sftp_chmod.describe_444:
+  en: Read-only for everyone
+  zh-CN: 所有人只读
+sftp_chmod.describe_600:
+  en: Only you can read and write
+  zh-CN: 只有自己能读写
+sftp_chmod.describe_644:
+  en: You can read and write, everyone else can read
+  zh-CN: 自己能读写，其他人只读
+sftp_chmod.describe_666:
+  en: Everyone can read and write
+  zh-CN: 所有人可读写
+sftp_chmod.describe_700:
+  en: Only you can enter, read and write
+  zh-CN: 只有自己能进、能读写
+sftp_chmod.describe_755:
+  en: You can enter, read and write; everyone else can enter and read
+  zh-CN: 自己能进能读写，其他人只能进和读
+sftp_chmod.describe_777:
+  en: Everyone can read, write and execute
+  zh-CN: 所有人可读、可写、可执行
+sftp_chmod.describe_other:
+  en: Set bit by bit (r=4 w=2 x=1, for user/group/others)
+  zh-CN: 按位设置（r=4 w=2 x=1，用户/组/其他）
+
+# ── 端口转发：三档的说明文字（src/forward.rs） ───────────────────────────
+# `badge()` 上那三个全大写的标签（LOCAL FORWARD / …）不进这张表：它们照的是
+# ssh 自己的 LocalForward / RemoteForward / DynamicForward 那套行话，两种语言
+# 下都是同一个词；停在徽章上给的那句人话（tagline）才是要翻的。
+forward.label_local:
+  en: -L Local
+  zh-CN: -L 本地
+forward.label_remote:
+  en: -R Remote
+  zh-CN: -R 远端
+forward.label_dynamic:
+  en: -D Dynamic
+  zh-CN: -D 动态
+forward.pipe_local:
+  en: Encrypted SSH Pipe
+  zh-CN: 加密 SSH 隧道
+forward.pipe_remote:
+  en: Reverse SSH Pipe
+  zh-CN: 反向 SSH 隧道
+forward.pipe_dynamic:
+  en: SOCKS5 Proxy
+  zh-CN: SOCKS5 代理
+forward.tagline_local:
+  en: Map a service only the remote can reach onto a port on this machine
+  zh-CN: 把远端才能访问的服务，映到本机的一个端口上
+forward.tagline_remote:
+  en: Expose a service on this machine to the remote side
+  zh-CN: 把本机的服务，开给远端那边访问
+forward.tagline_dynamic:
+  en: Open a SOCKS5 proxy locally and browse through the remote machine
+  zh-CN: 本机开一个 SOCKS5 代理，整台远端当跳板上网
+forward.detail_local:
+  en: Some service on the remote (or inside its private network) is not reachable from here. Turn this on and this machine gains a port; connecting to it is the same as connecting to that service. Remote databases, Redis and web consoles all go through this one.
+  zh-CN: 远端（或它内网里）的某个服务，你本机直连不到。起了这一档，本机就多出一个端口，连它就等于连那个服务。访问远端的数据库、Redis、Web 面板都走这一档。
+forward.detail_remote:
+  en: The other direction — ask the remote to open a port, and traffic arriving there comes back to a service on this machine. Use it when a program or a colleague on the remote side needs something on your machine and you would rather not expose it to the internet. Without GatewayPorts on the remote sshd, only the remote itself can reach that port.
+  zh-CN: 方向反过来：请远端开一个端口，远端那边连上来的流量回到本机的服务上。想让远端的程序或同事访问你机器上的东西，又不愿把电脑暴露到公网时用它。远端 sshd 没开 GatewayPorts 的话，那个端口只有远端自己连得上。
+forward.detail_dynamic:
+  en: No target needed — this machine opens a SOCKS5 proxy port, and once a browser or tool points at it, every address it asks for is fetched by the remote instead. It is the same as sitting on that remote machine.
+  zh-CN: 不用指定目标：本机开一个 SOCKS5 代理端口，浏览器或工具配上它之后，访问哪个地址都由远端代为发出 —— 相当于坐在远端那台机器上上网。
+forward.example_local:
+  en: "e.g. local 15432 → 10.0.4.15:5432 on the remote network; point the database client at 127.0.0.1:15432"
+  zh-CN: "例：本机 15432 → 远端内网的 10.0.4.15:5432，数据库客户端填 127.0.0.1:15432 即可"
+forward.example_remote:
+  en: "e.g. remote 8080 → 127.0.0.1:3000 here; a browser on the remote opening 8080 sees your service"
+  zh-CN: "例：远端 8080 → 本机的 127.0.0.1:3000，远端浏览器开 8080 看到的就是它"
+forward.example_dynamic:
+  en: "e.g. SOCKS5 on local 1080; set the browser proxy to 127.0.0.1:1080 and pages only the remote network can reach will open"
+  zh-CN: "例：本机 1080 上的 SOCKS5，浏览器代理填 127.0.0.1:1080，就能打开只有远端内网才通的页面"
+forward.listen_label_remote:
+  en: Remote listen port
+  zh-CN: 远端监听端口
+forward.listen_label_local:
+  en: Local listen port
+  zh-CN: 本地监听端口
+forward.check_no_name:
+  en: Give this forward a name so you can pick it out of the list.
+  zh-CN: 给这条转发起个名字，列表里要认得出它。
+forward.check_listen_port:
+  en: The listen port must be a number between 1 and 65535.
+  zh-CN: 监听端口要填 1~65535 之间的一个数。
+forward.check_bind_address:
+  en: The listen address cannot be empty; 127.0.0.1 is the usual choice for a local listener.
+  zh-CN: 监听地址不能空着，本机监听一般填 127.0.0.1。
+forward.check_target_host:
+  en: The target address cannot be empty.
+  zh-CN: 目标地址不能空着。
+forward.check_target_port:
+  en: The target port must be a number between 1 and 65535.
+  zh-CN: 目标端口要填 1~65535 之间的一个数。
+forward.preset_mysql:
+  en: Remote MySQL 3306 mapped to this machine
+  zh-CN: 远端 MySQL 3306 映到本机
+forward.preset_postgresql:
+  en: Remote PostgreSQL 5432 mapped to this machine
+  zh-CN: 远端 PostgreSQL 5432 映到本机
+forward.preset_redis:
+  en: Remote Redis 6379 mapped to this machine
+  zh-CN: 远端 Redis 6379 映到本机
+forward.preset_socks5:
+  en: SOCKS5 proxy on local 1080, the whole machine as a jump box
+  zh-CN: 本机 1080 上的 SOCKS5 代理，整台机器当跳板
+
+# ── 端口转发对话框 ───────────────────────────────────────────────────────
+port_forward.title:
+  en: Session port forwarding
+  zh-CN: 会话端口转发
+port_forward.shortcut_hint:
+  en: "Shortcut: Alt+P opens this screen"
+  zh-CN: 快捷键：Alt+P 打开这一屏
+port_forward.close:
+  en: Close
+  zh-CN: 关闭
+port_forward.start_failed:
+  en: "%{name} could not start: %{error}"
+  zh-CN: "%{name} 起不来：%{error}"
+port_forward.name_placeholder:
+  en: e.g. Prod database or K8s dashboard
+  zh-CN: 例如 生产库 或 K8s 面板
+port_forward.form_closed:
+  en: The form is not open
+  zh-CN: 表单没开着
+port_forward.port_taken:
+  en: "%{endpoint} already has a forward on it."
+  zh-CN: "%{endpoint} 上已经有一条转发了。"
+port_forward.running_stop_first:
+  en: This forward came back up; press Stop before saving your changes.
+  zh-CN: 这条转发又跑起来了，先按 Stop 停下再保存改动。
+port_forward.draft_title_edit:
+  en: Edit this forwarding rule
+  zh-CN: 修改这条转发规则
+port_forward.draft_title_new:
+  en: New forwarding rule
+  zh-CN: 新建一条转发规则
+port_forward.presets:
+  en: "Presets:"
+  zh-CN: 预设：
+port_forward.field_name:
+  en: Rule name
+  zh-CN: 规则名称
+port_forward.field_kind:
+  en: Forward type
+  zh-CN: 转发类型
+port_forward.field_bind:
+  en: Listen address
+  zh-CN: 监听地址
+port_forward.field_target:
+  en: "Target (address:port)"
+  zh-CN: 目标（地址:端口）
+port_forward.cancel:
+  en: Cancel
+  zh-CN: 取消
+port_forward.save_edit:
+  en: Save changes and enable
+  zh-CN: 保存修改并启用
+port_forward.save_new:
+  en: Save and enable
+  zh-CN: 保存并启用
+port_forward.editing_cannot_start:
+  en: This one is being edited; save or cancel before starting it
+  zh-CN: 正在改这一条，存下或取消之后再起
+port_forward.stop_before_edit:
+  en: Press Stop on this forward before editing it
+  zh-CN: 要改先按 Stop 停下这条转发
+port_forward.edit_rule:
+  en: Edit this forwarding rule
+  zh-CN: 修改这条转发规则
+port_forward.delete_rule:
+  en: Delete this forwarding rule
+  zh-CN: 删除这条转发规则
+port_forward.dynamic_target:
+  en: Chosen per connection
+  zh-CN: 每条连接自己指定
+port_forward.traffic:
+  en: "Traffic: %{amount}"
+  zh-CN: 流量：%{amount}
+port_forward.connections:
+  en: "Connections: %{count}"
+  zh-CN: 连接：%{count}
+port_forward.open_in_browser:
+  en: Open in browser
+  zh-CN: 在浏览器里打开
+port_forward.test_port:
+  en: Test port
+  zh-CN: 测试端口
+port_forward.test_port_tooltip:
+  en: Connect to this port once and see whether the tunnel carries
+  zh-CN: 连一次这个端口，看隧道通不通
+port_forward.copy_cli:
+  en: Copy CLI
+  zh-CN: 复制 CLI
+port_forward.copy_cli_tooltip:
+  en: Copy the equivalent ssh command line
+  zh-CN: 复制等价的 ssh 命令行
+port_forward.empty_title:
+  en: This host has no port forwarding rules yet
+  zh-CN: 这台主机还没有端口转发规则
+port_forward.empty_body:
+  en: Map a remote database or web console onto this machine, or open a local service to the remote network — all over the SSH connection you already authenticated, without opening another port to the outside.
+  zh-CN: 把远端的数据库、Web 面板映到本机，或者把本机的服务开给远端网络 —— 都走这条已经认证过的 SSH 连接，不必再开一个端口给外面。
+port_forward.empty_add:
+  en: Create the first forwarding rule
+  zh-CN: 建第一条转发规则
+port_forward.running_count:
+  en: "%{count} running"
+  zh-CN: "%{count} 条在跑"
+port_forward.host_line:
+  en: "%{name} (%{address})"
+  zh-CN: "%{name}（%{address}）"
+port_forward.add:
+  en: Add forward
+  zh-CN: 新增转发
+
+# ── 终端标签页 / 窗格 ────────────────────────────────────────────────────
+# 写进终端缓冲的那几条横幅只把**话**放进语言表，ANSI 颜色码留在代码里：
+# 转义序列不是文案，混进 yml 只会让译者踩到 `\x1b`。
+terminal.local_shell:
+  en: Local Shell
+  zh-CN: 本地 Shell
+terminal.local_shell_numbered:
+  en: Local Shell %{index}
+  zh-CN: 本地 Shell %{index}
+terminal.local_platform:
+  en: This machine
+  zh-CN: 本机
+terminal.close_session:
+  en: Close session
+  zh-CN: 关闭会话
+terminal.forwards_failed:
+  en: "%{count} port forward(s) did not start — %{reasons}"
+  zh-CN: 有 %{count} 条端口转发没起来 —— %{reasons}
+terminal.forward_failure_item:
+  en: "%{name}: %{error}"
+  zh-CN: "%{name}：%{error}"
+terminal.forwards_need_ssh:
+  en: SSH is not connected yet; port forwarding has to wait for the connection.
+  zh-CN: SSH 还没连上，端口转发要等连接建好。
+terminal.save_forwards_failed:
+  en: "Could not save the port forwarding rules: %{error}"
+  zh-CN: 保存端口转发规则失败：%{error}
+terminal.banner_local_ready:
+  en: Local shell is ready.
+  zh-CN: 本机 Shell 已就绪。
+terminal.local_shell_failed:
+  en: "Local shell could not start: %{error}"
+  zh-CN: 本地 Shell 启动失败：%{error}
+terminal.banner_connecting:
+  en: Connecting over SSH…
+  zh-CN: 正在通过 SSH 连接...
+terminal.banner_ssh_failed:
+  en: "SSH connection failed: %{error}"
+  zh-CN: SSH 连接失败：%{error}
+terminal.banner_fell_back:
+  en: Fell back to the local shell (the demo stays usable)
+  zh-CN: 已回退到本机 Shell（演示继续可用）
+terminal.banner_ssh_hint:
+  en: "Hint: check the host address, port, user name and password/key; the remote needs sshd running."
+  zh-CN: 提示：检查主机地址、端口、用户名与密码/密钥是否正确；远端需开启 SSH 服务。
+terminal.ssh_failed_notify:
+  en: "SSH connection to %{name} failed, fell back to this machine: %{error}"
+  zh-CN: SSH 连接 %{name} 失败，已回退到本机：%{error}
+terminal.both_failed:
+  en: "SSH failed: %{error}; the local shell failed too: %{local_error}"
+  zh-CN: "SSH 失败：%{error}；本机 Shell 也失败：%{local_error}"
+terminal.banner_opening_second:
+  en: Opening a second shell on %{name}…
+  zh-CN: 正在 %{name} 上打开第二个 Shell...
+terminal.banner_second_failed:
+  en: "Could not open a new shell: %{error}"
+  zh-CN: 开不出新的 Shell：%{error}
+terminal.banner_max_sessions:
+  en: The remote may cap the number of sessions on one connection (sshd's MaxSessions).
+  zh-CN: 对端可能限制了一条连接上的会话数（sshd 的 MaxSessions）。
+terminal.banner_connected:
+  en: ✓ Connected to %{name}
+  zh-CN: ✓ 已连接到 %{name}
+terminal.banner_identity:
+  en: "(%{user}@%{hostname}:%{port}, %{platform})"
+  zh-CN: "（%{user}@%{hostname}:%{port}，%{platform}）"
+terminal.banner_local_below:
+  en: What follows is the local shell; the SSH channel was not established.
+  zh-CN: 下面是本机的 Shell，SSH 通道未建立。
+terminal.search_placeholder:
+  en: Find in terminal…
+  zh-CN: 在终端里查找…
+terminal.search_case:
+  en: Match case
+  zh-CN: 区分大小写
+terminal.search_regex:
+  en: Use a regular expression
+  zh-CN: 使用正则表达式
+terminal.search_prev:
+  en: Previous (Shift+Enter)
+  zh-CN: 上一个（Shift+回车）
+terminal.search_next:
+  en: Next (Enter)
+  zh-CN: 下一个（回车）
+terminal.search_close:
+  en: Close (Esc)
+  zh-CN: 关闭（Esc）
+terminal.session_failed:
+  en: This session could not be started
+  zh-CN: 这条会话开不起来
+
+# ── 监控面板 ─────────────────────────────────────────────────────────────
+# 容器状态那几个词（running / exited / paused …）不进这张表：它们照抄的是
+# `docker ps` 自己的输出，翻了反而对不上用户在命令行里看到的东西。
+monitor.filter_placeholder:
+  en: Filter PID, user, cmd...
+  zh-CN: 筛选 PID、用户、命令…
+monitor.tab_metrics:
+  en: Metrics
+  zh-CN: 指标
+monitor.tab_processes:
+  en: Procs
+  zh-CN: 进程
+monitor.tab_processes_count:
+  en: Procs (%{count})
+  zh-CN: 进程（%{count}）
+monitor.tab_docker:
+  en: Docker
+  zh-CN: Docker
+monitor.tab_docker_count:
+  en: Docker (%{count})
+  zh-CN: Docker（%{count}）
+monitor.tab_diagnostics:
+  en: Diag
+  zh-CN: 诊断
+monitor.interval_not_integer:
+  en: The sampling interval has to be a whole number of seconds.
+  zh-CN: 采集间隔要填一个整数秒。
+monitor.no_host_config:
+  en: A local shell has no host configuration; this change only applies to the current session.
+  zh-CN: 本机 Shell 没有主机配置，这次改动只在当前会话里生效。
+monitor.intervals_saved:
+  en: Sampling interval saved to this host.
+  zh-CN: 采集频率已保存到这台主机。
+monitor.intervals_save_failed:
+  en: "Could not save the sampling interval: %{error}"
+  zh-CN: 保存采集频率失败：%{error}
+monitor.kill_title:
+  en: Kill process
+  zh-CN: 结束进程
+monitor.kill_confirm:
+  en: Kill process “%{command}” (PID %{pid})? SIGTERM (kill -15) is sent to the remote.
+  zh-CN: 确定要结束进程 “%{command}”（PID %{pid}）吗？将向对端发送 SIGTERM（kill -15）。
+monitor.kill_ok:
+  en: Kill process
+  zh-CN: 结束进程
+monitor.cancel:
+  en: Cancel
+  zh-CN: 取消
+monitor.kill_failed:
+  en: "kill %{pid} failed: %{error}"
+  zh-CN: "kill %{pid} 失败：%{error}"
+monitor.docker_action_failed:
+  en: "docker %{id} action failed: %{error}"
+  zh-CN: "docker %{id} 操作失败：%{error}"
+monitor.refresh_now:
+  en: Sample again now
+  zh-CN: 立刻重新采集
+monitor.collapse:
+  en: Collapse the monitor panel (Alt+M)
+  zh-CN: 收起监控面板（Alt+M）
+monitor.empty_no_remote_title:
+  en: This session has no remote to sample
+  zh-CN: 这条会话没有可采的对端
+monitor.empty_no_remote_detail:
+  en: The monitor reads the remote's /proc. Sampling starts on its own once SSH connects; a local shell has no remote.
+  zh-CN: 监控读的是远端的 /proc。SSH 连上之后这里会自动开始采集；本地 Shell 没有对端。
+monitor.empty_failed_title:
+  en: Sampling failed
+  zh-CN: 采集失败
+monitor.empty_failed_detail:
+  en: The line above is the reason the remote gave. Fix it and press refresh, or wait for the next automatic retry.
+  zh-CN: 上面那条是对端给的原因。修好之后按刷新，或者等下一次自动重试。
+monitor.empty_sampling_title:
+  en: Sampling…
+  zh-CN: 正在采集…
+monitor.empty_sampling_detail:
+  en: The first sample runs a sampling window; give it a moment.
+  zh-CN: 第一次采集要跑一段采样窗口，稍等一下。
+monitor.settings_tooltip:
+  en: Sampling settings
+  zh-CN: 采集设置
+monitor.processes_sampling:
+  en: Sampling the process list…
+  zh-CN: 正在采集进程列表…
+monitor.processes_none_returned:
+  en: This sample did not return a process list
+  zh-CN: 这次采集没有拿到进程列表
+monitor.processes_no_match:
+  en: No matching process
+  zh-CN: 没有匹配的进程
+monitor.docker_none:
+  en: This host has no docker, or no containers
+  zh-CN: 这台主机上没有 docker，或者没有容器
+monitor.docker_sampling:
+  en: Sampling containers…
+  zh-CN: 正在采集容器…
+monitor.settings_note:
+  en: The sampling interval follows this host; it will still be this rhythm next time you open it.
+  zh-CN: 采集频率跟着这台主机走，下次打开还是这个节奏。
+monitor.interval_panel_title:
+  en: Monitor panel
+  zh-CN: 监控面板
+monitor.interval_panel_hint:
+  en: "While this pane is open the full sample runs: charts, process table, containers."
+  zh-CN: 这一栏展开着的时候采全量：曲线、进程表、容器。
+monitor.interval_status_title:
+  en: Terminal status bar
+  zh-CN: 终端状态栏
+monitor.interval_status_hint:
+  en: Once this pane is collapsed only the light sample runs, feeding the status bar along the bottom of the terminal.
+  zh-CN: 这一栏收起之后只采轻量的一份，喂终端下沿那条状态栏。
+monitor.save:
+  en: Save
+  zh-CN: 保存
+monitor.interval_integer_hint:
+  en: The interval must be a whole number of seconds.
+  zh-CN: 间隔要填整数秒。
+monitor.no_host_config_hint:
+  en: A local shell has no host configuration; changes here only apply to the current session.
+  zh-CN: 本机 Shell 没有主机配置，这里改的只在当前会话里生效。
+monitor.seconds:
+  en: s
+  zh-CN: 秒
+monitor.seconds_range:
+  en: "%{low}–%{high} s"
+  zh-CN: "%{low}–%{high} 秒"
+monitor.probe_incomplete:
+  en: The sampling script did not finish (the remote may have cut the command short)
+  zh-CN: 采集脚本没有跑完（对端可能中断了这条命令）
+monitor.probe_no_meminfo:
+  en: The remote cannot read /proc/meminfo; monitoring only supports Linux hosts
+  zh-CN: 远端读不到 /proc/meminfo，监控只支持 Linux 主机
+
+# ── 传输队列状态 ─────────────────────────────────────────────────────────
+transfer.status_queued:
+  en: Queued
+  zh-CN: 排队中
+transfer.status_transferring:
+  en: Transferring
+  zh-CN: 传输中
+transfer.status_paused:
+  en: Paused
+  zh-CN: 已暂停
+transfer.status_completed:
+  en: Completed
+  zh-CN: 已完成
+transfer.status_failed:
+  en: Failed
+  zh-CN: 失败
+transfer.status_canceled:
+  en: Canceled
+  zh-CN: 已取消
+
+# ── SFTP 面板 ────────────────────────────────────────────────────────────
+sftp.col_name:
+  en: Name
+  zh-CN: 名称
+sftp.col_size:
+  en: Size
+  zh-CN: 大小
+sftp.col_modified:
+  en: Modified
+  zh-CN: 修改时间
+sftp.col_perm:
+  en: Perms
+  zh-CN: 权限
+sftp.col_owner:
+  en: Owner
+  zh-CN: 所属
+sftp.col_action:
+  en: Actions
+  zh-CN: 操作
+sftp.total_items:
+  en: "%{count} items in total"
+  zh-CN: 共 %{count} 项
+sftp.empty_dir:
+  en: This directory is empty
+  zh-CN: 目录是空的
+sftp.row_download:
+  en: Download
+  zh-CN: 下载到本地
+sftp.row_open_folder:
+  en: Open this directory
+  zh-CN: 进到这个目录
+sftp.row_delete:
+  en: Delete this entry
+  zh-CN: 删掉这个条目
+sftp.path_placeholder:
+  en: Remote path, e.g. /var/log or ~/logs
+  zh-CN: 远端路径，例如 /var/log 或 ~/logs
+sftp.filter_placeholder:
+  en: Filter file names…
+  zh-CN: 过滤文件名…
+sftp.queue_search_placeholder:
+  en: Search files…
+  zh-CN: 搜索文件…
+sftp.selected_local:
+  en: "%{count} selected locally%{size}"
+  zh-CN: 本地已选 %{count} 项%{size}
+sftp.selected_remote:
+  en: "%{count} selected on the remote%{size}"
+  zh-CN: 远端已选 %{count} 项%{size}
+sftp.selected_both:
+  en: "%{local} selected locally · %{remote} selected on the remote"
+  zh-CN: 本地已选 %{local} 项 · 远端已选 %{remote} 项
+sftp.created:
+  en: Created %{target}
+  zh-CN: 已创建 %{target}
+sftp.renamed:
+  en: Renamed to %{name}
+  zh-CN: 已改名为 %{name}
+sftp.delete_dir_title:
+  en: Delete this directory?
+  zh-CN: 删除这个目录？
+sftp.delete_file_title:
+  en: Delete this file?
+  zh-CN: 删除这个文件？
+sftp.delete_many_title:
+  en: Delete these %{count} entries?
+  zh-CN: 删除这 %{count} 个条目？
+sftp.deleted_one:
+  en: Deleted %{name}
+  zh-CN: 已删除 %{name}
+sftp.deleted_many:
+  en: Deleted %{count} items
+  zh-CN: 已删除 %{count} 项
+sftp.delete_remote_body:
+  en: "%{names} will be removed from the remote file system. Directories are deleted recursively with everything inside them, and this cannot be undone."
+  zh-CN: "%{names} 会从远端文件系统里去掉。目录会连同里面的所有内容一并递归删除，这一步不可恢复。"
+sftp.delete:
+  en: Delete
+  zh-CN: 删除
+sftp.cancel:
+  en: Cancel
+  zh-CN: 取消
+sftp.upload_failed:
+  en: "Upload of “%{name}” failed: %{error}"
+  zh-CN: 上传“%{name}”失败：%{error}
+sftp.download_failed:
+  en: "Download of “%{name}” failed: %{error}"
+  zh-CN: 下载“%{name}”失败：%{error}
+sftp.uploaded:
+  en: Uploaded %{name}
+  zh-CN: 已上传 %{name}
+sftp.downloaded:
+  en: Downloaded %{name}
+  zh-CN: 已下载 %{name}
+sftp.copied_paths:
+  en: "%{count} paths"
+  zh-CN: "%{count} 条路径"
+sftp.delete_local_dir_title:
+  en: Delete this local directory?
+  zh-CN: 删除这个本地目录？
+sftp.delete_local_file_title:
+  en: Delete this local file?
+  zh-CN: 删除这个本地文件？
+sftp.delete_local_many_title:
+  en: Delete these %{count} local entries?
+  zh-CN: 删除本地这 %{count} 个条目？
+sftp.delete_local_body:
+  en: "%{names} will be deleted from your computer outright, not moved to the trash. This cannot be undone, and directories go with everything inside them."
+  zh-CN: "%{names} 会从你的电脑上直接删掉，不进回收站。这一步不可逆；目录会连同里面的所有内容一并删除。"
+sftp.names_and_more:
+  en: "%{head} and %{count} more"
+  zh-CN: "%{head} 等 %{count} 项"
+sftp.count_truncated:
+  en: "%{count} items · truncated, the directory is larger"
+  zh-CN: "%{count} 项 · 已截断，目录比这大"
+sftp.count_items:
+  en: "%{count} items"
+  zh-CN: "%{count} 项"
+sftp.follow_cwd_on:
+  en: "Follow cwd: on"
+  zh-CN: 同步目录：开
+sftp.follow_cwd_off:
+  en: "Follow cwd: off"
+  zh-CN: 同步目录：关
+sftp.follow_cwd_tooltip:
+  en: Keep the right pane on the terminal's current directory
+  zh-CN: 让右栏跟着终端的当前目录走
+sftp.go:
+  en: Go
+  zh-CN: 前往
+sftp.copy_current_path:
+  en: Copy the current path
+  zh-CN: 复制当前路径
+sftp.refresh:
+  en: Refresh
+  zh-CN: 刷新
+sftp.parent_dir:
+  en: Parent directory
+  zh-CN: 上一级目录
+sftp.remote_home:
+  en: Remote home directory
+  zh-CN: 远端家目录
+sftp.new_file_here:
+  en: Create an empty file in this directory
+  zh-CN: 在这个目录里新建一个空文件
+sftp.new_folder_here:
+  en: Create a subdirectory in this directory
+  zh-CN: 在这个目录里新建子目录
+sftp.remote_only:
+  en: Remote only
+  zh-CN: 只看远端
+sftp.side_by_side:
+  en: Side by side
+  zh-CN: 两栏并排
+sftp.hide_dotfiles:
+  en: Hide entries starting with a dot
+  zh-CN: 藏掉点开头的条目
+sftp.show_dotfiles:
+  en: Show entries starting with a dot
+  zh-CN: 画出点开头的条目
+sftp.shrink_pane:
+  en: Shrink this pane
+  zh-CN: 压扁这一栏
+sftp.expand_pane:
+  en: Expand this pane
+  zh-CN: 展开这一栏
+sftp.close_pane:
+  en: Collapse this pane
+  zh-CN: 收起这一栏
+sftp.local_workstation:
+  en: Local workstation
+  zh-CN: 本地工作站
+sftp.drop_to_download:
+  en: Release to download into the current local directory
+  zh-CN: 释放鼠标下载到当前本地目录
+sftp.drop_to_upload:
+  en: Release to upload into the current directory
+  zh-CN: 释放鼠标上传到当前目录
+sftp.deleting:
+  en: Deleting…
+  zh-CN: 正在删除…
+sftp.quick_jump:
+  en: Common ▾
+  zh-CN: 常用 ▾
+sftp.quick_jump_tooltip:
+  en: Jump to a commonly used directory
+  zh-CN: 快速跳转到常用目录
+sftp.local_drive:
+  en: Local drive (%{drive})
+  zh-CN: 本地磁盘（%{drive}）
+sftp.root_dir:
+  en: Root directory
+  zh-CN: 根目录
+sftp.copied:
+  en: Copied %{path}
+  zh-CN: 已复制 %{path}
+sftp.parent_row:
+  en: "[parent directory]"
+  zh-CN: "[上级目录]"
+sftp.hint:
+  en: Double-click a file to edit it; Ctrl/Shift-click to select several; drag between the panes to upload or download; right-click a row for more.
+  zh-CN: 双击文件即可打开编辑；Ctrl/Shift 点选可多选；支持左右栏双向拖拽上传/下载；右键一行看更多操作。
+sftp.transfers_active:
+  en: Transfers (%{active}/%{total})
+  zh-CN: 传输（%{active}/%{total}）
+sftp.transfers:
+  en: Transfers (%{total})
+  zh-CN: 传输（%{total}）
+sftp.hide_queue:
+  en: Collapse the transfer queue
+  zh-CN: 收起传输队列
+sftp.show_queue:
+  en: Expand the transfer queue
+  zh-CN: 展开传输队列
+sftp.dir_home:
+  en: Home
+  zh-CN: 用户主目录 (Home)
+sftp.dir_downloads:
+  en: Downloads
+  zh-CN: 下载 (Downloads)
+sftp.dir_documents:
+  en: Documents
+  zh-CN: 文档 (Documents)
+sftp.dir_desktop:
+  en: Desktop
+  zh-CN: 桌面 (Desktop)
+sftp.dir_pictures:
+  en: Pictures
+  zh-CN: 图片 (Pictures)
+sftp.name_separator:
+  en: ", "
+  zh-CN: 、
+sftp.size_suffix:
+  en: " (%{size})"
+  zh-CN: （%{size}）
+
+# ── 传输队列抽屉 ─────────────────────────────────────────────────────────
+queue.title:
+  en: Transfer queue
+  zh-CN: 传输队列
+queue.filter_all:
+  en: All
+  zh-CN: 全部
+queue.filter_done:
+  en: Done
+  zh-CN: 已完成
+queue.filter_chip:
+  en: "%{label} (%{count})"
+  zh-CN: "%{label}（%{count}）"
+queue.summary:
+  en: "%{active} in progress · %{total} in total"
+  zh-CN: "%{active} 进行中 · 共 %{total} 项"
+queue.resume_all:
+  en: Resume all
+  zh-CN: 恢复全部
+queue.pause_all:
+  en: Pause all
+  zh-CN: 暂停全部
+queue.resume_all_tooltip:
+  en: Carry on with every transfer that is sitting still
+  zh-CN: 把停着的传输都接着搬
+queue.pause_all_tooltip:
+  en: Hold the running transfers; queued ones wait for their turn
+  zh-CN: 停住在跑的传输；排队的等轮到它再说
+queue.clear_finished:
+  en: Clear finished
+  zh-CN: 清除已完成
+queue.clear_finished_tooltip:
+  en: Drop the rows that are done; running ones have to be cancelled first
+  zh-CN: 清掉已经完事的行；还在跑的得先取消
+queue.collapse:
+  en: Collapse the queue
+  zh-CN: 收起队列
+queue.empty:
+  en: No transfers yet — drag files into the right pane, or pick upload / download from an entry's menu.
+  zh-CN: 还没有传输任务；把文件拖进右栏，或在条目菜单里选上传 / 下载。
+queue.child_files:
+  en: Child files
+  zh-CN: 子项文件
+queue.resume_one:
+  en: Carry on
+  zh-CN: 接着搬
+queue.pause_one:
+  en: Pause this one
+  zh-CN: 暂停这一条
+queue.cancel_one:
+  en: Cancel this transfer
+  zh-CN: 取消这次传输
+queue.remove_one:
+  en: Remove from the list
+  zh-CN: 从列表里去掉
+queue.section_head:
+  en: "%{name} · directory contents (%{count} items)"
+  zh-CN: "%{name} · 目录内容（%{count} 项）"
+queue.section_transferred:
+  en: Transferred %{done} / %{total}
+  zh-CN: 已传输 %{done} / %{total}
+queue.col_name:
+  en: Type / file / folder name
+  zh-CN: 类型 / 文件 / 目录名
+queue.col_direction:
+  en: Direction
+  zh-CN: 方向
+queue.col_size:
+  en: Size / transferred
+  zh-CN: 大小 / 已传输
+queue.col_progress:
+  en: Progress
+  zh-CN: 进度
+queue.col_speed:
+  en: Speed
+  zh-CN: 速度
+queue.col_status:
+  en: Status
+  zh-CN: 状态
+queue.col_action:
+  en: Actions
+  zh-CN: 操作
+queue.direction_upload:
+  en: Upload
+  zh-CN: 上传
+queue.direction_download:
+  en: Download
+  zh-CN: 下载
+queue.child_progress:
+  en: "%{done}/%{total} items"
+  zh-CN: "%{done}/%{total} 项"
+
+# ── SFTP 服务层的错误 ────────────────────────────────────────────────────
+# `sftp_err.failed` 是外壳，`%{action}` 由下面那些 `action_*` 填进去 ——
+# 拆开是因为同一句"…失败：对端原话"要套二十来件不同的事。
+sftp_err.failed:
+  en: "%{action} failed: %{message}%{hint}"
+  zh-CN: "%{action} 失败：%{message}%{hint}"
+sftp_err.hint_no_such_file:
+  en: " (the remote says this path does not exist)"
+  zh-CN: （远端说这个路径不存在）
+sftp_err.hint_permission_denied:
+  en: " (not enough permission)"
+  zh-CN: （权限不够）
+sftp_err.hint_unsupported:
+  en: " (the remote does not support this operation)"
+  zh-CN: （远端不支持这个操作）
+sftp_err.hint_connection_lost:
+  en: " (the SFTP channel dropped)"
+  zh-CN: （SFTP 通道断了）
+sftp_err.action_open_session:
+  en: Opening the SFTP session
+  zh-CN: 建立 SFTP 会话
+sftp_err.action_query_home:
+  en: Querying the remote home directory
+  zh-CN: 查询远端家目录
+sftp_err.action_read_dir:
+  en: Reading directory %{path}
+  zh-CN: 读取目录 %{path}
+sftp_err.action_stat_path:
+  en: Checking the path
+  zh-CN: 检查路径
+sftp_err.action_create_dir:
+  en: Creating directory %{path}
+  zh-CN: 创建目录 %{path}
+sftp_err.action_create_file:
+  en: Creating file %{path}
+  zh-CN: 创建文件 %{path}
+sftp_err.action_delete:
+  en: Deleting %{path}
+  zh-CN: 删除 %{path}
+sftp_err.action_delete_dir:
+  en: Deleting directory %{path}
+  zh-CN: 删除目录 %{path}
+sftp_err.action_rename:
+  en: Renaming %{from} to %{to}
+  zh-CN: 把 %{from} 改名为 %{to}
+sftp_err.action_chmod:
+  en: Changing the permissions of %{path}
+  zh-CN: 修改 %{path} 的权限
+sftp_err.action_read_file:
+  en: Reading %{path}
+  zh-CN: 读取 %{path}
+sftp_err.action_save_file:
+  en: Saving %{path}
+  zh-CN: 保存 %{path}
+sftp_err.action_stat_remote:
+  en: Inspecting remote path %{path}
+  zh-CN: 查看远端路径 %{path}
+sftp_err.action_open_remote:
+  en: Opening remote file %{path}
+  zh-CN: 打开远端文件 %{path}
+sftp_err.action_create_remote_temp:
+  en: Creating remote temporary file %{path}
+  zh-CN: 创建远端临时文件 %{path}
+sftp_err.action_finalize_remote:
+  en: Putting %{path} into place
+  zh-CN: 落下 %{path}
+sftp_err.action_stat_remote_dir:
+  en: Checking remote directory %{path}
+  zh-CN: 检查远端目录 %{path}
+sftp_err.action_create_remote_dir:
+  en: Creating remote directory %{path}
+  zh-CN: 创建远端目录 %{path}
+sftp_err.action_read_remote_dir:
+  en: Reading remote directory %{path}
+  zh-CN: 读取远端目录 %{path}
+sftp_err.already_exists:
+  en: "%{path} already exists"
+  zh-CN: "%{path} 已经存在"
+sftp_err.too_large_to_edit:
+  en: The file is %{bytes} bytes, over the editable limit
+  zh-CN: 文件 %{bytes} 字节，超过可编辑的上限
+sftp_err.not_utf8:
+  en: "%{path} is not UTF-8 text and cannot be edited here"
+  zh-CN: "%{path} 不是 UTF-8 文本，不能在这里编辑"
+sftp_err.bad_mode:
+  en: "Permissions have to be octal 0000–7777, got %{mode}"
+  zh-CN: 权限只能是八进制 0000~7777，收到 %{mode}
+sftp_err.download_incomplete:
+  en: "Download incomplete: %{moved} / %{total} bytes"
+  zh-CN: 下载不完整：%{moved} / %{total} 字节
+sftp_err.upload_incomplete:
+  en: "Upload incomplete: %{moved} / %{total} bytes"
+  zh-CN: 上传不完整：%{moved} / %{total} 字节
+sftp_err.create_local_dir:
+  en: Could not create local directory %{path}
+  zh-CN: 创建本地目录 %{path} 失败
+sftp_err.create_local_temp:
+  en: Could not create local temporary file %{path}
+  zh-CN: 创建本地临时文件 %{path} 失败
+sftp_err.open_local_file:
+  en: Could not open local file %{path}
+  zh-CN: 打开本地文件 %{path} 失败
+sftp_err.filename_not_utf8:
+  en: "The file name cannot be turned into a string: %{path}"
+  zh-CN: 文件名无法转成字符串：%{path}
+sftp_err.read_local_dir:
+  en: Could not read local directory %{path}
+  zh-CN: 读取本地目录 %{path} 失败
+sftp_err.read_local_meta:
+  en: Could not read the details of %{path}
+  zh-CN: 读取 %{path} 的信息失败
+sftp_err.read_data:
+  en: Could not read data
+  zh-CN: 读取数据失败
+sftp_err.write_data:
+  en: Could not write data
+  zh-CN: 写入数据失败
+sftp_err.overwrite_local:
+  en: Could not overwrite local file %{path}
+  zh-CN: 覆盖本地文件 %{path} 失败
+sftp_err.move_into_place:
+  en: Could not move %{from} into place as %{to}
+  zh-CN: 把 %{from} 落成 %{to} 失败
+
+# ── 主机配置服务 ─────────────────────────────────────────────────────────
+host_service.no_data_dir:
+  en: Could not find the user data directory
+  zh-CN: 找不到用户数据目录
+host_service.create_data_dir_failed:
+  en: Could not create the application data directory
+  zh-CN: 创建应用数据目录失败
+host_service.host_missing:
+  en: Host %{id} does not exist
+  zh-CN: 主机 %{id} 不存在
+host_service.group_not_empty:
+  en: Group “%{name}” still holds %{count} host(s)
+  zh-CN: 分组“%{name}”下还有 %{count} 台主机
+host_service.duplicate_suffix:
+  en: "%{name} copy"
+  zh-CN: "%{name} 副本"
+host_service.forward_incomplete:
+  en: "Forwarding rule “%{name}” is incomplete: %{reason}"
+  zh-CN: 转发规则“%{name}”不完整：%{reason}
+
+# ── 端口转发服务 ─────────────────────────────────────────────────────────
+forward_service.remote_untestable:
+  en: A remote listen port lives on the other machine, so it cannot be tested from here.
+  zh-CN: 远端监听的端口在对端机器上，本机测不到它。
+forward_service.test_ok:
+  en: "The listener on %{host}:%{port} answers — the tunnel is healthy."
+  zh-CN: "%{host}:%{port} 上的监听是通的，隧道健康。"
+forward_service.test_connect_failed:
+  en: "Connecting to %{host}:%{port} failed"
+  zh-CN: "连 %{host}:%{port} 失败"
+forward_service.test_timeout:
+  en: "%{host}:%{port} did not answer within %{seconds} s."
+  zh-CN: "连 %{host}:%{port} 超过 %{seconds} 秒没有反应。"
+
+# ── 监控服务 ─────────────────────────────────────────────────────────────
+monitor_service.exec_failed:
+  en: Running the sampling script on the remote failed
+  zh-CN: 在远端执行采集脚本失败
+monitor_service.parse_failed:
+  en: Could not parse the remote sampling result
+  zh-CN: 解析远端采集结果失败
+monitor_service.remote_error:
+  en: "The remote reported: %{reason}"
+  zh-CN: 远端报错：%{reason}
+monitor_service.collector_poisoned:
+  en: The monitor accumulator is corrupted
+  zh-CN: 监控累加器已损坏
+monitor_service.bad_container_id:
+  en: "Invalid container id: %{id}"
+  zh-CN: 容器 id 不合法：%{id}
+
+# ── 本地文件服务 ─────────────────────────────────────────────────────────
+local_file.list_interrupted:
+  en: The local directory listing task was interrupted
+  zh-CN: 本地目录读取任务中断
+local_file.not_a_dir:
+  en: "%{path} is not a local directory"
+  zh-CN: "%{path} 不是一个本地目录"
+local_file.open_failed:
+  en: Could not open %{path}
+  zh-CN: 打开 %{path} 失败
+local_file.open_rejected:
+  en: The system refused to open %{path} (exit code %{code})
+  zh-CN: 系统拒绝打开 %{path}（退出码 %{code}）
+local_file.delete_interrupted:
+  en: The local delete task was interrupted
+  zh-CN: 本地删除任务中断
+local_file.read_failed:
+  en: Could not read %{path}
+  zh-CN: 读取 %{path} 失败
+local_file.delete_failed:
+  en: Could not delete %{path}
+  zh-CN: 删除 %{path} 失败
+local_file.read_dir_failed:
+  en: Could not read local directory %{path}
+  zh-CN: 读取本地目录 %{path} 失败
+
+# ── 远端条目的"修改时间"一列 ─────────────────────────────────────────────
+entry.modified_unknown:
+  en: —
+  zh-CN: —
+entry.modified_just_now:
+  en: just now
+  zh-CN: 刚刚
+entry.modified_minutes:
+  en: "%{count} min ago"
+  zh-CN: "%{count} 分钟前"
+entry.modified_hours:
+  en: "%{count} h ago"
+  zh-CN: "%{count} 小时前"
+entry.modified_days:
+  en: "%{count} d ago"
+  zh-CN: "%{count} 天前"
+
+# ── 数据库 ───────────────────────────────────────────────────────────────
+db.open_failed:
+  en: Could not open the SQLite connection
+  zh-CN: 打开 SQLite 连接失败
+db.init_table_failed:
+  en: Could not initialise the host configuration tables
+  zh-CN: 初始化主机配置表失败
+db.migrate_failed:
+  en: Could not migrate the host configuration tables
+  zh-CN: 迁移主机配置表失败
+
+# ── 终端内核 ─────────────────────────────────────────────────────────────
+emulator.open_pty_failed:
+  en: Could not open the PTY
+  zh-CN: 打开 PTY 失败
+emulator.event_loop_failed:
+  en: Could not start the PTY event loop
+  zh-CN: 启动 PTY 事件循环失败
+
+# ── SSH 连接 ─────────────────────────────────────────────────────────────
+ssh.connect_failed:
+  en: "Connecting to %{host}:%{port} failed"
+  zh-CN: "连接到 %{host}:%{port} 失败"
+ssh.resize_failed:
+  en: Sending the window size change failed
+  zh-CN: 发送窗口尺寸变化失败
+ssh.send_failed:
+  en: Sending data to the remote failed
+  zh-CN: 发送数据到远端失败
+ssh.open_channel_failed:
+  en: Opening the SSH session channel failed
+  zh-CN: 打开 SSH 会话通道失败
+ssh.request_pty_failed:
+  en: Requesting a PTY on the remote failed (the remote may have PTYs disabled)
+  zh-CN: 请求远端 PTY 失败（对端可能禁用了 PTY）
+ssh.request_shell_failed:
+  en: Requesting a shell on the remote failed
+  zh-CN: 请求远端 Shell 失败
+ssh.no_key_path:
+  en: No private key path is configured, so key authentication cannot be used
+  zh-CN: 未配置私钥路径，无法使用密钥认证
+ssh.load_key_failed:
+  en: "Loading the private key failed: %{path}"
+  zh-CN: 加载私钥失败：%{path}
+ssh.auth_password_failed:
+  en: "Password authentication failed (methods the remote still offers: %{remaining})"
+  zh-CN: 密码认证失败（对端剩余方法：%{remaining}）
+ssh.auth_key_failed:
+  en: "Key authentication failed (methods the remote still offers: %{remaining})"
+  zh-CN: 密钥认证失败（对端剩余方法：%{remaining}）
+ssh.auth_agent_failed:
+  en: "Agent authentication failed (methods the remote still offers: %{remaining})"
+  zh-CN: Agent 认证失败（对端剩余方法：%{remaining}）
+
+# ── SSH 端口转发 ─────────────────────────────────────────────────────────
+ssh_forward.bind_failed:
+  en: "Binding %{bind}:%{port} on this machine failed"
+  zh-CN: "绑定本机 %{bind}:%{port} 失败"
+ssh_forward.local_port_failed:
+  en: Reading the local listening port failed
+  zh-CN: 读取本机监听端口失败
+ssh_forward.remote_refused:
+  en: "The remote refused to listen on %{bind}:%{port}"
+  zh-CN: "对端拒绝在 %{bind}:%{port} 上监听"
+ssh_forward.remote_no_port:
+  en: The remote accepted the forwarding request but did not tell us the port
+  zh-CN: 对端接受了转发请求但没有告诉我们端口
+ssh_forward.channel_failed:
+  en: The forwarding channel could not be opened
+  zh-CN: 转发通道开不出来
+ssh_forward.channel_target:
+  en: "%{reason} (target %{host}:%{port})"
+  zh-CN: "%{reason}（目标 %{host}:%{port}）"
+ssh_forward.reject_prohibited:
+  en: The remote does not allow this forward
+  zh-CN: 对端不允许这次转发
+ssh_forward.reject_connect_failed:
+  en: The remote could not reach the target
+  zh-CN: 对端连不上目标
+ssh_forward.reject_unknown_type:
+  en: The remote does not recognise this channel type
+  zh-CN: 对端不认识这种通道
+ssh_forward.reject_resource:
+  en: The remote is short on resources
+  zh-CN: 对端资源不足
+ssh_forward.reject_other:
+  en: The remote refused this forward
+  zh-CN: 对端拒绝了这次转发
+ssh_forward.socks_read_greeting:
+  en: Reading the SOCKS5 method negotiation failed
+  zh-CN: 读 SOCKS5 方法协商失败
+ssh_forward.socks_not_v5:
+  en: Not a SOCKS5 request (version %{version})
+  zh-CN: 不是 SOCKS5 请求（版本号 %{version}）
+ssh_forward.socks_read_methods:
+  en: Reading the SOCKS5 authentication method list failed
+  zh-CN: 读 SOCKS5 认证方法列表失败
+ssh_forward.socks_no_anon:
+  en: The client does not accept SOCKS5 without authentication
+  zh-CN: 客户端不接受无认证的 SOCKS5
+ssh_forward.socks_write_choice:
+  en: Replying with the chosen SOCKS5 method failed
+  zh-CN: 回 SOCKS5 方法选择失败
+ssh_forward.socks_read_request:
+  en: Reading the SOCKS5 request failed
+  zh-CN: 读 SOCKS5 请求失败
+ssh_forward.socks_only_connect:
+  en: Only SOCKS5 CONNECT is supported (got command %{command})
+  zh-CN: 只支持 SOCKS5 的 CONNECT（收到命令 %{command}）
+ssh_forward.socks_domain_not_utf8:
+  en: The SOCKS5 domain name is not UTF-8
+  zh-CN: SOCKS5 域名不是 UTF-8
+ssh_forward.socks_bad_atyp:
+  en: SOCKS5 address type %{atyp} is not recognised
+  zh-CN: SOCKS5 地址类型 %{atyp} 不认识
+ssh_forward.socks_read_port:
+  en: Reading the SOCKS5 target port failed
+  zh-CN: 读 SOCKS5 目标端口失败
+ssh_forward.socks_write_reply:
+  en: Replying to the SOCKS5 request failed
+  zh-CN: 回 SOCKS5 答复失败
+
+# ── SFTP 子系统 ──────────────────────────────────────────────────────────
+ssh_sftp.open_channel_failed:
+  en: Opening the SFTP channel failed
+  zh-CN: 打开 SFTP 通道失败
+ssh_sftp.request_subsystem_failed:
+  en: Requesting the SFTP subsystem failed
+  zh-CN: 请求 SFTP 子系统失败
+ssh_sftp.handshake_failed:
+  en: The SFTP protocol handshake failed
+  zh-CN: SFTP 协议握手失败
+ssh_sftp.subsystem_refused:
+  en: "The remote refused to start the SFTP subsystem (no `Subsystem sftp` in sshd_config, or the remote only allows a shell)"
+  zh-CN: "远端拒绝启动 SFTP 子系统（sshd_config 里没有 `Subsystem sftp`，或对端只允许 Shell）"
+ssh_sftp.closed_early:
+  en: The remote closed the channel before the SFTP subsystem started
+  zh-CN: 远端在启动 SFTP 子系统之前关掉了通道
+ssh_sftp.disconnected:
+  en: The connection dropped while waiting for the SFTP subsystem to answer
+  zh-CN: 等待 SFTP 子系统回音时连接已断开
+
+# ── 远端命令执行 ─────────────────────────────────────────────────────────
+ssh_exec.exit_status:
+  en: The remote command exited with status %{status}
+  zh-CN: 远端命令退出码 %{status}
+ssh_exec.no_output:
+  en: The remote command produced neither output nor an exit code
+  zh-CN: 远端命令没有输出也没有退出码
+ssh_exec.timeout:
+  en: The remote command did not return within %{seconds} s
+  zh-CN: 远端命令超过 %{seconds} 秒未返回
+ssh_exec.open_channel_failed:
+  en: Opening the sampling channel failed
+  zh-CN: 打开采集通道失败
+ssh_exec.start_sh_failed:
+  en: Starting /bin/sh on the remote failed
+  zh-CN: 远端启动 /bin/sh 失败
+ssh_exec.send_script_failed:
+  en: Sending the sampling script failed
+  zh-CN: 发送采集脚本失败
+ssh_exec.close_write_failed:
+  en: Closing the write end of the sampling channel failed
+  zh-CN: 关闭采集通道的写端失败
+
+# ── 终端里那几行方括号提示 ───────────────────────────────────────────────
+bridge.send_failed:
+  en: "[send failed: %{error}]"
+  zh-CN: "[发送失败：%{error}]"
+bridge.channel_closed:
+  en: "[the SSH channel is closed]"
+  zh-CN: "[SSH 通道已关闭]"
+bridge.remote_exit:
+  en: "[the remote exited, status %{status}]"
+  zh-CN: "[远端退出，状态码 %{status}]"
+bridge.remote_signal:
+  en: "[the remote was signalled: %{signal}]"
+  zh-CN: "[远端信号 %{signal}]"

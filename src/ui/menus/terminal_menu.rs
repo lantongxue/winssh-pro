@@ -29,6 +29,7 @@ use std::rc::Rc;
 
 use gpui::{App, Context, Pixels, SharedString, Window, px};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use rust_i18n::t;
 
 /// 菜单的最小宽度。定死它，菜单才不会随项的长短跳动。
 const MENU_MIN_WIDTH: Pixels = px(200.);
@@ -77,15 +78,16 @@ impl TerminalAction {
     ];
 
     fn label(self) -> SharedString {
-        SharedString::new_static(match self {
-            Self::Copy => "复制",
-            Self::Paste => "粘贴",
-            Self::SelectAll => "全选",
-            Self::Find => "查找…",
-            Self::CopyAll => "复制全部输出",
-            Self::Clear => "清屏",
-            Self::Close => "关闭会话",
-        })
+        match self {
+            Self::Copy => t!("terminal_menu.copy"),
+            Self::Paste => t!("terminal_menu.paste"),
+            Self::SelectAll => t!("terminal_menu.select_all"),
+            Self::Find => t!("terminal_menu.find"),
+            Self::CopyAll => t!("terminal_menu.copy_all"),
+            Self::Clear => t!("terminal_menu.clear"),
+            Self::Close => t!("terminal_menu.close"),
+        }
+        .into()
     }
 
     /// 这一项现在能不能点。灰掉而不是藏掉 —— 菜单里的项跳来跳去，

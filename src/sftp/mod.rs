@@ -18,4 +18,4 @@ pub mod transfer;
 
 pub use entry::{FileEntry, FileKind, Glyph, human_size, sort_entries};
 pub use path::{breadcrumbs, is_hidden, join, normalize, parent};
-pub use transfer::{TransferChild, TransferDirection, TransferItem, TransferStatus};
+pub use transfer::{CANCELED, TransferChild, TransferDirection, TransferItem, TransferStatus};

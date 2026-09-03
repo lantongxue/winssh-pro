@@ -17,6 +17,7 @@ use russh::{Channel, ChannelMsg, client::Handle, client::Msg as ClientMsg};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use super::client::SshHandler;
+use rust_i18n::t;
 
 /// 收到收工信号之后，留给后台任务把通道关干净的时间。
 ///
@@ -78,7 +79,12 @@ pub fn spawn_bridge(
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
     let io_handle = crate::db::runtime().spawn(bridge_task(
-        handle, channel, output_tx, input_rx, window_rx, shutdown_rx,
+        handle,
+        channel,
+        output_tx,
+        input_rx,
+        window_rx,
+        shutdown_rx,
     ));
 
     let bridge = SshBridge {
@@ -108,7 +114,11 @@ async fn bridge_task(
             Some(data) = input_rx.recv() => {
                 if let Err(error) = channel.data(&data[..]).await {
                     let _ = output_tx.send(
-                        format!("\r\n[发送失败：{error:#}]\r\n").into_bytes(),
+                        format!(
+                            "\r\n{}\r\n",
+                            t!("bridge.send_failed", error => format!("{error:#}")),
+                        )
+                        .into_bytes(),
                     );
                     break;
                 }
@@ -133,18 +143,30 @@ async fn bridge_task(
                         // 对端半关闭，后续可能还有 ExitStatus
                     }
                     Some(ChannelMsg::Close) | None => {
-                        let _ = output_tx
-                            .send("\r\n[SSH 通道已关闭]\r\n".as_bytes().to_vec());
+                        let _ = output_tx.send(
+                            format!("\r\n{}\r\n", t!("bridge.channel_closed")).into_bytes(),
+                        );
                         break;
                     }
                     Some(ChannelMsg::ExitStatus { exit_status }) => {
                         let _ = output_tx.send(
-                            format!("\r\n[远端退出，状态码 {exit_status}]\r\n").into_bytes(),
+                            format!(
+                                "\r\n{}\r\n",
+                                t!("bridge.remote_exit", status => exit_status),
+                            )
+                            .into_bytes(),
                         );
                     }
                     Some(ChannelMsg::ExitSignal { signal_name, .. }) => {
                         let _ = output_tx.send(
-                            format!("\r\n[远端信号 {signal_name:?}]\r\n").into_bytes(),
+                            format!(
+                                "\r\n{}\r\n",
+                                t!(
+                                    "bridge.remote_signal",
+                                    signal => format!("{signal_name:?}"),
+                                ),
+                            )
+                            .into_bytes(),
                         );
                         break;
                     }

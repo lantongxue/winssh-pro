@@ -20,6 +20,7 @@ use crate::{
     monitor::{MonitorCollector, MonitorTelemetry, ProbeOptions, parse_probe, probe},
     ssh::{SshHandler, exec_script},
 };
+use rust_i18n::t;
 
 /// 一次采集最多等多久。远端读 `/proc` 是微秒级的事，超过这个数说明对端在挨打
 /// （负载爆表、盘 hang），这一次就放弃，下一次轮询再试。
@@ -70,15 +71,19 @@ impl MonitorService {
         let output =
             crate::db::run(async move { exec_script(&handle, &script, PROBE_TIMEOUT).await })
                 .await
-                .context("在远端执行采集脚本失败")?;
+                .with_context(|| t!("monitor_service.exec_failed").to_string())?;
         let elapsed = started.elapsed();
 
         let sample = parse_probe(&output.stdout).with_context(|| {
             // 解析不了的时候，对端的抱怨比我们的猜测有用（`/bin/sh: not found`、
             // `This service allows sftp connections only.` 之类）。
             match output.stderr.trim().is_empty() {
-                true => "解析远端采集结果失败".to_owned(),
-                false => format!("远端报错：{}", output.failure_reason()),
+                true => t!("monitor_service.parse_failed").to_string(),
+                false => t!(
+                    "monitor_service.remote_error",
+                    reason => output.failure_reason(),
+                )
+                .to_string(),
             }
         })?;
 
@@ -94,7 +99,7 @@ impl MonitorService {
         let mut collector = self
             .collector
             .lock()
-            .map_err(|_| anyhow::anyhow!("监控累加器已损坏"))?;
+            .map_err(|_| anyhow::anyhow!("{}", t!("monitor_service.collector_poisoned")))?;
         Ok(collector.ingest(sample, latency_ms))
     }
 
@@ -117,7 +122,7 @@ impl MonitorService {
         // 容器 id 是十六进制的，除此之外一个字符都不接 —— 这个字符串是从远端
         // `docker ps` 的输出里来的，直接拼进命令行等于让对端决定我们跑什么。
         if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit()) {
-            bail!("容器 id 不合法：{id}");
+            bail!("{}", t!("monitor_service.bad_container_id", id => id));
         }
         self.run(format!("docker {} {id}", action.verb())).await
     }
@@ -228,7 +233,10 @@ mod tests {
                 .container_action("abc; rm -rf /", ContainerAction::Stop)
                 .await
                 .expect_err("不合法的 id 必须被挡住");
-            assert!(format!("{error}").contains("不合法"));
+            assert_eq!(
+                format!("{error}"),
+                t!("monitor_service.bad_container_id", id => "abc; rm -rf /")
+            );
             assert!(seen.script().is_empty(), "一个字节都不该发出去");
 
             service

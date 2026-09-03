@@ -29,6 +29,7 @@ use gpui_component::{
 };
 
 use crate::ui::theme::{AppIcon, palette};
+use rust_i18n::t;
 
 /// 菜单的最小宽度。宽度定死菜单才不会随选中的主机忽宽忽窄。
 const MENU_MIN_WIDTH: Pixels = px(176.);
@@ -58,10 +59,10 @@ impl HostAction {
 
     pub fn label(&self) -> SharedString {
         match self {
-            Self::OpenTerminal => "打开终端",
-            Self::EditConfig => "编辑配置",
-            Self::Duplicate => "创建副本",
-            Self::Delete => "删除主机",
+            Self::OpenTerminal => t!("host_menu.open_terminal"),
+            Self::EditConfig => t!("host_menu.edit_config"),
+            Self::Duplicate => t!("host_menu.duplicate"),
+            Self::Delete => t!("host_menu.delete"),
         }
         .into()
     }
@@ -185,8 +186,8 @@ impl RenderOnce for HostMenu {
             .ghost()
             .xsmall()
             .icon(IconName::EllipsisVertical)
-            .tooltip("更多")
-            .accessibility_id("更多")
+            .tooltip(t!("menu.more"))
+            .accessibility_id(t!("menu.more"))
             // 菜单从按钮的右上角往左下展开：卡片贴着侧边栏右边缘，
             // 从左上角展开的话整个菜单会盖到工作区上去。
             .dropdown_menu_with_anchor(Anchor::TopRight, Self::items(on_action))

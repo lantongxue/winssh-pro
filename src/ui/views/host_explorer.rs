@@ -53,6 +53,7 @@ use crate::{
         theme::{AppIcon, palette},
     },
 };
+use rust_i18n::t;
 
 /// 最近打开最多记住多少台主机。
 const RECENT_LIMIT: usize = 8;
@@ -247,8 +248,9 @@ impl HostExplorerView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search =
-            cx.new(|cx| InputState::new(window, cx).placeholder("按名称、地址或分组搜索主机"));
+        let search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("host_explorer.search_placeholder"))
+        });
         cx.subscribe(&search, |this, _, _: &InputEvent, cx| this.rebuild_rows(cx))
             .detach();
 
@@ -310,7 +312,10 @@ impl HostExplorerView {
                     this.groups = groups;
                     this.rebuild_rows(cx);
                 }
-                Err(error) => window.push_notification(format!("读取主机配置失败：{error:#}"), cx),
+                Err(error) => window.push_notification(
+                    t!("host_explorer.load_failed", error => format!("{error:#}")),
+                    cx,
+                ),
             })
             .ok();
         })
@@ -445,7 +450,14 @@ impl HostExplorerView {
                     this.reload(window, cx);
                     this.select_host(&copy, cx);
                 }
-                Err(error) => window.push_notification(format!("复制“{name}”失败：{error:#}"), cx),
+                Err(error) => window.push_notification(
+                    t!(
+                        "host_explorer.duplicate_failed",
+                        name => name,
+                        error => format!("{error:#}"),
+                    ),
+                    cx,
+                ),
             })
             .ok();
         })
@@ -467,16 +479,17 @@ impl HostExplorerView {
             let explorer = explorer.clone();
             let id = id.clone();
             alert
-                .title("删除主机")
-                .description(SharedString::from(format!(
-                    "确定要删除“{name}”吗？删除后无法恢复。"
+                .title(t!("host_explorer.delete_title"))
+                .description(SharedString::from(t!(
+                    "host_explorer.delete_confirm",
+                    name => name,
                 )))
                 .confirm()
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("删除")
+                        .ok_text(t!("host_explorer.delete"))
                         .ok_variant(ButtonVariant::Danger)
-                        .cancel_text("取消")
+                        .cancel_text(t!("host_explorer.cancel"))
                         .show_cancel(true),
                 )
                 .on_ok(move |_, window, cx| {
@@ -490,8 +503,13 @@ impl HostExplorerView {
                             explorer
                                 .update_in(cx, |explorer, window, cx| match result {
                                     Ok(()) => explorer.host_deleted(&id, window, cx),
-                                    Err(error) => window
-                                        .push_notification(format!("删除主机失败：{error:#}"), cx),
+                                    Err(error) => window.push_notification(
+                                        t!(
+                                            "host_explorer.delete_failed",
+                                            error => format!("{error:#}"),
+                                        ),
+                                        cx,
+                                    ),
                                 })
                                 .ok();
                         })
@@ -510,9 +528,10 @@ impl HostExplorerView {
         };
         if !group.hosts.is_empty() {
             window.push_notification(
-                format!(
-                    "分组“{name}”下还有 {} 台主机，请先移出或删除这些主机，再删除分组。",
-                    group.hosts.len()
+                t!(
+                    "host_explorer.group_not_empty",
+                    name => name,
+                    count => group.hosts.len(),
                 ),
                 cx,
             );
@@ -532,7 +551,10 @@ impl HostExplorerView {
                     this.collapsed.remove(&name);
                     this.reload(window, cx);
                 }
-                Err(error) => window.push_notification(format!("删除分组失败：{error:#}"), cx),
+                Err(error) => window.push_notification(
+                    t!("host_explorer.delete_group_failed", error => format!("{error:#}")),
+                    cx,
+                ),
             })
             .ok();
         })
@@ -621,7 +643,9 @@ impl HostExplorerView {
         self.rebuild_rows(cx);
         cx.spawn_in(window, async move |this, cx| {
             if let Err(error) = service.persist_layout(&layout).await {
-                let message = format!("保存主机顺序失败：{error:#}");
+                let message = SharedString::from(
+                    t!("host_explorer.save_order_failed", error => format!("{error:#}")),
+                );
                 this.update_in(cx, |this, window, cx| {
                     window.push_notification(message, cx);
                     this.reload(window, cx);
@@ -778,8 +802,8 @@ impl HostExplorerView {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Plus)
-                    .tooltip("新建主机")
-                    .accessibility_id("新建主机")
+                    .tooltip(t!("host_explorer.new_host"))
+                    .accessibility_id(t!("host_explorer.new_host"))
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(HostExplorerEvent::NewHost))),
             )
             .child(
@@ -832,9 +856,12 @@ impl HostExplorerView {
         let mut filters = vec![
             (
                 HostFilter::All,
-                SharedString::from(format!("全部 ({})", self.matched)),
+                SharedString::from(t!("host_explorer.filter_all", count => self.matched)),
             ),
-            (HostFilter::Recent, SharedString::from("最近")),
+            (
+                HostFilter::Recent,
+                SharedString::from(t!("host_explorer.filter_recent")),
+            ),
         ];
         filters.extend(
             self.groups
@@ -978,8 +1005,8 @@ impl HostExplorerView {
         .ghost()
         .xsmall()
         .icon(Icon::new(AppIcon::Trash).text_color(cx.theme().danger))
-        .tooltip("删除分组")
-        .accessibility_id("删除分组")
+        .tooltip(t!("host_explorer.delete_group"))
+        .accessibility_id(t!("host_explorer.delete_group"))
         .invisible()
         .group_hover(GROUP_ROW_GROUP, |style| style.visible())
         .on_click(cx.listener(move |this, _, window, cx| {
@@ -1034,10 +1061,7 @@ impl HostExplorerView {
                     },
                     |dragged, click_offset, _, cx| {
                         let host = dragged.host.clone();
-                        cx.new(|_| HostDragPreview {
-                            host,
-                            click_offset,
-                        })
+                        cx.new(|_| HostDragPreview { host, click_offset })
                     },
                 )
                 .on_drag_move(cx.listener(
@@ -1126,11 +1150,10 @@ impl HostExplorerView {
 
     fn render_list(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let empty = self.rows.is_empty();
-        let hint = if self.query(cx).is_empty() {
-            "这个分组下还没有主机。"
-        } else {
-            "没有匹配的主机。"
-        };
+        let hint = SharedString::from(match self.query(cx).is_empty() {
+            true => t!("host_explorer.group_empty"),
+            false => t!("host_explorer.no_match"),
+        });
 
         div()
             .flex_1()
@@ -1192,7 +1215,7 @@ impl HostExplorerView {
                     .bg(blue)
                     .rounded(cx.theme().radius)
                     .icon(IconName::Plus)
-                    .label("新建主机")
+                    .label(t!("host_explorer.new_host"))
                     .w_full()
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(HostExplorerEvent::NewHost))),
             )

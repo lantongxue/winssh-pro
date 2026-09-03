@@ -12,12 +12,22 @@ use gpui_component::{
     kbd::Kbd,
     v_flex,
 };
+use rust_i18n::t;
 
 /// 主快捷键提示。与 [`crate::ui::init`] 里注册的键位保持一致。
-#[cfg(target_os = "macos")]
-const SHORTCUTS: [(&str, &str); 2] = [("打开侧边栏", "cmd-b"), ("打开主机信息", "cmd-alt-b")];
-#[cfg(not(target_os = "macos"))]
-const SHORTCUTS: [(&str, &str); 2] = [("打开侧边栏", "ctrl-b"), ("打开主机信息", "ctrl-alt-b")];
+///
+/// 是函数而不是 `const`：文案要查语言表，而语言到运行时才定下来。
+fn shortcuts() -> [(SharedString, &'static str); 2] {
+    #[cfg(target_os = "macos")]
+    let keys = ["cmd-b", "cmd-alt-b"];
+    #[cfg(not(target_os = "macos"))]
+    let keys = ["ctrl-b", "ctrl-alt-b"];
+
+    [
+        (t!("welcome.toggle_sidebar").into(), keys[0]),
+        (t!("welcome.toggle_host_info").into(), keys[1]),
+    ]
+}
 
 pub struct WelcomePanel {
     focus_handle: FocusHandle,
@@ -47,7 +57,7 @@ impl BasePanel for WelcomePanel {
 
 impl Panel for WelcomePanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("欢迎")
+        SharedString::from(t!("welcome.title"))
     }
 }
 
@@ -68,7 +78,7 @@ impl Render for WelcomePanel {
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child("原生高性能 SSH 客户端"),
+                            .child(SharedString::from(t!("welcome.tagline"))),
                     ),
             )
             .child(
@@ -76,7 +86,7 @@ impl Render for WelcomePanel {
                     Button::new("browse-hosts")
                         .primary()
                         .icon(IconName::Network)
-                        .label("浏览主机")
+                        .label(t!("welcome.browse_hosts"))
                         .on_click(|_, _, _| {
                             // 侧边栏默认展开，主机列表始终可见，这里不再需要 action
                         }),
@@ -85,7 +95,7 @@ impl Render for WelcomePanel {
             .child(
                 v_flex()
                     .gap_2()
-                    .children(SHORTCUTS.iter().map(|(label, keys)| {
+                    .children(shortcuts().into_iter().map(|(label, keys)| {
                         h_flex()
                             .w(px(280.))
                             .justify_between()
@@ -93,7 +103,7 @@ impl Render for WelcomePanel {
                             .gap_4()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child(*label)
+                            .child(label)
                             .children(
                                 Keystroke::parse(keys)
                                     .ok()

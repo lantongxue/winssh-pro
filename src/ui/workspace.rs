@@ -30,6 +30,7 @@ use crate::ui::{
     theme::AppIcon,
     views::{HostExplorerEvent, HostExplorerView, PlaceholderView, SidebarView},
 };
+use rust_i18n::t;
 
 actions!(
     winssh,
@@ -87,7 +88,7 @@ impl Workspace {
         let host_service = HostService::open();
         if !host_service.is_persistent() {
             cx.defer_in(window, |_, window, cx| {
-                window.push_notification("主机配置库打开失败，本次的改动只在当前会话里生效。", cx);
+                window.push_notification(t!("workspace.host_db_failed"), cx);
             });
         }
 
@@ -217,8 +218,12 @@ impl Workspace {
         match action {
             ActivityAction::Settings => self.toggle_dock(DockPlacement::Right, window, cx),
             // 这两个入口的功能还没有落地。先如实说明，而不是让按钮点下去毫无反应。
-            ActivityAction::Assistant => window.push_notification("AI 助手还在开发中。", cx),
-            ActivityAction::QuickConnect => window.push_notification("快速连接还在开发中。", cx),
+            ActivityAction::Assistant => {
+                window.push_notification(t!("workspace.assistant_wip"), cx)
+            }
+            ActivityAction::QuickConnect => {
+                window.push_notification(t!("workspace.quick_connect_wip"), cx)
+            }
         }
     }
 
@@ -292,9 +297,9 @@ impl Workspace {
                             .ghost()
                             .small()
                             .icon(Icon::new(AppIcon::Terminal))
-                            .label("本地 Shell")
-                            .tooltip("打开本地终端（本机 PTY）")
-                            .accessibility_id("打开本地 Shell")
+                            .label(t!("workspace.local_shell"))
+                            .tooltip(t!("workspace.local_shell_tooltip"))
+                            .accessibility_id(t!("workspace.local_shell_a11y"))
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_local_shell(window, cx);
                             })),

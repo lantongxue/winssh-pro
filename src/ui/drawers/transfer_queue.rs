@@ -17,20 +17,20 @@
 use std::{collections::HashSet, rc::Rc, time::SystemTime};
 
 use gpui::{
-    prelude::FluentBuilder as _,
-    AnyElement, App, Context, Entity, EventEmitter, Hsla, IntoElement, InteractiveElement as _,
+    AnyElement, App, Context, Entity, EventEmitter, Hsla, InteractiveElement as _, IntoElement,
     ParentElement as _, Pixels, Render, SharedString, Size, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, div, percentage, px, size,
+    Styled as _, Subscription, Window, div, percentage, prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
     VirtualListScrollHandle,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex, v_virtual_list,
+    h_flex,
     input::{Input, InputEvent, InputState},
     progress::Progress,
     scroll::{ScrollableElement as _, ScrollbarAxis},
     table::{Table, TableCell, TableHead, TableHeader, TableRow},
+    v_flex, v_virtual_list,
 };
 
 use crate::{
@@ -38,6 +38,7 @@ use crate::{
     sftp::{TransferDirection, TransferItem, TransferStatus, human_size},
     ui::theme::{AppIcon, palette},
 };
+use rust_i18n::t;
 
 /// 父行（一次传输）的高度，比子行高半档 —— 它是这行数据的主角。
 const PARENT_ROW_HEIGHT: Pixels = px(28.);
@@ -99,11 +100,12 @@ impl QueueFilter {
         }
     }
 
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            Self::All => "全部",
-            Self::Done => "已完成",
+            Self::All => t!("queue.filter_all"),
+            Self::Done => t!("queue.filter_done"),
         }
+        .into()
     }
 }
 
@@ -150,7 +152,7 @@ impl TransferSummary {
     /// 速率展示文案（如 "24.5 MB/s"、"已暂停"、"—"）。
     pub fn speed_label(&self) -> String {
         if self.paused_count > 0 && self.transferring_count == 0 {
-            "已暂停".to_string()
+            t!("transfer.status_paused").to_string()
         } else if self.total_speed_bps > 0.0 {
             format!("{}/s", human_size(self.total_speed_bps as u64))
         } else {
@@ -204,11 +206,16 @@ pub struct TransferQueueDrawer {
 enum QueueRow {
     Parent(usize),
     /// "目录内容 (N 项) … 已传输 X / Y" 那一行。
-    SectionHead { parent: usize },
+    SectionHead {
+        parent: usize,
+    },
     /// "子项文件" 标签行。
     SectionLabel,
     /// 一个子文件。`child` 是 `children` 里的原索引（搜索过滤后不连续）。
-    Child { parent: usize, child: usize },
+    Child {
+        parent: usize,
+        child: usize,
+    },
 }
 
 /// 一行自己的高度。虚拟列表按这份表算滚动范围与可见区间。
@@ -239,13 +246,11 @@ impl TransferQueueDrawer {
 
     /// 订阅搜索框：每敲一个字都重算可见行。构造完调一次。
     pub fn watch_search(&mut self, cx: &mut Context<Self>) {
-        self._subscriptions.push(cx.subscribe(
-            &self.search,
-            |this, _, _: &InputEvent, cx| {
+        self._subscriptions
+            .push(cx.subscribe(&self.search, |this, _, _: &InputEvent, cx| {
                 this.rebuild_rows(cx);
                 cx.notify();
-            },
-        ));
+            }));
     }
 
     /// 队列里的行数（不含展开的子项）。
@@ -420,7 +425,7 @@ impl TransferQueueDrawer {
             TransferEvent::Done { id, error } => {
                 let status = match error.as_deref() {
                     None => TransferStatus::Completed,
-                    Some("已取消") => TransferStatus::Canceled,
+                    Some(crate::sftp::CANCELED) => TransferStatus::Canceled,
                     Some(_) => TransferStatus::Failed,
                 };
                 if let Some(item) = self.items.iter_mut().find(|item| item.id == *id) {
@@ -489,13 +494,18 @@ impl TransferQueueDrawer {
             if expand && !children.is_empty() {
                 rows.push(QueueRow::SectionHead { parent });
                 rows.push(QueueRow::SectionLabel);
-                rows.extend(children.into_iter().map(|child| QueueRow::Child {
-                    parent,
-                    child,
-                }));
+                rows.extend(
+                    children
+                        .into_iter()
+                        .map(|child| QueueRow::Child { parent, child }),
+                );
             }
         }
-        self.sizes = Rc::new(rows.iter().map(|row| size(px(0.), height_of(*row))).collect());
+        self.sizes = Rc::new(
+            rows.iter()
+                .map(|row| size(px(0.), height_of(*row)))
+                .collect(),
+        );
         self.rows = rows;
     }
 }
@@ -533,15 +543,17 @@ impl TransferQueueDrawer {
                     .text_xs()
                     .font_semibold()
                     .flex_shrink_0()
-                    .child("传输队列"),
+                    .child(SharedString::from(t!("queue.title"))),
             )
             .child(
                 div()
                     .text_xs()
                     .text_color(palette::idle(cx))
                     .flex_shrink_0()
-                    .child(SharedString::from(format!(
-                        "{active} 进行中 · 共 {total} 项"
+                    .child(SharedString::from(t!(
+                        "queue.summary",
+                        active => active,
+                        total => total,
                     ))),
             )
             .child(self.filter_chip(QueueFilter::All, total, cx))
@@ -567,16 +579,14 @@ impl TransferQueueDrawer {
                         .with_size(px(12.))
                         .text_color(palette::amber()),
                     )
-                    .label(if self.all_paused {
-                        "恢复全部"
-                    } else {
-                        "暂停全部"
+                    .label(match self.all_paused {
+                        true => t!("queue.resume_all"),
+                        false => t!("queue.pause_all"),
                     })
                     .text_color(palette::amber())
-                    .tooltip(if self.all_paused {
-                        "把停着的传输都接着搬"
-                    } else {
-                        "停住在跑的传输；排队的等轮到它再说"
+                    .tooltip(match self.all_paused {
+                        true => t!("queue.resume_all_tooltip"),
+                        false => t!("queue.pause_all_tooltip"),
                     })
                     .disabled(active == 0)
                     .on_click(cx.listener(|_, _, _, cx| {
@@ -589,8 +599,8 @@ impl TransferQueueDrawer {
                     .xsmall()
                     .flex_shrink_0()
                     .icon(Icon::new(IconName::Close).with_size(px(12.)))
-                    .label("清除已完成")
-                    .tooltip("清掉已经完事的行；还在跑的得先取消")
+                    .label(t!("queue.clear_finished"))
+                    .tooltip(t!("queue.clear_finished_tooltip"))
                     .on_click(cx.listener(|_, _, _, cx| {
                         cx.emit(TransferQueueEvent::ClearFinished);
                     })),
@@ -601,7 +611,7 @@ impl TransferQueueDrawer {
                     .xsmall()
                     .flex_shrink_0()
                     .icon(Icon::new(IconName::Close).with_size(px(12.)))
-                    .tooltip("收起队列")
+                    .tooltip(t!("queue.collapse"))
                     .on_click(cx.listener(|_, _, _, cx| {
                         cx.emit(TransferQueueEvent::Collapse);
                     })),
@@ -609,7 +619,12 @@ impl TransferQueueDrawer {
     }
 
     /// 筛选片：一枚小圆角 chip，选中描蓝。计数来自当前队列，点击切口径。
-    fn filter_chip(&self, which: QueueFilter, count: usize, cx: &mut Context<Self>) -> impl IntoElement {
+    fn filter_chip(
+        &self,
+        which: QueueFilter,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let selected = self.filter == which;
         let tone = if selected {
             palette::blue()
@@ -636,7 +651,11 @@ impl TransferQueueDrawer {
                 chip.border_1().border_color(cx.theme().border)
             })
             .text_color(tone)
-            .child(SharedString::from(format!("{} ({})", which.label(), count)))
+            .child(SharedString::from(t!(
+                "queue.filter_chip",
+                label => which.label(),
+                count => count,
+            )))
             .on_click(cx.listener(move |this, _, _, cx| {
                 if this.filter != which {
                     this.filter = which;
@@ -658,7 +677,7 @@ impl TransferQueueDrawer {
                 .justify_center()
                 .text_xs()
                 .text_color(palette::idle(cx))
-                .child("还没有传输任务；把文件拖进右栏，或在条目菜单里选上传 / 下载。")
+                .child(SharedString::from(t!("queue.empty")))
                 .into_any_element();
         }
 
@@ -711,11 +730,9 @@ impl TransferQueueDrawer {
                 .px_2()
                 .text_xs()
                 .text_color(palette::idle(cx))
-                .child("子项文件")
+                .child(SharedString::from(t!("queue.child_files")))
                 .into_any_element(),
-            Some(QueueRow::Child { parent, child }) => {
-                self.render_child_row(*parent, *child, cx)
-            }
+            Some(QueueRow::Child { parent, child }) => self.render_child_row(*parent, *child, cx),
             None => div().h(PARENT_ROW_HEIGHT).into_any_element(),
         }
     }
@@ -729,7 +746,10 @@ impl TransferQueueDrawer {
         let id = item.id;
         let expanded = self.expanded.contains(&id);
         let tone = status_tone(item.status, cx);
-        let pausable = matches!(item.status, TransferStatus::Transferring | TransferStatus::Paused);
+        let pausable = matches!(
+            item.status,
+            TransferStatus::Transferring | TransferStatus::Paused
+        );
         let direction = item.direction;
         let filename = item.filename.clone();
         let progress = item.progress();
@@ -763,9 +783,7 @@ impl TransferQueueDrawer {
                     .min_w_0()
                     .text_xs()
                     .children([
-                        self.render_name_cell(
-                            id, filename, items_badge, expanded, error, cx,
-                        ),
+                        self.render_name_cell(id, filename, items_badge, expanded, error, cx),
                         queue_cell(DIRECTION_WIDTH)
                             .justify_center()
                             .child(direction_badge(direction, cx)),
@@ -786,8 +804,9 @@ impl TransferQueueDrawer {
                                         .value(progress)
                                         .color(tone)
                                         // 总数未知时没有比例可画，让它在原地滑。
-                                        .loading(status == TransferStatus::Transferring
-                                            && !show_percent),
+                                        .loading(
+                                            status == TransferStatus::Transferring && !show_percent,
+                                        ),
                                 )
                                 .children(show_percent.then(|| {
                                     div()
@@ -826,10 +845,9 @@ impl TransferQueueDrawer {
                                                 palette::idle(cx)
                                             }),
                                         )
-                                        .tooltip(if status == TransferStatus::Paused {
-                                            "接着搬"
-                                        } else {
-                                            "暂停这一条"
+                                        .tooltip(match status == TransferStatus::Paused {
+                                            true => t!("queue.resume_one"),
+                                            false => t!("queue.pause_one"),
                                         })
                                         .on_click(cx.listener(move |_, _, _, cx| {
                                             cx.emit(TransferQueueEvent::TogglePause(id));
@@ -846,10 +864,9 @@ impl TransferQueueDrawer {
                                             .with_size(px(10.))
                                             .text_color(palette::idle(cx)),
                                     )
-                                    .tooltip(if pausable {
-                                        "取消这次传输"
-                                    } else {
-                                        "从列表里去掉"
+                                    .tooltip(match pausable {
+                                        true => t!("queue.cancel_one"),
+                                        false => t!("queue.remove_one"),
                                     })
                                     .on_click(cx.listener(move |_, _, _, cx| {
                                         cx.emit(TransferQueueEvent::Cancel(id));
@@ -967,15 +984,15 @@ impl TransferQueueDrawer {
         let Some(item) = self.items.get(parent) else {
             return div().h(SECTION_HEAD_HEIGHT).into_any_element();
         };
-        let head = SharedString::from(format!(
-            "{} · 目录内容 ({} 项)",
-            item.filename,
-            item.children.len()
+        let head = SharedString::from(t!(
+            "queue.section_head",
+            name => item.filename,
+            count => item.children.len(),
         ));
-        let transferred = SharedString::from(format!(
-            "已传输 {} / {}",
-            human_size(item.transferred),
-            human_size(item.total)
+        let transferred = SharedString::from(t!(
+            "queue.section_transferred",
+            done => human_size(item.transferred),
+            total => human_size(item.total),
         ));
         h_flex()
             .h(SECTION_HEAD_HEIGHT)
@@ -1022,8 +1039,7 @@ impl TransferQueueDrawer {
         };
         let status = entry.status;
         let row_key = SharedString::from(format!("transfer-queue-child-row-{id}-{child}"));
-        let progress_id =
-            SharedString::from(format!("transfer-queue-child-progress-{id}-{child}"));
+        let progress_id = SharedString::from(format!("transfer-queue-child-progress-{id}-{child}"));
 
         h_flex()
             .id(row_key)
@@ -1129,7 +1145,7 @@ impl TransferQueueDrawer {
 
 /// 表头的一格。定宽列与行里 [`queue_cell`] 同宽，天然对齐。
 fn queue_head_cells() -> Vec<TableHead> {
-    let fixed = |label: &'static str, width: Pixels| {
+    let fixed = |label: SharedString, width: Pixels| {
         TableHead::new()
             .xsmall()
             .w(width)
@@ -1142,13 +1158,13 @@ fn queue_head_cells() -> Vec<TableHead> {
             .xsmall()
             .flex_1()
             .min_w(px(60.))
-            .child("类型 / 文件 / 目录名"),
-        fixed("方向", DIRECTION_WIDTH),
-        fixed("大小 / 已传输", SIZE_WIDTH),
-        fixed("进度", PROGRESS_WIDTH),
-        fixed("速度", SPEED_WIDTH).text_right(),
-        fixed("状态", STATUS_WIDTH),
-        fixed("操作", ACTION_WIDTH),
+            .child(SharedString::from(t!("queue.col_name"))),
+        fixed(t!("queue.col_direction").into(), DIRECTION_WIDTH),
+        fixed(t!("queue.col_size").into(), SIZE_WIDTH),
+        fixed(t!("queue.col_progress").into(), PROGRESS_WIDTH),
+        fixed(t!("queue.col_speed").into(), SPEED_WIDTH).text_right(),
+        fixed(t!("queue.col_status").into(), STATUS_WIDTH),
+        fixed(t!("queue.col_action").into(), ACTION_WIDTH),
     ]
 }
 
@@ -1177,10 +1193,10 @@ fn direction_badge(direction: TransferDirection, cx: &App) -> impl IntoElement {
             })
             .with_size(px(10.)),
         )
-        .child(match direction {
-            TransferDirection::Upload => "上传",
-            TransferDirection::Download => "下载",
-        })
+        .child(SharedString::from(match direction {
+            TransferDirection::Upload => t!("queue.direction_upload"),
+            TransferDirection::Download => t!("queue.direction_download"),
+        }))
 }
 
 /// 状态药丸。完成带勾、传输带着装货的圈、暂停是两只手 —— 状态要能被
@@ -1214,7 +1230,11 @@ fn child_count_badge(item: &TransferItem) -> Option<SharedString> {
         .iter()
         .filter(|child| child.status == TransferStatus::Completed)
         .count();
-    Some(SharedString::from(format!("{}/{} 项", done, item.children.len())))
+    Some(SharedString::from(t!(
+        "queue.child_progress",
+        done => done,
+        total => item.children.len(),
+    )))
 }
 
 /// "大小 / 已传输"一格。两个数都不知道就别摆占位的零。
@@ -1281,9 +1301,8 @@ mod tests {
             progress: 10.0,
             total_speed_bps: 0.0,
         };
-        assert_eq!(paused.speed_label(), "已暂停");
+        // 文案查表来的，跟状态药丸上那一句是同一条 key。
+        assert_eq!(paused.speed_label(), t!("transfer.status_paused"));
         assert_eq!(paused.icon(), AppIcon::Download);
     }
 }
-
-

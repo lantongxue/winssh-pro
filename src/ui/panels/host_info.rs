@@ -11,6 +11,7 @@ use gpui_component::{
 };
 
 use crate::host::Host;
+use rust_i18n::t;
 
 pub struct HostInfoPanel {
     host: Option<Host>,
@@ -37,7 +38,7 @@ impl HostInfoPanel {
         cx.notify();
     }
 
-    fn render_row(&self, label: &'static str, value: SharedString, cx: &App) -> impl IntoElement {
+    fn render_row(&self, label: SharedString, value: SharedString, cx: &App) -> impl IntoElement {
         h_flex()
             .w_full()
             .py_1()
@@ -71,7 +72,7 @@ impl BasePanel for HostInfoPanel {
 
 impl Panel for HostInfoPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("主机信息")
+        SharedString::from(t!("host_info.title"))
     }
 }
 
@@ -93,7 +94,7 @@ impl Render for HostInfoPanel {
                     div()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child("选中一台主机后显示它的连接信息"),
+                        .child(SharedString::from(t!("host_info.empty"))),
                 );
         };
 
@@ -101,10 +102,18 @@ impl Render for HostInfoPanel {
             .size_full()
             .gap_1()
             .child(div().pb_1().child(host.name.clone()))
-            .child(self.render_row("地址", host.address().into(), cx))
-            .child(self.render_row("用户", host.user.clone(), cx))
-            .child(self.render_row("端口", host.port.to_string().into(), cx))
-            .child(self.render_row("系统", host.platform.clone(), cx))
-            .child(self.render_row("认证方式", "公钥（ed25519）".into(), cx))
+            .child(self.render_row(t!("host_info.address").into(), host.address().into(), cx))
+            .child(self.render_row(t!("host_info.user").into(), host.user.clone(), cx))
+            .child(self.render_row(
+                t!("host_info.port").into(),
+                host.port.to_string().into(),
+                cx,
+            ))
+            .child(self.render_row(t!("host_info.platform").into(), host.platform.clone(), cx))
+            .child(self.render_row(
+                t!("host_info.auth").into(),
+                t!("host_info.auth_public_key").into(),
+                cx,
+            ))
     }
 }

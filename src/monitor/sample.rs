@@ -13,6 +13,7 @@ use super::{
     ContainerStatus, DockerContainerItem, ProcessItem,
     probe::{SECTION_END, SECTION_PREFIX, SPLIT},
 };
+use rust_i18n::t;
 
 /// `/proc/stat` 的 CPU 累计时间，单位是时钟节拍。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -184,10 +185,10 @@ pub fn parse_probe(stdout: &str) -> Result<ProbeSample> {
     }
 
     if !finished {
-        bail!("采集脚本没有跑完（对端可能中断了这条命令）");
+        bail!("{}", t!("monitor.probe_incomplete"));
     }
     if sample.mem.total_kb == 0 {
-        bail!("远端读不到 /proc/meminfo，监控只支持 Linux 主机");
+        bail!("{}", t!("monitor.probe_no_meminfo"));
     }
 
     sample.processes = merge_processes(processes, users, sample.mem.total_kb);
@@ -662,7 +663,9 @@ mod tests {
     fn truncated_output_is_an_error() {
         let text = "##hz\n100 4\n##mem\nMemTotal: 1000 kB\n";
         let error = parse_probe(text).expect_err("没有 ##end 必须报错");
-        assert!(format!("{error}").contains("没有跑完"));
+        // 不比那句话本身（它在语言表里，跟着语言变），只认这一条错真的是
+        // "没跑完"那一条。
+        assert_eq!(format!("{error}"), t!("monitor.probe_incomplete"));
     }
 
     #[test]

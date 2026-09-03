@@ -7,6 +7,7 @@
 use std::time::SystemTime;
 
 use gpui::SharedString;
+use rust_i18n::t;
 
 /// 文件类型。对端只告诉我们 mode 里的类型位，剩下的是按 POSIX 的字符归类。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,18 +127,18 @@ impl FileEntry {
     /// `now` 由调用方给，是为了让这段逻辑可测（见单测），不是为了取时间方便。
     pub fn modified_label(&self, now: SystemTime) -> String {
         let Some(modified) = self.modified else {
-            return "—".to_owned();
+            return t!("entry.modified_unknown").to_string();
         };
         // 对端时钟比本地快的时候差值是负的 —— 那也是"刚刚"，不要写"-3 hours ago"。
         let Ok(elapsed) = now.duration_since(modified) else {
-            return "刚刚".to_owned();
+            return t!("entry.modified_just_now").to_string();
         };
         let delta = elapsed.as_secs() as i64;
         match delta {
-            0..=59 => "刚刚".to_owned(),
-            60..=3599 => format!("{} 分钟前", delta / 60),
-            3600..=86399 => format!("{} 小时前", delta / 3600),
-            86400..=604799 => format!("{} 天前", delta / 86400),
+            0..=59 => t!("entry.modified_just_now").to_string(),
+            60..=3599 => t!("entry.modified_minutes", count => delta / 60).to_string(),
+            3600..=86399 => t!("entry.modified_hours", count => delta / 3600).to_string(),
+            86400..=604799 => t!("entry.modified_days", count => delta / 86400).to_string(),
             _ => chrono::DateTime::<chrono::Local>::from(modified)
                 .format("%Y-%m-%d %H:%M")
                 .to_string(),
@@ -281,16 +282,31 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         let mut file = entry("f", FileKind::File, 0, None);
 
+        // 每一档比的是语言表里对应的那一条，不写死中文 —— 测试跑在缺省的
+        // 英文档上，写死中文只会在"代码是对的"时候红。
         file.modified = Some(now - Duration::from_secs(30));
-        assert_eq!(file.modified_label(now), "刚刚");
+        assert_eq!(file.modified_label(now), t!("entry.modified_just_now"));
         file.modified = Some(now - Duration::from_secs(5 * 60));
-        assert_eq!(file.modified_label(now), "5 分钟前");
+        assert_eq!(
+            file.modified_label(now),
+            t!("entry.modified_minutes", count => 5)
+        );
         file.modified = Some(now - Duration::from_secs(3 * 3600));
-        assert_eq!(file.modified_label(now), "3 小时前");
+        assert_eq!(
+            file.modified_label(now),
+            t!("entry.modified_hours", count => 3)
+        );
         file.modified = Some(now - Duration::from_secs(2 * 86400));
-        assert_eq!(file.modified_label(now), "2 天前");
+        assert_eq!(
+            file.modified_label(now),
+            t!("entry.modified_days", count => 2)
+        );
         file.modified = Some(now + Duration::from_secs(3600));
-        assert_eq!(file.modified_label(now), "刚刚", "对端时钟快了也不该写负数");
+        assert_eq!(
+            file.modified_label(now),
+            t!("entry.modified_just_now"),
+            "对端时钟快了也不该写负数"
+        );
         file.modified = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000));
         let label = file.modified_label(now);
         assert_eq!(

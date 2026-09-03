@@ -20,6 +20,7 @@ use russh::{Channel, ChannelMsg, client::Handle};
 use russh_sftp::client::SftpSession;
 
 use super::client::SshHandler;
+use rust_i18n::t;
 
 /// 在已认证的连接上开一条 SFTP 会话。
 ///
@@ -30,12 +31,12 @@ pub async fn open_session(handle: &Handle<SshHandler>) -> Result<Arc<SftpSession
     let mut channel = handle
         .channel_open_session()
         .await
-        .context("打开 SFTP 通道失败")?;
+        .with_context(|| t!("ssh_sftp.open_channel_failed").to_string())?;
 
     channel
         .request_subsystem(true, "sftp")
         .await
-        .context("请求 SFTP 子系统失败")?;
+        .with_context(|| t!("ssh_sftp.request_subsystem_failed").to_string())?;
 
     // `request_subsystem(true, ...)` 只是把请求发出去，`want_reply` 不是"在这儿等"
     // 的意思 —— 回音是通道上的 `Success`/`Failure`，得自己读。不读的话，被拒绝时
@@ -44,7 +45,7 @@ pub async fn open_session(handle: &Handle<SshHandler>) -> Result<Arc<SftpSession
 
     let session = SftpSession::new(channel.into_stream())
         .await
-        .context("SFTP 协议握手失败")?;
+        .with_context(|| t!("ssh_sftp.handshake_failed").to_string())?;
 
     Ok(Arc::new(session))
 }
@@ -54,15 +55,13 @@ async fn await_subsystem_reply(channel: &mut Channel<russh::client::Msg>) -> Res
     while let Some(message) = channel.wait().await {
         match message {
             ChannelMsg::Success => return Ok(()),
-            ChannelMsg::Failure => bail!(
-                "远端拒绝启动 SFTP 子系统（sshd_config 里没有 `Subsystem sftp`，或对端只允许 Shell）"
-            ),
-            ChannelMsg::Close => bail!("远端在启动 SFTP 子系统之前关掉了通道"),
+            ChannelMsg::Failure => bail!("{}", t!("ssh_sftp.subsystem_refused")),
+            ChannelMsg::Close => bail!("{}", t!("ssh_sftp.closed_early")),
             // 数据不该出现在这里（子系统还没起来），收到了就丢掉继续等。
             other => log::trace!("sftp subsystem 等待回音时收到：{other:?}"),
         }
     }
-    bail!("等待 SFTP 子系统回音时连接已断开")
+    bail!("{}", t!("ssh_sftp.disconnected"))
 }
 
 #[cfg(test)]
@@ -91,7 +90,7 @@ mod tests {
 
             let message = format!("{error:#}");
             assert!(
-                message.contains("SFTP 子系统"),
+                message.contains(t!("ssh_sftp.subsystem_refused").as_ref()),
                 "错误应说明是子系统的问题，实际：{message}"
             );
             assert_eq!(seen.subsystem(), "sftp", "请求的子系统名字要送对");

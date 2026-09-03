@@ -26,6 +26,7 @@ use crate::ui::{
     theme::{AppIcon, palette},
     views::SidebarView,
 };
+use rust_i18n::t;
 
 /// 活动栏宽度。固定值：图标是等宽的，随内容伸缩只会让全局导航不稳定。
 pub const ACTIVITY_BAR_WIDTH: Pixels = px(48.);
@@ -75,9 +76,9 @@ impl ActivityAction {
 
     pub fn label(&self) -> SharedString {
         match self {
-            Self::Assistant => "AI 助手",
-            Self::QuickConnect => "快速连接",
-            Self::Settings => "设置",
+            Self::Assistant => t!("activity.assistant"),
+            Self::QuickConnect => t!("activity.quick_connect"),
+            Self::Settings => t!("activity.settings"),
         }
         .into()
     }

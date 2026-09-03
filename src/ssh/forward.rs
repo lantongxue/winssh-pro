@@ -39,6 +39,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 
 use super::client::SshHandler;
+use rust_i18n::t;
 
 /// 一次搬运的块大小。32 KiB 是 SSH 通道窗口与以太网 MTU 之间一个不亏的折中：
 /// 再小就是每块都要过一遍窗口记账，再大也填不满一个通道窗口。
@@ -167,10 +168,10 @@ pub async fn listen_local(
 ) -> Result<u16> {
     let listener = TcpListener::bind((bind, port))
         .await
-        .with_context(|| format!("绑定本机 {bind}:{port} 失败"))?;
+        .with_context(|| t!("ssh_forward.bind_failed", bind => bind, port => port).to_string())?;
     let local_port = listener
         .local_addr()
-        .context("读取本机监听端口失败")?
+        .with_context(|| t!("ssh_forward.local_port_failed").to_string())?
         .port();
 
     tokio::spawn(accept_loop(listener, handle, mode, meter, cancel));
@@ -191,10 +192,12 @@ pub async fn request_remote(
     let assigned = handle
         .tcpip_forward(bind, port as u32)
         .await
-        .with_context(|| format!("对端拒绝在 {bind}:{port} 上监听"))?;
+        .with_context(|| {
+            t!("ssh_forward.remote_refused", bind => bind, port => port).to_string()
+        })?;
     // 端口写 0 时对端才会回一个它挑的端口，否则回 0（"就用你说的那个"）。
     let assigned = match (port, assigned) {
-        (0, 0) => bail!("对端接受了转发请求但没有告诉我们端口"),
+        (0, 0) => bail!("{}", t!("ssh_forward.remote_no_port")),
         (0, chosen) => chosen,
         (asked, _) => asked as u32,
     };
@@ -293,10 +296,17 @@ async fn serve_local(
             }
             let reason = match &rejection {
                 Some(failure) => describe_rejection(failure),
-                None => "转发通道开不出来",
+                None => t!("ssh_forward.channel_failed").to_string(),
             };
-            return Err(anyhow::Error::new(error))
-                .with_context(|| format!("{reason}（目标 {host}:{port}）"));
+            return Err(anyhow::Error::new(error)).with_context(|| {
+                t!(
+                    "ssh_forward.channel_target",
+                    reason => reason,
+                    host => host,
+                    port => port,
+                )
+                .to_string()
+            });
         }
     };
     if socks5 {
@@ -415,36 +425,39 @@ async fn socks5_handshake(stream: &mut TcpStream) -> Result<(String, u16)> {
     stream
         .read_exact(&mut head)
         .await
-        .context("读 SOCKS5 方法协商失败")?;
+        .with_context(|| t!("ssh_forward.socks_read_greeting").to_string())?;
     if head[0] != SOCKS5_VERSION {
-        bail!("不是 SOCKS5 请求（版本号 {}）", head[0]);
+        bail!("{}", t!("ssh_forward.socks_not_v5", version => head[0]));
     }
     let mut methods = vec![0u8; head[1] as usize];
     stream
         .read_exact(&mut methods)
         .await
-        .context("读 SOCKS5 认证方法列表失败")?;
+        .with_context(|| t!("ssh_forward.socks_read_methods").to_string())?;
     if !methods.contains(&SOCKS5_NO_AUTH) {
         // 这个监听只在本机上，认证由操作系统的回环边界提供；客户端非要认证
         // 的话如实告诉它我们没有它要的那种。
         let _ = stream
             .write_all(&[SOCKS5_VERSION, SOCKS5_NO_ACCEPTABLE_AUTH])
             .await;
-        bail!("客户端不接受无认证的 SOCKS5");
+        bail!("{}", t!("ssh_forward.socks_no_anon"));
     }
     stream
         .write_all(&[SOCKS5_VERSION, SOCKS5_NO_AUTH])
         .await
-        .context("回 SOCKS5 方法选择失败")?;
+        .with_context(|| t!("ssh_forward.socks_write_choice").to_string())?;
 
     let mut request = [0u8; 4];
     stream
         .read_exact(&mut request)
         .await
-        .context("读 SOCKS5 请求失败")?;
+        .with_context(|| t!("ssh_forward.socks_read_request").to_string())?;
     if request[1] != SOCKS5_CONNECT {
         let _ = socks5_reply(stream, SOCKS5_COMMAND_NOT_SUPPORTED).await;
-        bail!("只支持 SOCKS5 的 CONNECT（收到命令 {}）", request[1]);
+        bail!(
+            "{}",
+            t!("ssh_forward.socks_only_connect", command => request[1])
+        );
     }
 
     let host = match request[3] {
@@ -457,7 +470,8 @@ async fn socks5_handshake(stream: &mut TcpStream) -> Result<(String, u16)> {
             let length = stream.read_u8().await? as usize;
             let mut name = vec![0u8; length];
             stream.read_exact(&mut name).await?;
-            String::from_utf8(name).context("SOCKS5 域名不是 UTF-8")?
+            String::from_utf8(name)
+                .with_context(|| t!("ssh_forward.socks_domain_not_utf8").to_string())?
         }
         SOCKS5_ADDR_IPV6 => {
             let mut octets = [0u8; 16];
@@ -466,10 +480,13 @@ async fn socks5_handshake(stream: &mut TcpStream) -> Result<(String, u16)> {
         }
         other => {
             let _ = socks5_reply(stream, SOCKS5_COMMAND_NOT_SUPPORTED).await;
-            bail!("SOCKS5 地址类型 {other} 不认识");
+            bail!("{}", t!("ssh_forward.socks_bad_atyp", atyp => other));
         }
     };
-    let port = stream.read_u16().await.context("读 SOCKS5 目标端口失败")?;
+    let port = stream
+        .read_u16()
+        .await
+        .with_context(|| t!("ssh_forward.socks_read_port").to_string())?;
     Ok((host, port))
 }
 
@@ -493,7 +510,7 @@ async fn socks5_reply(stream: &mut TcpStream, status: u8) -> Result<()> {
             0,
         ])
         .await
-        .context("回 SOCKS5 答复失败")?;
+        .with_context(|| t!("ssh_forward.socks_write_reply").to_string())?;
     Ok(())
 }
 
@@ -511,14 +528,15 @@ fn socks5_status(rejection: Option<&ChannelOpenFailure>) -> u8 {
 
 /// 把 `russh` 的拒绝理由说成一句人话。转发被拒是有原因的，
 /// 而对端只会给一个枚举值。
-fn describe_rejection(reason: &ChannelOpenFailure) -> &'static str {
+fn describe_rejection(reason: &ChannelOpenFailure) -> String {
     match reason {
-        ChannelOpenFailure::AdministrativelyProhibited => "对端不允许这次转发",
-        ChannelOpenFailure::ConnectFailed => "对端连不上目标",
-        ChannelOpenFailure::UnknownChannelType => "对端不认识这种通道",
-        ChannelOpenFailure::ResourceShortage => "对端资源不足",
-        ChannelOpenFailure::Other { .. } => "对端拒绝了这次转发",
+        ChannelOpenFailure::AdministrativelyProhibited => t!("ssh_forward.reject_prohibited"),
+        ChannelOpenFailure::ConnectFailed => t!("ssh_forward.reject_connect_failed"),
+        ChannelOpenFailure::UnknownChannelType => t!("ssh_forward.reject_unknown_type"),
+        ChannelOpenFailure::ResourceShortage => t!("ssh_forward.reject_resource"),
+        ChannelOpenFailure::Other { .. } => t!("ssh_forward.reject_other"),
     }
+    .to_string()
 }
 
 #[cfg(test)]

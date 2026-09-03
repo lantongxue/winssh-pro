@@ -33,6 +33,7 @@ use crate::{
         workspace::{ToggleRightDock, ToggleSidebar},
     },
 };
+use rust_i18n::t;
 
 /// 面板宽度，取自设计稿。
 const PALETTE_WIDTH: Pixels = px(560.);
@@ -185,7 +186,7 @@ impl CommandPaletteDialog {
                 // 对话框已经是一层框了，面板不必再画一圈。
                 .bordered(false)
                 // 和标题栏那个触发器上的字一样，点进来之后说的还是同一件事。
-                .placeholder("搜索主机、视图与动作")
+                .placeholder(t!("command_center.search"))
                 .max_h(PALETTE_MAX_HEIGHT)
                 .empty(|_, _, cx| {
                     div()
@@ -194,7 +195,7 @@ impl CommandPaletteDialog {
                         .text_center()
                         .text_sm()
                         .text_color(palette::idle(cx))
-                        .child("没有匹配的主机或动作。")
+                        .child(SharedString::from(t!("palette.empty")))
                 })
                 // 面板全靠键盘用，底下这行是它的说明书。
                 .footer(|_, _, cx| {
@@ -206,9 +207,9 @@ impl CommandPaletteDialog {
                         .border_color(cx.theme().border)
                         .text_xs()
                         .text_color(palette::idle(cx))
-                        .child("↑↓ 选择")
-                        .child("Enter 执行")
-                        .child("Esc 关闭")
+                        .child(SharedString::from(t!("palette.hint_select")))
+                        .child(SharedString::from(t!("palette.hint_run")))
+                        .child(SharedString::from(t!("palette.hint_close")))
                 })
                 .on_confirm(move |index, window, cx| {
                     _ = this.update(cx, |this, cx| this.confirm(index, window, cx));
@@ -229,15 +230,15 @@ impl CommandPaletteDialog {
 fn build_sections(hosts: &[HostGroup]) -> Vec<PaletteSection> {
     vec![
         PaletteSection {
-            label: "主机".into(),
+            label: t!("palette.section_hosts").into(),
             commands: host_commands(hosts),
         },
         PaletteSection {
-            label: "视图".into(),
+            label: t!("palette.section_views").into(),
             commands: view_commands(),
         },
         PaletteSection {
-            label: "动作".into(),
+            label: t!("palette.section_actions").into(),
             commands: action_commands(),
         },
     ]
@@ -310,7 +311,7 @@ fn action_commands() -> Vec<PaletteCommand> {
     vec![
         PaletteCommand::new(
             CommandItem::new()
-                .label("新建主机")
+                .label(t!("palette.new_host"))
                 .icon(IconName::Plus)
                 .keywords(["new", "host", "add"]),
             CommandPaletteEvent::NewHost,
@@ -331,14 +332,14 @@ fn action_commands() -> Vec<PaletteCommand> {
         ),
         PaletteCommand::dispatching(
             CommandItem::new()
-                .label("切换侧边栏")
+                .label(t!("palette.toggle_sidebar"))
                 .icon(IconName::PanelLeft)
                 .keywords(["sidebar", "panel"])
                 .action(Box::new(ToggleSidebar)),
         ),
         PaletteCommand::dispatching(
             CommandItem::new()
-                .label("切换主机信息与设置")
+                .label(t!("palette.toggle_right_dock"))
                 .icon(IconName::PanelRight)
                 .keywords(["info", "settings", "right"])
                 .action(Box::new(ToggleRightDock)),

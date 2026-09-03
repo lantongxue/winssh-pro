@@ -4,6 +4,7 @@ mod assets;
 mod db;
 mod forward;
 mod host;
+mod i18n;
 mod monitor;
 mod repository;
 mod service;
@@ -19,10 +20,16 @@ use gpui_component::{Root, TitleBar};
 use assets::Assets;
 use ui::Workspace;
 
+// 界面文案的语言表，编译期从 `locales/` 读进来。放在 crate 根上是 `t!` 的要求：
+// 它展开成 `crate::_rust_i18n_t!`，而这个宏由下面这一行生成。
+rust_i18n::i18n!("locales", fallback = "en");
+
 fn main() {
     gpui_platform::application()
         .with_assets(Assets)
         .run(move |cx| {
+            // 语言要在组件库之前定下来：组件库初始化的时候已经在读自己的文案了。
+            i18n::init();
             // 必须先初始化组件库，再注册应用自己的动作与快捷键。
             gpui_component::init(cx);
             ui::init(cx);

@@ -10,7 +10,7 @@
 
 use gpui::{
     App, ClickEvent, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels,
-    RenderOnce, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    RenderOnce, SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
@@ -20,6 +20,7 @@ use gpui_component::{
 };
 
 use crate::ui::theme::palette;
+use rust_i18n::t;
 
 /// 搜索触发器的宽度，取自设计稿。固定值：它是标题栏的对称轴，
 /// 宽度随内容变的话，整条标题栏就跟着晃。
@@ -89,8 +90,8 @@ fn search_trigger(shortcut: Option<Kbd>, on_click: Option<Handler>, cx: &App) ->
         .border_1()
         .border_color(cx.theme().border)
         .rounded(cx.theme().radius)
-        .tooltip("搜索主机、视图与动作")
-        .accessibility_id("打开命令面板")
+        .tooltip(t!("command_center.search"))
+        .accessibility_id(t!("command_center.open"))
         .child(
             h_flex()
                 .w_full()
@@ -108,7 +109,7 @@ fn search_trigger(shortcut: Option<Kbd>, on_click: Option<Handler>, cx: &App) ->
                                 .min_w_0()
                                 .truncate()
                                 .text_xs()
-                                .child("搜索主机、视图与动作"),
+                                .child(SharedString::from(t!("command_center.search"))),
                         ),
                 )
                 .children(shortcut.map(Kbd::outline)),

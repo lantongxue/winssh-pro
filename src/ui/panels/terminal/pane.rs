@@ -47,6 +47,7 @@ use crate::{
         menus::{TerminalAction, TerminalActionHandler, TerminalMenu, terminal_menu_allowed},
     },
 };
+use rust_i18n::t;
 
 actions!(
     session,
@@ -160,12 +161,7 @@ pub struct TerminalPane {
 impl EventEmitter<TerminalPaneEvent> for TerminalPane {}
 
 impl TerminalPane {
-    pub fn new(
-        host: Host,
-        origin: PaneOrigin,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self> {
+    pub fn new(host: Host, origin: PaneOrigin, window: &mut Window, cx: &mut App) -> Entity<Self> {
         cx.new(|cx| {
             let mut this = Self {
                 host,
@@ -200,14 +196,20 @@ impl TerminalPane {
             Ok(emulator) => {
                 self.attach_emulator(&emulator, cx);
                 let banner = format!(
-                    "\x1b[32m◆ {}\x1b[0m（{}@{}）\r\n\x1b[90m本机 Shell 已就绪。\x1b[0m\r\n\r\n",
-                    self.host.name, self.host.user, self.host.hostname
+                    "\x1b[32m◆ {}\x1b[0m（{}@{}）\r\n\x1b[90m{}\x1b[0m\r\n\r\n",
+                    self.host.name,
+                    self.host.user,
+                    self.host.hostname,
+                    t!("terminal.banner_local_ready"),
                 );
                 emulator.update(cx, |em, cx| em.write_output(banner.as_bytes(), cx));
                 self.emulator = Some(emulator);
             }
             Err(error) => {
-                self.error = Some(SharedString::from(format!("本地 Shell 启动失败：{error:#}")));
+                self.error = Some(SharedString::from(t!(
+                    "terminal.local_shell_failed",
+                    error => format!("{error:#}"),
+                )));
             }
         }
     }
@@ -221,10 +223,11 @@ impl TerminalPane {
         let host = self.host.clone();
         let placeholder = self.show_placeholder(
             &format!(
-                "\x1b[36m{}\x1b[0m（{}，{}）\r\n\x1b[90m正在通过 SSH 连接...\x1b[0m\r\n",
+                "\x1b[36m{}\x1b[0m（{}，{}）\r\n\x1b[90m{}\x1b[0m\r\n",
                 host.name,
                 host.address(),
-                host.platform
+                host.platform,
+                t!("terminal.banner_connecting"),
             ),
             cx,
         );
@@ -240,7 +243,10 @@ impl TerminalPane {
                     // 顶上，界面始终可用。
                     placeholder.update(cx, |em, cx| {
                         let msg = format!(
-                            "\r\n\x1b[31mSSH 连接失败：{error:#}\x1b[0m\r\n\x1b[33m已回退到本机 Shell（演示继续可用）\x1b[0m\r\n\x1b[90m提示：检查主机地址、端口、用户名与密码/密钥是否正确；远端需开启 SSH 服务。\x1b[0m\r\n\r\n"
+                            "\r\n\x1b[31m{}\x1b[0m\r\n\x1b[33m{}\x1b[0m\r\n\x1b[90m{}\x1b[0m\r\n\r\n",
+                            t!("terminal.banner_ssh_failed", error => format!("{error:#}")),
+                            t!("terminal.banner_fell_back"),
+                            t!("terminal.banner_ssh_hint"),
                         );
                         em.write_output(msg.as_bytes(), cx);
                     });
@@ -252,14 +258,17 @@ impl TerminalPane {
                             });
                             this.emulator = Some(local);
                             this.error = None;
-                            cx.emit(TerminalPaneEvent::Notify(SharedString::from(format!(
-                                "SSH 连接 {} 失败，已回退到本机：{error:#}",
-                                host.name
+                            cx.emit(TerminalPaneEvent::Notify(SharedString::from(t!(
+                                "terminal.ssh_failed_notify",
+                                name => host.name,
+                                error => format!("{error:#}"),
                             ))));
                         }
                         Err(local_err) => {
-                            this.error = Some(SharedString::from(format!(
-                                "SSH 失败：{error:#}；本机 Shell 也失败：{local_err:#}"
+                            this.error = Some(SharedString::from(t!(
+                                "terminal.both_failed",
+                                error => format!("{error:#}"),
+                                local_error => format!("{local_err:#}"),
                             )));
                         }
                     }
@@ -278,7 +287,10 @@ impl TerminalPane {
     fn share(&mut self, session: SshSession, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.host.name.clone();
         let placeholder = self.show_placeholder(
-            &format!("\x1b[90m正在 {name} 上打开第二个 Shell...\x1b[0m\r\n"),
+            &format!(
+                "\x1b[90m{}\x1b[0m\r\n",
+                t!("terminal.banner_opening_second", name => name),
+            ),
             cx,
         );
 
@@ -291,7 +303,9 @@ impl TerminalPane {
                 Err(error) => {
                     placeholder.update(cx, |em, cx| {
                         let msg = format!(
-                            "\r\n\x1b[31m开不出新的 Shell：{error:#}\x1b[0m\r\n\x1b[90m对端可能限制了一条连接上的会话数（sshd 的 MaxSessions）。\x1b[0m\r\n"
+                            "\r\n\x1b[31m{}\x1b[0m\r\n\x1b[90m{}\x1b[0m\r\n",
+                            t!("terminal.banner_second_failed", error => format!("{error:#}")),
+                            t!("terminal.banner_max_sessions"),
                         );
                         em.write_output(msg.as_bytes(), cx);
                     });
@@ -356,9 +370,17 @@ impl TerminalPane {
             platform,
             ..
         } = &self.host;
-        [
-            format!("\x1b[32m✓ 已连接到 {name}\x1b[0m（{user}@{hostname}:{port}，{platform}）\r\n"),
-        ]
+        [format!(
+            "\x1b[32m{}\x1b[0m{}\r\n",
+            t!("terminal.banner_connected", name => name),
+            t!(
+                "terminal.banner_identity",
+                user => user,
+                hostname => hostname,
+                port => port,
+                platform => platform,
+            ),
+        )]
         .concat()
     }
 
@@ -373,8 +395,20 @@ impl TerminalPane {
             ..
         } = &self.host;
         [
-            format!("\x1b[36m{name}\x1b[0m（{user}@{hostname}:{port}，{platform}）\r\n"),
-            "\x1b[90m下面是本机的 Shell，SSH 通道未建立。\x1b[0m\r\n\r\n".to_string(),
+            format!(
+                "\x1b[36m{name}\x1b[0m{}\r\n",
+                t!(
+                    "terminal.banner_identity",
+                    user => user,
+                    hostname => hostname,
+                    port => port,
+                    platform => platform,
+                ),
+            ),
+            format!(
+                "\x1b[90m{}\x1b[0m\r\n\r\n",
+                t!("terminal.banner_local_below")
+            ),
         ]
         .concat()
     }
@@ -730,7 +764,7 @@ impl TerminalPane {
 
         let input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("在终端里查找…")
+                .placeholder(t!("terminal.search_placeholder"))
                 .default_value(seed.clone())
         });
         // 框里预填的是上次查的词，光标进去要选中它 —— 直接接着打字就是换一个词，
@@ -888,7 +922,7 @@ impl TerminalPane {
                         .ghost()
                         .small()
                         .selected(self.last_query.case_sensitive)
-                        .tooltip("区分大小写")
+                        .tooltip(t!("terminal.search_case"))
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_search_case(cx))),
                 )
                 .child(
@@ -897,7 +931,7 @@ impl TerminalPane {
                         .ghost()
                         .small()
                         .selected(self.last_query.regex)
-                        .tooltip("使用正则表达式")
+                        .tooltip(t!("terminal.search_regex"))
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_search_regex(cx))),
                 )
                 .child(div().flex_none().w(px(1.)).h(px(16.)).bg(cx.theme().border))
@@ -906,7 +940,7 @@ impl TerminalPane {
                         .icon(IconName::ChevronUp)
                         .ghost()
                         .small()
-                        .tooltip("上一个（Shift+回车）")
+                        .tooltip(t!("terminal.search_prev"))
                         .disabled(!has_matches)
                         .on_click(cx.listener(|this, _, _, cx| this.step_match(false, cx))),
                 )
@@ -915,7 +949,7 @@ impl TerminalPane {
                         .icon(IconName::ChevronDown)
                         .ghost()
                         .small()
-                        .tooltip("下一个（回车）")
+                        .tooltip(t!("terminal.search_next"))
                         .disabled(!has_matches)
                         .on_click(cx.listener(|this, _, _, cx| this.step_match(true, cx))),
                 )
@@ -924,7 +958,7 @@ impl TerminalPane {
                         .icon(IconName::Close)
                         .ghost()
                         .small()
-                        .tooltip("关闭（Esc）")
+                        .tooltip(t!("terminal.search_close"))
                         .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
                 )
                 .into_any_element(),
@@ -1039,7 +1073,11 @@ impl Render for TerminalPane {
                         .large()
                         .text_color(cx.theme().danger),
                 )
-                .child(div().text_sm().child("这条会话开不起来"))
+                .child(
+                    div()
+                        .text_sm()
+                        .child(SharedString::from(t!("terminal.session_failed"))),
+                )
                 .children(self.error.clone().map(|error| {
                     div()
                         .max_w(px(420.))

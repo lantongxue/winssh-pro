@@ -62,6 +62,16 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "
 # 跨平台的应用数据目录（Windows 是 %APPDATA%，macOS 是 ~/Library/Application Support）。
 dirs = "6"
 
+# 界面文案的多语言查表。选 rust-i18n 是因为组件库自己就在用它（见
+# `refs/gpui-kit/crates/component/src/lib.rs` 的 `i18n!`）：同一个库意味着
+# `set_locale` 一次就同时切掉应用和组件库两边的文案，不必各切一遍；4.2 起的
+# `extend!` 还让我们能只覆盖组件库里想改的那几条，不必抄一整份 ui.yml。
+# 语言表在 `locales/`，编译期读进二进制，运行时不找文件。
+rust-i18n = "4.2"
+# 启动时问一下系统"现在是什么语言"。它本来就在依赖树里（cosmic-text 用它），
+# 变成直接依赖不多编译一份东西；比自己读 LANG / GetUserDefaultLocaleName 稳。
+sys-locale = "0.3"
+
 # russh 的默认加密后端 aws-lc-rs 会用 C + 汇编编译 aws-lc-sys；在 x86_64 Windows 上
 # 它的汇编要靠 NASM 汇编，本机没有 nasm.exe 时 build 脚本直接 panic。开启
 # `prebuilt-nasm` 让 aws-lc-sys 使用 crate 里随附的预汇编 .obj，构建机就不必再装 NASM。

@@ -54,6 +54,7 @@ use super::{keys::to_esc_str, search::SearchState};
 
 use crate::ssh::{SshHandler, spawn_bridge};
 use russh::{Channel, client::Handle, client::Msg as ClientMsg};
+use rust_i18n::t;
 
 /// 回卷缓冲保留多少行。10000 行是常见的默认值，也是 zed 的默认值。
 const SCROLL_HISTORY_LINES: usize = 10_000;
@@ -364,7 +365,8 @@ impl Emulator {
         };
         // 第三个参数是给子进程的 `WINDOWID`。GPUI 不给我们平台窗口句柄，
         // 而这个变量只有 X11 下的少数程序（xdotool、xterm -into）会读，留 0。
-        let pty = tty::new(&options, bounds.window_size(), 0).context("打开 PTY 失败")?;
+        let pty = tty::new(&options, bounds.window_size(), 0)
+            .with_context(|| t!("emulator.open_pty_failed").to_string())?;
 
         let event_loop = EventLoop::new(
             term.clone(),
@@ -373,7 +375,7 @@ impl Emulator {
             options.drain_on_exit,
             false,
         )
-        .context("启动 PTY 事件循环失败")?;
+        .with_context(|| t!("emulator.event_loop_failed").to_string())?;
         let pty = Notifier(event_loop.channel());
         // 返回的 join handle 丢掉：这条线程的生命周期由 `Msg::Shutdown` 管，
         // 也就是 `Emulator` 的 `Drop`。

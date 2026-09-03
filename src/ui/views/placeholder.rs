@@ -7,12 +7,14 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, ClickEvent, IntoElement, ParentElement as _, RenderOnce, Styled as _, Window, div,
+    App, ClickEvent, IntoElement, ParentElement as _, RenderOnce, SharedString, Styled as _,
+    Window, div,
 };
 use gpui_component::{ActiveTheme as _, Icon, Sizable as _, v_flex};
 
 use super::{SidebarView, collapse_button, view_header};
 use crate::ui::theme::palette;
+use rust_i18n::t;
 
 type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -42,13 +44,13 @@ impl PlaceholderView {
 }
 
 /// 这个视图将来会放什么。
-fn hint(view: SidebarView) -> &'static str {
+fn hint(view: SidebarView) -> SharedString {
     match view {
-        SidebarView::Snippets => "常用命令与脚本会显示在这里，可以直接发到当前会话。",
-        SidebarView::Keys => "私钥、口令与 known_hosts 会显示在这里。",
-        SidebarView::Monitor => "已连接主机的 CPU、内存与网络占用会显示在这里。",
+        SidebarView::Snippets => t!("sidebar.snippets_hint").into(),
+        SidebarView::Keys => t!("sidebar.keys_hint").into(),
+        SidebarView::Monitor => t!("sidebar.monitor_hint").into(),
         // 主机视图有真正的实现（`HostExplorerView`），走不到这里。
-        SidebarView::Hosts => "",
+        SidebarView::Hosts => SharedString::default(),
     }
 }
 

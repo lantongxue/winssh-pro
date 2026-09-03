@@ -35,10 +35,10 @@ use std::{
 };
 
 use gpui::{
-    AnyElement, App, AppContext as _, AsyncApp, ClipboardItem, Context, Div, Entity,
-    EventEmitter, ExternalPaths, FocusHandle, Focusable, Hsla, InteractiveElement as _,
-    IntoElement, Modifiers, MouseButton, ParentElement as _, Pixels, Point, Render, SharedString,
-    Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
+    AnyElement, App, AppContext as _, AsyncApp, ClipboardItem, Context, Div, Entity, EventEmitter,
+    ExternalPaths, FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, Modifiers,
+    MouseButton, ParentElement as _, Pixels, Point, Render, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
@@ -77,6 +77,7 @@ use crate::{
         theme::palette,
     },
 };
+use rust_i18n::t;
 
 /// 一行的行高。虚拟列表按它算滚动范围与可见区间，所以行必须**真的**是这么高：
 /// 对不上就会错行（同 `MonitorPanel` 的进程表）。
@@ -243,7 +244,7 @@ fn drag_preview(
                             .bg(accent.opacity(0.18))
                             .text_xs()
                             .text_color(accent)
-                            .child(SharedString::from(format!("共 {count} 项"))),
+                            .child(SharedString::from(t!("sftp.total_items", count => count))),
                     )
                 }),
         )
@@ -461,16 +462,16 @@ impl LocalTableDelegate {
         Self {
             entries: Vec::new(),
             columns: vec![
-                Column::new("name", "名称")
+                Column::new("name", t!("sftp.col_name"))
                     .width(px(360.))
                     .min_width(px(150.))
                     .sortable(),
-                Column::new("size", "大小")
+                Column::new("size", t!("sftp.col_size"))
                     .width(px(90.))
                     .min_width(px(60.))
                     .sortable()
                     .text_right(),
-                Column::new("modified", "修改时间")
+                Column::new("modified", t!("sftp.col_modified"))
                     .width(px(180.))
                     .min_width(px(110.))
                     .sortable()
@@ -673,7 +674,7 @@ impl TableDelegate for LocalTableDelegate {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("目录是空的"),
+                    .child(SharedString::from(t!("sftp.empty_dir"))),
             )
     }
 }
@@ -699,29 +700,29 @@ impl RemoteTableDelegate {
         Self {
             entries: Vec::new(),
             columns: vec![
-                Column::new("name", "名称")
+                Column::new("name", t!("sftp.col_name"))
                     .width(px(260.))
                     .min_width(px(150.))
                     .sortable(),
-                Column::new("size", "大小")
+                Column::new("size", t!("sftp.col_size"))
                     .width(px(90.))
                     .min_width(px(60.))
                     .sortable()
                     .text_right(),
-                Column::new("perm", "权限")
+                Column::new("perm", t!("sftp.col_perm"))
                     .width(px(100.))
                     .min_width(px(60.))
                     .sortable(),
-                Column::new("owner", "所属")
+                Column::new("owner", t!("sftp.col_owner"))
                     .width(px(80.))
                     .min_width(px(50.))
                     .sortable(),
-                Column::new("modified", "修改时间")
+                Column::new("modified", t!("sftp.col_modified"))
                     .width(px(180.))
                     .min_width(px(110.))
                     .sortable()
                     .text_right(),
-                Column::new("action", "操作")
+                Column::new("action", t!("sftp.col_action"))
                     .width(px(80.))
                     .min_width(px(80.))
                     .resizable(false)
@@ -883,7 +884,7 @@ impl TableDelegate for RemoteTableDelegate {
                                     .ghost()
                                     .xsmall()
                                     .icon(Icon::new(AppIcon::Download).text_color(palette::teal()))
-                                    .tooltip("下载到本地")
+                                    .tooltip(t!("sftp.row_download"))
                                     .on_click(move |_, window, cx| {
                                         // 行里那几个按钮说的永远是"这一行"，
                                         // 不跟着选中集走 —— 它们就画在这一行上。
@@ -900,7 +901,7 @@ impl TableDelegate for RemoteTableDelegate {
                                     .ghost()
                                     .xsmall()
                                     .icon(Icon::new(IconName::Folder).text_color(palette::coral()))
-                                    .tooltip("进到这个目录")
+                                    .tooltip(t!("sftp.row_open_folder"))
                                     .on_click(move |_, window, cx| {
                                         let target = std::slice::from_ref(&entry);
                                         handler(target, &SftpEntryAction::OpenFolder, window, cx);
@@ -915,7 +916,7 @@ impl TableDelegate for RemoteTableDelegate {
                                     .ghost()
                                     .xsmall()
                                     .icon(Icon::new(AppIcon::Trash).text_color(cx.theme().danger))
-                                    .tooltip("删掉这个条目")
+                                    .tooltip(t!("sftp.row_delete"))
                                     .on_click(move |_, window, cx| {
                                         let target = std::slice::from_ref(&entry);
                                         handler(target, &SftpEntryAction::Delete, window, cx);
@@ -1000,7 +1001,7 @@ impl TableDelegate for RemoteTableDelegate {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("目录是空的"),
+                    .child(SharedString::from(t!("sftp.empty_dir"))),
             )
     }
 }
@@ -1210,16 +1211,18 @@ impl Pane {
 
 impl SftpPanel {
     pub fn new(host: Host, window: &mut Window, cx: &mut App) -> Entity<Self> {
-        let path_input = cx
-            .new(|cx| InputState::new(window, cx).placeholder("远端路径，例如 /var/log 或 ~/logs"));
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("过滤文件名…"));
+        let path_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("sftp.path_placeholder")));
+        let filter =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("sftp.filter_placeholder")));
         let local_dir = LocalFileService::start_dir();
         // 进度事件的管子：sender 存进面板（克隆给每个传输任务），receiver 交给
         // 下面那条排空任务。
         let (progress, receiver) = unbounded_channel();
 
         // 传输队列抽屉：搜索框在这里造（要 window），行模型与展开状态都归抽屉。
-        let queue_search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索文件…"));
+        let queue_search = cx
+            .new(|cx| InputState::new(window, cx).placeholder(t!("sftp.queue_search_placeholder")));
         let queue = cx.new(|_| TransferQueueDrawer::new(queue_search, host.name.clone()));
 
         // 两份可调整大小的状态：左右两栏一份，文件区与传输队列一份。
@@ -1263,8 +1266,9 @@ impl SftpPanel {
                     this.rebuild_view(cx)
                 }),
                 // 抽屉上的动作（取消 / 暂停 / 清除已完成 / 收起）以事件过来。
-                cx.subscribe(&queue, |this: &mut Self, _, event: &TransferQueueEvent, cx| {
-                    match event {
+                cx.subscribe(
+                    &queue,
+                    |this: &mut Self, _, event: &TransferQueueEvent, cx| match event {
                         TransferQueueEvent::Cancel(id) => this.cancel_or_remove(*id, cx),
                         TransferQueueEvent::TogglePause(id) => this.toggle_pause(*id, cx),
                         TransferQueueEvent::TogglePauseAll => this.toggle_pause_all(cx),
@@ -1273,8 +1277,8 @@ impl SftpPanel {
                             this.queue_drawer = false;
                             cx.notify();
                         }
-                    }
-                }),
+                    },
+                ),
                 cx.subscribe_in(
                     &local_table,
                     window,
@@ -1545,7 +1549,9 @@ impl SftpPanel {
                         this.set_remote_entries(entries);
                         // 进入新目录后重置滚动到顶部
                         this.remote_table.update(cx, |table, _| {
-                            table.vertical_scroll_handle.scroll_to_item(0, gpui::ScrollStrategy::Top);
+                            table
+                                .vertical_scroll_handle
+                                .scroll_to_item(0, gpui::ScrollStrategy::Top);
                         });
                     }
                     Err(error) => {
@@ -1575,7 +1581,9 @@ impl SftpPanel {
                     this.local_dir = requested;
                     // 进入新目录后重置滚动到顶部
                     this.local_table.update(cx, |table, _| {
-                        table.vertical_scroll_handle.scroll_to_item(0, gpui::ScrollStrategy::Top);
+                        table
+                            .vertical_scroll_handle
+                            .scroll_to_item(0, gpui::ScrollStrategy::Top);
                     });
                 }
                 this.local.loading = false;
@@ -1663,7 +1671,10 @@ impl SftpPanel {
         if entry.kind.is_dir() {
             if local {
                 let target = if entry.name == ".." {
-                    self.local_dir.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| self.local_dir.clone())
+                    self.local_dir
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| self.local_dir.clone())
                 } else {
                     PathBuf::from(entry.path.as_str())
                 };
@@ -1861,7 +1872,12 @@ impl SftpPanel {
 
     /// 回车：打开选中的那一个。一次只开一个 —— 进目录、开编辑器都不是能对一批
     /// 条目做的事；要一次搬一批，走拖拽或右键菜单里的下载 / 上传。
-    fn on_open_selection(&mut self, _: &OpenSelection, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_open_selection(
+        &mut self,
+        _: &OpenSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let local = self.active_pane_local();
         let selected = self.selected_entries(local, cx);
         if let [entry] = selected.as_slice() {
@@ -1880,15 +1896,21 @@ impl SftpPanel {
         let remote = self.remote.selected.len();
         let label = match (local, remote) {
             (0, 0) => return None,
-            (n, 0) => format!(
-                "本地已选 {n} 项{}",
-                size_suffix(self.local.selected_bytes())
+            (n, 0) => t!(
+                "sftp.selected_local",
+                count => n,
+                size => size_suffix(self.local.selected_bytes()),
             ),
-            (0, n) => format!(
-                "远端已选 {n} 项{}",
-                size_suffix(self.remote.selected_bytes())
+            (0, n) => t!(
+                "sftp.selected_remote",
+                count => n,
+                size => size_suffix(self.remote.selected_bytes()),
             ),
-            (local, remote) => format!("本地已选 {local} 项 · 远端已选 {remote} 项"),
+            (local, remote) => t!(
+                "sftp.selected_both",
+                local => local,
+                remote => remote,
+            ),
         };
         Some(SharedString::from(label))
     }
@@ -1905,7 +1927,7 @@ impl SftpPanel {
                 return;
             };
             let target = join(directory.as_str(), name.as_str());
-            let label = format!("已创建 {target}");
+            let label = t!("sftp.created", target => target).to_string();
             entity.update(app, |this, cx| {
                 if kind == SftpFormKind::NewFolder {
                     let work = {
@@ -1958,7 +1980,7 @@ impl SftpPanel {
             };
             let from = from.clone();
             let to = join(directory.as_str(), name.as_str());
-            let label = format!("已改名为 {name}");
+            let label = t!("sftp.renamed", name => name).to_string();
             entity.update(app, |this, cx| {
                 let work = {
                     let service = service.clone();
@@ -2025,14 +2047,14 @@ impl SftpPanel {
         let panel = cx.entity().downgrade();
         let count = victims.len();
         let title = match (count, first.kind.is_dir()) {
-            (1, true) => "删除这个目录？".to_owned(),
-            (1, false) => "删除这个文件？".to_owned(),
-            (count, _) => format!("删除这 {count} 个条目？"),
+            (1, true) => t!("sftp.delete_dir_title").to_string(),
+            (1, false) => t!("sftp.delete_file_title").to_string(),
+            (count, _) => t!("sftp.delete_many_title", count => count).to_string(),
         };
         let names = names_preview(&victims);
         let done = match count {
-            1 => format!("已删除 {}", first.name),
-            count => format!("已删除 {count} 项"),
+            1 => t!("sftp.deleted_one", name => first.name).to_string(),
+            count => t!("sftp.deleted_many", count => count).to_string(),
         };
         window.open_alert_dialog(cx, move |alert, _, _| {
             let panel = panel.clone();
@@ -2041,15 +2063,15 @@ impl SftpPanel {
             let done = done.clone();
             alert
                 .title(title.clone())
-                .description(format!(
-                    "{names} 会从远端文件系统里去掉。目录会连同里面的所有内容一并递归删除，\
-                     这一步不可恢复。"
-                ))
+                .description(SharedString::from(t!(
+                    "sftp.delete_remote_body",
+                    names => names,
+                )))
                 .button_props(
                     gpui_component::dialog::DialogButtonProps::default()
-                        .ok_text("删除")
+                        .ok_text(t!("sftp.delete"))
                         .ok_variant(gpui_component::button::ButtonVariant::Danger)
-                        .cancel_text("取消")
+                        .cancel_text(t!("sftp.cancel"))
                         .show_cancel(true),
                 )
                 .confirm()
@@ -2366,19 +2388,23 @@ impl SftpPanel {
 
         if let Some((direction, name)) = item_info {
             if let Some(err) = &error {
-                if err != "已取消" {
-                    let action = match direction {
-                        TransferDirection::Upload => "上传",
-                        TransferDirection::Download => "下载",
+                if err != crate::sftp::CANCELED {
+                    let message = match direction {
+                        TransferDirection::Upload => {
+                            t!("sftp.upload_failed", name => name, error => err)
+                        }
+                        TransferDirection::Download => {
+                            t!("sftp.download_failed", name => name, error => err)
+                        }
                     };
-                    window.push_notification(format!("{action}“{name}”失败：{err}"), cx);
+                    window.push_notification(message, cx);
                 }
             } else {
-                let verb = match direction {
-                    TransferDirection::Upload => "已上传",
-                    TransferDirection::Download => "已下载",
+                let message = match direction {
+                    TransferDirection::Upload => t!("sftp.uploaded", name => name),
+                    TransferDirection::Download => t!("sftp.downloaded", name => name),
                 };
-                window.push_notification(format!("{verb} {name}"), cx);
+                window.push_notification(message, cx);
             }
 
             if finished {
@@ -2460,9 +2486,8 @@ impl SftpPanel {
         if let Some(index) = self.pending.iter().position(|job| job.id == id) {
             self.pending.remove(index);
         }
-        self.queue.update(cx, |drawer, cx| {
-            drawer.retain(|item| item.id != id, cx)
-        });
+        self.queue
+            .update(cx, |drawer, cx| drawer.retain(|item| item.id != id, cx));
         cx.notify();
     }
 
@@ -2507,7 +2532,7 @@ impl SftpPanel {
         let label = match paths.as_slice() {
             [] => return,
             [path] => SharedString::from((*path).to_owned()),
-            paths => SharedString::from(format!("{} 条路径", paths.len())),
+            paths => SharedString::from(t!("sftp.copied_paths", count => paths.len())),
         };
         let text = paths.join("\n");
         self.set_copied(text, label, cx);
@@ -2654,14 +2679,14 @@ impl SftpPanel {
         let panel = cx.entity().downgrade();
         let count = victims.len();
         let title = match (count, first.kind.is_dir()) {
-            (1, true) => "删除这个本地目录？".to_owned(),
-            (1, false) => "删除这个本地文件？".to_owned(),
-            (count, _) => format!("删除本地这 {count} 个条目？"),
+            (1, true) => t!("sftp.delete_local_dir_title").to_string(),
+            (1, false) => t!("sftp.delete_local_file_title").to_string(),
+            (count, _) => t!("sftp.delete_local_many_title", count => count).to_string(),
         };
         let names = names_preview(&victims);
         let done = match count {
-            1 => format!("已删除 {}", first.name),
-            count => format!("已删除 {count} 项"),
+            1 => t!("sftp.deleted_one", name => first.name).to_string(),
+            count => t!("sftp.deleted_many", count => count).to_string(),
         };
         window.open_alert_dialog(cx, move |alert, _, _| {
             let panel = panel.clone();
@@ -2669,15 +2694,15 @@ impl SftpPanel {
             let done = done.clone();
             alert
                 .title(title.clone())
-                .description(format!(
-                    "{names} 会从你的电脑上直接删掉，不进回收站。这一步不可逆；\
-                     目录会连同里面的所有内容一并删除。"
-                ))
+                .description(SharedString::from(t!(
+                    "sftp.delete_local_body",
+                    names => names,
+                )))
                 .button_props(
                     gpui_component::dialog::DialogButtonProps::default()
-                        .ok_text("删除")
+                        .ok_text(t!("sftp.delete"))
                         .ok_variant(gpui_component::button::ButtonVariant::Danger)
-                        .cancel_text("取消")
+                        .cancel_text(t!("sftp.cancel"))
                         .show_cancel(true),
                 )
                 .confirm()
@@ -2772,10 +2797,10 @@ fn names_preview(entries: &[FileEntry]) -> String {
         .take(HEAD)
         .map(|entry| entry.name.as_ref())
         .collect::<Vec<_>>()
-        .join("、");
+        .join(&t!("sftp.name_separator"));
     match entries.len() {
         count if count <= HEAD => head,
-        count => format!("{head} 等 {count} 项"),
+        count => t!("sftp.names_and_more", head => head, count => count).to_string(),
     }
 }
 
@@ -2790,7 +2815,7 @@ fn queue_initial_height(panel_height: Pixels) -> Pixels {
 fn size_suffix(bytes: u64) -> String {
     match bytes {
         0 => String::new(),
-        bytes => format!("（{}）", human_size(bytes)),
+        bytes => t!("sftp.size_suffix", size => human_size(bytes)).to_string(),
     }
 }
 
@@ -2809,16 +2834,19 @@ fn rebuild_pane(pane: &mut Pane, needle: &str, show_hidden: bool, add_parent: bo
 
     // 在开头插入 ".." 返回上级目录条目（非根目录时）
     if add_parent && !at_root && !view.is_empty() {
-        view.insert(0, FileEntry {
-            name: "..".into(),
-            path: "..".into(),
-            kind: crate::sftp::FileKind::Dir,
-            size: 0,
-            modified: None,
-            mode: None,
-            uid: None,
-            owner: None,
-        });
+        view.insert(
+            0,
+            FileEntry {
+                name: "..".into(),
+                path: "..".into(),
+                kind: crate::sftp::FileKind::Dir,
+                size: 0,
+                modified: None,
+                mode: None,
+                uid: None,
+                owner: None,
+            },
+        );
     }
 
     pane.view = view;
@@ -2845,7 +2873,7 @@ impl Drop for SftpPanel {
 // 渲染部分见文件下半：`impl Render for SftpPanel`。
 
 /// 导航条上那类小方按钮：一个图标、一圈细边、悬停换底色。
-fn nav_button(id: &'static str, icon: Icon, tooltip: &'static str, cx: &App) -> Button {
+fn nav_button(id: &'static str, icon: Icon, tooltip: SharedString, cx: &App) -> Button {
     Button::new(id)
         .ghost()
         .xsmall()
@@ -2875,8 +2903,8 @@ fn dragged_local_paths(dragged: &DraggedLocalEntries) -> Vec<PathBuf> {
 /// 一栏底下那行"N items"。被截断过时说实话，不然人以为目录就只有这些。
 fn count_label(shown: usize, truncated: bool) -> SharedString {
     match truncated {
-        true => SharedString::from(format!("{shown} 项 · 已截断，目录比这大")),
-        false => SharedString::from(format!("{shown} 项")),
+        true => SharedString::from(t!("sftp.count_truncated", count => shown)),
+        false => SharedString::from(t!("sftp.count_items", count => shown)),
     }
 }
 
@@ -3068,12 +3096,11 @@ impl SftpPanel {
                         palette::idle(cx)
                     }),
             )
-            .label(SharedString::from(if on {
-                "同步目录：开"
-            } else {
-                "同步目录：关"
+            .label(SharedString::from(match on {
+                true => t!("sftp.follow_cwd_on"),
+                false => t!("sftp.follow_cwd_off"),
             }))
-            .tooltip("让右栏跟着终端的当前目录走")
+            .tooltip(t!("sftp.follow_cwd_tooltip"))
             .on_click(cx.listener(|this, _, window, cx| {
                 this.follow_cwd = !this.follow_cwd;
                 // 刚打开跟随时先跳到终端此刻所在的那一格，别等下一次 `cd`。
@@ -3106,18 +3133,18 @@ impl SftpPanel {
                     .child(Input::new(&self.path_input).small()),
             )
             .child(
-                Self::accent_button("sftp-panel-go", "前往", !ready, cx).on_click(cx.listener(
-                    |this, _, window, cx| {
+                Self::accent_button("sftp-panel-go", t!("sftp.go").into(), !ready, cx).on_click(
+                    cx.listener(|this, _, window, cx| {
                         let raw = this.path_input.read(cx).value().to_string();
                         this.navigate_remote(raw, window, cx);
-                    },
-                )),
+                    }),
+                ),
             )
             .child(
                 nav_button(
                     "sftp-panel-copy-path",
                     Icon::new(IconName::Copy).with_size(px(12.)),
-                    "复制当前路径",
+                    t!("sftp.copy_current_path").into(),
                     cx,
                 )
                 .disabled(!ready || !has_path)
@@ -3129,7 +3156,7 @@ impl SftpPanel {
                 nav_button(
                     "sftp-panel-refresh",
                     Icon::new(AppIcon::RefreshCw).with_size(px(12.)),
-                    "刷新",
+                    t!("sftp.refresh").into(),
                     cx,
                 )
                 .disabled(!ready)
@@ -3161,7 +3188,7 @@ impl SftpPanel {
                 nav_button(
                     "sftp-panel-up",
                     Icon::new(IconName::ChevronUp).with_size(px(12.)),
-                    "上一级目录",
+                    t!("sftp.parent_dir").into(),
                     cx,
                 )
                 .disabled(!ready || at_root)
@@ -3174,7 +3201,7 @@ impl SftpPanel {
                 nav_button(
                     "sftp-panel-home",
                     Icon::new(AppIcon::Home).with_size(px(12.)),
-                    "远端家目录",
+                    t!("sftp.remote_home").into(),
                     cx,
                 )
                 .disabled(!ready)
@@ -3184,7 +3211,7 @@ impl SftpPanel {
                 nav_button(
                     "sftp-panel-new-file",
                     Icon::new(AppIcon::FilePlus).with_size(px(12.)),
-                    "在这个目录里新建一个空文件",
+                    t!("sftp.new_file_here").into(),
                     cx,
                 )
                 .disabled(!ready)
@@ -3196,7 +3223,7 @@ impl SftpPanel {
                 nav_button(
                     "sftp-panel-new-folder",
                     Icon::new(AppIcon::FolderPlus).with_size(px(12.)),
-                    "在这个目录里新建子目录",
+                    t!("sftp.new_folder_here").into(),
                     cx,
                 )
                 .disabled(!ready)
@@ -3214,10 +3241,9 @@ impl SftpPanel {
                         } else {
                             palette::idle(cx)
                         }),
-                    if self.dual {
-                        "只看远端"
-                    } else {
-                        "两栏并排"
+                    match self.dual {
+                        true => t!("sftp.remote_only").into(),
+                        false => t!("sftp.side_by_side").into(),
                     },
                     cx,
                 )
@@ -3235,10 +3261,9 @@ impl SftpPanel {
                         IconName::EyeOff
                     })
                     .with_size(px(12.)),
-                    if self.show_hidden {
-                        "藏掉点开头的条目"
-                    } else {
-                        "画出点开头的条目"
+                    match self.show_hidden {
+                        true => t!("sftp.hide_dotfiles").into(),
+                        false => t!("sftp.show_dotfiles").into(),
                     },
                     cx,
                 )
@@ -3256,10 +3281,9 @@ impl SftpPanel {
                         IconName::Maximize
                     })
                     .with_size(px(12.)),
-                    if tall {
-                        "压扁这一栏"
-                    } else {
-                        "展开这一栏"
+                    match tall {
+                        true => t!("sftp.shrink_pane").into(),
+                        false => t!("sftp.expand_pane").into(),
                     },
                     cx,
                 )
@@ -3276,7 +3300,7 @@ impl SftpPanel {
                 nav_button(
                     "sftp-panel-close",
                     Icon::new(IconName::Close).with_size(px(12.)),
-                    "收起这一栏",
+                    t!("sftp.close_pane").into(),
                     cx,
                 )
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(SftpPanelEvent::Close))),
@@ -3284,7 +3308,7 @@ impl SftpPanel {
     }
 
     /// 主按钮（前往）：一个实心的强调色块。
-    fn accent_button(id: &'static str, label: &'static str, disabled: bool, cx: &App) -> Button {
+    fn accent_button(id: &'static str, label: SharedString, disabled: bool, cx: &App) -> Button {
         let accent = palette::blue();
         Button::new(id)
             .small()
@@ -3332,7 +3356,12 @@ impl SftpPanel {
                                     .with_size(px(12.))
                                     .text_color(palette::sky()),
                             )
-                            .child(div().text_xs().font_semibold().child("本地工作站"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_semibold()
+                                    .child(SharedString::from(t!("sftp.local_workstation"))),
+                            )
                             .child(self.render_quick_jump_menu(cx))
                             .child(self.render_local_breadcrumb(cx)),
                     )
@@ -3389,7 +3418,7 @@ impl SftpPanel {
                                             .text_sm()
                                             .font_semibold()
                                             .text_color(cx.theme().foreground)
-                                            .child("释放鼠标下载到当前本地目录"),
+                                            .child(SharedString::from(t!("sftp.drop_to_download"))),
                                     )
                                     .child(
                                         div()
@@ -3416,12 +3445,8 @@ impl SftpPanel {
                         .items_center()
                         .justify_center()
                         .bg(gpui::black().opacity(0.6))
-                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation()
-                        })
-                        .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation()
-                        })
+                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(
                             div()
                                 .flex()
@@ -3439,8 +3464,8 @@ impl SftpPanel {
                                         .text_base()
                                         .font_semibold()
                                         .text_color(cx.theme().foreground)
-                                        .child("正在删除…"),
-                                    ),
+                                        .child(SharedString::from(t!("sftp.deleting"))),
+                                ),
                         ),
                 )
             })
@@ -3520,7 +3545,7 @@ impl SftpPanel {
                                             .text_sm()
                                             .font_semibold()
                                             .text_color(cx.theme().foreground)
-                                            .child("释放鼠标上传到当前目录"),
+                                            .child(SharedString::from(t!("sftp.drop_to_upload"))),
                                     )
                                     .child(
                                         div()
@@ -3547,12 +3572,8 @@ impl SftpPanel {
                         .items_center()
                         .justify_center()
                         .bg(gpui::black().opacity(0.6))
-                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation()
-                        })
-                        .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| {
-                            cx.stop_propagation()
-                        })
+                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(
                             div()
                                 .flex()
@@ -3570,7 +3591,7 @@ impl SftpPanel {
                                         .text_base()
                                         .font_semibold()
                                         .text_color(cx.theme().foreground)
-                                        .child("正在删除…"),
+                                        .child(SharedString::from(t!("sftp.deleting"))),
                                 ),
                         ),
                 )
@@ -3591,8 +3612,8 @@ impl SftpPanel {
                     .with_size(px(11.))
                     .text_color(palette::amber()),
             )
-            .label("常用 ▾")
-            .tooltip("快速跳转到常用目录")
+            .label(t!("sftp.quick_jump"))
+            .tooltip(t!("sftp.quick_jump_tooltip"))
             .dropdown_menu(move |menu, _, _| {
                 let special_dirs = special_local_directories();
                 let mut menu = menu.min_w(px(160.));
@@ -3627,13 +3648,11 @@ impl SftpPanel {
                             let p = panel.clone();
                             let target = target_dir.clone();
 
-                            let item = PopupMenuItem::new(SharedString::from(format!(
-                                "本地磁盘 ({})",
-                                drive
+                            let item = PopupMenuItem::new(SharedString::from(t!(
+                                "sftp.local_drive",
+                                drive => drive,
                             )))
-                            .icon(
-                                Icon::new(IconName::HardDrive).text_color(palette::amber()),
-                            )
+                            .icon(Icon::new(IconName::HardDrive).text_color(palette::amber()))
                             .checked(is_curr)
                             .on_click(move |_, window, app| {
                                 let target = target.clone();
@@ -3666,90 +3685,85 @@ impl SftpPanel {
             .id("local-breadcrumb-scroll")
             .flex()
             .overflow_x_scroll()
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap_1()
-                    .flex_none()
-                    .children(segments.into_iter().enumerate().map(|(ix, (label, path))| {
-                        let here = ix == last;
-                        let is_drive = is_windows_drive(&label);
-                        let panel_for_menu = panel.clone();
-                        let current_drive = label.clone();
+            .child(h_flex().items_center().gap_1().flex_none().children(
+                segments.into_iter().enumerate().map(|(ix, (label, path))| {
+                    let here = ix == last;
+                    let is_drive = is_windows_drive(&label);
+                    let panel_for_menu = panel.clone();
+                    let current_drive = label.clone();
 
-                        h_flex()
-                            .items_center()
-                            .gap_1()
-                            .flex_shrink_0()
-                            .when(ix > 0, |this| {
-                                this.child(
-                                    Icon::new(IconName::ChevronRight)
-                                        .with_size(px(10.))
-                                        .text_color(palette::idle(cx)),
-                                )
-                            })
-                            .child(if is_drive {
-                                let drives = available_windows_drives();
-                                Button::new(SharedString::from(format!("local-crumb-drive-{}", ix)))
-                                    .ghost()
-                                    .xsmall()
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .label(SharedString::from(format!("{} ▾", label)))
-                                    .tooltip(SharedString::from(path.clone()))
-                                    .text_color(if here {
-                                        cx.theme().foreground
-                                    } else {
-                                        palette::idle(cx)
-                                    })
-                                    .dropdown_menu(move |menu, _, _| {
-                                        drives.iter().fold(menu.min_w(px(110.)), |menu, drive| {
-                                            let is_curr =
-                                                drive.eq_ignore_ascii_case(&current_drive);
-                                            let target_dir =
-                                                PathBuf::from(format!("{}\\", drive));
-                                            let p = panel_for_menu.clone();
+                    h_flex()
+                        .items_center()
+                        .gap_1()
+                        .flex_shrink_0()
+                        .when(ix > 0, |this| {
+                            this.child(
+                                Icon::new(IconName::ChevronRight)
+                                    .with_size(px(10.))
+                                    .text_color(palette::idle(cx)),
+                            )
+                        })
+                        .child(if is_drive {
+                            let drives = available_windows_drives();
+                            Button::new(SharedString::from(format!("local-crumb-drive-{}", ix)))
+                                .ghost()
+                                .xsmall()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .label(SharedString::from(format!("{} ▾", label)))
+                                .tooltip(SharedString::from(path.clone()))
+                                .text_color(if here {
+                                    cx.theme().foreground
+                                } else {
+                                    palette::idle(cx)
+                                })
+                                .dropdown_menu(move |menu, _, _| {
+                                    drives.iter().fold(menu.min_w(px(110.)), |menu, drive| {
+                                        let is_curr = drive.eq_ignore_ascii_case(&current_drive);
+                                        let target_dir = PathBuf::from(format!("{}\\", drive));
+                                        let p = panel_for_menu.clone();
 
-                                            let item = PopupMenuItem::new(SharedString::from(
-                                                format!("{} \\", drive),
-                                            ))
-                                            .icon(
-                                                Icon::new(IconName::HardDrive)
-                                                    .text_color(palette::amber()),
-                                            )
-                                            .checked(is_curr)
-                                            .on_click(move |_, window, app| {
-                                                let target = target_dir.clone();
-                                                if let Some(panel) = p.upgrade() {
-                                                    panel.update(app, |this, cx| {
-                                                        this.list_local(target, window, cx);
-                                                    });
-                                                }
-                                            });
-                                            menu.item(item)
-                                        })
+                                        let item = PopupMenuItem::new(SharedString::from(format!(
+                                            "{} \\",
+                                            drive
+                                        )))
+                                        .icon(
+                                            Icon::new(IconName::HardDrive)
+                                                .text_color(palette::amber()),
+                                        )
+                                        .checked(is_curr)
+                                        .on_click(move |_, window, app| {
+                                            let target = target_dir.clone();
+                                            if let Some(panel) = p.upgrade() {
+                                                panel.update(app, |this, cx| {
+                                                    this.list_local(target, window, cx);
+                                                });
+                                            }
+                                        });
+                                        menu.item(item)
                                     })
-                                    .into_any_element()
-                            } else {
-                                Button::new(SharedString::from(format!("local-crumb-{}", ix)))
-                                    .ghost()
-                                    .xsmall()
-                                    .label(label)
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .disabled(here)
-                                    .when(!here, |button| {
-                                        button
-                                            .text_color(palette::idle(cx))
-                                            .tooltip(SharedString::from(path.clone()))
-                                    })
-                                    .when(!here, |button| {
-                                        button.on_click(cx.listener(move |this, _, window, cx| {
-                                            this.list_local(PathBuf::from(path.clone()), window, cx);
-                                        }))
-                                    })
-                                    .into_any_element()
-                            })
-                    })),
-            )
+                                })
+                                .into_any_element()
+                        } else {
+                            Button::new(SharedString::from(format!("local-crumb-{}", ix)))
+                                .ghost()
+                                .xsmall()
+                                .label(label)
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .disabled(here)
+                                .when(!here, |button| {
+                                    button
+                                        .text_color(palette::idle(cx))
+                                        .tooltip(SharedString::from(path.clone()))
+                                })
+                                .when(!here, |button| {
+                                    button.on_click(cx.listener(move |this, _, window, cx| {
+                                        this.list_local(PathBuf::from(path.clone()), window, cx);
+                                    }))
+                                })
+                                .into_any_element()
+                        })
+                }),
+            ))
     }
 
     /// 面包屑那一行，右边带条目数与刚复制过的路径。
@@ -3788,26 +3802,29 @@ impl SftpPanel {
                                     .ghost()
                                     .xsmall()
                                     .label("/")
-                                    .tooltip("根目录")
+                                    .tooltip(t!("sftp.root_dir"))
                                     .disabled(self.service.is_none())
                                     .font_family(cx.theme().mono_font_family.clone())
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.load_remote("/", window, cx);
                                     })),
                             )
-                            .children(segments.into_iter().enumerate().map(|(ix, (label, path))| {
-                                let here = ix == last;
-                                h_flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .flex_shrink_0()
-                                    .child(
-                                        Icon::new(IconName::ChevronRight)
-                                            .with_size(px(10.))
-                                            .text_color(palette::idle(cx)),
-                                    )
-                                    .child(
-                                        Button::new(SharedString::from(format!("sftp-panel-crumb-{path}")))
+                            .children(segments.into_iter().enumerate().map(
+                                |(ix, (label, path))| {
+                                    let here = ix == last;
+                                    h_flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .flex_shrink_0()
+                                        .child(
+                                            Icon::new(IconName::ChevronRight)
+                                                .with_size(px(10.))
+                                                .text_color(palette::idle(cx)),
+                                        )
+                                        .child(
+                                            Button::new(SharedString::from(format!(
+                                                "sftp-panel-crumb-{path}"
+                                            )))
                                             .ghost()
                                             .xsmall()
                                             .label(label)
@@ -3817,13 +3834,19 @@ impl SftpPanel {
                                                     .text_color(palette::idle(cx))
                                                     .tooltip(SharedString::from(path.clone()))
                                             })
-                                            .when(!here, |button| {
-                                                button.on_click(cx.listener(move |this, _, window, cx| {
-                                                    this.load_remote(&path, window, cx);
-                                                }))
-                                            }),
-                                    )
-                            })),
+                                            .when(
+                                                !here,
+                                                |button| {
+                                                    button.on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.load_remote(&path, window, cx);
+                                                        },
+                                                    ))
+                                                },
+                                            ),
+                                        )
+                                },
+                            )),
                     ),
             )
             .child(
@@ -3844,7 +3867,7 @@ impl SftpPanel {
                         .text_color(palette::teal())
                         .truncate()
                         .max_w(px(180.))
-                        .child(SharedString::from(format!("已复制 {path}"))),
+                        .child(SharedString::from(t!("sftp.copied", path => path))),
                 )
             })
     }
@@ -3876,15 +3899,13 @@ impl SftpPanel {
                     .text_color(palette::coral()),
             )
             .child("..")
-            .child(div().child("[上级目录]"))
+            .child(div().child(SharedString::from(t!("sftp.parent_row"))))
             .on_click(cx.listener(|this, _, window, cx| {
                 let up = parent(&this.remote_path);
                 this.load_remote(&up, window, cx);
             }))
             .into_any_element()
     }
-
-
 
     /// 底下一条：一句用法提示，加右边的整体传输进度与速度（面板收起时）和传输队列开关。
     /// 选中条目能做的动作都收在行右键菜单里，这里不再重复摆一排按钮。
@@ -3917,10 +3938,7 @@ impl SftpPanel {
                         .text_xs()
                         .text_color(palette::idle(cx))
                         .truncate()
-                        .child(
-                            "双击文件即可打开编辑；Ctrl/Shift 点选可多选；\
-                             支持左右栏双向拖拽上传/下载；右键一行看更多操作。",
-                        ),
+                        .child(SharedString::from(t!("sftp.hint"))),
                 }),
             )
             .when(has_active, |this| {
@@ -3941,17 +3959,15 @@ impl SftpPanel {
                             h_flex()
                                 .items_center()
                                 .gap_1()
-                                .child(
-                                    Icon::new(summary.icon())
-                                        .with_size(px(11.))
-                                        .text_color(if summary.transferring_count > 0 {
-                                            palette::teal()
-                                        } else if summary.paused_count > 0 {
-                                            palette::amber()
-                                        } else {
-                                            palette::idle(cx)
-                                        }),
-                                )
+                                .child(Icon::new(summary.icon()).with_size(px(11.)).text_color(
+                                    if summary.transferring_count > 0 {
+                                        palette::teal()
+                                    } else if summary.paused_count > 0 {
+                                        palette::amber()
+                                    } else {
+                                        palette::idle(cx)
+                                    },
+                                ))
                                 .child(
                                     div()
                                         .text_xs()
@@ -3972,12 +3988,16 @@ impl SftpPanel {
                                 .xsmall()
                                 .w(px(72.))
                                 .value(summary.progress)
-                                .color(if summary.paused_count > 0 && summary.transferring_count == 0 {
-                                    palette::amber()
-                                } else {
-                                    palette::blue()
-                                })
-                                .loading(summary.transferring_count > 0 && summary.total_bytes == 0),
+                                .color(
+                                    if summary.paused_count > 0 && summary.transferring_count == 0 {
+                                        palette::amber()
+                                    } else {
+                                        palette::blue()
+                                    },
+                                )
+                                .loading(
+                                    summary.transferring_count > 0 && summary.total_bytes == 0,
+                                ),
                         )
                         // 进度百分比与大小
                         .child(
@@ -4015,12 +4035,18 @@ impl SftpPanel {
                             palette::idle(cx)
                         }),
                     )
-                    .label(SharedString::from(if has_active {
-                        format!("传输 ({}/{})", summary.active_count, summary.total_count)
-                    } else {
-                        format!("传输 ({})", summary.total_count)
+                    .label(SharedString::from(match has_active {
+                        true => t!(
+                            "sftp.transfers_active",
+                            active => summary.active_count,
+                            total => summary.total_count,
+                        ),
+                        false => t!("sftp.transfers", total => summary.total_count),
                     }))
-                    .tooltip(if self.queue_drawer { "收起传输队列" } else { "展开传输队列" })
+                    .tooltip(match self.queue_drawer {
+                        true => t!("sftp.hide_queue"),
+                        false => t!("sftp.show_queue"),
+                    })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.queue_drawer = !this.queue_drawer;
                         cx.notify();
@@ -4044,7 +4070,6 @@ fn entry_icon(entry: &FileEntry, cx: &App) -> Icon {
         crate::sftp::Glyph::Plain => Icon::new(IconName::File).text_color(palette::idle(cx)),
     }
 }
-
 
 /// 把本地路径拆成面包屑：每一段是 (显示名, 完整路径)。
 /// Windows 上盘符作为第一段（如 ("C:", "C:\\")），Unix 上根目录是第一段（("/", "/")）。
@@ -4071,7 +4096,10 @@ fn local_breadcrumbs(path: &str) -> Vec<(String, String)> {
             }
             std::path::Component::Normal(name) => {
                 current.push(component);
-                segments.push((name.to_string_lossy().to_string(), current.display().to_string()));
+                segments.push((
+                    name.to_string_lossy().to_string(),
+                    current.display().to_string(),
+                ));
             }
             _ => continue,
         }
@@ -4080,31 +4108,56 @@ fn local_breadcrumbs(path: &str) -> Vec<(String, String)> {
 }
 
 /// 获取本地常用特殊目录列表（名称、图标、色彩、路径）。
-fn special_local_directories() -> Vec<(&'static str, Icon, Hsla, PathBuf)> {
+fn special_local_directories() -> Vec<(SharedString, Icon, Hsla, PathBuf)> {
     let mut dirs = Vec::new();
     if let Some(p) = dirs::home_dir() {
         if p.exists() {
-            dirs.push(("用户主目录 (Home)", Icon::new(AppIcon::Home), palette::sky(), p));
+            dirs.push((
+                t!("sftp.dir_home").into(),
+                Icon::new(AppIcon::Home),
+                palette::sky(),
+                p,
+            ));
         }
     }
     if let Some(p) = dirs::download_dir() {
         if p.exists() {
-            dirs.push(("下载 (Downloads)", Icon::new(AppIcon::Download), palette::teal(), p));
+            dirs.push((
+                t!("sftp.dir_downloads").into(),
+                Icon::new(AppIcon::Download),
+                palette::teal(),
+                p,
+            ));
         }
     }
     if let Some(p) = dirs::document_dir() {
         if p.exists() {
-            dirs.push(("文档 (Documents)", Icon::new(IconName::FileText), palette::blue(), p));
+            dirs.push((
+                t!("sftp.dir_documents").into(),
+                Icon::new(IconName::FileText),
+                palette::blue(),
+                p,
+            ));
         }
     }
     if let Some(p) = dirs::desktop_dir() {
         if p.exists() {
-            dirs.push(("桌面 (Desktop)", Icon::new(AppIcon::Laptop), palette::coral(), p));
+            dirs.push((
+                t!("sftp.dir_desktop").into(),
+                Icon::new(AppIcon::Laptop),
+                palette::coral(),
+                p,
+            ));
         }
     }
     if let Some(p) = dirs::picture_dir() {
         if p.exists() {
-            dirs.push(("图片 (Pictures)", Icon::new(IconName::Folder), palette::magenta(), p));
+            dirs.push((
+                t!("sftp.dir_pictures").into(),
+                Icon::new(IconName::Folder),
+                palette::magenta(),
+                p,
+            ));
         }
     }
     dirs
@@ -4163,10 +4216,16 @@ mod tests {
         let crumbs = local_breadcrumbs("C:\\Users\\mrkin\\workspace");
         assert_eq!(crumbs[0], ("C:".to_string(), "C:\\".to_string()));
         assert_eq!(crumbs[1], ("Users".to_string(), "C:\\Users".to_string()));
-        assert_eq!(crumbs[2], ("mrkin".to_string(), "C:\\Users\\mrkin".to_string()));
+        assert_eq!(
+            crumbs[2],
+            ("mrkin".to_string(), "C:\\Users\\mrkin".to_string())
+        );
         assert_eq!(
             crumbs[3],
-            ("workspace".to_string(), "C:\\Users\\mrkin\\workspace".to_string())
+            (
+                "workspace".to_string(),
+                "C:\\Users\\mrkin\\workspace".to_string()
+            )
         );
 
         let root_crumbs = local_breadcrumbs("D:\\");
@@ -4353,7 +4412,10 @@ mod tests {
         };
         pane.select_all(&rows);
         assert_eq!(pane.selected_bytes(), 2048);
-        assert_eq!(size_suffix(pane.selected_bytes()), "（2 KB）");
+        assert_eq!(
+            size_suffix(pane.selected_bytes()),
+            t!("sftp.size_suffix", size => "2 KB")
+        );
         assert_eq!(size_suffix(0), "", "选的全是目录就不写大小");
     }
 
@@ -4429,15 +4491,18 @@ mod tests {
         assert_eq!(queue_initial_height(px(100.)), QUEUE_MIN_HEIGHT);
     }
 
+    /// 名字预览：一个照原样，两个用分隔符连起来，三个以上折成"前两个等 N 项"。
+    ///
+    /// 分隔符和"等 N 项"那句都在语言表里，所以拿 `t!` 拼出期望值来比 ——
+    /// 写死中文的话，切到英文这条测试就会红，而代码是对的。
     #[test]
     fn test_names_preview() {
+        let sep = t!("sftp.name_separator");
         assert_eq!(names_preview(&[entry("a")]), "a");
-        assert_eq!(names_preview(&[entry("a"), entry("b")]), "a、b");
+        assert_eq!(names_preview(&[entry("a"), entry("b")]), format!("a{sep}b"));
         assert_eq!(
             names_preview(&[entry("a"), entry("b"), entry("c")]),
-            "a、b 等 3 项"
+            t!("sftp.names_and_more", head => format!("a{sep}b"), count => 3)
         );
     }
 }
-
-

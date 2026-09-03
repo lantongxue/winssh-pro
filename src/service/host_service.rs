@@ -18,6 +18,7 @@ use crate::{
     host::{AuthMethod, Host, HostDraft, HostGroup, MonitorIntervals},
     repository::HostRepository,
 };
+use rust_i18n::t;
 
 /// 主机与分组的业务入口。廉价克隆：界面各处各拿一份，共享同一条连接。
 #[derive(Clone)]
@@ -48,9 +49,10 @@ impl HostService {
 
     fn open_on_disk() -> Result<Self> {
         let dir = dirs::data_dir()
-            .context("找不到用户数据目录")?
+            .with_context(|| t!("host_service.no_data_dir").to_string())?
             .join("winssh-pro");
-        std::fs::create_dir_all(&dir).context("创建应用数据目录失败")?;
+        std::fs::create_dir_all(&dir)
+            .with_context(|| t!("host_service.create_data_dir_failed").to_string())?;
         let db = db::connect_blocking(Some(&dir.join("winssh-pro.db")))?;
         Ok(Self {
             repo: HostRepository,
@@ -171,7 +173,9 @@ impl HostService {
             txn.commit().await?;
             match updated {
                 Ok(()) => Ok(()),
-                Err(DbErr::RecordNotFound(_)) => Err(anyhow!("主机 {id} 不存在")),
+                Err(DbErr::RecordNotFound(_)) => {
+                    Err(anyhow!("{}", t!("host_service.host_missing", id => id)))
+                }
                 Err(error) => Err(error.into()),
             }
         })
@@ -184,7 +188,7 @@ impl HostService {
         let id = id.to_owned();
         db::run(async move {
             if !this.repo.delete_host(&this.db, &id).await? {
-                return Err(anyhow!("主机 {id} 不存在"));
+                return Err(anyhow!("{}", t!("host_service.host_missing", id => id)));
             }
             Ok(())
         })
@@ -201,7 +205,15 @@ impl HostService {
                 return Ok(());
             };
             let host_count = this.repo.count_hosts_in_group(&this.db, group.id).await?;
-            ensure!(host_count == 0, "分组“{name}”下还有 {host_count} 台主机");
+            ensure!(
+                host_count == 0,
+                "{}",
+                t!(
+                    "host_service.group_not_empty",
+                    name => name,
+                    count => host_count,
+                )
+            );
             this.repo.delete_group(&this.db, group.id).await?;
             Ok(())
         })
@@ -217,10 +229,10 @@ impl HostService {
                 .repo
                 .find_host(&this.db, &id)
                 .await?
-                .ok_or_else(|| anyhow!("主机 {id} 不存在"))?;
+                .ok_or_else(|| anyhow!("{}", t!("host_service.host_missing", id => id)))?;
 
             let new_id = next_host_id(&source.name);
-            let new_name = format!("{} 副本", source.name);
+            let new_name = t!("host_service.duplicate_suffix", name => source.name).to_string();
             let txn = this.db.begin().await?;
             // 原主机后面的整体往后挪一位，副本正好插进空出来的位置。
             this.repo
@@ -292,7 +304,11 @@ impl HostService {
                 .repo
                 .update_host_intervals(&this.db, &id, intervals.monitor_secs, intervals.status_secs)
                 .await?;
-            ensure!(affected == 1, "主机 {id} 不存在");
+            ensure!(
+                affected == 1,
+                "{}",
+                t!("host_service.host_missing", id => id)
+            );
             Ok(intervals)
         })
         .await
@@ -307,7 +323,14 @@ impl HostService {
     pub async fn update_forwards(&self, id: &str, forwards: &[PortForward]) -> Result<()> {
         for rule in forwards {
             if let Err(reason) = rule.check() {
-                return Err(anyhow!("转发规则“{}”不完整：{reason}", rule.name));
+                return Err(anyhow!(
+                    "{}",
+                    t!(
+                        "host_service.forward_incomplete",
+                        name => rule.name,
+                        reason => reason,
+                    )
+                ));
             }
         }
         let this = self.clone();
@@ -318,7 +341,11 @@ impl HostService {
                 .repo
                 .update_host_forwards(&this.db, &id, &encoded)
                 .await?;
-            ensure!(affected == 1, "主机 {id} 不存在");
+            ensure!(
+                affected == 1,
+                "{}",
+                t!("host_service.host_missing", id => id)
+            );
             Ok(())
         })
         .await
@@ -572,7 +599,10 @@ mod tests {
             let second = service.insert_host("分组", draft("web-02")).await.unwrap();
 
             let copy = service.duplicate_host(&first.id).await.unwrap();
-            assert_eq!(copy.name, "web-01 副本");
+            assert_eq!(
+                copy.name.as_ref(),
+                t!("host_service.duplicate_suffix", name => "web-01").as_ref()
+            );
             assert_ne!(copy.id, first.id);
             assert_ne!(copy.id, second.id);
 
@@ -581,7 +611,7 @@ mod tests {
                 names(&groups[0]),
                 vec![
                     "web-01".to_string(),
-                    "web-01 副本".to_string(),
+                    t!("host_service.duplicate_suffix", name => "web-01").to_string(),
                     "web-02".to_string()
                 ]
             );
@@ -893,7 +923,15 @@ mod tests {
                 .update_forwards(&host.id, &[broken])
                 .await
                 .expect_err("端口 0 的规则必须被挡住");
-            assert!(format!("{error}").contains("不完整"), "实际：{error}");
+            // 那一句的外壳在语言表里，比外壳的前半段就够 —— 后半段是校验
+            // 自己给的原因，另有测试看着。
+            let shell = t!(
+                "host_service.forward_incomplete",
+                name => "pg",
+                reason => "",
+            );
+            let head = shell.trim_end();
+            assert!(format!("{error}").starts_with(head), "实际：{error}");
 
             let groups = service.load_groups().await.unwrap();
             assert!(groups[0].hosts[0].forwards.is_empty(), "一条都不该存进去");

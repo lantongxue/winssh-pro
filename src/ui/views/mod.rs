@@ -23,6 +23,7 @@ use gpui_component::{
 };
 
 use crate::ui::theme::{AppIcon, palette};
+use rust_i18n::t;
 
 /// 标题行高度。它是 chrome，不随内容变化。
 pub(crate) const HEADER_HEIGHT: Pixels = px(36.);
@@ -62,10 +63,10 @@ impl SidebarView {
     /// 视图名称，同时用作侧边栏标题与活动栏图标按钮的可访问名称。
     pub fn label(&self) -> SharedString {
         match self {
-            Self::Hosts => "主机",
-            Self::Snippets => "命令片段",
-            Self::Keys => "密钥",
-            Self::Monitor => "资源监控",
+            Self::Hosts => t!("sidebar.hosts"),
+            Self::Snippets => t!("sidebar.snippets"),
+            Self::Keys => t!("sidebar.keys"),
+            Self::Monitor => t!("sidebar.monitor"),
         }
         .into()
     }
@@ -113,6 +114,6 @@ pub(crate) fn collapse_button() -> Button {
         .ghost()
         .xsmall()
         .icon(IconName::ChevronLeft)
-        .tooltip("收起侧边栏")
-        .accessibility_id("收起侧边栏")
+        .tooltip(t!("sidebar.collapse"))
+        .accessibility_id(t!("sidebar.collapse"))
 }

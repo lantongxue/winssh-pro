@@ -24,6 +24,7 @@ use gpui_component::{
 };
 
 use crate::ui::theme::{AppIcon, palette};
+use rust_i18n::t;
 
 /// 原型给的三个快捷档位。顺序也照它：从保守到放开。
 const PRESETS: [u32; 3] = [0o644, 0o755, 0o777];
@@ -78,7 +79,7 @@ impl SftpChmodDialog {
                         .child(
                             Button::new("sftp-chmod-cancel")
                                 .ghost()
-                                .label("取消")
+                                .label(t!("sftp_chmod.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
@@ -86,7 +87,7 @@ impl SftpChmodDialog {
                                 .custom(variant)
                                 .bg(blue)
                                 .rounded(cx.theme().radius)
-                                .label("应用")
+                                .label(t!("sftp_chmod.apply"))
                                 .on_click(move |_, window, cx| {
                                     apply.update(cx, |this, cx| this.apply(window, cx));
                                 }),
@@ -104,7 +105,7 @@ impl SftpChmodDialog {
     ) -> Self {
         let octal = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("例如 644 或 755")
+                .placeholder(t!("sftp_chmod.placeholder"))
                 .default_value(initial)
         });
         cx.subscribe_in(&octal, window, |this, _, event: &InputEvent, window, cx| {
@@ -130,10 +131,7 @@ impl SftpChmodDialog {
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let raw = self.octal.read(cx).value().to_string();
         let Some(mode) = parse_octal(&raw) else {
-            window.push_notification(
-                "权限得是 3~4 位八进制数字（每一位不超过 7），例如 644 或 755。",
-                cx,
-            );
+            window.push_notification(t!("sftp_chmod.invalid"), cx);
             return;
         };
         let handler = self.on_apply.clone();
@@ -157,7 +155,7 @@ impl Render for SftpChmodDialog {
                     .items_baseline()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("目标：")
+                    .child(SharedString::from(t!("sftp_chmod.target")))
                     .child(
                         div()
                             .min_w_0()
@@ -214,13 +212,13 @@ impl Render for SftpChmodDialog {
                         None => cx.theme().danger,
                     })
                     .child(match mode {
-                        Some(mode) => SharedString::from(format!(
-                            "将对 {} 执行 chmod {:o}（{}）",
-                            self.target,
-                            mode,
-                            describe(mode)
+                        Some(mode) => SharedString::from(t!(
+                            "sftp_chmod.preview",
+                            target => self.target,
+                            mode => format!("{mode:o}"),
+                            description => describe(mode),
                         )),
-                        None => "每一位是 r=4、w=2、x=1，三位分别对应用户、组、其他。".into(),
+                        None => SharedString::from(t!("sftp_chmod.digits_hint")),
                     }),
             )
     }
@@ -242,17 +240,18 @@ fn parse_octal(raw: &str) -> Option<u32> {
 
 /// 一句人话说明这串数字放了什么权限。目录档位（`755`）与只读档位（`644`）
 /// 是最常点的两个，先说它们，剩下的按位描述。
-fn describe(mode: u32) -> &'static str {
+fn describe(mode: u32) -> SharedString {
     match mode {
-        0o444 => "所有人只读",
-        0o600 => "只有自己能读写",
-        0o644 => "自己能读写，其他人只读",
-        0o666 => "所有人可读写",
-        0o700 => "只有自己能进、能读写",
-        0o755 => "自己能进能读写，其他人只能进和读",
-        0o777 => "所有人可读、可写、可执行",
-        _ => "按位设置（r=4 w=2 x=1，用户/组/其他）",
+        0o444 => t!("sftp_chmod.describe_444"),
+        0o600 => t!("sftp_chmod.describe_600"),
+        0o644 => t!("sftp_chmod.describe_644"),
+        0o666 => t!("sftp_chmod.describe_666"),
+        0o700 => t!("sftp_chmod.describe_700"),
+        0o755 => t!("sftp_chmod.describe_755"),
+        0o777 => t!("sftp_chmod.describe_777"),
+        _ => t!("sftp_chmod.describe_other"),
     }
+    .into()
 }
 
 /// 标题行。盾牌那个图标在原型里是黄色的（配置类）。
@@ -277,12 +276,17 @@ fn render_header(cx: &App) -> impl IntoElement {
         .child(
             v_flex()
                 .gap(px(2.))
-                .child(div().text_sm().font_semibold().child("修改权限"))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_semibold()
+                        .child(SharedString::from(t!("sftp_chmod.title"))),
+                )
                 .child(
                     div()
                         .text_xs()
                         .text_color(tone)
-                        .child("远端会立刻收到这次 setstat，改完列表跟着刷新。"),
+                        .child(SharedString::from(t!("sftp_chmod.header_note"))),
                 ),
         )
 }
@@ -304,12 +308,22 @@ mod tests {
         assert_eq!(parse_octal(""), None);
     }
 
+    /// 常点的那几档各有各的说法，冷门的也有一句兜底。
+    ///
+    /// 不比具体那句话：文案在 `locales/app.yml` 里，跟着语言变。这里看的是
+    /// "每一档都说了话，而且说的不是同一句" —— 漏一档 `match` 分支就会让两个
+    /// 模式撞到同一句兜底上，那正是这个断言拦得住的。
     #[test]
     fn the_common_modes_explain_themselves() {
-        assert!(describe(0o644).contains("只读"));
-        assert!(describe(0o755).contains("进"));
-        assert!(describe(0o777).contains("所有人"));
-        assert!(describe(0o600).contains("自己"));
-        assert!(!describe(0o123).is_empty(), "冷门的也要有一句话");
+        let common = [0o444, 0o600, 0o644, 0o666, 0o700, 0o755, 0o777];
+        let fallback = describe(0o123);
+        assert!(!fallback.is_empty(), "冷门的也要有一句话");
+
+        let mut said = std::collections::BTreeSet::new();
+        for mode in common {
+            let text = describe(mode);
+            assert_ne!(text, fallback, "{mode:o} 落到了兜底那一句");
+            assert!(said.insert(text), "{mode:o} 和别的档位说了同一句话");
+        }
     }
 }

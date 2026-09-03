@@ -31,9 +31,16 @@ use crate::{
         views::HostExplorerView,
     },
 };
+use rust_i18n::t;
 
-/// 认证方式的展示文案，与 [`AUTH_TYPES`] 的下标一一对应。
-const AUTH_TYPES: [&str; 3] = ["密码认证", "SSH 密钥对(私钥)", "SSH Agent 转发"];
+/// 认证方式在下拉里的三档，顺序即 [`crate::host::AuthMethod`] 的编号顺序：
+/// 0 密码、1 密钥、2 Agent。选中的是哪一档一律按**下标**判断，不比文案
+/// —— 文案会跟着语言变，下标不会。
+///
+/// 是函数而不是 `const`：文案要查语言表，而语言到运行时才定下来。
+fn auth_types() -> Vec<SharedString> {
+    AuthMethod::ALL.map(|method| method.label()).to_vec()
+}
 
 /// 目标操作系统。名字沿用发行版本身的名称，不译——`platform_tag()` 取的是这里的
 /// 第一个词，和数据库里存的主机平台保持同一种风格。
@@ -58,7 +65,7 @@ const BADGE_COLORS: [u32; 7] = [
 const BADGE_SWATCH_SIZE: gpui::Pixels = px(22.);
 
 /// 标题行：图标 + 名称 + 副标题，对应设计稿的对话框头部。
-fn render_header(title: &'static str, subtitle: &'static str, cx: &App) -> impl IntoElement {
+fn render_header(title: SharedString, subtitle: SharedString, cx: &App) -> impl IntoElement {
     h_flex()
         .items_center()
         .gap(px(10.))
@@ -89,7 +96,7 @@ fn render_header(title: &'static str, subtitle: &'static str, cx: &App) -> impl 
 }
 
 /// 一个字段：标签 + 输入控件。
-fn field(label: &'static str, input: impl IntoElement, cx: &App) -> impl IntoElement {
+fn field(label: SharedString, input: impl IntoElement, cx: &App) -> impl IntoElement {
     v_flex()
         .gap_1()
         .w_full()
@@ -97,7 +104,7 @@ fn field(label: &'static str, input: impl IntoElement, cx: &App) -> impl IntoEle
         .child(input)
 }
 
-fn field_label(label: &'static str, cx: &App) -> impl IntoElement {
+fn field_label(label: SharedString, cx: &App) -> impl IntoElement {
     div()
         .text_xs()
         .font_medium()
@@ -130,7 +137,7 @@ pub struct HostFormDialog {
     hostname: Entity<InputState>,
     port: Entity<InputState>,
     username: Entity<InputState>,
-    auth_type: Entity<SelectState<Vec<&'static str>>>,
+    auth_type: Entity<SelectState<Vec<SharedString>>>,
     password: Entity<InputState>,
     platform: Entity<SelectState<Vec<&'static str>>>,
     proxy_jump: Entity<SelectState<Vec<SharedString>>>,
@@ -180,11 +187,13 @@ impl HostFormDialog {
             dialog
                 .w(px(560.))
                 .title(render_header(
-                    if is_editing { "编辑主机" } else { "新建主机" },
-                    if is_editing {
-                        "修改连接信息、认证方式、跳板机与标签"
-                    } else {
-                        "配置连接信息、认证方式、跳板机与标签"
+                    match is_editing {
+                        true => t!("host_form.title_edit").into(),
+                        false => t!("host_form.title_new").into(),
+                    },
+                    match is_editing {
+                        true => t!("host_form.subtitle_edit").into(),
+                        false => t!("host_form.subtitle_new").into(),
                     },
                     cx,
                 ))
@@ -203,7 +212,7 @@ impl HostFormDialog {
                                 .child(
                                     Button::new("host-form-cancel")
                                         .ghost()
-                                        .label("取消")
+                                        .label(t!("host_form.cancel"))
                                         .on_click(|_, window, cx| window.close_dialog(cx)),
                                 )
                                 .child(
@@ -211,7 +220,10 @@ impl HostFormDialog {
                                         .custom(submit_variant)
                                         .bg(blue)
                                         .rounded(cx.theme().radius)
-                                        .label(if is_editing { "保存修改" } else { "创建主机" })
+                                        .label(match is_editing {
+                                            true => t!("host_form.save"),
+                                            false => t!("host_form.create"),
+                                        })
                                         .on_click(move |_, window, cx| {
                                             let outcome = submit_form
                                                 .update(cx, |state, cx| state.build_draft(cx));
@@ -261,8 +273,9 @@ impl HostFormDialog {
                                                                 },
                                                                 Err(error) => window
                                                                     .push_notification(
-                                                                        format!(
-                                                                            "保存主机失败：{error:#}"
+                                                                        t!(
+                                                                            "host_form.save_failed",
+                                                                            error => format!("{error:#}"),
                                                                         ),
                                                                         cx,
                                                                     ),
@@ -302,16 +315,12 @@ impl HostFormDialog {
                         .iter()
                         .position(|candidate| *candidate == host.platform.as_ref())
                         .unwrap_or(0),
-                    match host.auth_method {
-                        AuthMethod::Password => 0,
-                        AuthMethod::PublicKey => 1,
-                        AuthMethod::Agent => 2,
-                    },
+                    host.auth_method.index(),
                     host.password.to_string(),
                 ),
                 None => (
                     String::new(),
-                    "生产环境".to_string(),
+                    t!("host_form.default_group").to_string(),
                     String::new(),
                     "22".to_string(),
                     "root".to_string(),
@@ -323,17 +332,17 @@ impl HostFormDialog {
 
         let name = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("例如 US-East K8s 主节点")
+                .placeholder(t!("host_form.name_placeholder"))
                 .default_value(name)
         });
         let group = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("例如 生产环境")
+                .placeholder(t!("host_form.group_placeholder"))
                 .default_value(group)
         });
         let hostname = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("192.168.1.100 或 example.com")
+                .placeholder(t!("host_form.hostname_placeholder"))
                 .default_value(hostname)
         });
         let port = cx.new(|cx| InputState::new(window, cx).default_value(port));
@@ -345,16 +354,10 @@ impl HostFormDialog {
                 .default_value(password_default)
         });
         let tag_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("添加标签(例如 AWS、生产环境)…"));
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("host_form.tag_placeholder")));
 
-        let auth_type = cx.new(|cx| {
-            SelectState::new(
-                AUTH_TYPES.to_vec(),
-                Some(IndexPath::new(auth_ix)),
-                window,
-                cx,
-            )
-        });
+        let auth_type =
+            cx.new(|cx| SelectState::new(auth_types(), Some(IndexPath::new(auth_ix)), window, cx));
         let platform = cx.new(|cx| {
             SelectState::new(
                 OS_PLATFORMS.to_vec(),
@@ -364,10 +367,17 @@ impl HostFormDialog {
             )
         });
 
-        let mut bastions = vec![SharedString::from("直接连接(不经跳板)")];
+        let mut bastions = vec![SharedString::from(t!("host_form.bastion_none"))];
         for group in groups {
             for host in &group.hosts {
-                bastions.push(format!("跳板:{} ({})", host.name, host.hostname).into());
+                bastions.push(
+                    t!(
+                        "host_form.bastion_item",
+                        name => host.name,
+                        hostname => host.hostname,
+                    )
+                    .into(),
+                );
             }
         }
         let proxy_jump =
@@ -375,7 +385,7 @@ impl HostFormDialog {
 
         cx.subscribe(
             &auth_type,
-            |_, _, _: &SelectEvent<Vec<&'static str>>, cx| {
+            |_, _, _: &SelectEvent<Vec<SharedString>>, cx| {
                 // 认证方式变了，密码框/提示文案要不要露出来得重新算——交给下一次渲染。
                 cx.notify();
             },
@@ -453,12 +463,12 @@ impl HostFormDialog {
         let hostname = self.hostname.read(cx).value().trim().to_string();
         let username = self.username.read(cx).value().trim().to_string();
         if name.is_empty() || hostname.is_empty() || username.is_empty() {
-            return Err("请填写节点显示名称、主机地址与登录用户名。".into());
+            return Err(t!("host_form.required_fields").into());
         }
 
         let group = self.group.read(cx).value().trim().to_string();
         let group = if group.is_empty() {
-            "未分组".to_string()
+            t!("host_form.ungrouped").to_string()
         } else {
             group
         };
@@ -478,13 +488,14 @@ impl HostFormDialog {
             .copied()
             .unwrap_or(OS_PLATFORMS[0]);
 
-        let auth_label = self
-            .auth_type
-            .read(cx)
-            .selected_value()
-            .copied()
-            .unwrap_or(AUTH_TYPES[0]);
-        let auth_method = AuthMethod::from_label(auth_label);
+        // 认证方式按下拉的下标折回枚举，不拿那行字反查 —— 见 [`auth_types`]。
+        let auth_method = AuthMethod::from_index(
+            self.auth_type
+                .read(cx)
+                .selected_index(cx)
+                .map(|index| index.row)
+                .unwrap_or_default(),
+        );
         let password = self.password.read(cx).value().trim().to_string();
         // 密钥路径暂未设独立输入框，先留空，后续表单会为 `key` 认证补上路径选择
         let key_path = String::new();
@@ -508,9 +519,17 @@ impl HostFormDialog {
 
     fn render_identity_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         two_field_row(
-            field("节点显示名称 *", Input::new(&self.name).w_full(), cx),
+            field(
+                t!("host_form.field_name").into(),
+                Input::new(&self.name).w_full(),
+                cx,
+            ),
             2.,
-            field("分组 / 目录", Input::new(&self.group).w_full(), cx),
+            field(
+                t!("host_form.field_group").into(),
+                Input::new(&self.group).w_full(),
+                cx,
+            ),
             1.,
         )
     }
@@ -518,13 +537,13 @@ impl HostFormDialog {
     fn render_address_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         two_field_row(
             field(
-                "主机 IP / 域名 *",
+                t!("host_form.field_hostname").into(),
                 Input::new(&self.hostname).font_family("monospace").w_full(),
                 cx,
             ),
             2.,
             field(
-                "端口",
+                t!("host_form.field_port").into(),
                 Input::new(&self.port).font_family("monospace").w_full(),
                 cx,
             ),
@@ -535,53 +554,60 @@ impl HostFormDialog {
     fn render_auth_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         two_field_row(
             field(
-                "登录用户名 *",
+                t!("host_form.field_username").into(),
                 Input::new(&self.username).font_family("monospace").w_full(),
                 cx,
             ),
             1.,
-            field("认证方式", Select::new(&self.auth_type).w_full(), cx),
+            field(
+                t!("host_form.field_auth").into(),
+                Select::new(&self.auth_type).w_full(),
+                cx,
+            ),
             1.,
         )
     }
 
     /// 密码认证给密码框，密钥认证先说保管库还在做，Agent 转发不需要额外字段。
     fn render_auth_detail(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // 按下标分派，不比文案 —— 见 [`auth_types`]。
         let selected = self
             .auth_type
             .read(cx)
-            .selected_value()
-            .copied()
-            .unwrap_or(AUTH_TYPES[0]);
+            .selected_index(cx)
+            .map(|index| index.row)
+            .unwrap_or_default();
 
-        if selected == AUTH_TYPES[0] {
-            Some(
+        match selected {
+            0 => Some(
                 field(
-                    "SSH 密码",
+                    t!("host_form.field_password").into(),
                     Input::new(&self.password).font_family("monospace").w_full(),
                     cx,
                 )
                 .into_any_element(),
-            )
-        } else if selected == AUTH_TYPES[1] {
-            Some(
+            ),
+            1 => Some(
                 div()
                     .text_xs()
                     .text_color(palette::idle(cx))
-                    .child("密钥保管库还在开发中，暂时无法选择已保存的密钥。")
+                    .child(SharedString::from(t!("host_form.key_vault_wip")))
                     .into_any_element(),
-            )
-        } else {
-            None
+            ),
+            _ => None,
         }
     }
 
     fn render_platform_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         two_field_row(
-            field("目标操作系统", Select::new(&self.platform).w_full(), cx),
+            field(
+                t!("host_form.field_platform").into(),
+                Select::new(&self.platform).w_full(),
+                cx,
+            ),
             1.,
             field(
-                "跳板机(ProxyJump)",
+                t!("host_form.field_proxy_jump").into(),
                 Select::new(&self.proxy_jump).w_full(),
                 cx,
             ),
@@ -625,7 +651,7 @@ impl HostFormDialog {
         v_flex()
             .gap_1p5()
             .w_full()
-            .child(field_label("徽章强调色", cx))
+            .child(field_label(t!("host_form.field_badge_color").into(), cx))
             .child(
                 h_flex()
                     .gap_3()
@@ -645,7 +671,7 @@ impl HostFormDialog {
                                 ColorPicker::new(&self.badge_picker)
                                     .small()
                                     .anchor(Anchor::TopRight)
-                                    .label("自定义"),
+                                    .label(t!("host_form.color_custom")),
                             ),
                     ),
             )
@@ -689,7 +715,7 @@ impl HostFormDialog {
         v_flex()
             .gap_1p5()
             .w_full()
-            .child(field_label("标签", cx))
+            .child(field_label(t!("host_form.field_tags").into(), cx))
             .child(
                 h_flex()
                     .gap_2()
@@ -701,7 +727,7 @@ impl HostFormDialog {
                     )
                     .child(
                         Button::new("host-form-add-tag")
-                            .label("添加")
+                            .label(t!("host_form.add_tag"))
                             .on_click(cx.listener(|this, _, window, cx| this.add_tag(window, cx))),
                     ),
             )

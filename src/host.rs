@@ -5,9 +5,12 @@
 //! 连接、认证与状态同步属于后续的连接层，界面层不应该知道它们如何实现。
 
 use gpui::SharedString;
+use rust_i18n::t;
 
-/// 认证方式。与表单里的 [`crate::ui::dialogs::host_form::AUTH_TYPES`] 对应，
-/// 落库时存为字符串，读回时按小写匹配：`password` / `key` / `agent`。
+/// 认证方式。落库时存为字符串，读回时按小写匹配：`password` / `key` / `agent`。
+///
+/// 界面上的下拉直接铺 [`AuthMethod::ALL`]，选中的是哪一档按下标折回来
+/// （[`AuthMethod::from_index`]）—— 不拿界面上那行字反查，那行字会跟着语言变。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum AuthMethod {
     #[default]
@@ -17,6 +20,9 @@ pub enum AuthMethod {
 }
 
 impl AuthMethod {
+    /// 下拉里自上而下的顺序。[`Self::from_index`] 按的就是这个顺序。
+    pub const ALL: [Self; 3] = [Self::Password, Self::PublicKey, Self::Agent];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Password => "password",
@@ -25,15 +31,27 @@ impl AuthMethod {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn label(&self) -> &'static str {
+    /// 界面上的名字。
+    pub fn label(&self) -> SharedString {
         match self {
-            Self::Password => "密码认证",
-            Self::PublicKey => "SSH 密钥对(私钥)",
-            Self::Agent => "SSH Agent 转发",
+            Self::Password => t!("host_form.auth_password"),
+            Self::PublicKey => t!("host_form.auth_public_key"),
+            Self::Agent => t!("host_form.auth_agent"),
         }
+        .into()
     }
 
+    /// 这一档在 [`Self::ALL`] 里的下标。表单要用它给下拉定初值。
+    pub fn index(&self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|candidate| candidate == self)
+            .unwrap_or_default()
+    }
+
+    /// 从库里那一列读回来。写进去的一直是 [`Self::as_str`] 的那三个 ascii 词，
+    /// 但更早的版本曾把界面上那行中文原样落库过，所以那两个旧写法也认 ——
+    /// 这里读的是**已经存下来的数据**，不是文案，跟着语言变会让老库读不出来。
     pub fn from_str_or_default(raw: &str) -> Self {
         match raw.trim().to_lowercase().as_str() {
             "key" | "publickey" | "privatekey" | "ssh 密钥对(私钥)" => Self::PublicKey,
@@ -42,12 +60,10 @@ impl AuthMethod {
         }
     }
 
-    pub fn from_label(label: &str) -> Self {
-        match label {
-            "SSH 密钥对(私钥)" => Self::PublicKey,
-            "SSH Agent 转发" => Self::Agent,
-            _ => Self::Password,
-        }
+    /// 下拉里第几项。越界按缺省档算 —— 界面选不出越界的下标，真出现了
+    /// 也不该把整个表单卡住。
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or_default()
     }
 }
 

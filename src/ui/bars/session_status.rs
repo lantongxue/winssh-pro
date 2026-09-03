@@ -40,6 +40,7 @@ use gpui::{
 use gpui_component::{ActiveTheme as _, h_flex, tooltip::Tooltip};
 
 use crate::{session::SessionTelemetry, ui::theme::palette};
+use rust_i18n::t;
 
 /// 条的高度。与 [`super::session_info::HEIGHT`] 一致，见那里的说明。
 pub const HEIGHT: Pixels = px(26.);
@@ -160,7 +161,10 @@ impl SessionStatusBar {
     /// 这一格改说"已断开"，而不是让一个过期的毫秒数继续挂在那儿。
     fn render_latency(&self, cx: &App) -> impl IntoElement {
         let (value, color) = match (self.connected, self.telemetry) {
-            (false, _) => (SharedString::from("已断开"), palette::idle(cx)),
+            (false, _) => (
+                SharedString::from(t!("session_status.disconnected")),
+                palette::idle(cx),
+            ),
             (true, None) => (SharedString::from(UNKNOWN), palette::idle(cx)),
             (true, Some(telemetry)) => {
                 let latency = telemetry.latency_ms;
@@ -199,7 +203,14 @@ impl SessionStatusBar {
             )
         });
 
-        self.render_capacity("MEM", "session-status-memory", reading, BUSY, "内存", cx)
+        self.render_capacity(
+            "MEM",
+            "session-status-memory",
+            reading,
+            BUSY,
+            t!("session_status.memory").into(),
+            cx,
+        )
     }
 
     /// 磁盘说的是根分区（采集脚本那句 `df` 问的就是 `/`），不是所有挂载点加起来。
@@ -219,7 +230,7 @@ impl SessionStatusBar {
             "session-status-disk",
             reading,
             DISK_BUSY,
-            "根分区",
+            t!("session_status.root_volume").into(),
             cx,
         )
     }
@@ -235,7 +246,7 @@ impl SessionStatusBar {
         id: &'static str,
         reading: Option<(f32, f32, f32)>,
         bands: (f32, f32),
-        subject: &'static str,
+        subject: SharedString,
         cx: &App,
     ) -> impl IntoElement {
         let (value, color) = percent(reading.map(|(percent, _, _)| percent), bands, cx);
@@ -245,8 +256,12 @@ impl SessionStatusBar {
             .flex_shrink_0()
             .child(cell(label, value, color, PERCENT_WIDTH, cx))
             .when_some(reading, |this, (_, used, total)| {
-                let detail =
-                    SharedString::from(format!("{subject} {used:.1} GiB / {total:.1} GiB"));
+                let detail = SharedString::from(t!(
+                    "session_status.capacity_detail",
+                    subject => subject,
+                    used => format!("{used:.1}"),
+                    total => format!("{total:.1}"),
+                ));
                 this.tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx))
             })
     }
@@ -284,7 +299,8 @@ impl SessionStatusBar {
             .flex_shrink_0()
             .child(cell(arrow, value, color, RATE_WIDTH, cx))
             .tooltip(move |window, cx| {
-                Tooltip::new("对端网卡的收发速率，整台机器的吞吐，不只是这条会话").build(window, cx)
+                Tooltip::new(SharedString::from(t!("session_status.rate_tooltip")))
+                    .build(window, cx)
             })
     }
 }

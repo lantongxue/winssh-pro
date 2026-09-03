@@ -25,6 +25,7 @@ use gpui_component::{
 };
 
 use crate::ui::theme::{AppIcon, palette};
+use rust_i18n::t;
 
 /// 这一只对话框在问哪件事。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,40 +39,43 @@ pub enum SftpFormKind {
 }
 
 impl SftpFormKind {
-    fn title(self) -> &'static str {
+    fn title(self) -> SharedString {
         match self {
-            Self::NewFile => "新建远端文件",
-            Self::NewFolder => "新建远端目录",
-            Self::Rename => "重命名条目",
+            Self::NewFile => t!("sftp_form.title_new_file"),
+            Self::NewFolder => t!("sftp_form.title_new_folder"),
+            Self::Rename => t!("sftp_form.title_rename"),
         }
+        .into()
     }
 
     /// 输入框上面那行说明。原型把"在哪个目录里建"写进标签，
     /// 因为面板可能已经翻到别处去了 —— 这一行就是落点。
     fn label(self, subject: &SharedString) -> SharedString {
         match self {
-            Self::NewFile => SharedString::from(format!("{subject} 内的文件名")),
-            Self::NewFolder => SharedString::from(format!("{subject} 内的目录名")),
-            Self::Rename => SharedString::from(format!("{subject} 的新名称")),
+            Self::NewFile => t!("sftp_form.label_new_file", subject => subject).into(),
+            Self::NewFolder => t!("sftp_form.label_new_folder", subject => subject).into(),
+            Self::Rename => t!("sftp_form.label_rename", subject => subject).into(),
         }
     }
 
-    fn placeholder(self) -> &'static str {
+    fn placeholder(self) -> SharedString {
         match self {
-            Self::NewFile => "例如 app.config.json 或 script.sh",
-            Self::NewFolder => "例如 backups 或 releases",
-            Self::Rename => "",
+            Self::NewFile => t!("sftp_form.placeholder_new_file").into(),
+            Self::NewFolder => t!("sftp_form.placeholder_new_folder").into(),
+            // 重命名时输入框里已经是旧名字了，占位符看不见。
+            Self::Rename => SharedString::default(),
         }
     }
 
-    fn ok_text(self) -> &'static str {
+    fn ok_text(self) -> SharedString {
         match self {
             // 新建文件之后紧接着打开编辑器（原型就是 "Create & Edit"）：
             // 建一个空文件不写点东西，等于没建完。
-            Self::NewFile => "创建并编辑",
-            Self::NewFolder => "创建目录",
-            Self::Rename => "保存",
+            Self::NewFile => t!("sftp_form.ok_new_file"),
+            Self::NewFolder => t!("sftp_form.ok_new_folder"),
+            Self::Rename => t!("sftp_form.ok_rename"),
         }
+        .into()
     }
 
     fn icon(self) -> AppIcon {
@@ -166,7 +170,7 @@ impl SftpFormDialog {
                                 .child(
                                     Button::new("sftp-form-cancel")
                                         .ghost()
-                                        .label("取消")
+                                        .label(t!("sftp_form.cancel"))
                                         .on_click(|_, window, cx| window.close_dialog(cx)),
                                 )
                                 .child(
@@ -262,16 +266,15 @@ impl Render for SftpFormDialog {
 }
 
 /// 标签下面那行小字：说清楚这个名字会被怎么处理。
-fn hint(kind: SftpFormKind) -> &'static str {
+fn hint(kind: SftpFormKind) -> SharedString {
     match kind {
-        SftpFormKind::NewFile => "新建的是空文件，创建完直接进编辑器。同名文件已存在时不会覆盖。",
-        SftpFormKind::NewFolder => "只在当前这一层建目录，不会顺路补出中间层级。",
+        SftpFormKind::NewFile => t!("sftp_form.hint_new_file"),
+        SftpFormKind::NewFolder => t!("sftp_form.hint_new_folder"),
         // 这一版协议的 rename 报文里没有覆盖标志，对端遇到同名条目会直接拒绝，
         // 所以这里说"不会顶掉"——顶掉旧名字的那条路是上传，不是改名。
-        SftpFormKind::Rename => {
-            "重命名只在当前这一层生效；新名字已经有同名条目时，对端会拒绝这次改名。"
-        }
+        SftpFormKind::Rename => t!("sftp_form.hint_rename"),
     }
+    .into()
 }
 
 /// 一个目录内的条目名。
@@ -282,13 +285,13 @@ fn hint(kind: SftpFormKind) -> &'static str {
 fn validate_name(raw: &str) -> Result<SharedString, SharedString> {
     let name = raw.trim();
     if name.is_empty() {
-        return Err("条目名不能是空的。".into());
+        return Err(t!("sftp_form.error_empty").into());
     }
     if name.contains('/') {
-        return Err("条目名里不能有 `/`：这里改的只是一个目录内的名字。".into());
+        return Err(t!("sftp_form.error_slash").into());
     }
     if name == "." || name == ".." {
-        return Err("`/.` 和 `..` 指的是目录本身与上级，不能当条目名。".into());
+        return Err(t!("sftp_form.error_dot").into());
     }
     Ok(SharedString::from(name))
 }
@@ -320,7 +323,7 @@ fn render_header(kind: SftpFormKind, cx: &App) -> impl IntoElement {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child("这一步会直接作用在远端的文件系统上。"),
+                        .child(SharedString::from(t!("sftp_form.header_note"))),
                 ),
         )
 }

@@ -46,6 +46,7 @@ use crate::{
     session::SessionTelemetry,
     ui::theme::{AppIcon, palette},
 };
+use rust_i18n::t;
 
 /// 采集失败之后隔多久再试。比正常间隔长一点：对端正忙或者刚断，
 /// 立刻重试只是再堵一次。这一档不给调 —— 它不是"多久看一眼"，
@@ -90,17 +91,17 @@ impl MonitorTab {
     /// `counts` 是 `(进程数, 容器数)`，后者在这次没问 docker 时是 `None`。
     fn label(&self, counts: Option<(usize, Option<usize>)>) -> SharedString {
         match (self, counts) {
-            (Self::Metrics, _) => "Metrics".into(),
+            (Self::Metrics, _) => t!("monitor.tab_metrics").into(),
             (Self::Processes, Some((processes, _))) => {
-                SharedString::from(format!("Procs ({processes})"))
+                t!("monitor.tab_processes_count", count => processes).into()
             }
-            (Self::Processes, None) => "Procs".into(),
+            (Self::Processes, None) => t!("monitor.tab_processes").into(),
             // 没问过 docker 的那几次不写计数：那不是"0 个容器"。
             (Self::Docker, Some((_, Some(containers)))) => {
-                SharedString::from(format!("Docker ({containers})"))
+                t!("monitor.tab_docker_count", count => containers).into()
             }
-            (Self::Docker, _) => "Docker".into(),
-            (Self::Diagnostics, _) => "Diag".into(),
+            (Self::Docker, _) => t!("monitor.tab_docker").into(),
+            (Self::Diagnostics, _) => t!("monitor.tab_diagnostics").into(),
             // 只有图标，见 [`Self::stretches`]。
             (Self::Settings, _) => "".into(),
         }
@@ -177,7 +178,7 @@ impl MonitorPanel {
         cx: &mut App,
     ) -> Entity<Self> {
         let process_search =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filter PID, user, cmd..."));
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("monitor.filter_placeholder")));
         // 库里读回来的值已经夹过一道，这里再夹一次是为了兜住"本机 Shell 自己
         // 造的那个 Host"这类没走过服务层的来路。
         let intervals = host.monitor_intervals.clamped();
@@ -306,21 +307,24 @@ impl MonitorPanel {
     /// 说没存住。反过来的话，一次磁盘抖动就会让用户觉得这个设置根本没接上。
     fn save_intervals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(intervals) = self.typed_intervals(cx) else {
-            window.push_notification("采集间隔要填一个整数秒。", cx);
+            window.push_notification(t!("monitor.interval_not_integer"), cx);
             return;
         };
         self.apply_intervals(intervals, window, cx);
 
         let Some(hosts) = self.hosts.clone() else {
-            window.push_notification("本机 Shell 没有主机配置，这次改动只在当前会话里生效。", cx);
+            window.push_notification(t!("monitor.no_host_config"), cx);
             return;
         };
         let id = self.host.id.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = hosts.update_monitor_intervals(&id, intervals).await;
             this.update_in(cx, |_, window, cx| match result {
-                Ok(_) => window.push_notification("采集频率已保存到这台主机。", cx),
-                Err(error) => window.push_notification(format!("保存采集频率失败：{error:#}"), cx),
+                Ok(_) => window.push_notification(t!("monitor.intervals_saved"), cx),
+                Err(error) => window.push_notification(
+                    t!("monitor.intervals_save_failed", error => format!("{error:#}")),
+                    cx,
+                ),
             })
             .ok();
         })
@@ -460,16 +464,18 @@ impl MonitorPanel {
         window.open_alert_dialog(cx, move |alert, _, _| {
             let panel = panel.clone();
             alert
-                .title("结束进程")
-                .description(SharedString::from(format!(
-                    "确定要结束进程 “{command}”（PID {pid}）吗？将向对端发送 SIGTERM（kill -15）。"
+                .title(t!("monitor.kill_title"))
+                .description(SharedString::from(t!(
+                    "monitor.kill_confirm",
+                    command => command,
+                    pid => pid,
                 )))
                 .confirm()
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("结束进程")
+                        .ok_text(t!("monitor.kill_ok"))
                         .ok_variant(ButtonVariant::Danger)
-                        .cancel_text("取消")
+                        .cancel_text(t!("monitor.cancel"))
                         .show_cancel(true),
                 )
                 .on_ok(move |_, _, cx| {
@@ -497,7 +503,11 @@ impl MonitorPanel {
                 match outcome {
                     Ok(()) => this.error = None,
                     Err(error) => {
-                        this.error = Some(SharedString::from(format!("kill {pid} 失败：{error:#}")))
+                        this.error = Some(SharedString::from(t!(
+                            "monitor.kill_failed",
+                            pid => pid,
+                            error => format!("{error:#}"),
+                        )))
                     }
                 }
                 this.refresh(cx);
@@ -521,8 +531,10 @@ impl MonitorPanel {
                 match outcome {
                     Ok(()) => this.error = None,
                     Err(error) => {
-                        this.error = Some(SharedString::from(format!(
-                            "docker {id} 操作失败：{error:#}"
+                        this.error = Some(SharedString::from(t!(
+                            "monitor.docker_action_failed",
+                            id => id,
+                            error => format!("{error:#}"),
                         )))
                     }
                 }
@@ -603,7 +615,7 @@ impl MonitorPanel {
                             // 采集在路上的时候按不动：再按一下只会把正在跑的那次
                             // 掐掉重开，等的时间反而更长。
                             .disabled(self.service.is_none() || self.polling)
-                            .tooltip("立刻重新采集")
+                            .tooltip(t!("monitor.refresh_now"))
                             .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
                     )
                     .child(
@@ -611,7 +623,7 @@ impl MonitorPanel {
                             .ghost()
                             .xsmall()
                             .icon(IconName::Close)
-                            .tooltip("收起监控面板（Alt+M）")
+                            .tooltip(t!("monitor.collapse"))
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(MonitorEvent::Close))),
                     ),
             )
@@ -641,16 +653,19 @@ impl MonitorPanel {
 
     /// 还没有读数时的正文：说清楚在等什么，不画空的仪表。
     fn render_empty(&self, cx: &App) -> impl IntoElement {
-        let (title, detail) = match (&self.service, &self.error) {
+        let (title, detail): (SharedString, SharedString) = match (&self.service, &self.error) {
             (None, _) => (
-                "这条会话没有可采的对端",
-                "监控读的是远端的 /proc。SSH 连上之后这里会自动开始采集；本地 Shell 没有对端。",
+                t!("monitor.empty_no_remote_title").into(),
+                t!("monitor.empty_no_remote_detail").into(),
             ),
             (Some(_), Some(_)) => (
-                "采集失败",
-                "上面那条是对端给的原因。修好之后按刷新，或者等下一次自动重试。",
+                t!("monitor.empty_failed_title").into(),
+                t!("monitor.empty_failed_detail").into(),
             ),
-            (Some(_), None) => ("正在采集…", "第一次采集要跑一段采样窗口，稍等一下。"),
+            (Some(_), None) => (
+                t!("monitor.empty_sampling_title").into(),
+                t!("monitor.empty_sampling_detail").into(),
+            ),
         };
 
         v_flex()
@@ -776,7 +791,10 @@ impl MonitorPanel {
                         this.child(div().font_medium().child(label))
                     })
                     .when(!tab.stretches(), |this| {
-                        this.tooltip(|window, cx| Tooltip::new("采集设置").build(window, cx))
+                        this.tooltip(|window, cx| {
+                            Tooltip::new(SharedString::from(t!("monitor.settings_tooltip")))
+                                .build(window, cx)
+                        })
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if this.active_tab == tab {
@@ -1252,12 +1270,13 @@ impl MonitorPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let rows = self.process_view.len();
-        let nothing_matched = match (telemetry.processes.is_empty(), self.polling) {
-            // 刚展开面板的那一两秒：上一次是轻量采集，本来就没要进程列表。
-            (true, true) => "正在采集进程列表…",
-            (true, false) => "这次采集没有拿到进程列表",
-            (false, _) => "没有匹配的进程",
-        };
+        let nothing_matched =
+            SharedString::from(match (telemetry.processes.is_empty(), self.polling) {
+                // 刚展开面板的那一两秒：上一次是轻量采集，本来就没要进程列表。
+                (true, true) => t!("monitor.processes_sampling"),
+                (true, false) => t!("monitor.processes_none_returned"),
+                (false, _) => t!("monitor.processes_no_match"),
+            });
 
         v_flex()
             .size_full()
@@ -1435,10 +1454,10 @@ impl MonitorPanel {
         let containers = &telemetry.containers;
         // "没问过 docker" 与 "问过，没有容器" 要说成两句话。切到这一页会立刻补采
         // 一次（见 `render_tabs`），所以第一句只会出现一两秒。
-        let empty_note = match telemetry.docker_sampled {
-            true => "这台主机上没有 docker，或者没有容器",
-            false => "正在采集容器…",
-        };
+        let empty_note = SharedString::from(match telemetry.docker_sampled {
+            true => t!("monitor.docker_none"),
+            false => t!("monitor.docker_sampling"),
+        });
         v_flex()
             .gap_2()
             .p_2()
@@ -1675,18 +1694,18 @@ impl MonitorPanel {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("采集频率跟着这台主机走，下次打开还是这个节奏。"),
+                    .child(SharedString::from(t!("monitor.settings_note"))),
             )
             .child(self.render_interval_row(
-                "监控面板",
-                "这一栏展开着的时候采全量：曲线、进程表、容器。",
+                t!("monitor.interval_panel_title").into(),
+                t!("monitor.interval_panel_hint").into(),
                 MonitorIntervals::MONITOR_RANGE,
                 &self.monitor_input,
                 cx,
             ))
             .child(self.render_interval_row(
-                "终端状态栏",
-                "这一栏收起之后只采轻量的一份，喂终端下沿那条状态栏。",
+                t!("monitor.interval_status_title").into(),
+                t!("monitor.interval_status_hint").into(),
                 MonitorIntervals::STATUS_RANGE,
                 &self.status_input,
                 cx,
@@ -1696,7 +1715,7 @@ impl MonitorPanel {
                     Button::new("monitor-settings-save")
                         .small()
                         .primary()
-                        .label("保存")
+                        .label(t!("monitor.save"))
                         .disabled(!dirty)
                         .on_click(
                             cx.listener(|this, _, window, cx| this.save_intervals(window, cx)),
@@ -1708,7 +1727,7 @@ impl MonitorPanel {
                     div()
                         .text_xs()
                         .text_color(cx.theme().danger)
-                        .child("间隔要填整数秒。"),
+                        .child(SharedString::from(t!("monitor.interval_integer_hint"))),
                 )
             })
             .when(self.hosts.is_none(), |this| {
@@ -1716,7 +1735,7 @@ impl MonitorPanel {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child("本机 Shell 没有主机配置，这里改的只在当前会话里生效。"),
+                        .child(SharedString::from(t!("monitor.no_host_config_hint"))),
                 )
             })
     }
@@ -1727,8 +1746,8 @@ impl MonitorPanel {
     /// 但一个悄悄被改掉的数字比一开始就说"1–60"更让人疑惑。
     fn render_interval_row(
         &self,
-        title: &'static str,
-        hint: &'static str,
+        title: SharedString,
+        hint: SharedString,
         (low, high): (u32, u32),
         input: &Entity<InputState>,
         cx: &App,
@@ -1762,7 +1781,7 @@ impl MonitorPanel {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("秒"),
+                                    .child(SharedString::from(t!("monitor.seconds"))),
                             ),
                     ),
             )
@@ -1777,7 +1796,11 @@ impl MonitorPanel {
                     .text_xs()
                     .font_family(cx.theme().mono_font_family.clone())
                     .text_color(palette::idle(cx))
-                    .child(SharedString::from(format!("{low}–{high} 秒"))),
+                    .child(SharedString::from(t!(
+                        "monitor.seconds_range",
+                        low => low,
+                        high => high,
+                    ))),
             )
     }
 }

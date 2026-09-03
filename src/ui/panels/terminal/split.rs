@@ -25,12 +25,13 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Axis, Bounds, InteractiveElement as _, IntoElement, MouseButton,
-    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Styled as _, canvas, div,
-    prelude::FluentBuilder as _, px,
+    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, SharedString, Styled as _, canvas,
+    div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::ActiveTheme as _;
 
 use crate::ui::theme::AppIcon;
+use rust_i18n::t;
 
 /// 一边最少占多少、最多占多少。留 10% 是为了"拖过头"之后还看得见、还拖得回来
 /// —— 拖到 0 的那一半在屏幕上就消失了，用户只会以为窗格被关掉了。
@@ -89,12 +90,13 @@ impl SplitLayout {
         }
     }
 
-    pub fn tooltip(self) -> &'static str {
+    pub fn tooltip(self) -> SharedString {
         match self {
-            Self::Single => "单屏",
-            Self::Rows => "上下分屏",
-            Self::Columns => "左右分屏",
+            Self::Single => t!("split.single"),
+            Self::Rows => t!("split.rows"),
+            Self::Columns => t!("split.columns"),
         }
+        .into()
     }
 
     /// 按钮上的 `id`，每一档一个。

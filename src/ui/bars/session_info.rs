@@ -26,6 +26,7 @@ use crate::ui::{
     panels::SplitLayout,
     theme::{AppIcon, palette},
 };
+use rust_i18n::t;
 
 /// 条的高度。和会话状态栏一样高：它们是同一条会话的上下两个边框，
 /// 一高一矮会让中间的终端看着没落在正中。
@@ -283,8 +284,10 @@ impl RenderOnce for SessionInfoBar {
                         let active = self.tunnels_count > 0;
                         let tone = palette::green();
                         let label = match self.tunnels_count {
-                            0 => SharedString::from("Tunnels"),
-                            count => SharedString::from(format!("Tunnels {count}")),
+                            0 => SharedString::from(t!("session_info.tunnels")),
+                            count => {
+                                SharedString::from(t!("session_info.tunnels_count", count => count))
+                            }
                         };
                         let mut btn = Button::new("session-info-tunnels")
                             .xsmall()
@@ -294,7 +297,7 @@ impl RenderOnce for SessionInfoBar {
                                     .text_color(if active { tone } else { palette::idle(cx) }),
                             )
                             .label(label)
-                            .tooltip("Session Port Forwarding (Alt+P)");
+                            .tooltip(t!("session_info.tunnels_tooltip"));
                         btn = if active {
                             btn.custom(
                                 ButtonCustomVariant::new(cx)
@@ -325,11 +328,11 @@ impl RenderOnce for SessionInfoBar {
                                         palette::idle(cx)
                                     }),
                             )
-                            .label("SFTP Panel")
+                            .label(t!("session_info.sftp"))
                             .tooltip(if self.sftp_active {
-                                "Hide Bottom SFTP Panel (Alt+F)"
+                                t!("session_info.sftp_hide")
                             } else {
-                                "Show Bottom SFTP Panel (Alt+F)"
+                                t!("session_info.sftp_show")
                             });
                         btn = if self.sftp_active {
                             btn.custom(
@@ -355,11 +358,11 @@ impl RenderOnce for SessionInfoBar {
                                     .with_size(ICON_SIZE)
                                     .text_color(green),
                             )
-                            .label("Top Monitor")
+                            .label(t!("session_info.monitor"))
                             .tooltip(if self.monitor_active {
-                                "Hide Right Top Monitor (Alt+M)"
+                                t!("session_info.monitor_hide")
                             } else {
-                                "Show Right Top Monitor (Alt+M)"
+                                t!("session_info.monitor_show")
                             });
                         if self.monitor_active {
                             btn = btn
@@ -382,8 +385,8 @@ impl RenderOnce for SessionInfoBar {
                             .ghost()
                             .xsmall()
                             .icon(Icon::new(IconName::Copy).with_size(ICON_SIZE))
-                            .tooltip("复制全部输出")
-                            .accessibility_id("复制全部输出")
+                            .tooltip(t!("session_info.copy_all"))
+                            .accessibility_id(t!("session_info.copy_all"))
                             .when_some(self.on_copy, |this, handler| this.on_click(handler)),
                     )
                     .child(
@@ -391,8 +394,8 @@ impl RenderOnce for SessionInfoBar {
                             .ghost()
                             .xsmall()
                             .icon(Icon::new(AppIcon::Trash).with_size(ICON_SIZE))
-                            .tooltip("清屏")
-                            .accessibility_id("清屏")
+                            .tooltip(t!("session_info.clear"))
+                            .accessibility_id(t!("session_info.clear"))
                             .when_some(self.on_clear, |this, handler| this.on_click(handler)),
                     ),
             )

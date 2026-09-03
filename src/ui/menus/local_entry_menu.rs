@@ -29,6 +29,7 @@ use crate::{
     sftp::FileEntry,
     ui::theme::{AppIcon, palette},
 };
+use rust_i18n::t;
 
 /// 菜单的最小宽度。定死它，菜单才不会随条目名长短跳动。
 const MENU_MIN_WIDTH: Pixels = px(196.);
@@ -65,15 +66,15 @@ impl LocalEntryAction {
     /// "刷新本地栏"不带数目：它动的是这一栏，跟选了几个条目无关。
     fn label(self, count: usize) -> SharedString {
         let label = match self {
-            Self::Upload => "上传到远端",
-            Self::OpenWithDefault => "用系统默认程序打开",
-            Self::OpenFolder => "进入目录",
-            Self::CopyPath => "复制本地路径",
-            Self::Refresh => "刷新本地栏",
-            Self::Delete => "删除",
+            Self::Upload => t!("local_menu.upload"),
+            Self::OpenWithDefault => t!("local_menu.open_with_default"),
+            Self::OpenFolder => t!("local_menu.open_folder"),
+            Self::CopyPath => t!("local_menu.copy_path"),
+            Self::Refresh => t!("local_menu.refresh"),
+            Self::Delete => t!("local_menu.delete"),
         };
         if count > 1 && self != Self::Refresh {
-            return SharedString::from(format!("{label}（{count} 项）"));
+            return SharedString::from(t!("menu.label_with_count", label => label, count => count));
         }
         SharedString::from(label)
     }

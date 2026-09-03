@@ -15,6 +15,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use anyhow::{Context as _, Result};
+use rust_i18n::t;
 use sea_orm::sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sea_orm::{ConnectionTrait, DatabaseConnection, SqlxSqliteConnector};
 use tokio::runtime::Runtime;
@@ -107,13 +108,13 @@ pub async fn connect(path: Option<&Path>) -> Result<DatabaseConnection> {
         .max_connections(1)
         .connect_with(options)
         .await
-        .context("打开 SQLite 连接失败")?;
+        .with_context(|| t!("db.open_failed").to_string())?;
     let conn = SqlxSqliteConnector::from_sqlx_sqlite_pool(pool);
 
     for statement in SCHEMA {
         conn.execute_unprepared(statement)
             .await
-            .context("初始化主机配置表失败")?;
+            .with_context(|| t!("db.init_table_failed").to_string())?;
     }
     for migration in MIGRATIONS {
         let result = conn.execute_unprepared(migration).await;
@@ -121,7 +122,7 @@ pub async fn connect(path: Option<&Path>) -> Result<DatabaseConnection> {
             let message = error.to_string();
             // 已存在的列是幂等成功，不算错；其余错误才需要冒泡。
             if !message.contains("duplicate column name") {
-                return Err(error).context("迁移主机配置表失败")?;
+                return Err(error).with_context(|| t!("db.migrate_failed").to_string())?;
             }
         }
     }

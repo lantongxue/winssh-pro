@@ -10836,10 +10836,12 @@ dependencies = [
  "rand 0.10.2",
  "russh",
  "russh-sftp",
+ "rust-i18n",
  "sea-orm",
  "serde",
  "serde_json",
  "ssh-key",
+ "sys-locale",
  "tokio",
  "tokio-util",
 ]

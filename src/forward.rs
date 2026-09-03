@@ -20,6 +20,7 @@ use gpui::SharedString;
 use serde::{Deserialize, Serialize};
 
 use crate::host::Host;
+use rust_i18n::t;
 
 /// 转发的三档，对应 `ssh` 的三个开关。
 ///
@@ -50,15 +51,20 @@ impl ForwardKind {
     pub const ALL: [Self; 3] = [Self::Local, Self::Remote, Self::Dynamic];
 
     /// 原型里那一组按钮上的文字。
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> SharedString {
         match self {
-            Self::Local => "-L 本地",
-            Self::Remote => "-R 远端",
-            Self::Dynamic => "-D 动态",
+            Self::Local => t!("forward.label_local"),
+            Self::Remote => t!("forward.label_remote"),
+            Self::Dynamic => t!("forward.label_dynamic"),
         }
+        .into()
     }
 
     /// 规则卡片右上角那枚徽章上的字。
+    ///
+    /// 不进语言表：这三个全大写的标签照的是 ssh 自己的 `LocalForward` /
+    /// `RemoteForward` / `DynamicForward`，两种语言下都是同一个词。停在徽章上
+    /// 给的那句人话（[`Self::tagline`]）才是翻的那一份。
     pub fn badge(&self) -> &'static str {
         match self {
             Self::Local => "LOCAL FORWARD",
@@ -68,12 +74,13 @@ impl ForwardKind {
     }
 
     /// 拓扑图中间那一段说明字节往哪儿流。
-    pub fn pipe(&self) -> &'static str {
+    pub fn pipe(&self) -> SharedString {
         match self {
-            Self::Local => "Encrypted SSH Pipe",
-            Self::Remote => "Reverse SSH Pipe",
-            Self::Dynamic => "SOCKS5 Proxy",
+            Self::Local => t!("forward.pipe_local"),
+            Self::Remote => t!("forward.pipe_remote"),
+            Self::Dynamic => t!("forward.pipe_dynamic"),
         }
+        .into()
     }
 
     /// 一句话说清这一档在干什么，不提 `-L`/`-R`/`-D`。
@@ -81,55 +88,45 @@ impl ForwardKind {
     /// 三档的开关名字只差一个字母，而字节的方向完全相反 —— 记不住那三个字母
     /// 才是常态。所以每一档都配一句大白话：说的是"什么搬到哪儿"，
     /// 而不是"这个参数叫什么"。
-    pub fn tagline(&self) -> &'static str {
+    pub fn tagline(&self) -> SharedString {
         match self {
-            Self::Local => "把远端才能访问的服务，映到本机的一个端口上",
-            Self::Remote => "把本机的服务，开给远端那边访问",
-            Self::Dynamic => "本机开一个 SOCKS5 代理，整台远端当跳板上网",
+            Self::Local => t!("forward.tagline_local"),
+            Self::Remote => t!("forward.tagline_remote"),
+            Self::Dynamic => t!("forward.tagline_dynamic"),
         }
+        .into()
     }
 
     /// [`tagline`](Self::tagline) 之后再补的一两句：什么时候该选它。
-    pub fn detail(&self) -> &'static str {
+    pub fn detail(&self) -> SharedString {
         match self {
-            Self::Local => {
-                "远端（或它内网里）的某个服务，你本机直连不到。起了这一档，本机就多出一个端口，\
-                 连它就等于连那个服务。访问远端的数据库、Redis、Web 面板都走这一档。"
-            }
-            Self::Remote => {
-                "方向反过来：请远端开一个端口，远端那边连上来的流量回到本机的服务上。\
-                 想让远端的程序或同事访问你机器上的东西，又不愿把电脑暴露到公网时用它。\
-                 远端 sshd 没开 GatewayPorts 的话，那个端口只有远端自己连得上。"
-            }
-            Self::Dynamic => {
-                "不用指定目标：本机开一个 SOCKS5 代理端口，浏览器或工具配上它之后，\
-                 访问哪个地址都由远端代为发出 —— 相当于坐在远端那台机器上上网。"
-            }
+            Self::Local => t!("forward.detail_local"),
+            Self::Remote => t!("forward.detail_remote"),
+            Self::Dynamic => t!("forward.detail_dynamic"),
         }
+        .into()
     }
 
     /// 一个具体到端口号的例子。数字和 [`PRESETS`] 对得上，照着填就能跑。
     ///
     /// 和 [`detail`](Self::detail) 分开，是因为界面上它单独一行、单独一种颜色：
     /// 讲道理的那几句可以跳过不读，例子是照抄就能用的那一行。
-    pub fn example(&self) -> &'static str {
+    pub fn example(&self) -> SharedString {
         match self {
-            Self::Local => {
-                "例：本机 15432 → 远端内网的 10.0.4.15:5432，数据库客户端填 127.0.0.1:15432 即可"
-            }
-            Self::Remote => "例：远端 8080 → 本机的 127.0.0.1:3000，远端浏览器开 8080 看到的就是它",
-            Self::Dynamic => {
-                "例：本机 1080 上的 SOCKS5，浏览器代理填 127.0.0.1:1080，就能打开只有远端内网才通的页面"
-            }
+            Self::Local => t!("forward.example_local"),
+            Self::Remote => t!("forward.example_remote"),
+            Self::Dynamic => t!("forward.example_dynamic"),
         }
+        .into()
     }
 
     /// 监听端口那一格的标签。`-R` 监听在远端，这一格问的不是同一件事。
-    pub fn listen_label(&self) -> &'static str {
+    pub fn listen_label(&self) -> SharedString {
         match self {
-            Self::Remote => "远端监听端口",
-            _ => "本地监听端口",
+            Self::Remote => t!("forward.listen_label_remote"),
+            _ => t!("forward.listen_label_local"),
         }
+        .into()
     }
 
     /// 这一档要不要填目标地址。动态转发的目标由每条连接自己给，填了也没处用。
@@ -266,22 +263,22 @@ impl PortForward {
     ///
     /// 挡在这儿而不是等对端拒绝：端口 0 之外的错（没名字、目标空着）根本走不到
     /// 网络那一层，而"绑定失败"这种错要等一次往返才知道，能提前说的就提前说。
-    pub fn check(&self) -> Result<(), &'static str> {
+    pub fn check(&self) -> Result<(), SharedString> {
         if self.name.trim().is_empty() {
-            return Err("给这条转发起个名字，列表里要认得出它。");
+            return Err(t!("forward.check_no_name").into());
         }
         if self.listen_port == 0 {
-            return Err("监听端口要填 1~65535 之间的一个数。");
+            return Err(t!("forward.check_listen_port").into());
         }
         if self.bind_address.trim().is_empty() {
-            return Err("监听地址不能空着，本机监听一般填 127.0.0.1。");
+            return Err(t!("forward.check_bind_address").into());
         }
         if self.kind.needs_target() {
             if self.target_host.trim().is_empty() {
-                return Err("目标地址不能空着。");
+                return Err(t!("forward.check_target_host").into());
             }
             if self.target_port == 0 {
-                return Err("目标端口要填 1~65535 之间的一个数。");
+                return Err(t!("forward.check_target_port").into());
             }
         }
         Ok(())
@@ -297,7 +294,16 @@ pub struct ForwardPreset {
     pub kind: ForwardKind,
     pub listen_port: u16,
     pub target_port: u16,
-    pub description: &'static str,
+    /// 说明那一句在语言表里的 key，不是文案本身 —— 这一整排是个 `const`，
+    /// 而查表要到运行时才做。读文案走 [`Self::description`]。
+    description_key: &'static str,
+}
+
+impl ForwardPreset {
+    /// 预设片的悬停说明。
+    pub fn description(&self) -> SharedString {
+        t!(self.description_key).into()
+    }
 }
 
 /// 四个预设，与原型里那一排片一致。
@@ -307,28 +313,28 @@ pub const PRESETS: [ForwardPreset; 4] = [
         kind: ForwardKind::Local,
         listen_port: 3306,
         target_port: 3306,
-        description: "远端 MySQL 3306 映到本机",
+        description_key: "forward.preset_mysql",
     },
     ForwardPreset {
         label: "PostgreSQL",
         kind: ForwardKind::Local,
         listen_port: 5432,
         target_port: 5432,
-        description: "远端 PostgreSQL 5432 映到本机",
+        description_key: "forward.preset_postgresql",
     },
     ForwardPreset {
         label: "Redis",
         kind: ForwardKind::Local,
         listen_port: 6379,
         target_port: 6379,
-        description: "远端 Redis 6379 映到本机",
+        description_key: "forward.preset_redis",
     },
     ForwardPreset {
         label: "SOCKS5",
         kind: ForwardKind::Dynamic,
         listen_port: 1080,
         target_port: 1080,
-        description: "本机 1080 上的 SOCKS5 代理，整台机器当跳板",
+        description_key: "forward.preset_socks5",
     },
 ];
 
@@ -536,6 +542,12 @@ mod tests {
             for line in [kind.tagline(), kind.detail(), kind.example()] {
                 assert!(!line.trim().is_empty(), "{kind:?} 少了一句说明");
             }
+            // 三档的说明都是查表来的，漏一条 key 就会退化成 key 本身
+            // （`forward.tagline_local` 那样）。带点就当漏了。
+            assert!(
+                !kind.tagline().starts_with("forward."),
+                "{kind:?} 的说明没查到译文，露出了 key"
+            );
             assert!(
                 !kind.tagline().contains("-L")
                     && !kind.tagline().contains("-R")

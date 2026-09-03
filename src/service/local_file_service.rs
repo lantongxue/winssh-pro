@@ -13,6 +13,7 @@ use anyhow::{Context as _, Result};
 use gpui::SharedString;
 
 use crate::sftp::{FileEntry, FileKind};
+use rust_i18n::t;
 
 /// 本地这一侧的入口。没有状态，廉价克隆。
 #[derive(Clone, Copy, Default)]
@@ -34,7 +35,7 @@ impl LocalFileService {
         crate::db::run(async move {
             tokio::task::spawn_blocking(move || list_blocking(&dir))
                 .await
-                .context("本地目录读取任务中断")?
+                .with_context(|| t!("local_file.list_interrupted").to_string())?
         })
         .await
     }
@@ -48,7 +49,10 @@ impl LocalFileService {
         if path.as_os_str().is_empty() {
             return Ok(Self::start_dir());
         }
-        Err(anyhow::anyhow!("{} 不是一个本地目录", path.display()))
+        Err(anyhow::anyhow!(
+            "{}",
+            t!("local_file.not_a_dir", path => path.display())
+        ))
     }
 
     /// 用系统的默认程序打开一个本地条目（文件走关联程序，目录交给文件管理器）。
@@ -60,10 +64,17 @@ impl LocalFileService {
         let mut opener = Self::opener(path);
         let status = opener
             .status()
-            .with_context(|| format!("打开 {} 失败", path.display()))?;
+            .with_context(|| t!("local_file.open_failed", path => path.display()).to_string())?;
         // 各平台的 open/start/xdg-open 在"成功唤起"时都返回 0；非零就是它自己报了错。
         if !status.success() {
-            anyhow::bail!("系统拒绝打开 {}（退出码 {:?}）", path.display(), status.code());
+            anyhow::bail!(
+                "{}",
+                t!(
+                    "local_file.open_rejected",
+                    path => path.display(),
+                    code => format!("{:?}", status.code()),
+                )
+            );
         }
         Ok(())
     }
@@ -105,7 +116,7 @@ impl LocalFileService {
         crate::db::run(async move {
             tokio::task::spawn_blocking(move || remove_blocking(&path))
                 .await
-                .context("本地删除任务中断")?
+                .with_context(|| t!("local_file.delete_interrupted").to_string())?
         })
         .await
     }
@@ -114,7 +125,7 @@ impl LocalFileService {
 /// 真正的删除。同步的 `std::fs`，跑在 blocking 线程上（大目录、网络盘都可能慢）。
 fn remove_blocking(path: &Path) -> Result<()> {
     let metadata = std::fs::symlink_metadata(path)
-        .with_context(|| format!("读取 {} 失败", path.display()))?;
+        .with_context(|| t!("local_file.read_failed", path => path.display()).to_string())?;
     let result = if metadata.is_dir() {
         // 目录连里面的东西一并删掉：系统调用负责递归，不在这儿手写遍历。
         std::fs::remove_dir_all(path)
@@ -122,13 +133,13 @@ fn remove_blocking(path: &Path) -> Result<()> {
         // 文件与软链接都走 remove_file：软链接删的是链接本身，不是它指向的东西。
         std::fs::remove_file(path)
     };
-    result.with_context(|| format!("删除 {} 失败", path.display()))
+    result.with_context(|| t!("local_file.delete_failed", path => path.display()).to_string())
 }
 
 /// 真正的读取。同步的 `std::fs`，跑在 blocking 线程上。
 fn list_blocking(dir: &Path) -> Result<Vec<FileEntry>> {
-    let reader =
-        std::fs::read_dir(dir).with_context(|| format!("读取本地目录 {} 失败", dir.display()))?;
+    let reader = std::fs::read_dir(dir)
+        .with_context(|| t!("local_file.read_dir_failed", path => dir.display()).to_string())?;
 
     let mut entries = Vec::new();
     for item in reader.flatten() {

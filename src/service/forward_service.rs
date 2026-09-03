@@ -27,6 +27,7 @@ use crate::{
     forward::{ForwardKind, ForwardRuntime, PortForward},
     ssh::{ForwardMeter, LocalMode, RemoteTarget, SshSession, forward},
 };
+use rust_i18n::t;
 
 /// 测一次端口最多等多久。本机回环上连得上就是毫秒级的事，超过这个数只说明
 /// 那个端口后面没有活着的东西。
@@ -230,7 +231,7 @@ impl ForwardService {
     /// 测不了 —— 那个端口在别人机器上，本机连过去问的是另一回事。
     pub async fn test(&self, rule: &PortForward) -> Result<String> {
         if !rule.kind.listens_locally() {
-            return Err(anyhow!("远端监听的端口在对端机器上，本机测不到它。"));
+            return Err(anyhow!("{}", t!("forward_service.remote_untestable")));
         }
         let port = self
             .snapshot()
@@ -246,13 +247,28 @@ impl ForwardService {
         crate::db::run(async move {
             let connect = TcpStream::connect((host.as_str(), port));
             match tokio::time::timeout(PROBE_TIMEOUT, connect).await {
-                Ok(Ok(_)) => Ok(format!("{host}:{port} 上的监听是通的，隧道健康。")),
-                Ok(Err(error)) => {
-                    Err(anyhow::Error::new(error)).with_context(|| format!("连 {host}:{port} 失败"))
-                }
+                Ok(Ok(_)) => Ok(t!(
+                    "forward_service.test_ok",
+                    host => host,
+                    port => port,
+                )
+                .to_string()),
+                Ok(Err(error)) => Err(anyhow::Error::new(error)).with_context(|| {
+                    t!(
+                        "forward_service.test_connect_failed",
+                        host => host,
+                        port => port,
+                    )
+                    .to_string()
+                }),
                 Err(_) => Err(anyhow!(
-                    "连 {host}:{port} 超过 {} 秒没有反应。",
-                    PROBE_TIMEOUT.as_secs()
+                    "{}",
+                    t!(
+                        "forward_service.test_timeout",
+                        host => host,
+                        port => port,
+                        seconds => PROBE_TIMEOUT.as_secs(),
+                    )
                 )),
             }
         })
@@ -349,7 +365,16 @@ mod tests {
                 .start(&rule(ForwardKind::Local, taken, 5432))
                 .await
                 .expect_err("端口被占必须失败");
-            assert!(format!("{error:#}").contains("绑定"), "实际：{error:#}");
+            // 文案在语言表里，比 key 对应的那句，不写死中文。
+            let expected = t!(
+                "ssh_forward.bind_failed",
+                bind => "127.0.0.1",
+                port => taken,
+            );
+            assert!(
+                format!("{error:#}").contains(expected.as_ref()),
+                "实际：{error:#}"
+            );
             assert_eq!(service.active_count(), 0, "失败的规则不该留在表里");
         });
     }
@@ -453,7 +478,11 @@ mod tests {
                 .test(&rule(ForwardKind::Remote, 8080, 80))
                 .await
                 .expect_err("远端监听测不了");
-            assert!(format!("{error}").contains("对端"), "实际：{error}");
+            assert_eq!(
+                format!("{error}"),
+                t!("forward_service.remote_untestable"),
+                "实际：{error}"
+            );
         });
     }
 

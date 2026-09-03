@@ -18,6 +18,7 @@ use crate::host::Host;
 
 use super::client::SshHandler;
 use super::forward::ForwardRegistry;
+use rust_i18n::t;
 
 /// 一条已认证的 SSH 连接，作为"还能在它上面开东西"的凭据传来传去。
 ///
@@ -72,7 +73,14 @@ impl SshConnection {
 
         let mut handle = client::connect(Arc::new(config), addr, handler)
             .await
-            .with_context(|| format!("连接到 {}:{} 失败", host.hostname, host.port))?;
+            .with_context(|| {
+                t!(
+                    "ssh.connect_failed",
+                    host => host.hostname,
+                    port => host.port,
+                )
+                .to_string()
+            })?;
 
         authenticate(&mut handle, host, &user).await?;
 
@@ -105,7 +113,7 @@ impl SshConnection {
         self.channel
             .window_change(window.cols, window.rows, window.width_px, window.height_px)
             .await
-            .context("发送窗口尺寸变化失败")?;
+            .with_context(|| t!("ssh.resize_failed").to_string())?;
         Ok(())
     }
 
@@ -127,7 +135,7 @@ impl SshConnection {
         self.channel
             .data(data)
             .await
-            .context("发送数据到远端失败")?;
+            .with_context(|| t!("ssh.send_failed").to_string())?;
         Ok(())
     }
 }
@@ -173,7 +181,7 @@ async fn shell_channel(
     let channel = handle
         .channel_open_session()
         .await
-        .context("打开 SSH 会话通道失败")?;
+        .with_context(|| t!("ssh.open_channel_failed").to_string())?;
 
     channel
         .request_pty(
@@ -186,12 +194,12 @@ async fn shell_channel(
             &[(Pty::TTY_OP_ISPEED, 14400), (Pty::TTY_OP_OSPEED, 14400)],
         )
         .await
-        .context("请求远端 PTY 失败（对端可能禁用了 PTY）")?;
+        .with_context(|| t!("ssh.request_pty_failed").to_string())?;
 
     channel
         .request_shell(true)
         .await
-        .context("请求远端 Shell 失败")?;
+        .with_context(|| t!("ssh.request_shell_failed").to_string())?;
 
     Ok(channel)
 }
@@ -231,11 +239,11 @@ async fn authenticate(handle: &mut Handle<SshHandler>, host: &Host, user: &str) 
         }
         AuthMethod::PublicKey => {
             if host.key_path.is_empty() {
-                bail!("未配置私钥路径，无法使用密钥认证");
+                bail!("{}", t!("ssh.no_key_path"));
             }
             let key_path = shellexpand(&host.key_path);
             let key = load_secret_key(Path::new(&key_path), None)
-                .with_context(|| format!("加载私钥失败：{key_path}"))?;
+                .with_context(|| t!("ssh.load_key_failed", path => key_path).to_string())?;
             let hash_alg = handle.best_supported_rsa_hash().await?.flatten();
             handle
                 .authenticate_publickey(
@@ -259,11 +267,11 @@ async fn authenticate(handle: &mut Handle<SshHandler>, host: &Host, user: &str) 
 
     let remaining = format!("{:?}", result);
     let message = match host.auth_method {
-        AuthMethod::Password => format!("密码认证失败（对端剩余方法：{remaining}）"),
-        AuthMethod::PublicKey => format!("密钥认证失败（对端剩余方法：{remaining}）"),
-        AuthMethod::Agent => format!("Agent 认证失败（对端剩余方法：{remaining}）"),
+        AuthMethod::Password => t!("ssh.auth_password_failed", remaining => remaining),
+        AuthMethod::PublicKey => t!("ssh.auth_key_failed", remaining => remaining),
+        AuthMethod::Agent => t!("ssh.auth_agent_failed", remaining => remaining),
     };
-    Err(anyhow!(message))
+    Err(anyhow!("{message}"))
 }
 
 /// 展开 `~` 与环境变量，`~/.ssh/id_ed25519` 这种路径在表单里很常见。
@@ -325,7 +333,7 @@ mod tests {
             };
             // 错误里应包含连接失败的上下文
             assert!(
-                err.contains("127.0.0.1") || err.contains("22222") || err.contains("连接"),
+                err.contains("127.0.0.1") || err.contains("22222"),
                 "错误信息应提及目标地址，实际：{err}"
             );
         });

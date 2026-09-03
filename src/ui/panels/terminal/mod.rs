@@ -58,6 +58,7 @@ use crate::{
         theme::palette,
     },
 };
+use rust_i18n::t;
 
 actions!(
     terminal,
@@ -161,10 +162,9 @@ impl TerminalPanel {
         let user = std::env::var("USER")
             .or_else(|_| std::env::var("USERNAME"))
             .unwrap_or_else(|_| "local".to_string());
-        let name: SharedString = if counter == 1 {
-            "本地 Shell".into()
-        } else {
-            SharedString::from(format!("本地 Shell {counter}"))
+        let name: SharedString = match counter {
+            1 => t!("terminal.local_shell").into(),
+            index => t!("terminal.local_shell_numbered", index => index).into(),
         };
         let host = Host {
             id: SharedString::from(format!("local-{counter}")),
@@ -172,7 +172,7 @@ impl TerminalPanel {
             user: SharedString::from(user),
             hostname: SharedString::from("localhost"),
             port: 22,
-            platform: SharedString::from("本机"),
+            platform: t!("terminal.local_platform").into(),
             auth_method: crate::host::AuthMethod::Password,
             password: "".into(),
             key_path: "".into(),
@@ -380,12 +380,7 @@ impl TerminalPanel {
     }
 
     /// 关掉一个窗格：分屏时收回单屏，单屏时关掉整个标签页。
-    fn close_pane(
-        &mut self,
-        pane: gpui::EntityId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn close_pane(&mut self, pane: gpui::EntityId, window: &mut Window, cx: &mut Context<Self>) {
         if self.panes.len() <= 1 {
             self.close(window, cx);
             return;
@@ -554,16 +549,23 @@ impl TerminalPanel {
             let mut failures = Vec::new();
             for rule in rules {
                 if let Err(error) = service.start(&rule).await {
-                    failures.push(format!("{}：{error:#}", rule.name));
+                    failures.push(
+                        t!(
+                            "terminal.forward_failure_item",
+                            name => rule.name,
+                            error => format!("{error:#}"),
+                        )
+                        .to_string(),
+                    );
                 }
             }
             this.update_in(cx, |_, window, cx| {
                 if !failures.is_empty() {
                     window.push_notification(
-                        format!(
-                            "有 {} 条端口转发没起来 —— {}",
-                            failures.len(),
-                            failures.join("；")
+                        t!(
+                            "terminal.forwards_failed",
+                            count => failures.len(),
+                            reasons => failures.join("；"),
                         ),
                         cx,
                     );
@@ -595,7 +597,7 @@ impl TerminalPanel {
             return;
         }
         let Some(service) = self.forwards.clone() else {
-            window.push_notification("SSH 还没连上，端口转发要等连接建好。", cx);
+            window.push_notification(t!("terminal.forwards_need_ssh"), cx);
             return;
         };
 
@@ -641,7 +643,10 @@ impl TerminalPanel {
             let outcome = hosts.update_forwards(&id, &rules).await;
             this.update_in(cx, |_, window, cx| {
                 if let Err(error) = outcome {
-                    window.push_notification(format!("保存端口转发规则失败：{error:#}"), cx);
+                    window.push_notification(
+                        t!("terminal.save_forwards_failed", error => format!("{error:#}")),
+                        cx,
+                    );
                 }
             })
             .ok();
@@ -760,12 +765,7 @@ impl TerminalPanel {
     /// 我们的 [`crate::ui::elements::TerminalGridElement`] 没有那一层，而给整块
     /// 元素加 `opacity` 会连光标和选区一起变淡，读起来是"这一半坏了"。
     /// 描边只花一像素，还不动任何一个字的颜色。
-    fn render_pane_cell(
-        &self,
-        at: usize,
-        window: &Window,
-        cx: &App,
-    ) -> gpui::AnyElement {
+    fn render_pane_cell(&self, at: usize, window: &Window, cx: &App) -> gpui::AnyElement {
         let Some(pane) = self.panes.get(at) else {
             return div().size_full().into_any_element();
         };
@@ -847,8 +847,8 @@ impl Panel for TerminalPanel {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Close)
-                    .tooltip("关闭会话")
-                    .accessibility_id("关闭会话")
+                    .tooltip(t!("terminal.close_session"))
+                    .accessibility_id(t!("terminal.close_session"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         // 按钮吞掉这一下：不然点关闭会顺带把这个标签页选中，
                         // 而它下一刻就不存在了。
@@ -1056,7 +1056,9 @@ mod tests {
     fn collapsing_keeps_the_active_pane(cx: &mut gpui::TestAppContext) {
         let (panel, cx) = draw_panel(cx);
         cx.update(|window, cx| {
-            panel.update(cx, |panel, cx| panel.set_split(SplitLayout::Rows, window, cx))
+            panel.update(cx, |panel, cx| {
+                panel.set_split(SplitLayout::Rows, window, cx)
+            })
         });
         let second = panel.read_with(cx, |panel, _| {
             assert_eq!(panel.active, 1, "新开的那一半应当是活动的");

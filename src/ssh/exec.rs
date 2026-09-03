@@ -16,6 +16,7 @@ use anyhow::{Context as _, Result, anyhow};
 use russh::{ChannelMsg, client::Handle};
 
 use super::client::SshHandler;
+use rust_i18n::t;
 
 /// 一次采集最多收多少字节。远端命令跑飞了（比如 `##ps` 段接了个刷屏的命令）
 /// 也不能把内存吃光；正常一次采集不到 64 KiB。
@@ -45,8 +46,8 @@ impl ExecOutput {
             .find(|line| !line.is_empty());
         match (line, self.exit_status) {
             (Some(line), _) => line.to_owned(),
-            (None, Some(status)) => format!("远端命令退出码 {status}"),
-            (None, None) => "远端命令没有输出也没有退出码".to_owned(),
+            (None, Some(status)) => t!("ssh_exec.exit_status", status => status).to_string(),
+            (None, None) => t!("ssh_exec.no_output").to_string(),
         }
     }
 }
@@ -62,7 +63,10 @@ pub async fn exec_script(
 ) -> Result<ExecOutput> {
     match tokio::time::timeout(timeout, run_script(handle, script)).await {
         Ok(result) => result,
-        Err(_) => Err(anyhow!("远端命令超过 {} 秒未返回", timeout.as_secs())),
+        Err(_) => Err(anyhow!(
+            "{}",
+            t!("ssh_exec.timeout", seconds => timeout.as_secs())
+        )),
     }
 }
 
@@ -70,18 +74,21 @@ async fn run_script(handle: &Handle<SshHandler>, script: &str) -> Result<ExecOut
     let mut channel = handle
         .channel_open_session()
         .await
-        .context("打开采集通道失败")?;
+        .with_context(|| t!("ssh_exec.open_channel_failed").to_string())?;
 
     channel
         .exec(true, "/bin/sh")
         .await
-        .context("远端启动 /bin/sh 失败")?;
+        .with_context(|| t!("ssh_exec.start_sh_failed").to_string())?;
     channel
         .data(script.as_bytes())
         .await
-        .context("发送采集脚本失败")?;
+        .with_context(|| t!("ssh_exec.send_script_failed").to_string())?;
     // sh 读到 EOF 才开始收尾；不发这一下，通道会一直等着更多输入。
-    channel.eof().await.context("关闭采集通道的写端失败")?;
+    channel
+        .eof()
+        .await
+        .with_context(|| t!("ssh_exec.close_write_failed").to_string())?;
 
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -363,7 +370,11 @@ pub(crate) mod fake {
             )
             .await
             .expect_err("超时必须报错");
-            assert!(format!("{error}").contains("未返回"), "实际：{error}");
+            assert_eq!(
+                format!("{error}"),
+                t!("ssh_exec.timeout", seconds => 0),
+                "实际：{error}"
+            );
         });
     }
 }
