@@ -607,15 +607,10 @@ impl Emulator {
         }
     }
 
-    /// 粘贴一段文本。开了 bracketed paste 的程序（vim、bash）靠那对包裹序列
-    /// 分清"粘进来的"和"敲进来的"，不然多行文本会被逐行当命令执行。
+    /// 粘贴一段文本。编码见 [`paste_bytes`]。
     pub fn paste(&mut self, text: &str, cx: &mut Context<Self>) {
-        let text = if self.content.mode.contains(TermMode::BRACKETED_PASTE) {
-            format!("\x1b[200~{}\x1b[201~", text.replace('\x1b', ""))
-        } else {
-            text.replace("\r\n", "\r").replace('\n', "\r")
-        };
-        self.input(text.into_bytes(), cx);
+        let bracketed = self.content.mode.contains(TermMode::BRACKETED_PASTE);
+        self.input(paste_bytes(text, bracketed), cx);
     }
 
     /// 滚轮。`lines` 为正表示往回看（显示更早的输出），按住 Shift 时强制
@@ -1042,6 +1037,36 @@ fn cursor(cursor: RenderableCursor, mode: TermMode) -> Option<Cursor> {
     })
 }
 
+/// 一次粘贴编成的字节。
+///
+/// 开了 bracketed paste 的程序（bash、zsh、vim）靠 `\x1b[200~` / `\x1b[201~`
+/// 那对包裹序列分清"粘进来的"和"敲进来的"，不然多行文本会被逐行当命令执行。
+///
+/// 两件事必须在这里做掉：
+///
+/// - **CRLF 折成 LF**。Windows 剪贴板里的换行是 `\r\n`，而 readline 在
+///   bracketed paste 里把读到的 `\r` 也当成一个换行（`_rl_bracketed_text`
+///   里 `c == '\r'` 就换成 `'\n'`），一对 CRLF 于是变成两个换行 —— 粘进来的
+///   多行命令行行之间凭空多一个空行，行尾续行的 `\` 也就接不上了。折成 LF
+///   之后，从浏览器/编辑器拷来的命令和在 Unix 终端里粘的完全一样。
+/// - **抹掉 ESC**。文本里自带一个 `\x1b[201~` 就能提前关掉包裹，让后面的内容
+///   变成"敲进来的"直接执行；连 ESC 一起滤掉，那串就只剩无害的 `[201~`。
+///   非 bracketed 的那条路上没有包裹可关，原样送出去。
+///
+/// 对端没开 bracketed paste 时只能退回逐行送：换行统一成 `\r`，因为终端上
+/// 的回车键送的是 CR，`\n` 在这条路上不是"执行"而是换行。
+fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    if bracketed {
+        let text = text.replace("\r\n", "\n");
+        let mut bytes = b"\x1b[200~".to_vec();
+        bytes.extend(text.bytes().filter(|&b| b != 0x1b));
+        bytes.extend_from_slice(b"\x1b[201~");
+        bytes
+    } else {
+        text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+    }
+}
+
 /// 三个键在 xterm 编码里的基数。侧键（前进/后退）没有编码，不报。
 fn button_base(button: gpui::MouseButton) -> Option<u8> {
     Some(match button {
@@ -1283,6 +1308,40 @@ mod tests {
             wheel_route(TermMode::ALT_SCREEN, false, true),
             WheelRoute::Scrollback
         );
+    }
+
+    #[test]
+    fn paste_folds_crlf_so_a_windows_clipboard_pastes_like_a_unix_one() {
+        // 症状就是这一条：`\r\n` 原样进包裹，readline 把 CR 也算一个换行，
+        // 多行命令粘进去行行之间多一个空行。
+        assert_eq!(
+            paste_bytes("a\r\nb\r\n", true),
+            b"\x1b[200~a\nb\n\x1b[201~".to_vec(),
+        );
+        assert_eq!(paste_bytes("a\r\nb", true), paste_bytes("a\nb", true));
+    }
+
+    #[test]
+    fn paste_wraps_and_strips_esc_inside_the_brackets() {
+        assert_eq!(
+            paste_bytes("ls -la", true),
+            b"\x1b[200~ls -la\x1b[201~".to_vec()
+        );
+        // 自带一个结束序列也关不掉包裹：ESC 被滤掉，只剩无害的字面量，
+        // 而结束序列全篇仍然只有我们加的那一个。
+        let out = paste_bytes("foo\x1b[201~\nrm -rf ~\n", true);
+        let end = b"\x1b[201~";
+        assert_eq!(out.windows(end.len()).filter(|w| *w == end).count(), 1);
+        let inner = &out[b"\x1b[200~".len()..out.len() - end.len()];
+        assert!(!inner.contains(&0x1b));
+        assert_eq!(inner, b"foo[201~\nrm -rf ~\n");
+    }
+
+    #[test]
+    fn paste_without_bracketed_mode_sends_cr_per_line() {
+        // 没有包裹可关，ESC 也就不用动。
+        assert_eq!(paste_bytes("a\nb\r\nc\n", false), b"a\rb\rc\r".to_vec());
+        assert_eq!(paste_bytes("a\x1b[201~b", false), b"a\x1b[201~b".to_vec());
     }
 
     #[test]
