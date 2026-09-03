@@ -105,11 +105,11 @@ impl AssetSource for Assets {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
 
-        gpui_component_assets::Assets.load(path)
+        gpui_kit_assets::Assets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut paths = gpui_component_assets::Assets.list(path)?;
+        let mut paths = gpui_kit_assets::Assets.list(path)?;
         paths.extend(
             OWNED
                 .iter()
