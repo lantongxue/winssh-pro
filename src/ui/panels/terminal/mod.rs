@@ -953,6 +953,15 @@ impl Render for TerminalPanel {
                                                 .overflow_hidden()
                                                 .border_l_1()
                                                 .border_color(cx.theme().border)
+                                                // 别在这儿给它套 `Entity::cached`：
+                                                // 缓存进不了门。Dock 已经把整个面板
+                                                // 挂成一块带缓存的子视图，终端刷屏时
+                                                // 那一层每帧都不命中，而 GPUI 重建一棵
+                                                // 缓存子树时会置上 `Window::refreshing`，
+                                                // 嵌在里面的缓存视图一律跳过复用 ——
+                                                // 试过，每帧照样重画。这一栏能省的只有
+                                                // 它自己一帧建多少元素，见那个模块的
+                                                // 文档与 `frame_cost`。
                                                 .child(self.monitor_panel.clone()),
                                         ),
                                 ),
@@ -1114,6 +1123,60 @@ mod tests {
         let panel = harness.read_with(cx, |harness, _| harness.panel.clone());
         cx.update(|window, cx| window.draw(cx).clear(cx));
         (panel, cx)
+    }
+
+    /// 这条标签页一帧要多少 CPU。**平时不跑**（`#[ignore]`），要量的时候：
+    ///
+    /// ```text
+    /// cargo test --release --bin winssh-pro terminal::tests::frame_cost \
+    ///     -- --ignored --nocapture --test-threads=1
+    /// ```
+    ///
+    /// 量的是"终端里正刷屏"这个场景：每帧给终端窗格一次 `cx.notify()`，然后
+    /// 整帧走完 layout/prepaint/paint。它是这一栏所有面板的预算表 ——
+    /// 终端每吐一批输出，Dock 那一层的面板缓存就不命中（见
+    /// [`crate::ui::panels::MonitorPanel`] 的模块文档），**整条标签页**连右侧
+    /// 监控、底部 SFTP 一起重建一遍，所以这里的数就是一帧的实际开销。
+    ///
+    /// 落这条量尺时（release 档，监控面板还没采到读数，所以它那一栏只画空状态；
+    /// 带读数的 Metrics 页另有 [`MonitorPanel`] 自己那条量尺）：
+    ///
+    /// | 开了什么 | 每帧 |
+    /// | --- | --- |
+    /// | 只有终端 | 0.8ms |
+    /// | 加监控面板（空状态） | 1.0ms |
+    /// | 再加 SFTP 栏 | 4.8ms |
+    ///
+    /// 120fps 的预算是 8.3ms。
+    #[gpui_kit::test]
+    #[ignore = "性能量尺，按需手动跑"]
+    fn frame_cost(cx: &mut gpui_kit::TestAppContext) {
+        use std::time::Instant;
+
+        /// 每帧先让终端窗格脏一次，再整帧画完 —— 终端刷屏时就是这个节奏。
+        fn run(cx: &mut gpui_kit::VisualTestContext, pane: &Entity<TerminalPane>, label: &str) {
+            for _ in 0..3 {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+            }
+            const FRAMES: u32 = 100;
+            let start = Instant::now();
+            for _ in 0..FRAMES {
+                pane.update(cx, |_, cx| cx.notify());
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+            }
+            println!("{label}: {:?}/frame", start.elapsed() / FRAMES);
+        }
+
+        let (panel, cx) = draw_panel(cx);
+        let pane = panel.read_with(cx, |panel, _| panel.panes[0].clone());
+
+        run(cx, &pane, "只有终端");
+        panel.update(cx, |panel, cx| panel.set_monitor_open(true, cx));
+        run(cx, &pane, "加监控面板");
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| panel.toggle_sftp(window, cx));
+        });
+        run(cx, &pane, "再加 SFTP 栏");
     }
 
     struct Harness {

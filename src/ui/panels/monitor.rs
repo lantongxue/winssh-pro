@@ -1,8 +1,8 @@
 //! 会话右侧监控面板：贴在终端右侧，展示对端主机的实时资源。
 //!
 //! 对应原型的 `SessionRightMonitorPanel`：顶部是主机名 + 活力点 + 关闭 / 刷新，
-//! 下一条是 Uptime/Load，再往下是 Tab 条（Metrics / Procs / Docker / Diag，
-//! 末尾一个齿轮是设置页），内容区按当前 Tab 渲染不同的卡片与列表。
+//! 下一条是 Uptime/Load，再往下是 Tab 条（Metrics / Procs / Diag，末尾一个齿轮
+//! 是设置页），内容区按当前 Tab 渲染不同的卡片与列表。
 //!
 //! 它不是一个 Dock `Panel`，而是每个终端会话自己持有的一块侧栏，生命周期跟着
 //! `TerminalPanel` 走。
@@ -13,7 +13,22 @@
 //! 原因显示出来。没有会话（本地 Shell、还没连上）时显示空状态，不编数字。
 //!
 //! 轮询在面板收起时也继续，但用的是轻量脚本 —— 终端下沿的状态栏要那几个数，
-//! 而它一直看得见；进程列表与容器只在真的显示着的时候才采。
+//! 而它一直看得见；进程列表只在真的显示着的时候才采。
+//!
+//! **这一栏每帧都重画，而且没法靠缓存躲开。** 它是这条标签页里最重的一块：
+//! Metrics 页一帧要建两百多个元素（四张卡片、两条面积图、十行高负载进程），
+//! 而 120fps 一帧的预算只有 8.3ms。GPUI 每帧从根视图重建整棵元素树，终端一
+//! 刷屏就是每帧一次 `cx.notify()`，脏视图沿派发树往上标会把 `TerminalPanel`
+//! 也标脏 —— 而 Dock 恰好把整个面板挂成一块带缓存的子视图
+//! （`TabPanel::render_active_panel`），那一层于是每帧都不命中。在这块面板
+//! 自己身上再加 [`gpui_kit::Entity::cached`] 也没用：GPUI 重建一棵缓存子树时
+//! 会置上 `Window::refreshing`，嵌在里面的缓存视图一律跳过复用。试过，实测
+//! 每帧照样重画。
+//!
+//! 所以这一栏能省的只有"一帧建多少元素、排几遍版"。**别加内容尺寸的 flex
+//! 层级**：一个尺寸靠内容决定的 flex 容器会让它下面整棵子树多排一遍版，
+//! 这一页两百个元素，一层就是零点几毫秒。改这一页之前先跑一遍
+//! [`tests::frame_cost`]（那儿记着每一页当时的数）。
 //!
 //! 展开与收起这两档各有各的间隔，跟着主机走（[`crate::host::MonitorIntervals`]），
 //! 在末尾那个齿轮页里改：一台跳板机和一台数据库该盯多紧本来就不一样。
@@ -34,15 +49,15 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString, Size,
-    StatefulInteractiveElement as _, Styled as _, Task, Window, div, linear_color_stop,
-    linear_gradient, prelude::FluentBuilder as _, px, rgb, size,
+    InteractiveElement as _, IntoElement, ParentElement, Pixels, Render, SharedString, Size,
+    StatefulInteractiveElement as _, Styled, Task, Window, div, linear_color_stop, linear_gradient,
+    prelude::FluentBuilder as _, px, rgb, size,
 };
 
 use crate::{
     host::{Host, MonitorIntervals},
     monitor::{MonitorTelemetry, ProbeOptions, ProcessItem, diag_commands},
-    service::{ContainerAction, HostService, MonitorService},
+    service::{HostService, MonitorService},
     session::SessionTelemetry,
     ui::theme::{AppIcon, palette},
 };
@@ -62,7 +77,6 @@ const PROCESS_ROW_HEIGHT: Pixels = px(28.);
 pub enum MonitorTab {
     Metrics,
     Processes,
-    Docker,
     Diagnostics,
     /// 采集节奏的设置页。排在最后，只有一个齿轮图标 —— 见 [`MonitorTab::ALL`]。
     Settings,
@@ -70,37 +84,30 @@ pub enum MonitorTab {
 
 impl MonitorTab {
     /// Tab 条上的顺序。
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 4] = [
         Self::Metrics,
         Self::Processes,
-        Self::Docker,
         Self::Diagnostics,
         Self::Settings,
     ];
 
     /// 这一页占不占 Tab 条的等分宽度。
     ///
-    /// 设置页不占：这一栏才 360 宽，四个带字的页签已经把它排满了
-    /// （`Procs (128)` 本来就险些放不下）。设置是"偶尔来一次改个数"的页，
-    /// 给它一个齿轮宽的固定位置，剩下的宽度还留给天天要看的那四页。
+    /// 设置页不占：这一栏才 360 宽，带字的那几个页签本来就排得紧
+    /// （`Procs (128)` 险些放不下）。设置是"偶尔来一次改个数"的页，
+    /// 给它一个齿轮宽的固定位置，剩下的宽度还留给天天要看的那几页。
     fn stretches(&self) -> bool {
         !matches!(self, Self::Settings)
     }
 
     /// 计数只在真的采到了之后才写 —— `Procs (0)` 和"还不知道有几个"是两回事。
-    /// `counts` 是 `(进程数, 容器数)`，后者在这次没问 docker 时是 `None`。
-    fn label(&self, counts: Option<(usize, Option<usize>)>) -> SharedString {
-        match (self, counts) {
+    fn label(&self, processes: Option<usize>) -> SharedString {
+        match (self, processes) {
             (Self::Metrics, _) => t!("monitor.tab_metrics").into(),
-            (Self::Processes, Some((processes, _))) => {
+            (Self::Processes, Some(processes)) => {
                 t!("monitor.tab_processes_count", count => processes).into()
             }
             (Self::Processes, None) => t!("monitor.tab_processes").into(),
-            // 没问过 docker 的那几次不写计数：那不是"0 个容器"。
-            (Self::Docker, Some((_, Some(containers)))) => {
-                t!("monitor.tab_docker_count", count => containers).into()
-            }
-            (Self::Docker, _) => t!("monitor.tab_docker").into(),
             (Self::Diagnostics, _) => t!("monitor.tab_diagnostics").into(),
             // 只有图标，见 [`Self::stretches`]。
             (Self::Settings, _) => "".into(),
@@ -111,7 +118,6 @@ impl MonitorTab {
         match self {
             Self::Metrics => Icon::new(AppIcon::Activity),
             Self::Processes => Icon::new(IconName::Cpu),
-            Self::Docker => Icon::new(IconName::GalleryVerticalEnd),
             Self::Diagnostics => Icon::new(AppIcon::Zap),
             Self::Settings => Icon::new(IconName::Settings),
         }
@@ -265,12 +271,10 @@ impl MonitorPanel {
         cx.notify();
     }
 
-    /// 这一次要采什么：面板收起时只要状态栏那几个数，Docker 那一页展开时才连
-    /// 容器一起采（`docker stats` 要一秒上下）。
+    /// 这一次要采什么：面板收起时只要状态栏那几个数。
     fn probe_options(&self) -> ProbeOptions {
         match (self.expanded, self.active_tab) {
             (false, _) => ProbeOptions::light(),
-            (true, MonitorTab::Docker) => ProbeOptions::with_docker(),
             // 进程管理那一页要看到主机上所有进程，采一份不截断的列表。
             (true, MonitorTab::Processes) => ProbeOptions::all_processes(),
             (true, _) => ProbeOptions::full(),
@@ -359,7 +363,7 @@ impl MonitorPanel {
 
     /// 开一条轮询任务：采一次 → 等一个间隔 → 再采。
     ///
-    /// 每一轮都重新问一次 `probe_options`，所以切到 Docker 那一页、或者把面板
+    /// 每一轮都重新问一次 `probe_options`，所以切到 Procs 那一页、或者把面板
     /// 收起来，下一轮就自动换成对应的脚本。赋值给 `self.poll` 会丢掉上一条任务
     /// （`Task` 的 `Drop` 就是取消），所以重复调用不会攒出好几条在跑。
     fn start_polling(&mut self, cx: &mut Context<Self>) {
@@ -511,34 +515,10 @@ impl MonitorPanel {
                     }
                 }
                 this.refresh(cx);
-            });
-        })
-        .detach();
-    }
-
-    fn container_action(
-        &mut self,
-        id: SharedString,
-        action: ContainerAction,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(service) = self.service.clone() else {
-            return;
-        };
-        cx.spawn(async move |this, cx| {
-            let outcome = service.container_action(&id, action).await;
-            _ = this.update(cx, |this, cx| {
-                match outcome {
-                    Ok(()) => this.error = None,
-                    Err(error) => {
-                        this.error = Some(SharedString::from(t!(
-                            "monitor.docker_action_failed",
-                            id => id,
-                            error => format!("{error:#}"),
-                        )))
-                    }
-                }
-                this.refresh(cx);
+                // 改了 `error` 就得喊一声。眼下终端一直在刷屏、整棵树每帧
+                // 都重建，所以不喊也看得见 —— 但那是别人的重画顺带捎的，
+                // 换一条安静的会话（本地 shell）这条提示就不出来了。
+                cx.notify();
             });
         })
         .detach();
@@ -729,16 +709,14 @@ impl MonitorPanel {
 
     fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active_tab;
-        // 只取 Tab 名要的那两个计数。别在这儿 clone 整份遥测 —— 那是一次
-        // 四十条进程加容器的深拷贝，而这个函数每帧都跑。
+        // 只取 Tab 名要的那个计数。别在这儿 clone 整份遥测 —— 那是一次四十条
+        // 进程的深拷贝，而这个函数每帧都跑。
         // 进程数用真正的总数（`##proccount`），不是截断后回传的那份列表长度：
         // 后者会跟着当前所在页在 40 与全量之间跳，把标签卡在 40 上误导人。
-        let counts = self.telemetry.as_ref().map(|t| {
-            (
-                t.process_total.unwrap_or(t.processes.len()),
-                t.docker_sampled.then_some(t.containers.len()),
-            )
-        });
+        let counts = self
+            .telemetry
+            .as_ref()
+            .map(|t| t.process_total.unwrap_or(t.processes.len()));
         h_flex()
             .w_full()
             .items_center()
@@ -753,7 +731,7 @@ impl MonitorPanel {
                 let label = tab.label(counts);
                 let icon = tab.icon();
                 div()
-                    .id(SharedString::from(format!("monitor-tab-{ix}")))
+                    .id(("monitor-tab", ix))
                     // 带字的四页等分剩下的宽度，齿轮那页只占一个图标。
                     .map(|this| match tab.stretches() {
                         true => this.flex_1(),
@@ -801,10 +779,9 @@ impl MonitorPanel {
                             return;
                         }
                         this.active_tab = tab;
-                        // 有些页要的东西上一次没采全：Docker 的容器（`docker
-                        // stats` 慢，不显示就不采），Procs 的全部进程（默认档位
-                        // 截断到前 N 条）。切过去立刻补采一次，不然要等下个周期。
-                        if matches!(tab, MonitorTab::Docker | MonitorTab::Processes) {
+                        // Procs 页要的全部进程上一次没采全（默认档位截断到前 N
+                        // 条）。切过去立刻补采一次，不然要等下个周期。
+                        if matches!(tab, MonitorTab::Processes) {
                             this.refresh(cx);
                         }
                         cx.notify();
@@ -812,33 +789,36 @@ impl MonitorPanel {
             }))
     }
 
-    fn render_metrics(
+    /// Metrics 页：2x2 四张卡片 + 高负载进程预览。
+    ///
+    /// 内容直接长在传进来的那一列上（[`Render`] 那边给的是外层滚动容器），中间
+    /// 不夹自己的 `v_flex` —— **内容尺寸的 flex 容器会让它下面整棵子树多排一遍
+    /// 版**，而这一页是两百来个元素，那一遍就是毫秒级。同一个道理下面还用了两次
+    /// （四张卡片不再套一层、十行预览不再套一层）。量法与当时的数见
+    /// [`tests::frame_cost`]。
+    fn render_metrics<E: ParentElement + Styled>(
         &self,
+        column: E,
         telemetry: &MonitorTelemetry,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> E {
         let mem_percent = telemetry.memory_percent().round() as i32;
         let disk_percent = telemetry.disk_percent().round() as i32;
 
-        v_flex()
+        column
             .gap_2()
             .p_2()
             .child(
-                // 2x2 gauges
-                v_flex()
+                h_flex()
                     .gap_2()
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(self.render_cpu_card(telemetry, cx))
-                            .child(self.render_ram_card(telemetry, mem_percent, cx)),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(self.render_disk_card(telemetry, disk_percent, cx))
-                            .child(self.render_network_card(telemetry, cx)),
-                    ),
+                    .child(self.render_cpu_card(telemetry, cx))
+                    .child(self.render_ram_card(telemetry, mem_percent, cx)),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(self.render_disk_card(telemetry, disk_percent, cx))
+                    .child(self.render_network_card(telemetry, cx)),
             )
             .child(self.render_top_processes(telemetry, cx))
     }
@@ -867,21 +847,20 @@ impl MonitorPanel {
             .border_1()
             .border_color(cx.theme().border)
             .child(
+                // 图标、标题、读数一排三个，读数靠 `ml_auto` 顶到右边 —— 与
+                // 「标题分一组 + justify_between」画出来一样，但少一层容器。
+                // 卡片头这么写的四张都是同一个理由，见 [`Self::render_metrics`]。
                 h_flex()
-                    .justify_between()
+                    .gap_1()
                     .items_center()
                     .text_xs()
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .items_center()
-                            .text_color(cx.theme().foreground)
-                            .font_semibold()
-                            .child(Icon::new(IconName::Cpu).with_size(px(14.)).text_color(blue))
-                            .child("CPU Usage"),
-                    )
+                    .text_color(cx.theme().foreground)
+                    .font_semibold()
+                    .child(Icon::new(IconName::Cpu).with_size(px(14.)).text_color(blue))
+                    .child("CPU Usage")
                     .child(
                         div()
+                            .ml_auto()
                             .font_family(cx.theme().mono_font_family.clone())
                             .font_bold()
                             .text_color(blue)
@@ -934,24 +913,20 @@ impl MonitorPanel {
             .border_color(cx.theme().border)
             .child(
                 h_flex()
-                    .justify_between()
+                    .gap_1()
                     .items_center()
                     .text_xs()
+                    .font_semibold()
+                    .text_color(cx.theme().foreground)
                     .child(
-                        h_flex()
-                            .gap_1()
-                            .items_center()
-                            .font_semibold()
-                            .text_color(cx.theme().foreground)
-                            .child(
-                                Icon::new(IconName::MemoryStick)
-                                    .with_size(px(14.))
-                                    .text_color(teal),
-                            )
-                            .child("RAM Usage"),
+                        Icon::new(IconName::MemoryStick)
+                            .with_size(px(14.))
+                            .text_color(teal),
                     )
+                    .child("RAM Usage")
                     .child(
                         div()
+                            .ml_auto()
                             .font_family(cx.theme().mono_font_family.clone())
                             .font_bold()
                             .text_color(teal)
@@ -1001,24 +976,20 @@ impl MonitorPanel {
             .border_color(cx.theme().border)
             .child(
                 h_flex()
-                    .justify_between()
+                    .gap_1()
                     .items_center()
                     .text_xs()
+                    .font_semibold()
+                    .text_color(cx.theme().foreground)
                     .child(
-                        h_flex()
-                            .gap_1()
-                            .items_center()
-                            .font_semibold()
-                            .text_color(cx.theme().foreground)
-                            .child(
-                                Icon::new(IconName::HardDrive)
-                                    .with_size(px(14.))
-                                    .text_color(rgb(0xCE9178)),
-                            )
-                            .child("Disk / Root"),
+                        Icon::new(IconName::HardDrive)
+                            .with_size(px(14.))
+                            .text_color(rgb(0xCE9178)),
                     )
+                    .child("Disk / Root")
                     .child(
                         div()
+                            .ml_auto()
                             .font_family(cx.theme().mono_font_family.clone())
                             .font_bold()
                             .text_color(rgb(0xCE9178))
@@ -1116,12 +1087,6 @@ impl MonitorPanel {
         telemetry: &MonitorTelemetry,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let processes = telemetry
-            .processes
-            .iter()
-            .take(10)
-            .cloned()
-            .collect::<Vec<_>>();
         // "View All" 后面那个数是主机上真正的进程总数，不是截断后这份预览的长度
         // —— 点进 Procs 页看到的是全量，这里的数要和它以及标签一致。
         let total = telemetry.process_total.unwrap_or(telemetry.processes.len());
@@ -1132,6 +1097,9 @@ impl MonitorPanel {
             .border_color(cx.theme().border)
             .overflow_hidden()
             .child(
+                // 这一条**不**照卡片头那样压平：`font_semibold` 挂在行上的话，
+                // 右边那颗 ghost 按钮的字也会跟着变粗 —— 组件库的 Button 自己
+                // 定字号与颜色，字重却是继承来的。
                 h_flex()
                     .h(px(32.))
                     .px_2()
@@ -1165,11 +1133,13 @@ impl MonitorPanel {
                             })),
                     ),
             )
-            .child(v_flex().children(processes.into_iter().map(|p| {
+            // 十行直接挂在这一列上，中间不再夹一层 `v_flex`：那一层不改版式，
+            // 只是让这十行的排版多走一级。
+            .children(telemetry.processes.iter().take(10).map(|p| {
                 let pid = p.pid;
                 let command = p.command.clone();
                 h_flex()
-                    .id(SharedString::from(format!("top-proc-row-{pid}")))
+                    .id(("top-proc-row", pid))
                     // 悬停高亮整行，和 Procs 页一致。
                     .hover(|style| style.bg(palette::surface(cx)))
                     .px_2()
@@ -1245,7 +1215,7 @@ impl MonitorPanel {
                                     ),
                             )
                             .child(
-                                Button::new(SharedString::from(format!("kill-top-{pid}")))
+                                Button::new(("kill-top", pid))
                                     .ghost()
                                     .xsmall()
                                     .icon(Icon::new(AppIcon::Trash).with_size(px(12.)))
@@ -1255,7 +1225,7 @@ impl MonitorPanel {
                                     })),
                             ),
                     )
-            })))
+            }))
     }
 
     /// Procs 页：筛选/排序条 + 一条虚拟列表。
@@ -1372,253 +1342,76 @@ impl MonitorPanel {
         let pid = process.pid;
         let command = process.command.clone();
 
-        div()
-            .id(SharedString::from(format!("proc-row-{pid}")))
+        // 行高、悬停底色与内部横排都由同一个元素承担：原来外面那个只管高度和
+        // 悬停的 `div` 是白搭的一级 —— 一屏三十来行，每行省一级排版。
+        h_flex()
+            .id(("proc-row", pid))
             .h(PROCESS_ROW_HEIGHT)
             // 悬停高亮整行：告诉用户这一条是当前盯着的那一行。
             .hover(|style| style.bg(palette::surface(cx)))
+            .px_2()
+            .items_center()
+            .justify_between()
+            .border_b_1()
+            .border_color(cx.theme().border.opacity(0.5))
             .child(
                 h_flex()
-                    .size_full()
-                    .px_2()
+                    .gap_2()
+                    .min_w_0()
                     .items_center()
-                    .justify_between()
-                    .border_b_1()
-                    .border_color(cx.theme().border.opacity(0.5))
+                    .text_xs()
+                    .font_family(cx.theme().mono_font_family.clone())
                     .child(
-                        h_flex()
-                            .gap_2()
-                            .min_w_0()
-                            .items_center()
-                            .text_xs()
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .child(
-                                div()
-                                    .font_bold()
-                                    .text_color(rgb(0x569CD6))
-                                    .child(SharedString::from(pid.to_string())),
-                            )
-                            .child(
-                                div()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(SharedString::from(format!("({})", process.user))),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .max_w(px(160.))
-                                    .text_color(cx.theme().foreground)
-                                    .child(command.clone()),
-                            ),
+                        div()
+                            .font_bold()
+                            .text_color(rgb(0x569CD6))
+                            .child(SharedString::from(pid.to_string())),
                     )
                     .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .flex_shrink_0()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_bold()
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .text_color(rgb(0x569CD6))
-                                    .child(SharedString::from(format!("{:.1}%", process.cpu))),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(SharedString::from(format!("{:.1}%", process.mem))),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("kill-{pid}")))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(Icon::new(AppIcon::Trash).with_size(px(12.)))
-                                    .tooltip(SharedString::from(format!("kill -15 {pid}")))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.confirm_kill(pid, command.clone(), window, cx);
-                                    })),
-                            ),
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(format!("({})", process.user))),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .max_w(px(160.))
+                            .text_color(cx.theme().foreground)
+                            .child(command.clone()),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_bold()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_color(rgb(0x569CD6))
+                            .child(SharedString::from(format!("{:.1}%", process.cpu))),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(format!("{:.1}%", process.mem))),
+                    )
+                    .child(
+                        Button::new(("kill", pid))
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(AppIcon::Trash).with_size(px(12.)))
+                            .tooltip(SharedString::from(format!("kill -15 {pid}")))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.confirm_kill(pid, command.clone(), window, cx);
+                            })),
                     ),
             )
             .into_any_element()
-    }
-
-    fn render_docker_tab(
-        &self,
-        telemetry: &MonitorTelemetry,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let containers = &telemetry.containers;
-        // "没问过 docker" 与 "问过，没有容器" 要说成两句话。切到这一页会立刻补采
-        // 一次（见 `render_tabs`），所以第一句只会出现一两秒。
-        let empty_note = SharedString::from(match telemetry.docker_sampled {
-            true => t!("monitor.docker_none"),
-            false => t!("monitor.docker_sampling"),
-        });
-        v_flex()
-            .gap_2()
-            .p_2()
-            .when(containers.is_empty(), |this| {
-                this.child(
-                    div()
-                        .p_4()
-                        .rounded(cx.theme().radius)
-                        .bg(cx.theme().background)
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .text_sm()
-                        .text_center()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(empty_note),
-                )
-            })
-            .when(!containers.is_empty(), |this| {
-                this.children(containers.iter().map(|c| {
-                    let is_running = c.status.is_running();
-                    let id = c.id.clone();
-                    let id2 = c.id.clone();
-                    v_flex()
-                        .gap_1()
-                        .p_2()
-                        .rounded(cx.theme().radius)
-                        .bg(cx.theme().background)
-                        .border_1()
-                        .border_color(cx.theme().border)
-                        .text_xs()
-                        .font_family(cx.theme().mono_font_family.clone())
-                        .child(
-                            h_flex()
-                                .justify_between()
-                                .items_center()
-                                .child(
-                                    h_flex()
-                                        .gap_1()
-                                        .items_center()
-                                        .min_w_0()
-                                        .child(div().size(px(8.)).rounded_full().bg(
-                                            if is_running {
-                                                rgb(0x27C93F)
-                                            } else {
-                                                rgb(0xFF5F56)
-                                            },
-                                        ))
-                                        .child(
-                                            div()
-                                                .font_semibold()
-                                                .text_color(cx.theme().foreground)
-                                                .truncate()
-                                                .child(c.name.clone()),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .px_1()
-                                        .rounded(cx.theme().radius)
-                                        .bg(if is_running {
-                                            rgb(0x27C93F).opacity(0.15)
-                                        } else {
-                                            rgb(0xFF5F56).opacity(0.15)
-                                        })
-                                        .border_1()
-                                        .border_color(if is_running {
-                                            rgb(0x27C93F).opacity(0.3)
-                                        } else {
-                                            rgb(0xFF5F56).opacity(0.3)
-                                        })
-                                        .text_color(if is_running {
-                                            rgb(0x27C93F)
-                                        } else {
-                                            rgb(0xFF5F56)
-                                        })
-                                        .text_xs()
-                                        .child(SharedString::from(c.status.label().to_string())),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_color(cx.theme().muted_foreground)
-                                .truncate()
-                                .child(SharedString::from(format!("Image: {}", c.image))),
-                        )
-                        .child(
-                            h_flex()
-                                .justify_between()
-                                .gap_2()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .truncate()
-                                        .child(SharedString::from(format!("Ports: {}", c.ports))),
-                                )
-                                .child(div().flex_shrink_0().child(c.created.clone())),
-                        )
-                        .child(
-                            h_flex()
-                                .justify_between()
-                                .items_center()
-                                .pt_1()
-                                .border_t_1()
-                                .border_color(cx.theme().border.opacity(0.5))
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(SharedString::from(format!("CPU: {:.1}%", c.cpu)))
-                                        .child(SharedString::from(format!("RAM: {}", c.mem))),
-                                )
-                                .child(
-                                    h_flex()
-                                        .gap_1()
-                                        .child(
-                                            Button::new(SharedString::from(format!(
-                                                "restart-{}",
-                                                id
-                                            )))
-                                            .ghost()
-                                            .xsmall()
-                                            .icon(IconName::Redo2)
-                                            .tooltip("docker restart")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.container_action(
-                                                    id.clone(),
-                                                    ContainerAction::Restart,
-                                                    cx,
-                                                );
-                                            })),
-                                        )
-                                        .child(
-                                            Button::new(SharedString::from(format!(
-                                                "toggle-{}",
-                                                id2
-                                            )))
-                                            .ghost()
-                                            .xsmall()
-                                            .icon(if is_running {
-                                                IconName::Pause
-                                            } else {
-                                                IconName::Play
-                                            })
-                                            .tooltip(if is_running {
-                                                "docker stop"
-                                            } else {
-                                                "docker start"
-                                            })
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                let action = match is_running {
-                                                    true => ContainerAction::Stop,
-                                                    false => ContainerAction::Start,
-                                                };
-                                                this.container_action(id2.clone(), action, cx);
-                                            })),
-                                        ),
-                                ),
-                        )
-                }))
-            })
     }
 
     fn render_diag_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1635,7 +1428,7 @@ impl MonitorPanel {
             .children(commands.iter().enumerate().map(|(ix, diag)| {
                 let cmd = diag.cmd.clone();
                 h_flex()
-                    .id(SharedString::from(format!("diag-{ix}")))
+                    .id(("diag", ix))
                     .p_2()
                     .rounded(cx.theme().radius)
                     .bg(cx.theme().background)
@@ -1861,27 +1654,31 @@ impl Render for MonitorPanel {
                     .min_h_0()
                     .child(self.render_processes_tab(t, cx))
                     .into_any_element(),
-                (tab, telemetry) => v_flex()
-                    .id("monitor-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(match (tab, telemetry) {
-                        (MonitorTab::Diagnostics, _) => self.render_diag_tab(cx).into_any_element(),
-                        (MonitorTab::Settings, _) => {
-                            self.render_settings_tab(cx).into_any_element()
-                        }
-                        (_, None) => self.render_empty(cx).into_any_element(),
+                (tab, telemetry) => {
+                    // 会滚的那几页共用这一列。Metrics 页的内容**直接长在它身上**
+                    // （见 [`Self::render_metrics`]）：那一页最重，中间少夹一层
+                    // 内容尺寸的容器就少排一遍两百个元素的版。剩下几页轻，照旧
+                    // 各自返回一块内容挂进来。
+                    let column = v_flex()
+                        .id("monitor-scroll")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll();
+                    match (tab, telemetry) {
                         (MonitorTab::Metrics, Some(t)) => {
-                            self.render_metrics(t, cx).into_any_element()
+                            self.render_metrics(column, t, cx).into_any_element()
                         }
-                        (MonitorTab::Docker, Some(t)) => {
-                            self.render_docker_tab(t, cx).into_any_element()
+                        (MonitorTab::Diagnostics, _) => {
+                            column.child(self.render_diag_tab(cx)).into_any_element()
                         }
+                        (MonitorTab::Settings, _) => column
+                            .child(self.render_settings_tab(cx))
+                            .into_any_element(),
+                        (_, None) => column.child(self.render_empty(cx)).into_any_element(),
                         // 上面那条分支已经接走了。
-                        (MonitorTab::Processes, Some(_)) => gpui_kit::Empty.into_any_element(),
-                    })
-                    .into_any_element(),
+                        (MonitorTab::Processes, Some(_)) => column.into_any_element(),
+                    }
+                }
             })
     }
 }
@@ -2039,6 +1836,116 @@ mod tests {
         panel.read_with(cx, |panel, _| {
             assert_eq!(panel.intervals, MonitorIntervals::default());
         });
+    }
+
+    /// 这块面板一帧要多少 CPU。**平时不跑**（`#[ignore]`），要量的时候：
+    ///
+    /// ```text
+    /// cargo test --release --bin winssh-pro monitor::tests::frame_cost \
+    ///     -- --ignored --nocapture --test-threads=1
+    /// ```
+    ///
+    /// 存在的理由是一次真实的掉帧：终端里有输出时每帧都会 `cx.notify()`，
+    /// 而脏视图沿派发树往上标会把 `TerminalPanel` 也标脏 —— Dock 把面板整块挂成
+    /// 带缓存的子视图（`TabPanel::render_active_panel`），那一层每帧不命中，
+    /// 于是这一栏**每帧**都要重建一遍元素树。在这块面板自己身上加
+    /// `Entity::cached` 没用：GPUI 重建一棵缓存子树时会置上 `Window::refreshing`，
+    /// 嵌在里面的缓存视图一律跳过复用（试过，实测每帧照样重画）。所以这一栏
+    /// 唯一能压的就是"一帧到底建了多少元素、排了几遍版"。
+    ///
+    /// 落这条量尺时（release 档，Metrics 页有读数、40 条进程）：
+    ///
+    /// | 页 | 每帧 |
+    /// | --- | --- |
+    /// | Metrics | 2.4ms（拆层级之前 6.9ms） |
+    /// | Procs（虚拟列表，可见约 30 行） | 2.0ms |
+    /// | Diag | 0.7ms |
+    /// | 设置 | 0.6ms |
+    ///
+    /// 120fps 一帧的预算是 8.3ms，同一条标签页里终端约 1ms、SFTP 栏约 4ms ——
+    /// Metrics 页原来那 6.9ms 正好把总和顶过预算，于是"一开监控就掉一半帧"。
+    /// 那 6.9→2.4 全部来自**拆掉内容尺寸的 flex 层级**：一个尺寸靠内容决定的
+    /// flex 容器会让它下面整棵子树多排一遍版，四张卡片、十行预览、Metrics 那一列
+    /// 各少一层，就是三倍。加内容之前先看一眼这个数。
+    #[gpui_kit::test]
+    #[ignore = "性能量尺，按需手动跑"]
+    fn frame_cost(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::component::Root;
+        use std::time::Instant;
+
+        cx.update(gpui_kit::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            let panel = MonitorPanel::new(host(MonitorIntervals::default()), None, window, cx);
+            panel.update(cx, |panel, cx| {
+                panel.expanded = true;
+                panel.telemetry = Some(loaded_telemetry());
+                panel.rebuild_process_view(cx);
+            });
+            Root::new(cx.new(|_| Bench { panel }), window, cx)
+        });
+        let bench = root.read_with(cx, |root, _| {
+            root.view().clone().downcast::<Bench>().expect("bench")
+        });
+
+        for tab in MonitorTab::ALL {
+            bench.update(cx, |bench, cx| {
+                bench.panel.update(cx, |panel, _| panel.active_tab = tab);
+                cx.notify();
+            });
+            // 预热两帧：第一帧建元素状态，行排版缓存还是冷的。
+            for _ in 0..2 {
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+            }
+            const FRAMES: u32 = 100;
+            let start = Instant::now();
+            for _ in 0..FRAMES {
+                cx.update(|window, cx| {
+                    bench.update(cx, |bench, cx| {
+                        bench.panel.update(cx, |_, cx| cx.notify());
+                        cx.notify();
+                    });
+                    window.draw(cx).clear(cx)
+                });
+            }
+            println!("{tab:?}: {:?}/frame", start.elapsed() / FRAMES);
+        }
+    }
+
+    /// 一份"像真的"的读数：满历史、四十条进程，用来量一帧的代价。
+    fn loaded_telemetry() -> MonitorTelemetry {
+        MonitorTelemetry {
+            cpu_percent: 37.4,
+            cpu_history: (0..crate::monitor::collector::HISTORY_LEN)
+                .map(|i| 20. + i as f32)
+                .collect(),
+            memory_history: (0..crate::monitor::collector::HISTORY_LEN)
+                .map(|i| 40. + i as f32)
+                .collect(),
+            memory_used_gb: 7.3,
+            memory_total_gb: 16.,
+            disk_used_gb: 120.4,
+            disk_total_gb: 500.,
+            net_in_kbps: 812.,
+            net_out_kbps: 91.,
+            uptime: "12 days, 3:41".into(),
+            load_avg: [0.72, 0.61, 0.55],
+            latency_ms: 37,
+            processes: (0..crate::monitor::probe::TOP_PROCESSES)
+                .map(|ix| process(1000 + ix as u32, "root", "/usr/bin/some-long-daemon --flag"))
+                .collect(),
+            process_total: Some(312),
+        }
+    }
+
+    /// [`frame_cost`] 的外壳：一栏 360x900，就是这块面板在窗口里的地方。
+    struct Bench {
+        panel: Entity<MonitorPanel>,
+    }
+
+    impl Render for Bench {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(360.)).h(px(900.)).child(self.panel.clone())
+        }
     }
 
     /// 把设置页真的画一遍。这一页全是新搭的元素，画不出来只有在这儿才会红。
