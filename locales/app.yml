@@ -21,6 +21,14 @@ activity.settings:
   en: Settings
   zh-CN: 设置
 
+# ── 设置菜单（活动栏底部设置按钮弹出） ──────────────────────────────────────
+settings_menu.settings:
+  en: Settings
+  zh-CN: 设置
+settings_menu.vault:
+  en: Password Vault
+  zh-CN: 密码库
+
 # ── 命令中心（标题栏中间的搜索框） ───────────────────────────────────────
 command_center.search:
   en: Search hosts, views and actions

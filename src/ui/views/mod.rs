@@ -51,8 +51,8 @@ pub enum SidebarView {
 }
 
 impl SidebarView {
-    /// 自上而下的排列顺序。
-    pub const ALL: [SidebarView; 4] = [Self::Hosts, Self::Snippets, Self::Keys, Self::Monitor];
+    /// 自上而下的排列顺序。活动栏上的侧边栏视图导航条目。
+    pub const ALL: [SidebarView; 3] = [Self::Hosts, Self::Snippets, Self::Monitor];
 
     pub fn id(&self) -> &'static str {
         match self {

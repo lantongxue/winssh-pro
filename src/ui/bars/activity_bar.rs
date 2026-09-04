@@ -23,6 +23,7 @@ use gpui_kit::{
 };
 
 use crate::ui::{
+    menus::{SettingsMenu, SettingsMenuAction},
     theme::{AppIcon, palette},
     views::SidebarView,
 };
@@ -63,8 +64,8 @@ pub enum ActivityAction {
 }
 
 impl ActivityAction {
-    /// 自上而下的排列顺序。
-    pub const ALL: [ActivityAction; 3] = [Self::Assistant, Self::QuickConnect, Self::Settings];
+    /// 自上而下的排列顺序。底部的常规动作（设置由专门的菜单组件负责）。
+    pub const ALL: [ActivityAction; 2] = [Self::Assistant, Self::QuickConnect];
 
     pub fn id(&self) -> &'static str {
         match self {
@@ -103,6 +104,7 @@ impl ActivityAction {
 
 type ViewHandler = Rc<dyn Fn(&SidebarView, &mut Window, &mut App)>;
 type ActionHandler = Rc<dyn Fn(&ActivityAction, &mut Window, &mut App)>;
+type VaultHandler = Rc<dyn Fn(&(), &mut Window, &mut App)>;
 
 /// 固定在窗口左侧的活动栏。
 #[derive(IntoElement)]
@@ -110,6 +112,7 @@ pub struct ActivityBar {
     active: SidebarView,
     on_select: Option<ViewHandler>,
     on_action: Option<ActionHandler>,
+    on_open_vault: Option<VaultHandler>,
 }
 
 impl ActivityBar {
@@ -118,6 +121,7 @@ impl ActivityBar {
             active,
             on_select: None,
             on_action: None,
+            on_open_vault: None,
         }
     }
 
@@ -136,6 +140,15 @@ impl ActivityBar {
         handler: impl Fn(&ActivityAction, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_action = Some(Rc::new(handler));
+        self
+    }
+
+    /// 打开密码库完整独立管理窗口。
+    pub fn on_open_vault(
+        mut self,
+        handler: impl Fn(&(), &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_open_vault = Some(Rc::new(handler));
         self
     }
 
@@ -183,13 +196,35 @@ impl ActivityBar {
             }),
         )
     }
+
+    fn render_settings_menu(&self, _cx: &App) -> impl IntoElement {
+        let on_action = self.on_action.clone();
+        let on_open_vault = self.on_open_vault.clone();
+
+        slot(
+            None,
+            SettingsMenu::new("activity-bar-settings")
+                .on_action(move |action, window, cx| match action {
+                    SettingsMenuAction::Settings => {
+                        if let Some(on_action) = on_action.as_ref() {
+                            on_action(&ActivityAction::Settings, window, cx);
+                        }
+                    }
+                    SettingsMenuAction::Vault => {
+                        if let Some(on_open_vault) = on_open_vault.as_ref() {
+                            on_open_vault(&(), window, cx);
+                        }
+                    }
+                }),
+        )
+    }
 }
 
 /// 一格条目：整栏宽，药丸居中，选中时左边缘再贴一条指示条。
 ///
 /// 指示条画在药丸之外、贴着活动栏最左边，所以只能由这一层负责 ——
 /// 按钮自己撑不到那儿。
-fn slot(indicator: Option<Hsla>, pill: Button) -> impl IntoElement {
+fn slot(indicator: Option<Hsla>, pill: impl IntoElement) -> impl IntoElement {
     div()
         .relative()
         .w_full()
@@ -255,11 +290,15 @@ impl RenderOnce for ActivityBar {
             // 而是“做什么”。两组之间的距离靠上面那块留白，不靠更多的线。
             .child(Separator::horizontal().color(cx.theme().sidebar_border))
             .child(
-                v_flex().pt(BAR_PADDING).gap(PILL_GAP).children(
-                    ActivityAction::ALL
-                        .into_iter()
-                        .map(|action| self.render_action(action, cx)),
-                ),
+                v_flex()
+                    .pt(BAR_PADDING)
+                    .gap(PILL_GAP)
+                    .children(
+                        ActivityAction::ALL
+                            .into_iter()
+                            .map(|action| self.render_action(action, cx)),
+                    )
+                    .child(self.render_settings_menu(cx)),
             )
     }
 }

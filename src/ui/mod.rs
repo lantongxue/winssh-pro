@@ -43,7 +43,7 @@ use panels::{
     OpenSelection, PasteClipboard, SelectAllEntries, Tab, ToggleForwards, ToggleMonitor,
     ToggleSftp,
 };
-use workspace::{ToggleCommandPalette, ToggleRightDock, ToggleSidebar};
+use workspace::{OpenVaultWindow, ToggleCommandPalette, ToggleRightDock, ToggleSidebar};
 
 /// 主修饰键：macOS 用 Command，其余平台用 Ctrl。
 #[cfg(target_os = "macos")]
@@ -58,6 +58,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(&format!("{CMD}-k"), ToggleCommandPalette, None),
         KeyBinding::new(&format!("{CMD}-b"), ToggleSidebar, None),
         KeyBinding::new(&format!("{CMD}-alt-b"), ToggleRightDock, None),
+        KeyBinding::new("alt-3", OpenVaultWindow, None),
         KeyBinding::new(&format!("{CMD}-w"), ClosePanel, None),
         KeyBinding::new("shift-escape", ToggleZoom, None),
         // 终端内的 Tab / Shift-Tab：必须在 `Terminal` 上下文中显式绑定并消费，

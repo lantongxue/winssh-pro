@@ -28,7 +28,7 @@ use crate::ui::{
     bars::{ActivityAction, ActivityBar, CommandCenterBar},
     dialogs::{CommandPaletteDialog, CommandPaletteEvent},
     panels::{HostInfoPanel, SettingsPanel, TerminalPanel, WelcomePanel, show_fps_monitor},
-    theme::{AppIcon, palette},
+    theme::AppIcon,
     views::{
         CredentialVaultEvent, CredentialVaultView, HostExplorerEvent, HostExplorerView,
         PlaceholderView, SidebarView,
@@ -48,6 +48,8 @@ actions!(
         ToggleRightDock,
         /// 在中心区新开一个本地 Shell 终端。
         OpenLocalShell,
+        /// 打开密码库完整独立管理窗口。
+        OpenVaultWindow,
     ]
 );
 
@@ -156,7 +158,6 @@ impl Workspace {
                 CommandPaletteEvent::NewHost => this
                     .host_explorer
                     .update(cx, |explorer, cx| explorer.new_host(window, cx)),
-                CommandPaletteEvent::OpenVaultWindow => this.open_vault_window(cx),
                 CommandPaletteEvent::NewCredential => {
                     // 先把侧边栏切到保险箱：新建完之后那条凭据要有个地方
                     // 落下来，不然表单一关就像什么都没发生。
@@ -311,6 +312,15 @@ impl Workspace {
         self.open_local_shell(window, cx);
     }
 
+    fn on_open_vault_window(
+        &mut self,
+        _: &OpenVaultWindow,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_vault_window(cx);
+    }
+
     /// 标题栏：左边应用名，正中命令中心与本地 Shell，右侧留空补窗口按钮。
     ///
     /// 两侧 `flex_1` 把中间这组（搜索框＋本地 Shell）夹在正中，
@@ -349,20 +359,6 @@ impl Workspace {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_local_shell(window, cx);
                             })),
-                    )
-                    // 保险箱在标题栏上有一个入口，照原型（`HeaderNavbar` 上那颗
-                    // "密码保险箱"）：它开的是那扇独立窗口，和"取一段密码去登机器"
-                    // 这件事同时要两屏在场的用法对得上。侧边栏那一栏还在，
-                    // 它是边干活边翻的那一份。
-                    .child(
-                        Button::new("title-bar-vault")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(AppIcon::ShieldCheck).text_color(palette::teal()))
-                            .label(t!("sidebar.keys"))
-                            .tooltip(t!("vault.open_window"))
-                            .accessibility_id(t!("vault.open_window"))
-                            .on_click(cx.listener(|this, _, _, cx| this.open_vault_window(cx))),
                     ),
             )
             .child(h_flex().flex_1().min_w_0().pr(WINDOW_CONTROLS_INSET))
@@ -399,6 +395,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_toggle_right_dock))
             .on_action(cx.listener(Self::on_open_local_shell))
+            .on_action(cx.listener(Self::on_open_vault_window))
             .child(self.render_title_bar(window, cx))
             .child(
                 // 活动栏宽度固定，不参与拖拽，所以它在 resizable 之外；
@@ -415,6 +412,9 @@ impl Render for Workspace {
                             }))
                             .on_action(cx.listener(|this, action: &ActivityAction, window, cx| {
                                 this.run_action(*action, window, cx);
+                            }))
+                            .on_open_vault(cx.listener(|this, _, _, cx| {
+                                this.open_vault_window(cx);
                             })),
                     )
                     .child(div().flex_1().min_w_0().map(|this| {
