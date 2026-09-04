@@ -5,7 +5,7 @@
 //! 的脚本，把结果交给 [`MonitorCollector`] 攒成 [`MonitorTelemetry`]。
 //!
 //! 界面因此完全不知道 `russh`、`/proc` 与 shell 的存在，只会两件事：
-//! `poll` 要一份读数，`kill_process` / `container_action` 请求一个动作。
+//! `poll` 要一份读数，`kill_process` 请求一个动作。
 //!
 //! 累加器（上一次的累计值、CPU 曲线）藏在服务里而不是界面里：速率算得对不对
 //! 取决于"上一次是什么"，那是采集的一部分，不是画法的一部分。
@@ -26,26 +26,8 @@ use rust_i18n::t;
 /// （负载爆表、盘 hang），这一次就放弃，下一次轮询再试。
 const PROBE_TIMEOUT: Duration = Duration::from_secs(12);
 
-/// 一个动作（`kill`、`docker restart`）最多等多久。`docker` 起停容器本身就慢。
+/// 一个动作（`kill`）最多等多久。对端正忙的时候连发个信号都可能排上一会儿。
 const ACTION_TIMEOUT: Duration = Duration::from_secs(25);
-
-/// 容器动作。只有这三种，命令由这里拼，界面给不了别的字符串进来。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContainerAction {
-    Start,
-    Stop,
-    Restart,
-}
-
-impl ContainerAction {
-    fn verb(&self) -> &'static str {
-        match self {
-            Self::Start => "start",
-            Self::Stop => "stop",
-            Self::Restart => "restart",
-        }
-    }
-}
 
 /// 一条会话的监控采集入口。廉价克隆（两个 `Arc`），可以直接搬进轮询任务里。
 #[derive(Clone)]
@@ -117,16 +99,6 @@ impl MonitorService {
         self.run(format!("kill {signal} {pid}")).await
     }
 
-    /// 起停或重启一个容器。
-    pub async fn container_action(&self, id: &str, action: ContainerAction) -> Result<()> {
-        // 容器 id 是十六进制的，除此之外一个字符都不接 —— 这个字符串是从远端
-        // `docker ps` 的输出里来的，直接拼进命令行等于让对端决定我们跑什么。
-        if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit()) {
-            bail!("{}", t!("monitor_service.bad_container_id", id => id));
-        }
-        self.run(format!("docker {} {id}", action.verb())).await
-    }
-
     /// 跑一条一次性命令，只关心成没成。
     async fn run(&self, command: String) -> Result<()> {
         let handle = self.handle.clone();
@@ -187,7 +159,6 @@ mod tests {
             assert_eq!(telemetry.disk_used_gb, 0.5);
             assert_eq!(telemetry.uptime, "16 mins");
             assert_eq!(telemetry.load_avg, [0.5, 0.4, 0.3]);
-            assert!(!telemetry.docker_sampled, "没要 docker 就不该说采过");
 
             let process = telemetry.processes.first().expect("应有一条进程");
             assert_eq!(process.pid, 42);
@@ -223,31 +194,6 @@ mod tests {
     }
 
     #[test]
-    fn container_id_must_be_hex() {
-        crate::db::runtime().block_on(async {
-            let (handle, seen) = crate::ssh::exec::fake::connect("", "", true).await;
-            let service = MonitorService::new(handle);
-
-            // 这个字符串是从远端 `docker ps` 的输出里来的，不能直接拼进命令行。
-            let error = service
-                .container_action("abc; rm -rf /", ContainerAction::Stop)
-                .await
-                .expect_err("不合法的 id 必须被挡住");
-            assert_eq!(
-                format!("{error}"),
-                t!("monitor_service.bad_container_id", id => "abc; rm -rf /")
-            );
-            assert!(seen.script().is_empty(), "一个字节都不该发出去");
-
-            service
-                .container_action("c8f921a4aaaa", ContainerAction::Restart)
-                .await
-                .expect("十六进制 id 应放行");
-            assert_eq!(seen.script(), "docker restart c8f921a4aaaa");
-        });
-    }
-
-    #[test]
     fn kill_sends_the_signal_it_says_it_sends() {
         crate::db::runtime().block_on(async {
             let (handle, seen) = crate::ssh::exec::fake::connect("", "", true).await;
@@ -258,12 +204,5 @@ mod tests {
                 .expect("kill 应成功");
             assert_eq!(seen.script(), "kill -15 4321");
         });
-    }
-
-    #[test]
-    fn action_verbs_are_fixed() {
-        assert_eq!(ContainerAction::Start.verb(), "start");
-        assert_eq!(ContainerAction::Stop.verb(), "stop");
-        assert_eq!(ContainerAction::Restart.verb(), "restart");
     }
 }

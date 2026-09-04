@@ -10,7 +10,7 @@ use gpui_kit::SharedString;
 use anyhow::{Result, bail};
 
 use super::{
-    ContainerStatus, DockerContainerItem, ProcessItem,
+    ProcessItem,
     probe::{SECTION_END, SECTION_PREFIX, SPLIT},
 };
 use rust_i18n::t;
@@ -103,15 +103,11 @@ pub struct ProbeSample {
     /// [`super::probe::TOP_PROCESSES`] 条），所以标签不能拿 `processes.len()`
     /// 充数 —— 那个数会随当前在哪一页忽大忽小。轻量采集不采进程，是 `None`。
     pub process_total: Option<usize>,
-    pub containers: Vec<DockerContainerItem>,
-    /// 这次采集问过 docker 没有。面板收起或不在 Docker 那一页时不问（`docker
-    /// stats` 要一秒上下），那时候"没有容器"与"没问过"必须分得开。
-    pub docker_sampled: bool,
 }
 
 /// 解析一次采集的 stdout。
 ///
-/// 缺段落不算错（`ps`、`docker` 都可能不在），但脚本没跑完（没有 `##end`）
+/// 缺段落不算错（`ps` 可能不在），但脚本没跑完（没有 `##end`）
 /// 或者根本没有 `/proc/meminfo` 就是错 —— 那说明对端不是 Linux，或者
 /// `exec` 被 sshd 的 `ForceCommand` 换成了别的东西，此时任何数字都不可信。
 pub fn parse_probe(stdout: &str) -> Result<ProbeSample> {
@@ -123,8 +119,6 @@ pub fn parse_probe(stdout: &str) -> Result<ProbeSample> {
 
     let mut processes = Vec::new();
     let mut users: Vec<(u32, SharedString, SharedString)> = Vec::new();
-    let mut containers = Vec::new();
-    let mut stats: Vec<(SharedString, f32, SharedString)> = Vec::new();
 
     for (name, body) in split_sections(stdout) {
         match name {
@@ -174,11 +168,6 @@ pub fn parse_probe(stdout: &str) -> Result<ProbeSample> {
             "proc" => processes = parse_proc(body),
             "ps" => users = parse_ps(body),
             "proccount" => sample.process_total = body.trim().parse::<usize>().ok(),
-            "docker" => {
-                sample.docker_sampled = true;
-                containers = parse_docker_ps(body);
-            }
-            "dockerstats" => stats = parse_docker_stats(body),
             SECTION_END => finished = true,
             _ => {}
         }
@@ -192,7 +181,6 @@ pub fn parse_probe(stdout: &str) -> Result<ProbeSample> {
     }
 
     sample.processes = merge_processes(processes, users, sample.mem.total_kb);
-    sample.containers = merge_containers(containers, stats);
     Ok(sample)
 }
 
@@ -398,88 +386,12 @@ fn merge_processes(
         .collect()
 }
 
-/// `docker ps -a --format`：`id\tname\timage\tstate\tports\trunning_for`。
-fn parse_docker_ps(body: &str) -> Vec<DockerContainerItem> {
-    body.lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| {
-            let fields: Vec<&str> = line.split('\t').collect();
-            if fields.len() < 4 {
-                return None;
-            }
-            Some(DockerContainerItem {
-                id: SharedString::from(fields[0].trim().to_owned()),
-                name: SharedString::from(fields[1].trim().to_owned()),
-                image: SharedString::from(fields[2].trim().to_owned()),
-                status: ContainerStatus::parse(fields[3].trim()),
-                ports: SharedString::from(match fields.get(4).map(|v| v.trim()) {
-                    Some(ports) if !ports.is_empty() => ports.to_owned(),
-                    _ => "-".to_owned(),
-                }),
-                cpu: 0.,
-                mem: SharedString::from("—"),
-                created: SharedString::from(
-                    fields.get(5).map(|v| v.trim()).unwrap_or("—").to_owned(),
-                ),
-            })
-        })
-        .collect()
-}
-
-/// `docker stats --no-stream --format`：`id\t4.25%\t980MiB / 15.5GiB`。
-fn parse_docker_stats(body: &str) -> Vec<(SharedString, f32, SharedString)> {
-    body.lines()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| {
-            let mut fields = line.split('\t');
-            let id = fields.next()?.trim();
-            let cpu = fields
-                .next()
-                .unwrap_or("")
-                .trim()
-                .trim_end_matches('%')
-                .parse::<f32>()
-                .unwrap_or(0.);
-            // `980MiB / 15.5GiB` —— 斜杠后面是容器的内存上限，面板只显示用量。
-            let mem = fields
-                .next()
-                .unwrap_or("")
-                .split('/')
-                .next()
-                .unwrap_or("")
-                .trim();
-            Some((
-                SharedString::from(id.to_owned()),
-                cpu,
-                SharedString::from(match mem.is_empty() {
-                    true => "—".to_owned(),
-                    false => mem.to_owned(),
-                }),
-            ))
-        })
-        .collect()
-}
-
-fn merge_containers(
-    mut containers: Vec<DockerContainerItem>,
-    stats: Vec<(SharedString, f32, SharedString)>,
-) -> Vec<DockerContainerItem> {
-    for container in &mut containers {
-        if let Some((_, cpu, mem)) = stats.iter().find(|(id, _, _)| *id == container.id) {
-            container.cpu = *cpu;
-            container.mem = mem.clone();
-        }
-    }
-    containers
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// 一份完整采集的样子。刻意混了几种真实世界的排版：`df` 带表头、
-    /// `/proc/net/dev` 带回环与 docker 网桥、`ps` 的列有对齐空格、
-    /// 容器有一个停着的。
+    /// `/proc/net/dev` 带回环与 docker 网桥、`ps` 的列有对齐空格。
     const FULL: &str = concat!(
         "##hz\n100 4\n",
         "##window\n1000.00 1000.30\n",
@@ -517,11 +429,6 @@ mod tests {
         "   1420 root     /usr/bin/kubelet --config=/var/lib/kubelet/config.yaml\n",
         "   1980 root     etcd --advertise-client-urls=https://10.0.0.1:2379\n",
         "##proccount\n234\n",
-        "##docker\n",
-        "c8f921a4aaaa\tk8s_api\tregistry.k8s.io/kube-apiserver:v1.30.2\trunning\t6443/tcp\t14 days\n",
-        "d00dcafe0001\tstopped_one\talpine:3\texited\t\t2 hours\n",
-        "##dockerstats\n",
-        "c8f921a4aaaa\t4.25%\t980MiB / 15.5GiB\n",
         "##end\n",
     );
 
@@ -617,24 +524,6 @@ mod tests {
     }
 
     #[test]
-    fn containers_merge_stats_and_keep_stopped_ones() {
-        let sample = parse_probe(FULL).unwrap();
-        assert!(sample.docker_sampled, "有 ##docker 段就算问过了");
-        assert_eq!(sample.containers.len(), 2);
-
-        let running = &sample.containers[0];
-        assert!(running.status.is_running());
-        assert_eq!(running.cpu, 4.25);
-        assert_eq!(running.mem, "980MiB");
-        assert_eq!(running.ports, "6443/tcp");
-
-        let stopped = &sample.containers[1];
-        assert_eq!(stopped.status, ContainerStatus::Exited);
-        assert_eq!(stopped.ports, "-", "没有端口映射时给一个占位符");
-        assert_eq!(stopped.mem, "—", "没跑的容器没有 stats");
-    }
-
-    #[test]
     fn light_probe_has_no_second_cpu_sample() {
         let text = concat!(
             "##hz\n100 4\n",
@@ -653,10 +542,6 @@ mod tests {
         assert!(sample.processes.is_empty());
         assert_eq!(sample.process_total, None, "轻量采集不采进程，也没有总数");
         assert!(sample.disk.is_none());
-        assert!(
-            !sample.docker_sampled,
-            "没问 docker 就是没问，不能当成没有容器"
-        );
     }
 
     #[test]

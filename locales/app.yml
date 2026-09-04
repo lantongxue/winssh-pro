@@ -1380,8 +1380,6 @@ terminal.session_failed:
   zh-CN: 这条会话开不起来
 
 # ── 监控面板 ─────────────────────────────────────────────────────────────
-# 容器状态那几个词（running / exited / paused …）不进这张表：它们照抄的是
-# `docker ps` 自己的输出，翻了反而对不上用户在命令行里看到的东西。
 monitor.filter_placeholder:
   en: Filter PID, user, cmd...
   zh-CN: 筛选 PID、用户、命令…
@@ -1394,12 +1392,6 @@ monitor.tab_processes:
 monitor.tab_processes_count:
   en: Procs (%{count})
   zh-CN: 进程（%{count}）
-monitor.tab_docker:
-  en: Docker
-  zh-CN: Docker
-monitor.tab_docker_count:
-  en: Docker (%{count})
-  zh-CN: Docker（%{count}）
 monitor.tab_diagnostics:
   en: Diag
   zh-CN: 诊断
@@ -1430,9 +1422,6 @@ monitor.cancel:
 monitor.kill_failed:
   en: "kill %{pid} failed: %{error}"
   zh-CN: "kill %{pid} 失败：%{error}"
-monitor.docker_action_failed:
-  en: "docker %{id} action failed: %{error}"
-  zh-CN: "docker %{id} 操作失败：%{error}"
 monitor.refresh_now:
   en: Sample again now
   zh-CN: 立刻重新采集
@@ -1469,12 +1458,6 @@ monitor.processes_none_returned:
 monitor.processes_no_match:
   en: No matching process
   zh-CN: 没有匹配的进程
-monitor.docker_none:
-  en: This host has no docker, or no containers
-  zh-CN: 这台主机上没有 docker，或者没有容器
-monitor.docker_sampling:
-  en: Sampling containers…
-  zh-CN: 正在采集容器…
 monitor.settings_note:
   en: The sampling interval follows this host; it will still be this rhythm next time you open it.
   zh-CN: 采集频率跟着这台主机走，下次打开还是这个节奏。
@@ -1482,8 +1465,8 @@ monitor.interval_panel_title:
   en: Monitor panel
   zh-CN: 监控面板
 monitor.interval_panel_hint:
-  en: "While this pane is open the full sample runs: charts, process table, containers."
-  zh-CN: 这一栏展开着的时候采全量：曲线、进程表、容器。
+  en: "While this pane is open the full sample runs: charts and the process table."
+  zh-CN: 这一栏展开着的时候采全量：曲线、进程表。
 monitor.interval_status_title:
   en: Terminal status bar
   zh-CN: 终端状态栏
@@ -2050,9 +2033,6 @@ monitor_service.remote_error:
 monitor_service.collector_poisoned:
   en: The monitor accumulator is corrupted
   zh-CN: 监控累加器已损坏
-monitor_service.bad_container_id:
-  en: "Invalid container id: %{id}"
-  zh-CN: 容器 id 不合法：%{id}
 
 # ── 本地文件服务 ─────────────────────────────────────────────────────────
 local_file.list_interrupted:

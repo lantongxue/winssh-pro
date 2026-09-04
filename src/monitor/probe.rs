@@ -23,9 +23,6 @@ pub struct ProbeOptions {
     /// 进程列表要前多少条，0 表示不采（省掉远端的采样窗口），
     /// [`ALL_PROCESSES`] 表示不截断、回传全部进程（Procs 那一页用）。
     pub top_processes: usize,
-    /// 是否连 Docker 容器一起采。`docker stats` 要一秒上下，只在 Docker 那一
-    /// 页真的显示着的时候才值得付这个代价。
-    pub docker: bool,
 }
 
 /// 进程列表不截断的哨兵值：进程管理那一页要看到主机上所有进程。
@@ -34,17 +31,13 @@ pub const ALL_PROCESSES: usize = usize::MAX;
 /// 面板收起来时：只要状态栏那几个数。
 impl ProbeOptions {
     pub const fn light() -> Self {
-        Self {
-            top_processes: 0,
-            docker: false,
-        }
+        Self { top_processes: 0 }
     }
 
     /// 面板展开时：带进程列表。
     pub const fn full() -> Self {
         Self {
             top_processes: TOP_PROCESSES,
-            docker: false,
         }
     }
 
@@ -52,15 +45,6 @@ impl ProbeOptions {
     pub const fn all_processes() -> Self {
         Self {
             top_processes: ALL_PROCESSES,
-            docker: false,
-        }
-    }
-
-    /// Docker 那一页展开时：进程列表加容器。
-    pub const fn with_docker() -> Self {
-        Self {
-            top_processes: TOP_PROCESSES,
-            docker: true,
         }
     }
 }
@@ -110,10 +94,6 @@ pub fn script(options: &ProbeOptions) -> String {
         }
         script.push_str(PROC_TAIL);
         script.push_str(PROC_COUNT_EMIT);
-    }
-
-    if options.docker {
-        script.push_str(DOCKER);
     }
 
     script.push_str("echo '");
@@ -228,16 +208,6 @@ const PROC_COUNT_OPEN: &str = "total=$(printf '%s\\n' \"$top\" | grep -c .)\n";
 /// 段落之间的先后不影响解析。
 const PROC_COUNT_EMIT: &str = "echo '##proccount'\necho \"$total\"\n";
 
-/// 容器。`docker` 不在或当前用户没进 `docker` 组时两段都是空的，面板显示
-/// "没有容器" —— 这与"有 docker 但没跑容器"看起来一样，但对面板要表达的
-/// "这台机器上没有能管的容器"是同一件事。
-const DOCKER: &str = "\
-echo '##docker'
-command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.ID}}\\t{{.Names}}\\t{{.Image}}\\t{{.State}}\\t{{.Ports}}\\t{{.RunningFor}}' 2>/dev/null
-echo '##dockerstats'
-command -v docker >/dev/null 2>&1 && docker stats --no-stream --format '{{.ID}}\\t{{.CPUPerc}}\\t{{.MemUsage}}' 2>/dev/null
-";
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,7 +217,6 @@ mod tests {
         let script = script(&ProbeOptions::light());
         assert!(!script.contains("sleep"), "轻量采集不该有采样窗口");
         assert!(!script.contains("##proc"), "轻量采集不该带进程列表");
-        assert!(!script.contains("##docker"), "轻量采集不该带容器");
         assert!(script.contains("##load"), "状态栏要的负载必须在");
         assert!(script.trim_end().ends_with("echo '##end'"));
     }
@@ -279,13 +248,6 @@ mod tests {
         );
         assert!(script.contains("sort -k2,2nr"), "仍要按 CPU 排序");
         assert!(!script.contains("head -n"), "全部进程不截断");
-    }
-
-    #[test]
-    fn docker_script_asks_for_containers_and_stats() {
-        let script = script(&ProbeOptions::with_docker());
-        assert!(script.contains("docker ps -a"));
-        assert!(script.contains("docker stats --no-stream"));
     }
 
     /// 脚本整体是单引号里嵌 awk 程序拼出来的，awk 里再出现单引号就会把外层

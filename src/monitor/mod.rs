@@ -1,6 +1,6 @@
 //! 会话监控的领域层：读数模型、采集脚本、解析与累加。
 //!
-//! 对应原型里的 `ServerTelemetry`：CPU / 内存 / 磁盘 / 网络 / 进程 / Docker，
+//! 对应原型里的 `ServerTelemetry`：CPU / 内存 / 磁盘 / 网络 / 进程，
 //! 以及诊断命令列表。数据全部来自对端 —— 在那台机器上跑一段 POSIX sh 读
 //! `/proc`，把结果解析成下面这些类型。三步各自一个文件：
 //!
@@ -41,64 +41,6 @@ pub struct ProcessItem {
     pub state: SharedString,
 }
 
-/// Docker 容器的一行。
-#[derive(Clone, Debug)]
-pub struct DockerContainerItem {
-    pub id: SharedString,
-    pub name: SharedString,
-    pub image: SharedString,
-    pub status: ContainerStatus,
-    pub ports: SharedString,
-    pub cpu: f32,
-    pub mem: SharedString,
-    pub created: SharedString,
-}
-
-/// 容器状态。取自 `docker ps` 的 `.State`，不是那句人话 `.Status`
-///（`Up 3 hours`）—— 面板要的是分档配色，不是描述。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContainerStatus {
-    Created,
-    Running,
-    Paused,
-    Restarting,
-    Exited,
-    Dead,
-    /// docker 报了个我们不认识的状态，原样当"未知"处理，不冒充别的。
-    Unknown,
-}
-
-impl ContainerStatus {
-    pub fn parse(raw: &str) -> Self {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "created" => Self::Created,
-            "running" => Self::Running,
-            "paused" => Self::Paused,
-            "restarting" => Self::Restarting,
-            "exited" | "stopped" => Self::Exited,
-            "dead" => Self::Dead,
-            _ => Self::Unknown,
-        }
-    }
-
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Created => "created",
-            Self::Running => "running",
-            Self::Paused => "paused",
-            Self::Restarting => "restarting",
-            Self::Exited => "exited",
-            Self::Dead => "dead",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    /// 在跑着的（含正在重启）才算活的，配色与可用动作都看这个。
-    pub fn is_running(&self) -> bool {
-        matches!(self, Self::Running | Self::Restarting)
-    }
-}
-
 /// 对端主机的完整遥测，覆盖右侧监控面板所有 tab。
 ///
 /// 没有主机标识：一块监控面板只服务它自己那条会话，读数从哪儿来是调用方的
@@ -127,9 +69,6 @@ pub struct MonitorTelemetry {
     /// 主机上真正的进程总数。`processes` 常被截断，标签上的计数要用这个而不是
     /// `processes.len()`。轻量采集没有，是 `None`。
     pub process_total: Option<usize>,
-    pub containers: Vec<DockerContainerItem>,
-    /// 这次采集问过 docker 没有。没问过的时候界面说"还没采"，而不是"没有容器"。
-    pub docker_sampled: bool,
 }
 
 impl MonitorTelemetry {
@@ -227,15 +166,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unknown_container_state_is_not_mistaken_for_stopped() {
-        assert_eq!(ContainerStatus::parse("removing"), ContainerStatus::Unknown);
-        assert!(!ContainerStatus::parse("removing").is_running());
-        assert!(ContainerStatus::parse("Running").is_running());
-        assert!(ContainerStatus::parse("restarting").is_running());
-        assert_eq!(ContainerStatus::parse("exited"), ContainerStatus::Exited);
-    }
-
-    #[test]
     fn percentages_guard_against_a_zero_total() {
         let telemetry = MonitorTelemetry {
             cpu_percent: 0.,
@@ -252,8 +182,6 @@ mod tests {
             latency_ms: 0,
             processes: Vec::new(),
             process_total: None,
-            containers: Vec::new(),
-            docker_sampled: false,
         };
         assert_eq!(telemetry.memory_percent(), 0.);
         assert_eq!(telemetry.disk_percent(), 0.);
