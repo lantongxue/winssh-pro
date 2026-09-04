@@ -22,6 +22,14 @@ anyhow = "1"
 # 的地方；跟新快照就是 `cargo update`，0.6 与 0.3 都是 caret 需求。
 gpui-kit = { path = "refs/gpui-kit/crates/kit", version = "0.6.0" }
 
+# 帧率浮层（设置里那个"FPS 监控"开关点亮的那块 HUD）。读数来自 gpui 自己的
+# 帧追踪（`gpui::FrameTimingCollector`），量的是框架真正花在 `Window::draw`
+# 里的时间，不是从外面估的；GPU / CPU / 内存那三行按平台各自的按进程计数器读，
+# 不要 SDK 也不要提权。和 gpui-kit 同一个仓库、同一个版本号，因此钉在同一份
+# `gpui-pre` 快照上 —— 这是它能用的前提：换一份 gpui 就是两套不兼容的 `Window`
+# 类型，报错还只说类型对不上，不说版本。走本地检出与 gpui-kit 一致。
+gpui-fps = { path = "refs/gpui-kit/crates/fps", version = "0.6.0" }
+
 # 终端内核。VT 解析、屏幕缓冲、滚动回卷与 PTY 都由 alacritty 提供。
 # 用的是 zed 的那个 fork，rev 与 `refs/zed` 自己钉的一致（见 refs/alacritty）：
 # `src/terminal/` 是照着 zed 的 `crates/terminal` + `crates/terminal_view`

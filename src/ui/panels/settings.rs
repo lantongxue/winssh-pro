@@ -9,13 +9,42 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Window, div,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Global,
+    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window, div,
 };
 
 use crate::i18n;
 use crate::ui::theme::appearance;
 use rust_i18n::t;
+
+/// 帧率浮层开着没有。
+///
+/// 状态放全局而不是放 [`SettingsPanel`] 上：画那块浮层的是主窗口外壳
+/// （[`crate::ui::Workspace`]），而这个面板停在 Dock 深处，可以被拖走、
+/// 被关掉、按布局恢复出另一个 —— 让外壳去盯一个这样的面板，不如两边都读同一处。
+///
+/// 代价是改它不会让任何视图变脏（全局在 GPUI 的追踪之外），所以
+/// [`set_show_fps_monitor`] 翻完要 `window.refresh()`，和这个面板里换语言
+/// （[`SettingsPanel::apply_language`]）、换主题（[`appearance::set_theme_mode`]）
+/// 是同一个道理。
+struct ShowFpsMonitor(bool);
+
+impl Global for ShowFpsMonitor {}
+
+/// 这一帧要不要画帧率浮层。主窗口外壳每帧读它。
+///
+/// 默认关：浮层为了让读数像游戏里的帧率计，会一帧接一帧地请求重绘，窗口从此
+/// 不再空闲 —— 那是量性能时想要的，不是平时开着的。
+pub fn show_fps_monitor(cx: &App) -> bool {
+    cx.try_global::<ShowFpsMonitor>()
+        .is_some_and(|state| state.0)
+}
+
+/// 开关帧率浮层。`window.refresh()` 的理由见 [`ShowFpsMonitor`]。
+fn set_show_fps_monitor(show: bool, window: &mut Window, cx: &mut App) {
+    cx.set_global(ShowFpsMonitor(show));
+    window.refresh();
+}
 
 pub struct SettingsPanel {
     focus_handle: FocusHandle,
@@ -99,6 +128,7 @@ impl Panel for SettingsPanel {
 impl Render for SettingsPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_dark = cx.theme().is_dark();
+        let show_fps = show_fps_monitor(cx);
 
         v_flex()
             .size_full()
@@ -150,10 +180,118 @@ impl Render for SettingsPanel {
                     ),
             )
             .child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(t!("settings.performance"))),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .justify_between()
+                            .gap_4()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .child(SharedString::from(t!("settings.fps_monitor"))),
+                            )
+                            .child(Switch::new("fps-monitor").checked(show_fps).on_click(
+                                |checked, window, cx| set_show_fps_monitor(*checked, window, cx),
+                            )),
+                    )
+                    // 这一条不是可选的补充说明：开着的时候窗口不再空闲，读数的
+                    // 含义也跟着变（是"撑得住多少帧"而不是"正在画多少帧"）。
+                    // 不写在这儿，就只能靠用户自己发现风扇转起来了。
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(t!("settings.fps_monitor_hint"))),
+                    ),
+            )
+            .child(
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(SharedString::from(t!("settings.more_hint"))),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 开关翻的和外壳读的必须是同一处。
+    ///
+    /// 这条状态是个全局：写在这个文件里、读在 [`crate::ui::Workspace`] 里，
+    /// 中间没有类型把两头绑住 —— 哪天把 `set_` 改成写另一个全局，编译期一声不响，
+    /// 界面上就是开关点了没反应。这个断言就是那根绑带。
+    #[gpui_kit::test]
+    fn the_switch_and_the_shell_agree(cx: &mut gpui_kit::TestAppContext) {
+        let (_panel, cx) = draw_panel(cx);
+
+        cx.update(|_, cx| assert!(!show_fps_monitor(cx), "默认不画"));
+        cx.update(|window, cx| {
+            set_show_fps_monitor(true, window, cx);
+            assert!(show_fps_monitor(cx));
+        });
+        cx.update(|window, cx| {
+            set_show_fps_monitor(false, window, cx);
+            assert!(!show_fps_monitor(cx), "关得掉");
+        });
+    }
+
+    /// 开关开着与关着两种样子都要画得完。开着的那一档多一行提示，
+    /// 关着的那一档没有 —— 这一页全是现搭的元素，画不出来只有在这儿才会红。
+    #[gpui_kit::test]
+    fn the_panel_draws_either_way(cx: &mut gpui_kit::TestAppContext) {
+        let (_panel, cx) = draw_panel(cx);
+        for show in [true, false] {
+            cx.update(|window, cx| {
+                set_show_fps_monitor(show, window, cx);
+                window.draw(cx).clear(cx);
+            });
+        }
+    }
+
+    /// 把设置面板挂进一扇测试窗口并画一帧。
+    ///
+    /// 外面套一层 [`Root`]：语言下拉是个浮层，浮层挂在 `Root` 那一层上。
+    fn draw_panel(
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> (Entity<SettingsPanel>, &mut gpui_kit::VisualTestContext) {
+        use gpui_kit::component::Root;
+
+        cx.update(gpui_kit::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            let panel = SettingsPanel::new(window, cx);
+            Root::new(cx.new(|_| Harness { panel }), window, cx)
+        });
+        let panel = root.read_with(cx, |root, cx| {
+            root.view()
+                .clone()
+                .downcast::<Harness>()
+                .expect("harness")
+                .read(cx)
+                .panel
+                .clone()
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (panel, cx)
+    }
+
+    struct Harness {
+        panel: Entity<SettingsPanel>,
+    }
+
+    impl Render for Harness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.panel.clone())
+        }
     }
 }

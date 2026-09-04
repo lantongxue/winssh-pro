@@ -188,6 +188,15 @@ settings.dark_theme:
 settings.language:
   en: Language
   zh-CN: 语言
+settings.performance:
+  en: Performance
+  zh-CN: 性能
+settings.fps_monitor:
+  en: FPS monitor
+  zh-CN: FPS 监控
+settings.fps_monitor_hint:
+  en: Overlays the frame rate, frame time and this process' GPU, CPU and memory on the bottom right. It keeps the window drawing back to back, so the reading is the frame rate the application can sustain rather than the rate it happens to be drawing at — and while it is on, the overlay itself keeps the CPU and GPU busy.
+  zh-CN: 在右下角浮一块读数：帧率、每帧耗时，以及本进程的 GPU、CPU 与内存。它会让窗口一帧接一帧地画下去，所以读到的是这台机器上撑得住多少帧，不是此刻正在画多少帧；开着的时候它自己也在占 CPU 与 GPU。
 settings.more_hint:
   en: Connection, key and terminal settings will open up alongside the matching features.
   zh-CN: 连接、密钥与终端设置会随对应功能一起开放。

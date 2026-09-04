@@ -7,6 +7,7 @@
 
 use std::rc::Rc;
 
+use gpui_fps::fps_monitor;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, ResizableState, Root, Sizable as _, StyledExt as _, TitleBar,
     WindowExt as _,
@@ -17,7 +18,7 @@ use gpui_kit::component::{
     resizable_panel,
 };
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    Anchor, AnyElement, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     MouseButton, ParentElement as _, Render, Styled as _, Window, actions, div,
     prelude::FluentBuilder as _, px,
 };
@@ -26,7 +27,7 @@ use crate::service::{CredentialService, HostService};
 use crate::ui::{
     bars::{ActivityAction, ActivityBar, CommandCenterBar},
     dialogs::{CommandPaletteDialog, CommandPaletteEvent},
-    panels::{HostInfoPanel, SettingsPanel, TerminalPanel, WelcomePanel},
+    panels::{HostInfoPanel, SettingsPanel, TerminalPanel, WelcomePanel, show_fps_monitor},
     theme::{AppIcon, palette},
     views::{
         CredentialVaultEvent, CredentialVaultView, HostExplorerEvent, HostExplorerView,
@@ -385,6 +386,7 @@ impl Render for Workspace {
         let sheet_layer = Root::render_sheet_layer(window, cx);
         let dialog_layer = Root::render_dialog_layer(window, cx);
         let notification_layer = Root::render_notification_layer(window, cx);
+        let show_fps = show_fps_monitor(cx);
 
         div()
             .id("workspace")
@@ -436,6 +438,19 @@ impl Render for Workspace {
                         )
                     })),
             )
+            // 帧率浮层，设置面板里那个开关点亮的就是它。挂在外壳最外面那层
+            // （已经是 `relative()`）而不是某个面板里：它量的是这扇窗一整帧的
+            // 代价，跟着某个面板走的话，那个面板一关读数就没了。
+            //
+            // 靠右下而不是默认的右上：非 macOS 平台的窗口按钮在标题栏右端，
+            // 浮层压上去就把关闭按钮盖住了。右下那一条是终端状态栏的网格尺寸，
+            // 只是一行读数，盖住不影响操作。
+            //
+            // 排在三层浮层之前，所以对话框与通知画在它上面 —— 一块调试读数
+            // 不该挡住要用户答复的那一层。
+            .when(show_fps, |this| {
+                this.child(fps_monitor(window, cx).anchor(Anchor::BottomRight))
+            })
             .children(sheet_layer)
             .children(dialog_layer)
             .children(notification_layer)
