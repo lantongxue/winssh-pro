@@ -163,14 +163,18 @@ impl Host {
         }
     }
 
-    /// 平台标签：只取发行版名字并大写，`Ubuntu 24.04` → `UBUNTU`。
+    /// 平台标签：只取发行版名字，`Ubuntu 24.04` → `Ubuntu`。
     /// 卡片上那一格很窄，完整的版本号留给主机信息面板。
+    ///
+    /// 大小写照抄原样，不再统一大写：`macOS` 的这两个大写字母在中间，
+    /// 抹成 `MACOS` 就不是它的写法了。命令面板拿它当搜索关键词，那边匹配前
+    /// 会自己转小写，不受影响。
     pub fn platform_tag(&self) -> SharedString {
         self.platform
             .split_whitespace()
             .next()
             .unwrap_or_default()
-            .to_uppercase()
+            .to_string()
             .into()
     }
 }

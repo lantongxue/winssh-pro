@@ -7,7 +7,7 @@
 //!
 //! 1. 会话指示点 + 名字 + 更多菜单
 //! 2. `user@hostname:port`，等宽字体 —— 地址是要照抄的东西，对齐比排版好看更重要
-//! 3. 平台标签 + 可达性指示（延迟）
+//! 3. 平台标签（系统标识 + 名字）+ 可达性指示（延迟）
 //!
 //! 底色比列表暗一档，加一圈细边：卡片看起来是嵌在列表里的一块，
 //! 而不是浮在上面的一层。选中时边框换成品牌蓝，底色不变 ——
@@ -19,7 +19,7 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, StyledExt as _, h_flex, menu::ContextMenuExt as _, v_flex,
+    ActiveTheme as _, Icon, Sizable as _, StyledExt as _, h_flex, menu::ContextMenuExt as _, v_flex,
 };
 use gpui_kit::{
     AnyElement, App, ClickEvent, ElementId, Hsla, InteractiveElement as _, IntoElement,
@@ -31,7 +31,7 @@ use crate::{
     host::{Host, HostStatus},
     ui::{
         menus::{HostAction, HostActionHandler, HostMenu},
-        theme::palette,
+        theme::{OsIcon, palette},
     },
 };
 
@@ -58,6 +58,14 @@ const LATENCY_DOT: Pixels = px(6.);
 
 /// 名字与指示点之间的距离，也是第三行各段之间的距离。
 const INLINE_GAP: Pixels = px(8.);
+
+/// 平台标签里那个系统标识的边长。比同一格里的字略大一点 ——
+/// 实心商标缩到跟字一样高就糊成一个点了。
+const PLATFORM_ICON: Pixels = px(12.);
+
+/// 系统标识与平台名之间的缝。比 [`INLINE_GAP`] 窄：它俩是一格里的两半，
+/// 不是并排的两段。
+const PLATFORM_GAP: Pixels = px(4.);
 
 /// 延迟超过这个数就不再算“快”。真正的阈值应该跟着连接层的探测策略走，
 /// 这里只是不让一个两秒的往返也顶着一片绿色。
@@ -167,6 +175,10 @@ impl HostCard {
 
     /// 第三行：平台标签 + 可达性。两者都是“这台主机是什么、现在怎么样”的注脚，
     /// 所以并排放在最下面，字号压到最小。
+    ///
+    /// 平台那一格是标识加名字。标识认得比字快 —— 一列卡片扫下来，那几个
+    /// 熟悉的轮廓不用读就知道哪台是哪一家；名字仍旧留着，因为同一家的标识
+    /// 缩到 12px 之后彼此并不总是分得开（CentOS 与 Rocky 就很像）。
     fn render_meta(&self, cx: &App) -> impl IntoElement {
         h_flex()
             .w_full()
@@ -174,18 +186,28 @@ impl HostCard {
             .gap(INLINE_GAP)
             .items_center()
             .child(
-                div()
+                // 描边而不是填色：这一格右边紧挨着延迟那一段，两者是同一档
+                // 注脚。给它一块实底就等于说它更重要，而它并不是。
+                h_flex()
                     .flex_shrink_0()
                     .h_full()
-                    .flex()
                     .items_center()
+                    .gap(PLATFORM_GAP)
                     .px_1p5()
                     .rounded_sm()
-                    .bg(palette::surface(cx))
-                    .font_family("monospace")
-                    .text_xs()
+                    .border_1()
+                    .border_color(cx.theme().sidebar_border)
                     .text_color(palette::idle(cx))
-                    .child(self.host.platform_tag()),
+                    .child(
+                        Icon::new(OsIcon::from_platform(&self.host.platform))
+                            .with_size(PLATFORM_ICON),
+                    )
+                    .child(
+                        div()
+                            .font_family("monospace")
+                            .text_xs()
+                            .child(self.host.platform_tag()),
+                    ),
             )
             .children(self.render_latency(cx))
     }

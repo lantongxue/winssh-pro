@@ -3,6 +3,7 @@
 //! `gpui_kit::component` 的 `IconName` 是在宏展开期从那份资源的 `icons` 目录生成的，
 //! 所以那一套图标是固定的。设计稿要用的几个图标不在里面，就放在本仓库的
 //! `assets/icons/` 下，由这里内嵌进二进制，再用 [`crate::ui::AppIcon`] 按路径取用。
+//! 各操作系统的商标另放一层 `assets/icons/os/`，由 [`crate::ui::OsIcon`] 取用。
 //!
 //! 查找顺序是"先自己、后组件库"：同名资源以本仓库为准，其余全部透传，
 //! 这样组件库里的 99 个图标依然可用。
@@ -94,6 +95,49 @@ const OWNED: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/upload.svg"),
     ),
     ("icons/zap.svg", include_bytes!("../assets/icons/zap.svg")),
+    // 操作系统的品牌标识，见 [`crate::ui::OsIcon`]。单独放一层 `os/`：
+    // 上面那些是 Lucide 的线条图标，这一组是各家自己的商标，两套东西
+    // 画法不同（一个描边、一个实心），混在一个目录里迟早有人照错样子加。
+    (
+        "icons/os/alpine.svg",
+        include_bytes!("../assets/icons/os/alpine.svg"),
+    ),
+    (
+        "icons/os/arch.svg",
+        include_bytes!("../assets/icons/os/arch.svg"),
+    ),
+    (
+        "icons/os/centos.svg",
+        include_bytes!("../assets/icons/os/centos.svg"),
+    ),
+    (
+        "icons/os/debian.svg",
+        include_bytes!("../assets/icons/os/debian.svg"),
+    ),
+    (
+        "icons/os/linux.svg",
+        include_bytes!("../assets/icons/os/linux.svg"),
+    ),
+    (
+        "icons/os/macos.svg",
+        include_bytes!("../assets/icons/os/macos.svg"),
+    ),
+    (
+        "icons/os/redhat.svg",
+        include_bytes!("../assets/icons/os/redhat.svg"),
+    ),
+    (
+        "icons/os/rocky.svg",
+        include_bytes!("../assets/icons/os/rocky.svg"),
+    ),
+    (
+        "icons/os/ubuntu.svg",
+        include_bytes!("../assets/icons/os/ubuntu.svg"),
+    ),
+    (
+        "icons/os/windows.svg",
+        include_bytes!("../assets/icons/os/windows.svg"),
+    ),
 ];
 
 /// 注册给 `gpui_kit::application().with_assets(..)` 的资源源。

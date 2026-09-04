@@ -13,7 +13,7 @@ use gpui_kit::component::{
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputContentType, InputEvent, InputState},
     select::{Select, SelectEvent, SelectState},
     v_flex,
 };
@@ -44,12 +44,15 @@ fn auth_types() -> Vec<SharedString> {
 
 /// 目标操作系统。名字沿用发行版本身的名称，不译——`platform_tag()` 取的是这里的
 /// 第一个词，和数据库里存的主机平台保持同一种风格。
-const OS_PLATFORMS: [&str; 6] = [
-    "Ubuntu / Debian Linux",
-    "CentOS / RedHat / Rocky",
-    "Alpine Linux",
-    "Arch Linux",
-    "macOS Darwin",
+const OS_PLATFORMS: [&str; 9] = [
+    "Ubuntu",
+    "Debian",
+    "CentOS",
+    "RedHat",
+    "Rocky",
+    "Alpine",
+    "Arch",
+    "macOS",
     "Windows OpenSSH",
 ];
 
@@ -582,7 +585,15 @@ impl HostFormDialog {
             0 => Some(
                 field(
                     t!("host_form.field_password").into(),
-                    Input::new(&self.password).font_family("monospace").w_full(),
+                    // 尾部那只眼睛来自 `mask_toggle()`：密码默认是打码的
+                    // （`InputState::masked(true)`），点一下明文看一眼，再点回去。
+                    // 明文只是这一次的显示状态，对话框每次打开都新建一份
+                    // `InputState`，所以下次进来仍旧是打码的。
+                    Input::new(&self.password)
+                        .font_family("monospace")
+                        .content_type(InputContentType::Password)
+                        .mask_toggle()
+                        .w_full(),
                     cx,
                 )
                 .into_any_element(),
@@ -671,6 +682,14 @@ impl HostFormDialog {
                                 ColorPicker::new(&self.badge_picker)
                                     .small()
                                     .anchor(Anchor::TopRight)
+                                    // 常用色那一行清空：取色器的每一格用颜色的十六进制
+                                    // 值当元素 id（`color-#RRGGBB`），而它默认的常用色
+                                    // 取自主题的 base.red/base.blue…… 那一组，正好又都
+                                    // 落在下面的色阶里 —— 同一个 id 出现两次，a11y 树
+                                    // 建到第二个就 `Duplicate a11y node id` 断言崩了。
+                                    // 快捷色本来也已经画在弹层外面那七个圆点上，弹层里
+                                    // 只留完整色阶与 HSLA 两页，不重复给一遍。
+                                    .featured_colors(Vec::new())
                                     .label(t!("host_form.color_custom")),
                             ),
                     ),

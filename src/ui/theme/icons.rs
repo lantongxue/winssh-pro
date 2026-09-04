@@ -83,3 +83,153 @@ impl IconNamed for AppIcon {
         .into()
     }
 }
+
+/// 操作系统的标识，画在主机卡片的平台标签里。
+///
+/// 这一组**不是** Lucide：Lucide 不做商标，各发行版的标志只有各家自己有。
+/// 用的是 Simple Icons 那一份（CC0），实心单色、同一个 24 见方的画布，
+/// 缩到 12px 还认得出来 —— 这正是它要干的事：一眼看出这台是什么系统。
+/// 上面那套线条图标是界面动作的符号，两者本来就是两类东西，所以分开放
+/// （`assets/icons/os/`），也不要拿这两套的画法互相要求。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OsIcon {
+    Alpine,
+    Arch,
+    CentOs,
+    Debian,
+    MacOs,
+    RedHat,
+    Rocky,
+    Ubuntu,
+    Windows,
+    /// 认不出是哪一家时的兜底：Tux。主机的平台是一个自由文本字段，
+    /// 库里存着什么都有可能，但至少"是台 Linux"这句话在 SSH 场景里八成不错。
+    Linux,
+}
+
+impl OsIcon {
+    /// 从主机的平台字段认出是哪一家。
+    ///
+    /// 按**子串**匹配整个字段，不是只看第一个词：这一列是自由文本，历史上
+    /// 存过 `Ubuntu / Debian Linux`、`CentOS / RedHat / Rocky` 这种一格里
+    /// 写好几家的写法，也存过 `Ubuntu 24.04` 这种带版本号的。顺序即优先级，
+    /// 一格里写了好几家就认头一个。
+    pub fn from_platform(platform: &str) -> Self {
+        const MARKS: [(&str, OsIcon); 12] = [
+            ("macos", OsIcon::MacOs),
+            ("darwin", OsIcon::MacOs),
+            ("windows", OsIcon::Windows),
+            ("ubuntu", OsIcon::Ubuntu),
+            ("debian", OsIcon::Debian),
+            ("centos", OsIcon::CentOs),
+            ("redhat", OsIcon::RedHat),
+            ("red hat", OsIcon::RedHat),
+            ("rhel", OsIcon::RedHat),
+            ("rocky", OsIcon::Rocky),
+            ("alpine", OsIcon::Alpine),
+            ("arch", OsIcon::Arch),
+        ];
+
+        let platform = platform.to_lowercase();
+        MARKS
+            .iter()
+            .find(|(mark, _)| platform.contains(mark))
+            .map(|(_, icon)| *icon)
+            .unwrap_or(Self::Linux)
+    }
+}
+
+impl IconNamed for OsIcon {
+    fn path(self) -> SharedString {
+        match self {
+            Self::Alpine => "icons/os/alpine.svg",
+            Self::Arch => "icons/os/arch.svg",
+            Self::CentOs => "icons/os/centos.svg",
+            Self::Debian => "icons/os/debian.svg",
+            Self::MacOs => "icons/os/macos.svg",
+            Self::RedHat => "icons/os/redhat.svg",
+            Self::Rocky => "icons/os/rocky.svg",
+            Self::Ubuntu => "icons/os/ubuntu.svg",
+            Self::Windows => "icons/os/windows.svg",
+            Self::Linux => "icons/os/linux.svg",
+        }
+        .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppIcon, OsIcon};
+    use crate::assets::Assets;
+    use gpui_kit::AssetSource as _;
+    use gpui_kit::component::IconNamed as _;
+
+    /// 图标的路径写在这个文件里，字节内嵌在 `crate::assets` 里，两处对不上
+    /// 就是画一片空白 —— 编译器不管，界面上也不报错，只是那一格没了。
+    #[test]
+    fn every_icon_path_resolves_to_bytes() {
+        let paths = [
+            AppIcon::Activity.path(),
+            AppIcon::Archive.path(),
+            AppIcon::Columns2.path(),
+            AppIcon::Rows2.path(),
+            AppIcon::Square.path(),
+            AppIcon::CodeXml.path(),
+            AppIcon::Download.path(),
+            AppIcon::FilePlus.path(),
+            AppIcon::FolderPlus.path(),
+            AppIcon::FolderSync.path(),
+            AppIcon::Home.path(),
+            AppIcon::KeyRound.path(),
+            AppIcon::Laptop.path(),
+            AppIcon::Pencil.path(),
+            AppIcon::RefreshCw.path(),
+            AppIcon::Server.path(),
+            AppIcon::Sparkles.path(),
+            AppIcon::Terminal.path(),
+            AppIcon::Trash.path(),
+            AppIcon::Upload.path(),
+            AppIcon::Zap.path(),
+            OsIcon::Alpine.path(),
+            OsIcon::Arch.path(),
+            OsIcon::CentOs.path(),
+            OsIcon::Debian.path(),
+            OsIcon::MacOs.path(),
+            OsIcon::RedHat.path(),
+            OsIcon::Rocky.path(),
+            OsIcon::Ubuntu.path(),
+            OsIcon::Windows.path(),
+            OsIcon::Linux.path(),
+        ];
+
+        for path in paths {
+            let bytes = Assets
+                .load(&path)
+                .unwrap_or_else(|error| panic!("{path} 读不出来：{error}"))
+                .unwrap_or_else(|| panic!("{path} 没有登记进 crate::assets::OWNED"));
+            assert!(
+                bytes.starts_with(b"<svg"),
+                "{path} 不像一个 svg：{:?}",
+                &bytes[..bytes.len().min(16)]
+            );
+        }
+    }
+
+    #[test]
+    fn platform_marks_match_versions_and_legacy_spellings() {
+        // 现在表单里那九档。
+        assert_eq!(OsIcon::from_platform("Ubuntu"), OsIcon::Ubuntu);
+        assert_eq!(OsIcon::from_platform("macOS"), OsIcon::MacOs);
+        assert_eq!(OsIcon::from_platform("Windows OpenSSH"), OsIcon::Windows);
+        // 带版本号，以及老库里一格写好几家的写法 —— 认头一个。
+        assert_eq!(OsIcon::from_platform("Ubuntu 24.04"), OsIcon::Ubuntu);
+        assert_eq!(
+            OsIcon::from_platform("CentOS / RedHat / Rocky"),
+            OsIcon::CentOs
+        );
+        assert_eq!(OsIcon::from_platform("macOS Darwin"), OsIcon::MacOs);
+        // 认不出来的落到 Tux，不是空白。
+        assert_eq!(OsIcon::from_platform(""), OsIcon::Linux);
+        assert_eq!(OsIcon::from_platform("FreeBSD 14"), OsIcon::Linux);
+    }
+}
