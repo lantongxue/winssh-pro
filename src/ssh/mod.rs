@@ -27,7 +27,7 @@ pub mod sftp;
 
 pub use bridge::{SshBridge, SshOutputReceiver, spawn_bridge};
 pub use client::SshHandler;
-pub use connection::{SshConnection, SshSession, WindowSize};
+pub use connection::{SshConnection, SshSession, WindowSize, decode_private_key};
 pub use exec::exec_script;
 pub use forward::{ForwardMeter, LocalMode, RemoteTarget};
 pub use sftp::open_session as open_sftp_session;

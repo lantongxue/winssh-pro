@@ -1,9 +1,9 @@
 //! 新建/编辑主机对话框：按设计稿采集连接地址、认证方式、跳板机与标签。
 //!
-//! 主机模型（[`crate::host::Host`]）只描述连接配置本身，认证凭据、跳板机路由
-//! 属于后续连接层——这里仍然按设计稿把它们画出来，交互也接得上，但提交时只把
-//! 模型认下的字段（名称、地址、用户名、端口、平台）交给 [`HostService`] 落库；
-//! 密码、密钥选择与跳板机选择先留在界面上，等连接层落地后再接线。
+//! 认证那几格是连接层真的会用的：密码、私钥（整份 PEM 文本）与私钥密码都跟着
+//! [`crate::host::HostDraft`] 落库，开会话时由 [`crate::ssh`] 拿去认证。
+//! 跳板机选择与徽章颜色、标签还只是界面上的东西 —— 模型里没有它们的位置，
+//! 提交时也就无处可去，等各自的连接层/展示层落地后再接线。
 //!
 //! 提交之后去哪儿由“新建还是编辑”决定，收尾则归 [`HostExplorerView`]：
 //! 新建完跳到目标分组并选中新主机，编辑完刷新列表与右侧的信息面板。
@@ -13,19 +13,20 @@ use gpui_kit::component::{
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     h_flex,
-    input::{Input, InputContentType, InputEvent, InputState},
+    input::{Input, InputContentType, InputEvent, InputState, Textarea, TextareaState},
     select::{Select, SelectEvent, SelectState},
     v_flex,
 };
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, prelude::FluentBuilder as _, px, rgb,
+    IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    rgb,
 };
 
 use crate::{
     host::{AuthMethod, Host, HostDraft, HostGroup},
-    service::HostService,
+    service::{HostService, LocalFileService, SshService},
     ui::{
         theme::{AppIcon, palette},
         views::HostExplorerView,
@@ -142,6 +143,12 @@ pub struct HostFormDialog {
     username: Entity<InputState>,
     auth_type: Entity<SelectState<Vec<SharedString>>>,
     password: Entity<InputState>,
+    /// 私钥本身那一大段 PEM 文本。可以直接粘进来，也可以点"从文件导入"
+    /// 从 `~/.ssh/` 里读一个文件填进来 —— 存的是内容，导入之后那个文件
+    /// 就与这台主机无关了（见 [`crate::host::Host::key_content`]）。
+    key_content: Entity<TextareaState>,
+    /// 私钥密码。留空就是"这把私钥没加密"，见 [`crate::host::Host::key_passphrase`]。
+    key_passphrase: Entity<InputState>,
     platform: Entity<SelectState<Vec<&'static str>>>,
     proxy_jump: Entity<SelectState<Vec<SharedString>>>,
     /// 当前的徽章强调色。存颜色本身而不是色板下标：色板和取色器是同一个值的
@@ -246,6 +253,32 @@ impl HostFormDialog {
                                             let editing = editing.clone();
                                             window
                                                 .spawn(cx, async move |cx| {
+                                                    // 私钥先解一次再存：粘成了公钥、
+                                                    // 少复制半截、密码敲错，这三样都在
+                                                    // 这一步说得清楚。存下去再发现的话，
+                                                    // 用户看到的是下一次开会话时的一句
+                                                    // 认证失败。
+                                                    if draft.auth_method == AuthMethod::PublicKey
+                                                        && let Err(error) = SshService::new()
+                                                            .check_private_key(
+                                                                draft.key_content.clone(),
+                                                                draft.key_passphrase.clone(),
+                                                            )
+                                                            .await
+                                                    {
+                                                        cx.update(|window, cx| {
+                                                            window.push_notification(
+                                                                t!(
+                                                                    "host_form.key_invalid",
+                                                                    error => format!("{error:#}"),
+                                                                ),
+                                                                cx,
+                                                            )
+                                                        })
+                                                        .ok();
+                                                        return;
+                                                    }
+
                                                     let outcome = match &editing {
                                                         None => service
                                                             .insert_host(&group, draft)
@@ -333,6 +366,16 @@ impl HostFormDialog {
                 ),
             };
 
+        // 密钥那两格单独取：上面那个元组已经排到第八个了，再往里塞两个就没人
+        // 数得清哪个是哪个。
+        let (key_content_default, key_passphrase_default) = match editing {
+            Some((host, _)) => (
+                host.key_content.to_string(),
+                host.key_passphrase.to_string(),
+            ),
+            None => (String::new(), String::new()),
+        };
+
         let name = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(t!("host_form.name_placeholder"))
@@ -355,6 +398,20 @@ impl HostFormDialog {
                 .placeholder("••••••••••••")
                 .masked(true)
                 .default_value(password_default)
+        });
+        let key_content = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                // 不折行：PEM 的每一行都是定长的 base64，折行之后一眼看不出
+                // 复制回来的是不是完整的一份。
+                .soft_wrap(false)
+                .placeholder(t!("host_form.key_content_placeholder"))
+                .default_value(key_content_default)
+        });
+        let key_passphrase = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("host_form.key_passphrase_placeholder"))
+                .masked(true)
+                .default_value(key_passphrase_default)
         });
         let tag_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("host_form.tag_placeholder")));
@@ -428,6 +485,8 @@ impl HostFormDialog {
             username,
             auth_type,
             password,
+            key_content,
+            key_passphrase,
             platform,
             proxy_jump,
             badge_color: rgb(BADGE_COLORS[0]).into(),
@@ -459,8 +518,8 @@ impl HostFormDialog {
     }
 
     /// 校验必填项并组装一份待入库的 [`HostDraft`]。id 归仓储层分配，
-    /// 这里不碰；认证凭据、跳板机选择目前无处可去——它们不属于连接配置模型，
-    /// 等连接层落地后再决定怎么接。
+    /// 这里不碰；跳板机选择目前无处可去——模型里还没有它的位置，
+    /// 等连接层的 ProxyJump 落地后再决定怎么接。
     fn build_draft(&self, cx: &App) -> Result<(SharedString, HostDraft), SharedString> {
         let name = self.name.read(cx).value().trim().to_string();
         let hostname = self.hostname.read(cx).value().trim().to_string();
@@ -500,8 +559,19 @@ impl HostFormDialog {
                 .unwrap_or_default(),
         );
         let password = self.password.read(cx).value().trim().to_string();
-        // 密钥路径暂未设独立输入框，先留空，后续表单会为 `key` 认证补上路径选择
-        let key_path = String::new();
+        // 私钥前后的空白剪掉：从终端里复制出来的多半带着空行与缩进，而
+        // 一份 PEM 的正文本来就从 `-----BEGIN` 那一行开始。
+        let key_content = self.key_content.read(cx).value().trim().to_string();
+        // 私钥密码不 trim：密码里的空格是密码的一部分，替用户抹掉一个尾随空格
+        // 就是替他把密码改了，而那时候只会看到一句"私钥密码不对"。
+        let key_passphrase = self.key_passphrase.read(cx).value().to_string();
+        // 选了密钥认证却没给私钥，存下来也连不上 —— 连接层那边只会在开会话时
+        // 抛一句"未配置私钥"，那时候表单已经关掉了，不如在这儿就说。
+        // 私钥本身认不认得，等提交时由 [`SshService::check_private_key`] 解一次
+        // 才知道：那一步要跑 bcrypt，不能放在这个同步的校验里。
+        if auth_method == AuthMethod::PublicKey && key_content.is_empty() {
+            return Err(t!("host_form.key_content_required").into());
+        }
         let jump_host_id: Option<String> = None;
 
         Ok((
@@ -514,10 +584,52 @@ impl HostFormDialog {
                 platform: platform.to_string(),
                 auth_method,
                 password,
-                key_path,
+                key_content,
+                key_passphrase,
                 jump_host_id,
             },
         ))
+    }
+
+    /// 从系统文件对话框里挑一个私钥文件，把**内容**读进框里。
+    ///
+    /// 读完这个文件就与这台主机无关了：存进库的是刚刚填进框里的那段文本，
+    /// 之后删掉源文件、换台机器，这台主机照样连得上。
+    ///
+    /// 不过滤扩展名：私钥文件通常没有后缀（`id_ed25519`、`id_rsa`），
+    /// 按后缀筛一遍反而会把它们全藏起来。
+    fn import_key_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(t!("host_form.key_import_prompt").into()),
+        });
+
+        cx.spawn_in(window, async move |this, cx| {
+            // 三层：通道没断、对话框没出错、用户没取消。任何一层不成立都是
+            // "这次没挑"，框里保持原样就是对的。
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+
+            let outcome = LocalFileService::read_text(path).await;
+            _ = this.update_in(cx, |this, window, cx| match outcome {
+                Ok(text) => this.key_content.update(cx, |state, cx| {
+                    state.set_value(text.trim().to_string(), window, cx);
+                }),
+                // 读不出来（挑中了一个目录、权限不够、不是 UTF-8）就说一声，
+                // 别把框里已经有的东西冲掉。
+                Err(error) => window.push_notification(
+                    t!("host_form.key_import_failed", error => format!("{error:#}")),
+                    cx,
+                ),
+            });
+        })
+        .detach();
     }
 
     fn render_identity_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -571,7 +683,7 @@ impl HostFormDialog {
         )
     }
 
-    /// 密码认证给密码框，密钥认证先说保管库还在做，Agent 转发不需要额外字段。
+    /// 密码认证给密码框，密钥认证给私钥路径与私钥密码，Agent 转发不需要额外字段。
     fn render_auth_detail(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         // 按下标分派，不比文案 —— 见 [`auth_types`]。
         let selected = self
@@ -598,15 +710,73 @@ impl HostFormDialog {
                 )
                 .into_any_element(),
             ),
-            1 => Some(
-                div()
-                    .text_xs()
-                    .text_color(palette::idle(cx))
-                    .child(SharedString::from(t!("host_form.key_vault_wip")))
-                    .into_any_element(),
-            ),
+            1 => Some(self.render_key_fields(cx).into_any_element()),
             _ => None,
         }
+    }
+
+    /// 密钥认证要采集的两格：私钥本身，以及解开它的密码。
+    ///
+    /// 私钥那一格是个粘贴框，"从文件导入"只是替用户跑一趟 `~/.ssh/`；
+    /// 存下去的一律是框里这段文本。
+    ///
+    /// 密码是可选的：`ssh-keygen` 生成时不给密码的私钥不需要它，留空就是
+    /// 那种。这句话画在框下面 —— 不写的话，空着的一格看起来像漏填了。
+    fn render_key_fields(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_3()
+            .w_full()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .w_full()
+                    // 标签行右端挂"从文件导入"：它是这一格的另一个入口，
+                    // 不是下一步，所以贴着标签而不是另起一行。
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .justify_between()
+                            .child(field_label(t!("host_form.field_key_content").into(), cx))
+                            .child(
+                                Button::new("host-form-import-key")
+                                    .ghost()
+                                    .xsmall()
+                                    .label(t!("host_form.import_key"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.import_key_file(window, cx)
+                                    })),
+                            ),
+                    )
+                    .child(
+                        Textarea::new(&self.key_content)
+                            .h(px(120.))
+                            .font_family("monospace")
+                            .text_size(px(11.))
+                            .w_full(),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_1()
+                    .w_full()
+                    .child(field(
+                        t!("host_form.field_key_passphrase").into(),
+                        // 和密码那格同一套：默认打码，尾部的眼睛点一下看明文。
+                        Input::new(&self.key_passphrase)
+                            .font_family("monospace")
+                            .content_type(InputContentType::Password)
+                            .mask_toggle()
+                            .w_full(),
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette::idle(cx))
+                            .child(SharedString::from(t!("host_form.key_passphrase_hint"))),
+                    ),
+            )
     }
 
     fn render_platform_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -770,5 +940,107 @@ impl Render for HostFormDialog {
             .child(self.render_platform_row(cx))
             .child(self.render_color_row(cx))
             .child(self.render_tags_row(cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::MonitorIntervals;
+
+    /// 一段假装是私钥的文本。表单这一层只搬字符串，认不认得由
+    /// [`crate::ssh::decode_private_key`] 管，那边有自己的测试。
+    const KEY_TEXT: &str =
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----";
+
+    /// 一台配好了密钥认证的主机，用来进编辑模式。
+    fn keyed_host(key_content: &str, key_passphrase: &str) -> EditedHost {
+        (
+            Host {
+                id: "web-01".into(),
+                name: "web-01".into(),
+                user: "root".into(),
+                hostname: "10.0.0.1".into(),
+                port: 22,
+                platform: "Ubuntu".into(),
+                auth_method: AuthMethod::PublicKey,
+                password: "".into(),
+                key_content: key_content.to_string().into(),
+                key_passphrase: key_passphrase.to_string().into(),
+                jump_host_id: None,
+                monitor_intervals: MonitorIntervals::default(),
+                forwards: Vec::new(),
+            },
+            "生产环境".into(),
+        )
+    }
+
+    fn draw_form(
+        cx: &mut gpui_kit::TestAppContext,
+        editing: Option<EditedHost>,
+    ) -> (Entity<HostFormDialog>, &mut gpui_kit::VisualTestContext) {
+        cx.update(gpui_kit::init);
+        let (form, cx) =
+            cx.add_window_view(|window, cx| HostFormDialog::new(&[], editing.as_ref(), window, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (form, cx)
+    }
+
+    /// 编辑一台密钥主机时，两格都要预填成库里的值 —— 不填的话，用户改一次
+    /// 端口号就把私钥连同密码顺手清空了，而那要等下次连不上才发现。
+    #[gpui_kit::test]
+    fn editing_a_keyed_host_prefills_the_key_fields(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form(cx, Some(keyed_host(KEY_TEXT, "hunter2")));
+
+        form.read_with(cx, |this, cx| {
+            assert_eq!(this.key_content.read(cx).value(), KEY_TEXT);
+            assert_eq!(this.key_passphrase.read(cx).value(), "hunter2");
+        });
+
+        let (_, draft) = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect("这张表填得是全的");
+        assert_eq!(draft.auth_method, AuthMethod::PublicKey);
+        assert_eq!(draft.key_content, KEY_TEXT);
+        assert_eq!(draft.key_passphrase, "hunter2");
+    }
+
+    /// 密钥那两格只有选了密钥认证才画得到，所以单独把这一屏画一遍：
+    /// 深 builder 链上的错 `cargo check` 看不见，只有真的走一趟才掉得出来。
+    #[gpui_kit::test]
+    fn the_key_fields_draw_all_the_way_through(cx: &mut gpui_kit::TestAppContext) {
+        let (_form, cx) = draw_form(cx, Some(keyed_host(KEY_TEXT, "hunter2")));
+        // 再画一帧：第一帧和后续帧走的不是同一条路（元素状态、焦点都只有
+        // 第二帧才读得到）。
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// 选了密钥认证却没给私钥，表单就该把人拦下来 —— 存下去的那份配置
+    /// 一开会话必然失败，而那时候这张表已经关掉了。
+    #[gpui_kit::test]
+    fn key_auth_without_a_key_is_refused(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form(cx, Some(keyed_host("", "")));
+
+        let error = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect_err("没有私钥不该存得下去");
+        assert_eq!(
+            error,
+            SharedString::from(t!("host_form.key_content_required"))
+        );
+    }
+
+    /// 私钥前后的空白剪掉（从终端里复制出来的多半带着空行），密码里的空格
+    /// 原样留着 —— 那是密码的一部分，替用户 trim 掉就是替他把密码改了。
+    #[gpui_kit::test]
+    fn the_key_is_trimmed_but_the_passphrase_is_not(cx: &mut gpui_kit::TestAppContext) {
+        let padded = format!("\n  \n{KEY_TEXT}\n\n");
+        let (form, cx) = draw_form(cx, Some(keyed_host(&padded, " pass ")));
+
+        let (_, draft) = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect("这张表填得是全的");
+        assert_eq!(draft.key_content, KEY_TEXT);
+        assert_eq!(draft.key_passphrase, " pass ");
     }
 }

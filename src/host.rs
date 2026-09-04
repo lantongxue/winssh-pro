@@ -136,8 +136,19 @@ pub struct Host {
     /// 密码（`auth_method == Password` 时有效）。落库为明文，演示环境暂如此；
     /// 生产应走系统钥匙串或加密存储。
     pub password: SharedString,
-    /// 私钥路径（`auth_method == PublicKey` 时有效），例如 `~/.ssh/id_ed25519`。
-    pub key_path: SharedString,
+    /// 私钥本身（`auth_method == PublicKey` 时有效）：`-----BEGIN OPENSSH
+    /// PRIVATE KEY-----` 那份 PEM 文本，整份存进库里。
+    ///
+    /// 存内容而不是存路径，是为了让一台主机的配置**自己是完整的**：
+    /// 后面要做云同步，路径同步过去在另一台机器上是一句空话 —— 那边的
+    /// `~/.ssh/` 里没有这把钥匙，同步回来的主机一台都连不上。内容跟着走，
+    /// 换台机器打开就能用。
+    pub key_content: SharedString,
+    /// 私钥密码（`auth_method == PublicKey` 且私钥是加密的时候有效）。
+    ///
+    /// 空串就是"这把私钥没加密"：`ssh-keygen` 生成时不给密码的那种，解密时
+    /// 传 `None`。和 [`Self::password`] 一样落库为明文，同样等钥匙串。
+    pub key_passphrase: SharedString,
     /// 跳板机主机 id（`Some` 时经由该主机 ProxyJump）。
     #[allow(dead_code)]
     pub jump_host_id: Option<SharedString>,
@@ -193,7 +204,10 @@ pub struct HostDraft {
     pub platform: String,
     pub auth_method: AuthMethod,
     pub password: String,
-    pub key_path: String,
+    /// 私钥 PEM 文本，见 [`Host::key_content`]。
+    pub key_content: String,
+    /// 私钥密码，空串表示私钥没加密。见 [`Host::key_passphrase`]。
+    pub key_passphrase: String,
     pub jump_host_id: Option<String>,
 }
 

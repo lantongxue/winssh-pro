@@ -120,6 +120,23 @@ impl LocalFileService {
         })
         .await
     }
+
+    /// 读一个本地文本文件。主机表单从 `~/.ssh/` 里导入私钥走的就是这条。
+    ///
+    /// 不是 UTF-8 就报错而不是有损转换：调用方拿它去解私钥，一份被替换字符
+    /// 蛀过的文本解出来只会是一句莫名其妙的"格式不认"。
+    pub async fn read_text(path: PathBuf) -> Result<String> {
+        crate::db::run(async move {
+            tokio::task::spawn_blocking(move || {
+                std::fs::read_to_string(&path).with_context(|| {
+                    t!("local_file.read_failed", path => path.display()).to_string()
+                })
+            })
+            .await
+            .with_context(|| t!("local_file.read_interrupted").to_string())?
+        })
+        .await
+    }
 }
 
 /// 真正的删除。同步的 `std::fs`，跑在 blocking 线程上（大目录、网络盘都可能慢）。

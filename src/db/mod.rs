@@ -39,7 +39,8 @@ const SCHEMA: [&str; 2] = [
         sort_order   INTEGER NOT NULL DEFAULT 0,
         auth_method  TEXT    NOT NULL DEFAULT 'password',
         password     TEXT    NOT NULL DEFAULT '',
-        key_path     TEXT    NOT NULL DEFAULT '',
+        key_content  TEXT    NOT NULL DEFAULT '',
+        key_passphrase TEXT  NOT NULL DEFAULT '',
         jump_host_id TEXT,
         monitor_interval_secs INTEGER NOT NULL DEFAULT 3,
         status_interval_secs  INTEGER NOT NULL DEFAULT 8,
@@ -49,10 +50,16 @@ const SCHEMA: [&str; 2] = [
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 7] = [
+const MIGRATIONS: [&str; 8] = [
     "ALTER TABLE hosts ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'password'",
     "ALTER TABLE hosts ADD COLUMN password TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE hosts ADD COLUMN key_path TEXT NOT NULL DEFAULT ''",
+    // 私钥本身与解开它的密码。老库补出来都是空串，也就是"这台主机还没配私钥"。
+    //
+    // 老库里可能还有一列 `key_path`：那是早先按路径存私钥的做法，现在换成了整份
+    // 内容（见 [`crate::host::Host::key_content`]）。那一列没人再读，也不删 ——
+    // SQLite 的 DROP COLUMN 要重建整张表，为一列从来没被界面写过的死数据不值当。
+    "ALTER TABLE hosts ADD COLUMN key_content TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE hosts ADD COLUMN key_passphrase TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE hosts ADD COLUMN jump_host_id TEXT",
     // 默认值要和 `MonitorIntervals::default()` 对得上：老库里补出来的那一列
     // 就是新主机的出厂节奏，两边不一致的话，同一台机器在升级前后表现不同。

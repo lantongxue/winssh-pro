@@ -104,7 +104,8 @@ impl HostService {
                         sort_order: Set(sort_order),
                         auth_method: Set(draft.auth_method.as_str().to_owned()),
                         password: Set(draft.password.clone()),
-                        key_path: Set(draft.key_path.clone()),
+                        key_content: Set(draft.key_content.clone()),
+                        key_passphrase: Set(draft.key_passphrase.clone()),
                         jump_host_id: Set(draft.jump_host_id.clone()),
                         // 采集节奏不在表单里，新主机先拿出厂值；改它的地方是
                         // 监控面板的设置页（[`Self::update_monitor_intervals`]）。
@@ -127,7 +128,8 @@ impl HostService {
                 platform: draft.platform.into(),
                 auth_method: draft.auth_method,
                 password: draft.password.into(),
-                key_path: draft.key_path.into(),
+                key_content: draft.key_content.into(),
+                key_passphrase: draft.key_passphrase.into(),
                 jump_host_id: draft.jump_host_id.map(|value| value.into()),
                 monitor_intervals: MonitorIntervals::default(),
                 forwards: Vec::new(),
@@ -159,7 +161,8 @@ impl HostService {
                         sort_order: ActiveValue::NotSet,
                         auth_method: Set(draft.auth_method.as_str().to_owned()),
                         password: Set(draft.password.clone()),
-                        key_path: Set(draft.key_path.clone()),
+                        key_content: Set(draft.key_content.clone()),
+                        key_passphrase: Set(draft.key_passphrase.clone()),
                         jump_host_id: Set(draft.jump_host_id.clone()),
                         // 表单不认这三列，别把用户在监控面板里调好的节奏、
                         // 在端口转发对话框里加的规则顺手抹掉。
@@ -252,7 +255,8 @@ impl HostService {
                         sort_order: Set(source.sort_order + 1),
                         auth_method: Set(source.auth_method.clone()),
                         password: Set(source.password.clone()),
-                        key_path: Set(source.key_path.clone()),
+                        key_content: Set(source.key_content.clone()),
+                        key_passphrase: Set(source.key_passphrase.clone()),
                         jump_host_id: Set(source.jump_host_id.clone()),
                         // 副本是"同一台机器的另一份配置"，盯多紧、转发什么
                         // 一并照抄。
@@ -273,7 +277,8 @@ impl HostService {
                 platform: source.platform.into(),
                 auth_method: crate::host::AuthMethod::from_str_or_default(&source.auth_method),
                 password: source.password.into(),
-                key_path: source.key_path.into(),
+                key_content: source.key_content.into(),
+                key_passphrase: source.key_passphrase.into(),
                 jump_host_id: source.jump_host_id.map(|value| value.into()),
                 monitor_intervals: MonitorIntervals {
                     monitor_secs: source.monitor_interval_secs,
@@ -400,7 +405,8 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                     platform: host.platform.into(),
                     auth_method: AuthMethod::from_str_or_default(&host.auth_method),
                     password: host.password.into(),
-                    key_path: host.key_path.into(),
+                    key_content: host.key_content.into(),
+                    key_passphrase: host.key_passphrase.into(),
                     jump_host_id: host.jump_host_id.map(|value| value.into()),
                     // 老库补出来的列可能是 0，夹一道再交给界面 —— 轮询间隔
                     // 是拿去当定时器用的，0 会变成一条不停歇的采集。
@@ -455,16 +461,22 @@ mod tests {
             platform: "Ubuntu / Debian Linux".into(),
             auth_method: AuthMethod::Password,
             password: String::new(),
-            key_path: String::new(),
+            key_content: String::new(),
+            key_passphrase: String::new(),
             jump_host_id: None,
         }
     }
+
+    /// 一份私钥文本。这一层不解析它，只在意那几个换行与 `-----` 存进去
+    /// 之后还是原样。
+    const KEY_TEXT: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\nQyNTUxOQAAACCSYs7/Ou==\n-----END OPENSSH PRIVATE KEY-----";
 
     fn draft_with_auth(
         name: &str,
         auth_method: AuthMethod,
         password: &str,
-        key_path: &str,
+        key_content: &str,
+        key_passphrase: &str,
     ) -> HostDraft {
         HostDraft {
             name: name.into(),
@@ -474,7 +486,8 @@ mod tests {
             platform: "Ubuntu / Debian Linux".into(),
             auth_method,
             password: password.into(),
-            key_path: key_path.into(),
+            key_content: key_content.into(),
+            key_passphrase: key_passphrase.into(),
             jump_host_id: None,
         }
     }
@@ -690,7 +703,7 @@ mod tests {
     fn auth_fields_are_persisted() {
         db::runtime().block_on(async {
             let service = service().await;
-            let draft = draft_with_auth("secure", AuthMethod::Password, "s3cr3t", "");
+            let draft = draft_with_auth("secure", AuthMethod::Password, "s3cr3t", "", "");
             let host = service.insert_host("分组", draft).await.unwrap();
             assert_eq!(host.auth_method, AuthMethod::Password);
             assert_eq!(host.password.to_string(), "s3cr3t");
@@ -698,17 +711,36 @@ mod tests {
             let loaded = &groups[0].hosts[0];
             assert_eq!(loaded.auth_method, AuthMethod::Password);
             assert_eq!(loaded.password.to_string(), "s3cr3t");
-            let draft2 = draft_with_auth(
-                "secure2",
-                AuthMethod::PublicKey,
-                "",
-                "/home/user/.ssh/id_ed25519",
-            );
+            let draft2 =
+                draft_with_auth("secure2", AuthMethod::PublicKey, "", KEY_TEXT, "key-pass");
             service.update_host(&host.id, "分组", draft2).await.unwrap();
             let groups = service.load_groups().await.unwrap();
             let loaded = &groups[0].hosts[0];
             assert_eq!(loaded.auth_method, AuthMethod::PublicKey);
-            assert_eq!(loaded.key_path.to_string(), "/home/user/.ssh/id_ed25519");
+            assert_eq!(loaded.key_content.to_string(), KEY_TEXT);
+            assert_eq!(loaded.key_passphrase.to_string(), "key-pass");
+        });
+    }
+
+    /// 私钥整份存进这一行里 —— 存内容不存路径，为的是这条记录同步到另一台
+    /// 机器上还能用（见 [`crate::host::Host::key_content`]）。换行、`-----`
+    /// 这些字符都要原样回来，少一个字节这把钥匙就废了。
+    #[test]
+    fn the_key_itself_round_trips_and_is_copied() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let draft = draft_with_auth("keyed", AuthMethod::PublicKey, "", KEY_TEXT, "hunter2");
+            let host = service.insert_host("分组", draft).await.unwrap();
+            assert_eq!(host.key_content.to_string(), KEY_TEXT);
+            assert_eq!(host.key_passphrase.to_string(), "hunter2");
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].key_content.to_string(), KEY_TEXT);
+
+            // 副本是"同一台机器的另一份配置"，用的还是同一把钥匙。
+            let copy = service.duplicate_host(&host.id).await.unwrap();
+            assert_eq!(copy.key_content.to_string(), KEY_TEXT);
+            assert_eq!(copy.key_passphrase.to_string(), "hunter2");
         });
     }
 

@@ -20,9 +20,14 @@ pub struct Model {
     /// 密码（`password` 认证时有效），默认空。
     #[sea_orm(default_value = "")]
     pub password: String,
-    /// 私钥路径（`key` 认证时有效），默认空。
+    /// 私钥 PEM 文本（`key` 认证时有效），默认空。
+    /// 存的是内容不是路径，理由见 [`crate::host::Host::key_content`]。
     #[sea_orm(default_value = "")]
-    pub key_path: String,
+    pub key_content: String,
+    /// 私钥密码（`key` 认证且私钥加密过时有效），默认空。
+    /// 空串就是"这把私钥没加密"，见 [`crate::host::Host::key_passphrase`]。
+    #[sea_orm(default_value = "")]
+    pub key_passphrase: String,
     /// 跳板机主机 id，空表示直连。
     #[sea_orm(nullable)]
     pub jump_host_id: Option<String>,

@@ -5,13 +5,12 @@
 //! 认证按主机配置来：`password` / `key` / `agent`，失败时把对端给的
 //! `remaining_methods` 带回给调用方，便于界面提示"密码错了"还是"密钥不对"。
 
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use russh::client::{self, Handle, Msg as ClientMsg};
-use russh::keys::{PrivateKeyWithHashAlg, load_secret_key};
+use russh::keys::{Error as KeyError, PrivateKey, PrivateKeyWithHashAlg, decode_secret_key};
 use russh::{Channel, Disconnect, Pty};
 
 use crate::host::Host;
@@ -238,12 +237,10 @@ async fn authenticate(handle: &mut Handle<SshHandler>, host: &Host, user: &str) 
             }
         }
         AuthMethod::PublicKey => {
-            if host.key_path.is_empty() {
-                bail!("{}", t!("ssh.no_key_path"));
+            if host.key_content.is_empty() {
+                bail!("{}", t!("ssh.no_key_content"));
             }
-            let key_path = shellexpand(&host.key_path);
-            let key = load_secret_key(Path::new(&key_path), None)
-                .with_context(|| t!("ssh.load_key_failed", path => key_path).to_string())?;
+            let key = decode_private_key(&host.key_content, &host.key_passphrase)?;
             let hash_alg = handle.best_supported_rsa_hash().await?.flatten();
             handle
                 .authenticate_publickey(
@@ -274,20 +271,27 @@ async fn authenticate(handle: &mut Handle<SshHandler>, host: &Host, user: &str) 
     Err(anyhow!("{message}"))
 }
 
-/// 展开 `~` 与环境变量，`~/.ssh/id_ed25519` 这种路径在表单里很常见。
-fn shellexpand(raw: &str) -> String {
-    if let Some(stripped) = raw.strip_prefix("~/")
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.join(stripped).to_string_lossy().into_owned();
+/// 把库里存着的那份私钥文本解成一把能用的私钥，必要时用私钥密码解开它。
+///
+/// 空的私钥密码传 `None` 而不是 `Some("")`：russh 收到 `Some` 就真拿那个空串
+/// 去解一遍，加密过的私钥于是报"密钥损坏"，而正确的说法是"这把私钥要密码"。
+///
+/// 三条失败路径分别给一句话，因为用户要做的事不一样：私钥加密了但没配密码
+/// —— 去表单里填那一格；配了密码还是解不开 —— 多半是密码敲错了；其余
+/// （粘进来的压根不是私钥，比如误贴了 `.pub`）是格式不认。
+///
+/// 表单也走这条路（[`crate::service::SshService::check_private_key`]）：
+/// 存之前先解一次，粘错的东西当场就能说清楚，不必等到开会话才发现。
+pub fn decode_private_key(content: &str, passphrase: &str) -> Result<PrivateKey> {
+    let passphrase = (!passphrase.is_empty()).then_some(passphrase);
+    match decode_secret_key(content, passphrase) {
+        Ok(key) => Ok(key),
+        Err(KeyError::KeyIsEncrypted) => Err(anyhow!("{}", t!("ssh.key_encrypted"))),
+        Err(error) if passphrase.is_some() => {
+            Err(error).with_context(|| t!("ssh.key_passphrase_wrong").to_string())
+        }
+        Err(error) => Err(error).with_context(|| t!("ssh.key_decode_failed").to_string()),
     }
-    if raw.starts_with('~')
-        && raw.len() == 1
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.to_string_lossy().into_owned();
-    }
-    raw.to_owned()
 }
 
 /// 供 [`SshConnection`] 的 I/O 桥接任务使用的结束信号。
@@ -313,7 +317,8 @@ mod tests {
             platform: "Linux".into(),
             auth_method: AuthMethod::Password,
             password: "wrong".into(),
-            key_path: "".into(),
+            key_content: "".into(),
+            key_passphrase: "".into(),
             jump_host_id: None,
             monitor_intervals: Default::default(),
             forwards: Vec::new(),
@@ -346,11 +351,101 @@ mod tests {
         assert_eq!(w.rows, 1);
     }
 
+    /// 一把没有密码的 ed25519 私钥（`ssh-keygen -t ed25519 -N ""`）。
+    /// 只在测试里用，不对应任何真实主机。
+    const PLAIN_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACCSYs7/Ou/C2pPI7ZxckzxEd+/ccwDwhRrBZ5LSX/1hMAAAAJiU1PCmlNTw
+pgAAAAtzc2gtZWQyNTUxOQAAACCSYs7/Ou/C2pPI7ZxckzxEd+/ccwDwhRrBZ5LSX/1hMA
+AAAEA8+fBsnVb31tspnDJupy7iZ0yI+tnQezazJTwOlyeX9ZJizv8678Lak8jtnFyTPER3
+79xzAPCFGsFnktJf/WEwAAAAD3dpbnNzaC1wcm8tdGVzdAECAwQFBg==
+-----END OPENSSH PRIVATE KEY-----
+";
+
+    /// 同一种密钥，但用 `hunter2` 加密过（`ssh-keygen -t ed25519 -N hunter2`）。
+    const ENCRYPTED_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABCmKbI20u
+8XVX69dMuTR4pfAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIAMFAyIYaK7pkza+
+63Y1HOPXJYDhcQgW4ud+1v7qmqJrAAAAoFj9H/9oKsGEw5TPDbaqngne5PsBvFxqnPE8q3
+xlqt/fJ2ipwhn4Caw86C/lXtb9cFxxtHOaj6PsZ32bZMrnH8kxt+C21P5VGwcp1U4kCTDw
+vuto+/bzBst7xefgt2Zsai22TrC3hNR2vzHSevt0/+8nLHmufhPBHHijXGfCp3VOWwucsl
+PQXcTyft1To8E3DVXPp/uvYMADAt0xeBTYkPw=
+-----END OPENSSH PRIVATE KEY-----
+";
+
+    /// 那把明文私钥对应的**公钥**。粘错的人多半粘的就是它 —— `.pub` 和私钥
+    /// 挨着躺在同一个目录里，名字只差三个字母。
+    const PUBLIC_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJJizv8678Lak8jtnFyTPER379xzAPCFGsFnktJf/WEw test\n";
+
+    /// 没加密的私钥，配置里也没填密码 —— 最常见的那一种，解得开。
     #[test]
-    fn shellexpand_tilde() {
-        let expanded = shellexpand("~/mykey");
-        assert!(!expanded.contains("~/"), "应展开 ~");
-        let plain = shellexpand("/tmp/key");
-        assert_eq!(plain, "/tmp/key");
+    fn a_plain_key_decodes_without_a_passphrase() {
+        let key = decode_private_key(PLAIN_KEY, "");
+        assert!(key.is_ok(), "没加密的私钥应直接解出来：{:?}", key.err());
+    }
+
+    /// 加密的私钥配上对的密码。
+    #[test]
+    fn an_encrypted_key_decodes_with_the_right_passphrase() {
+        let key = decode_private_key(ENCRYPTED_KEY, "hunter2");
+        assert!(key.is_ok(), "密码对就该解得开：{:?}", key.err());
+    }
+
+    /// 加密的私钥而配置里没填密码：这一条要说的是"去填那一格"，
+    /// 不能是一句泛泛的解析失败。
+    #[test]
+    fn an_encrypted_key_without_a_passphrase_says_so() {
+        let error = decode_private_key(ENCRYPTED_KEY, "").expect_err("没密码解不开");
+
+        let expected = t!("ssh.key_encrypted");
+        // 语言表里没有这一条时 `t!` 原样返回键名，那样下面那句断言会自己成立，
+        // 测试就白跑了 —— 先把这条路堵上。
+        assert_ne!(expected.as_ref(), "ssh.key_encrypted", "语言表里少了这一条");
+        assert_eq!(
+            format!("{error:#}"),
+            expected.as_ref(),
+            "该提示去配私钥密码"
+        );
+    }
+
+    /// 密码敲错了：错误里要提到密码，否则用户会去翻私钥本身。
+    #[test]
+    fn a_wrong_passphrase_gets_blamed_on_the_passphrase() {
+        let error = decode_private_key(ENCRYPTED_KEY, "not-hunter2").expect_err("密码不对解不开");
+
+        let head = t!("ssh.key_passphrase_wrong");
+        assert_ne!(
+            head.as_ref(),
+            "ssh.key_passphrase_wrong",
+            "语言表里少了这一条"
+        );
+        assert!(
+            format!("{error:#}").starts_with(head.as_ref()),
+            "实际：{error:#}"
+        );
+    }
+
+    /// 粘进来的是公钥（或别的什么），当场就要说"这不是一份私钥"。
+    /// 存下去的话，用户要等到开会话才知道自己粘错了那一个文件。
+    #[test]
+    fn a_public_key_is_not_a_private_key() {
+        let error = decode_private_key(PUBLIC_KEY, "").expect_err("公钥不是私钥");
+
+        let head = t!("ssh.key_decode_failed");
+        assert_ne!(head.as_ref(), "ssh.key_decode_failed", "语言表里少了这一条");
+        assert!(
+            format!("{error:#}").starts_with(head.as_ref()),
+            "实际：{error:#}"
+        );
+    }
+
+    /// 前后多出来的空行、粘贴时带上的缩进都不该让一把好私钥解不开 ——
+    /// 从终端里复制出来的十有八九带着这些。
+    #[test]
+    fn surrounding_whitespace_does_not_break_a_key() {
+        let padded = format!("\n  \n{PLAIN_KEY}\n  \n");
+        let key = decode_private_key(&padded, "");
+        assert!(key.is_ok(), "带空白的私钥也该解得开：{:?}", key.err());
     }
 }

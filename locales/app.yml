@@ -446,6 +446,36 @@ host_form.field_auth:
 host_form.field_password:
   en: SSH password
   zh-CN: SSH 密码
+host_form.field_key_content:
+  en: Private key *
+  zh-CN: 私钥 *
+host_form.field_key_passphrase:
+  en: Private key passphrase
+  zh-CN: 私钥密码
+host_form.key_content_placeholder:
+  en: Paste the private key, starting with -----BEGIN OPENSSH PRIVATE KEY-----
+  zh-CN: 粘贴私钥内容，从 -----BEGIN OPENSSH PRIVATE KEY----- 开始
+host_form.key_passphrase_placeholder:
+  en: Leave empty if the key has no passphrase
+  zh-CN: 私钥没有加密时留空
+host_form.key_passphrase_hint:
+  en: Only needed for an encrypted private key; leave it empty otherwise.
+  zh-CN: 只有加密过的私钥才需要填；私钥没加密就留空。
+host_form.key_content_required:
+  en: Paste (or import) the private key to use for key authentication.
+  zh-CN: 请粘贴或导入用于密钥认证的私钥。
+host_form.key_invalid:
+  en: "This private key cannot be used: %{error}"
+  zh-CN: 这份私钥用不了：%{error}
+host_form.import_key:
+  en: Import from file…
+  zh-CN: 从文件导入…
+host_form.key_import_prompt:
+  en: Select private key file
+  zh-CN: 选择私钥文件
+host_form.key_import_failed:
+  en: "Could not read that private key file: %{error}"
+  zh-CN: 读取私钥文件失败：%{error}
 host_form.field_platform:
   en: Target operating system
   zh-CN: 目标操作系统
@@ -485,9 +515,6 @@ host_form.bastion_item:
 host_form.required_fields:
   en: Fill in the display name, host address and login user.
   zh-CN: 请填写节点显示名称、主机地址与登录用户名。
-host_form.key_vault_wip:
-  en: The key vault is still under development; saved keys cannot be picked yet.
-  zh-CN: 密钥保管库还在开发中，暂时无法选择已保存的密钥。
 host_form.color_custom:
   en: Custom
   zh-CN: 自定义
@@ -1577,6 +1604,9 @@ monitor_service.bad_container_id:
 local_file.list_interrupted:
   en: The local directory listing task was interrupted
   zh-CN: 本地目录读取任务中断
+local_file.read_interrupted:
+  en: The local file read task was interrupted
+  zh-CN: 本地文件读取任务中断
 local_file.not_a_dir:
   en: "%{path} is not a local directory"
   zh-CN: "%{path} 不是一个本地目录"
@@ -1654,12 +1684,18 @@ ssh.request_pty_failed:
 ssh.request_shell_failed:
   en: Requesting a shell on the remote failed
   zh-CN: 请求远端 Shell 失败
-ssh.no_key_path:
-  en: No private key path is configured, so key authentication cannot be used
-  zh-CN: 未配置私钥路径，无法使用密钥认证
-ssh.load_key_failed:
-  en: "Loading the private key failed: %{path}"
-  zh-CN: 加载私钥失败：%{path}
+ssh.no_key_content:
+  en: No private key is configured, so key authentication cannot be used
+  zh-CN: 未配置私钥，无法使用密钥认证
+ssh.key_decode_failed:
+  en: This is not a private key we can read (a public key was pasted, or part of it is missing)
+  zh-CN: 这不是一份能识别的私钥（可能粘成了公钥，或者少复制了一段）
+ssh.key_encrypted:
+  en: The private key is encrypted, but no passphrase is configured for this host
+  zh-CN: 私钥已加密，但这台主机没有配置私钥密码
+ssh.key_passphrase_wrong:
+  en: The private key could not be decrypted, the passphrase may be wrong
+  zh-CN: 私钥解不开，私钥密码可能不对
 ssh.auth_password_failed:
   en: "Password authentication failed (methods the remote still offers: %{remaining})"
   zh-CN: 密码认证失败（对端剩余方法：%{remaining}）
