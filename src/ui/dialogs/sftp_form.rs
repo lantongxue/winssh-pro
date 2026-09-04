@@ -12,16 +12,16 @@
 
 use std::rc::Rc;
 
-use gpui::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Window, div, prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Icon, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     v_flex,
+};
+use gpui_kit::{
+    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
+    Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::ui::theme::{AppIcon, palette};
@@ -88,7 +88,7 @@ impl SftpFormKind {
 
     /// 图标颜色跟着语义走：新建文件是"加东西"（青），目录是橙色（和表格里的
     /// 文件夹同一个颜色），改名属于改配置（蓝）。
-    fn tone(self) -> gpui::Hsla {
+    fn tone(self) -> gpui_kit::Hsla {
         match self {
             Self::NewFile => palette::teal(),
             Self::NewFolder => palette::coral(),

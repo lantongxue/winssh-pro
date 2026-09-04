@@ -6,7 +6,7 @@
 //! 只负责等结果。
 
 use anyhow::{Context as _, Result, anyhow, ensure};
-use gpui::SharedString;
+use gpui_kit::SharedString;
 use sea_orm::{
     ActiveValue::{self, Set},
     ConnectionTrait, DatabaseConnection, DbErr, TransactionTrait,

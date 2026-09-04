@@ -8,7 +8,7 @@
 //! 不必再套一层“主机 / 最近”的分段标题，列表的第一层就是分组本身。
 //!
 //! 列表是一个按行记尺寸的虚拟列表：分组头是一行 36 的普通行，展开后的主机是
-//! 一张 [`HostCard`]，两者高度不同，所以用不了 [`gpui_component::tree`] 那种
+//! 一张 [`HostCard`]，两者高度不同，所以用不了 [`gpui_kit::component::tree`] 那种
 //! 等高列表（它底层是 `uniform_list`，所有行共用第一行量出来的高度）。
 //! 换来的是虚拟滚动仍然在，代价是树自带的键盘上下左右没有了。
 //!
@@ -21,13 +21,7 @@ use std::{
     rc::Rc,
 };
 
-use gpui::{
-    App, AppContext as _, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, Render,
-    SharedString, Size, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px, size,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Icon, IconName, Sizable as _, StyledExt as _,
     VirtualListScrollHandle, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariant, ButtonVariants as _},
@@ -39,6 +33,12 @@ use gpui_component::{
     scroll::{ScrollableElement as _, ScrollbarAxis},
     separator::Separator,
     v_flex, v_virtual_list,
+};
+use gpui_kit::{
+    App, AppContext as _, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, Render,
+    SharedString, Size, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, size,
 };
 
 use super::{GUTTER, ICON_SIZE, SidebarView, collapse_button, view_header};
@@ -97,7 +97,7 @@ const GROUP_ROW_GROUP: &str = "host-explorer-group-row";
 
 /// 分组头在被拖着的主机悬在上面时的底色。品牌蓝压到很淡：它说的是
 /// “松手就落这儿”，不该盖过分组头本身的字。
-fn drop_tint() -> gpui::Hsla {
+fn drop_tint() -> gpui_kit::Hsla {
     palette::blue().opacity(0.35)
 }
 
@@ -464,7 +464,7 @@ impl HostExplorerView {
         .detach();
     }
 
-    /// 删除前问一句。确认框是 gpui-component 现成的 [`AlertDialog`]，
+    /// 删除前问一句。确认框是组件库现成的 [`AlertDialog`]，
     /// 会丢东西的动作配危险色的按钮。
     fn confirm_delete(&mut self, host: &Host, window: &mut Window, cx: &mut Context<Self>) {
         let service = self.service.clone();
@@ -1129,7 +1129,7 @@ impl HostExplorerView {
         )
     }
 
-    fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         match &self.rows[ix] {
             Row::Group {
                 name,

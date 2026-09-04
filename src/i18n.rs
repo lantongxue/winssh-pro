@@ -30,11 +30,17 @@ pub const AVAILABLE: [(&str, &str); 2] = [(EN, "English"), (ZH_CN, "中文")];
 
 /// 装好语言表并按系统语言选一档。
 ///
-/// 必须在 `gpui_component::init` 之前调用：[`rust_i18n::extend!`] 是把应用的
+/// 必须在 `gpui_kit::init` 之前调用：[`rust_i18n::extend!`] 是把应用的
 /// 语言表挂到组件库的查表链前面，组件库初始化时已经会读文案了。
 pub fn init() {
     // 组件库自己的 key（`Calendar.month.January` 那些）先查我们的 `ui.yml`，
     // 查不到再回落到它自带的那份。只挂一次。
+    //
+    // 这里必须写 `gpui_component` 这个名字：`extend!` 一边拿它当路径去调组件库
+    // 的 `_rust_i18n_extend`，一边 `stringify!` 出查表用的命名空间 —— 而那个
+    // 命名空间就叫 `gpui_component`（组件库的 crate 名）。门面下它在
+    // `gpui_kit::component`，所以在这儿按原名引一次。
+    use gpui_kit::component as gpui_component;
     rust_i18n::extend!(gpui_component);
     set_locale(detect());
 }
@@ -45,7 +51,7 @@ pub fn locale() -> impl Deref<Target = str> {
 }
 
 /// 换语言。应用和组件库共用一份 `rust_i18n` 的全局状态，所以这一次调用
-/// 两边一起换 —— 不必再单独喊一次 `gpui_component::set_locale`。
+/// 两边一起换 —— 不必再单独喊一次 `gpui_kit::component::set_locale`。
 ///
 /// 换完不会自己重画，调用方负责通知界面。
 pub fn set_locale(locale: &str) {

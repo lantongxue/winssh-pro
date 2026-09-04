@@ -1,6 +1,6 @@
 //! 终端网格的配色：ANSI 那 16 色、256 色索引与真彩色怎么落到具体的像素颜色。
 //!
-//! 主题（gpui-component 那套 shadcn neutral）里没有终端色 —— 它是给控件用的，
+//! 主题（组件库那套 shadcn neutral）里没有终端色 —— 它是给控件用的，
 //! 只有前景、底色、边框那几档。终端要的是另一套东西：程序用 `\x1b[31m` 说
 //! "红"，这一套得回答"红是哪个红"。所以这里固定一组，取自 VS Code 的
 //! Dark+ / Light+，与 [`crate::ui::theme::palette`] 里的品牌色是同一套观感。
@@ -8,8 +8,8 @@
 //! 明暗两套都给全了：终端的底色跟着主题走，前景色和 16 色也得跟着换，
 //! 不然浅色模式下一屏字都糊在白底上。
 
-use gpui::{App, Hsla, Rgba, rgb};
-use gpui_component::ActiveTheme as _;
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::{App, Hsla, Rgba, rgb};
 
 use crate::ui::theme::palette;
 

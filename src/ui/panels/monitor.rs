@@ -20,13 +20,7 @@
 
 use std::{rc::Rc, time::Duration};
 
-use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString, Size,
-    StatefulInteractiveElement as _, Styled as _, Task, Window, div, linear_color_stop,
-    linear_gradient, prelude::FluentBuilder as _, px, rgb, size,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
     VirtualListScrollHandle, WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
@@ -37,6 +31,12 @@ use gpui_component::{
     scroll::{ScrollableElement as _, ScrollbarAxis},
     tooltip::Tooltip,
     v_flex, v_virtual_list,
+};
+use gpui_kit::{
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString, Size,
+    StatefulInteractiveElement as _, Styled as _, Task, Window, div, linear_color_stop,
+    linear_gradient, prelude::FluentBuilder as _, px, rgb, size,
 };
 
 use crate::{
@@ -847,7 +847,7 @@ impl MonitorPanel {
         let cpu = telemetry.cpu_percent;
         let blue = rgb(0x569CD6);
         // `AreaChart` 画的是一串带标签的读数：把 CPU 历史按下标配上采样序号，
-        // 数值转成 `f64`（[`gpui_component::chart::AreaChart`] 的 Y 轴只接受 f64）。
+        // 数值转成 `f64`（[`gpui_kit::component::chart::AreaChart`] 的 Y 轴只接受 f64）。
         // 序号只用来当 x 轴的刻度键，卡片里不显示轴线，所以它不会露出来。
         let history: Vec<HistoryPoint> = telemetry
             .cpu_history
@@ -1038,7 +1038,7 @@ impl MonitorPanel {
                             .child(
                                 div()
                                     .h_full()
-                                    .w(gpui::relative(disk_percent as f32 / 100.))
+                                    .w(gpui_kit::relative(disk_percent as f32 / 100.))
                                     .rounded_full()
                                     .bg(rgb(0xCE9178)),
                             ),
@@ -1879,7 +1879,7 @@ impl Render for MonitorPanel {
                             self.render_docker_tab(t, cx).into_any_element()
                         }
                         // 上面那条分支已经接走了。
-                        (MonitorTab::Processes, Some(_)) => gpui::Empty.into_any_element(),
+                        (MonitorTab::Processes, Some(_)) => gpui_kit::Empty.into_any_element(),
                     })
                     .into_any_element(),
             })
@@ -1953,8 +1953,8 @@ mod tests {
 
     /// 主机身上的节奏要落到轮询上：展开时用 `monitor_secs`，收起时用
     /// `status_secs`。这两条是整个设置页存在的理由，接错了界面上看不出来。
-    #[gpui::test]
-    fn each_interval_drives_its_own_phase(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn each_interval_drives_its_own_phase(cx: &mut gpui_kit::TestAppContext) {
         let (panel, cx) = draw_settings(
             cx,
             MonitorIntervals {
@@ -1984,8 +1984,8 @@ mod tests {
 
     /// 手敲一个越界的数按保存：当场夹回区间，而且输入框里也要看得见被夹过了 ——
     /// 悄悄改掉用户填的数字比拒绝它更让人困惑。
-    #[gpui::test]
-    fn saving_an_out_of_range_interval_clamps_it_in_place(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn saving_an_out_of_range_interval_clamps_it_in_place(cx: &mut gpui_kit::TestAppContext) {
         let (panel, cx) = draw_settings(cx, MonitorIntervals::default());
 
         cx.update(|window, cx| {
@@ -2021,8 +2021,8 @@ mod tests {
     ///
     /// 空格子是这条路上唯一真的会出现的"不是数字"：输入框自己带着数字模式，
     /// 字母根本敲不进去。所以界面上那句红字守的是这一种。
-    #[gpui::test]
-    fn an_empty_interval_is_not_saved(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn an_empty_interval_is_not_saved(cx: &mut gpui_kit::TestAppContext) {
         let (panel, cx) = draw_settings(cx, MonitorIntervals::default());
 
         cx.update(|window, cx| {
@@ -2045,12 +2045,12 @@ mod tests {
     /// 外面套一层 [`Root`]：保存要弹通知，而通知是挂在 `Root` 那一层的 ——
     /// 少了它，`push_notification` 会在测试里直接 panic。
     fn draw_settings(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
         intervals: MonitorIntervals,
-    ) -> (Entity<MonitorPanel>, &mut gpui::VisualTestContext) {
-        use gpui_component::Root;
+    ) -> (Entity<MonitorPanel>, &mut gpui_kit::VisualTestContext) {
+        use gpui_kit::component::Root;
 
-        cx.update(gpui_component::init);
+        cx.update(gpui_kit::init);
         let (root, cx) = cx.add_window_view(|window, cx| {
             // `hosts` 给 `None`：这条测试只管界面与轮询节奏，落库那一半在
             // `HostService` 自己的测试里验。

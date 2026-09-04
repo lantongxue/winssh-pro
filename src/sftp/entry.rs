@@ -6,7 +6,7 @@
 
 use std::time::SystemTime;
 
-use gpui::SharedString;
+use gpui_kit::SharedString;
 use rust_i18n::t;
 
 /// 文件类型。对端只告诉我们 mode 里的类型位，剩下的是按 POSIX 的字符归类。

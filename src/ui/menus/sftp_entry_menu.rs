@@ -5,7 +5,7 @@
 //! （`cd here`），然后是复制路径、改名、权限，删除永远在最后并且单独一段 ——
 //! 分组是防手滑。
 //!
-//! 菜单本体仍然是 [`gpui_component::menu::PopupMenu`]：定位、键盘选择、点外面
+//! 菜单本体仍然是 [`gpui_kit::component::menu::PopupMenu`]：定位、键盘选择、点外面
 //! 关掉都归它。这里只声明有哪些项、长什么样、点下去往外报哪一个
 //! [`SftpEntryAction`]。项按条目的类型取舍：目录没有"编辑"（要搬它走的是下载那套
 //! 目录树），文件没有"进目录"。
@@ -16,12 +16,12 @@
 
 use std::rc::Rc;
 
-use gpui::{
-    App, Context, Hsla, ParentElement as _, Pixels, SharedString, Styled as _, Window, div, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName,
     menu::{PopupMenu, PopupMenuItem},
+};
+use gpui_kit::{
+    App, Context, Hsla, ParentElement as _, Pixels, SharedString, Styled as _, Window, div, px,
 };
 
 use crate::{

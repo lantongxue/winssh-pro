@@ -45,7 +45,7 @@ use alacritty_terminal::{
 };
 use anyhow::{Context as _, Result};
 use futures::{StreamExt as _, channel::mpsc};
-use gpui::{
+use gpui_kit::{
     App, AppContext as _, Bounds, Context, Entity, EventEmitter, Keystroke, Modifiers, Pixels,
     Point, Size, Task, px,
 };
@@ -665,7 +665,7 @@ impl Emulator {
     /// 按下。`column` / `line` 是可见区域里的格子坐标，0 起。
     pub fn mouse_press(
         &mut self,
-        button: gpui::MouseButton,
+        button: gpui_kit::MouseButton,
         column: usize,
         line: usize,
         mods: &Modifiers,
@@ -680,7 +680,7 @@ impl Emulator {
     /// 松开。
     pub fn mouse_release(
         &mut self,
-        button: gpui::MouseButton,
+        button: gpui_kit::MouseButton,
         column: usize,
         line: usize,
         mods: &Modifiers,
@@ -694,7 +694,7 @@ impl Emulator {
     /// 按着键移动。只有开了 `MOUSE_DRAG` 或 `MOUSE_MOTION` 的程序要这个。
     pub fn mouse_drag(
         &mut self,
-        button: gpui::MouseButton,
+        button: gpui_kit::MouseButton,
         column: usize,
         line: usize,
         mods: &Modifiers,
@@ -919,7 +919,7 @@ impl EventEmitter<EmulatorEvent> for Emulator {}
 
 /// 只带 Shift 的修饰键组合。别的组合（Ctrl、Alt、Command）要么已经被
 /// [`to_esc_str`] 翻译掉了，要么是窗口的快捷键，不能当普通字符送进终端。
-const SHIFT_ONLY: gpui::Modifiers = gpui::Modifiers {
+const SHIFT_ONLY: gpui_kit::Modifiers = gpui_kit::Modifiers {
     control: false,
     alt: false,
     shift: true,
@@ -934,9 +934,9 @@ const SHIFT_ONLY: gpui::Modifiers = gpui::Modifiers {
 /// alacritty 每解析出一块输出就送一条 `Wakeup`，逐条重画的话刷屏的命令
 /// 会让渲染跟不上。
 async fn pump(
-    this: gpui::WeakEntity<Emulator>,
+    this: gpui_kit::WeakEntity<Emulator>,
     mut events: mpsc::UnboundedReceiver<AlacEvent>,
-    cx: &mut gpui::AsyncApp,
+    cx: &mut gpui_kit::AsyncApp,
 ) {
     /// 一批最多处理多少条。上限是为了别让一条无限刷屏的命令把这一轮拖到没有尽头。
     const BATCH_LIMIT: usize = 512;
@@ -974,9 +974,9 @@ async fn pump(
 
 /// SSH 输出泵：把远端字节喂回 `Emulator::write_output`。
 async fn ssh_pump(
-    this: gpui::WeakEntity<Emulator>,
+    this: gpui_kit::WeakEntity<Emulator>,
     mut rx: crate::ssh::SshOutputReceiver,
-    cx: &mut gpui::AsyncApp,
+    cx: &mut gpui_kit::AsyncApp,
 ) {
     while let Some(data) = rx.recv().await {
         let outcome = this.update(cx, |this, cx| {
@@ -1070,11 +1070,11 @@ fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
 }
 
 /// 三个键在 xterm 编码里的基数。侧键（前进/后退）没有编码，不报。
-fn button_base(button: gpui::MouseButton) -> Option<u8> {
+fn button_base(button: gpui_kit::MouseButton) -> Option<u8> {
     Some(match button {
-        gpui::MouseButton::Left => 0,
-        gpui::MouseButton::Middle => 1,
-        gpui::MouseButton::Right => 2,
+        gpui_kit::MouseButton::Left => 0,
+        gpui_kit::MouseButton::Middle => 1,
+        gpui_kit::MouseButton::Right => 2,
         _ => return None,
     })
 }
@@ -1348,11 +1348,13 @@ mod tests {
 
     #[test]
     fn only_the_three_real_buttons_get_reported() {
-        assert_eq!(button_base(gpui::MouseButton::Left), Some(0));
-        assert_eq!(button_base(gpui::MouseButton::Middle), Some(1));
-        assert_eq!(button_base(gpui::MouseButton::Right), Some(2));
+        assert_eq!(button_base(gpui_kit::MouseButton::Left), Some(0));
+        assert_eq!(button_base(gpui_kit::MouseButton::Middle), Some(1));
+        assert_eq!(button_base(gpui_kit::MouseButton::Right), Some(2));
         assert_eq!(
-            button_base(gpui::MouseButton::Navigate(gpui::NavigationDirection::Back)),
+            button_base(gpui_kit::MouseButton::Navigate(
+                gpui_kit::NavigationDirection::Back
+            )),
             None
         );
     }

@@ -21,19 +21,19 @@
 use std::rc::Rc;
 
 use alacritty_terminal::selection::SelectionType;
-use gpui::{
-    App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, SharedString, Styled as _, Subscription, Window, actions, div, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::ContextMenuExt as _,
     v_flex,
+};
+use gpui_kit::{
+    App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, ScrollDelta,
+    ScrollWheelEvent, SharedString, Styled as _, Subscription, Window, actions, div, px,
 };
 
 use crate::{
@@ -148,7 +148,7 @@ pub struct TerminalPane {
     last_query: SearchQuery,
     /// 最近这一下右键该不该弹菜单（[`terminal_menu_allowed`] 的判断结果）。
     ///
-    /// 要在这儿存一份，是因为弹层那个元素（`gpui_component` 的 `ContextMenu`）
+    /// 要在这儿存一份，是因为弹层那个元素（组件库的 `ContextMenu`）
     /// 自己拿走了右键的 mouse-down，而交给菜单构建器的参数里没有事件，读不到
     /// 修饰键。它又包在我们这层外面，所以也拦不住它 —— 只能在自己的
     /// [`Self::on_mouse_down`] 里把结论记下来，构建器再回头读。
@@ -672,7 +672,7 @@ impl TerminalPane {
     }
 
     /// 指针位置落在网格的哪个格子上（缓冲坐标，供选区用）。
-    fn point_at(&self, position: gpui::Point<gpui::Pixels>, cx: &App) -> GridPoint {
+    fn point_at(&self, position: gpui_kit::Point<gpui_kit::Pixels>, cx: &App) -> GridPoint {
         let Some(emulator) = &self.emulator else {
             return GridPoint::default();
         };
@@ -680,7 +680,7 @@ impl TerminalPane {
     }
 
     /// 指针位置落在屏幕的第几行第几列（屏幕坐标，供鼠标上报用）。
-    fn cell_at(&self, position: gpui::Point<gpui::Pixels>, cx: &App) -> (usize, usize) {
+    fn cell_at(&self, position: gpui_kit::Point<gpui_kit::Pixels>, cx: &App) -> (usize, usize) {
         let Some(emulator) = &self.emulator else {
             return (0, 0);
         };
@@ -859,7 +859,7 @@ impl TerminalPane {
     /// 搜索栏本身。浮在网格右上角，不把网格顶下去 —— 顶下去会让整屏重排，
     /// 开关一次搜索栏就抖一下。代价是它盖住了几行，那几行由
     /// [`Self::rows_behind_the_search_bar`] 报给扫描那边。
-    fn render_search_bar(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn render_search_bar(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
         let input = self.search_input.as_ref()?;
         let query = input.read(cx).value();
         let search = self
@@ -1013,10 +1013,10 @@ impl TerminalPane {
         &self,
         cx: &mut Context<Self>,
     ) -> impl Fn(
-        gpui_component::menu::PopupMenu,
+        gpui_kit::component::menu::PopupMenu,
         &mut Window,
-        &mut Context<gpui_component::menu::PopupMenu>,
-    ) -> gpui_component::menu::PopupMenu
+        &mut Context<gpui_kit::component::menu::PopupMenu>,
+    ) -> gpui_kit::component::menu::PopupMenu
     + 'static {
         let pane = cx.entity().downgrade();
         let handler: TerminalActionHandler = {

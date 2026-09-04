@@ -5,7 +5,7 @@
 //! 这一层可以逐段单测 —— 每种发行版的 `/proc/net/dev`、`df`、`ps` 排版都略有
 //! 出入，解析必须挡得住。
 
-use gpui::SharedString;
+use gpui_kit::SharedString;
 
 use anyhow::{Result, bail};
 

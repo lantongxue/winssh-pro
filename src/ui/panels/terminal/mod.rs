@@ -27,16 +27,16 @@ mod split;
 pub use pane::{BackTab, CloseSearch, CopySelection, Find, PasteClipboard, Tab};
 pub use split::SplitLayout;
 
-use gpui::{
-    App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    WeakEntity, Window, actions, div, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, IconName, ResizableState, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent, PanelId, TabGroup},
     h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
+};
+use gpui_kit::{
+    App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    WeakEntity, Window, actions, div, px,
 };
 use std::sync::Arc;
 
@@ -73,16 +73,16 @@ actions!(
 );
 
 /// 标签页上那个颜色点的直径。
-const TAB_DOT_SIZE: gpui::Pixels = px(6.);
+const TAB_DOT_SIZE: gpui_kit::Pixels = px(6.);
 
 /// 右侧监控面板的固定宽度。
-const MONITOR_WIDTH: gpui::Pixels = px(360.);
+const MONITOR_WIDTH: gpui_kit::Pixels = px(360.);
 
 /// 底部 SFTP 栏展开时的初始高度，以及能拖到多高/多矮。展开时给到三行的目录加一条
 /// 队列（原型是 h-20 那一档），拖拽范围则由"还能看见一两行"到"半屏"。
-const SFTP_HEIGHT: gpui::Pixels = px(300.);
-const SFTP_MIN_HEIGHT: gpui::Pixels = px(120.);
-const SFTP_MAX_HEIGHT: gpui::Pixels = px(560.);
+const SFTP_HEIGHT: gpui_kit::Pixels = px(300.);
+const SFTP_MIN_HEIGHT: gpui_kit::Pixels = px(120.);
+const SFTP_MAX_HEIGHT: gpui_kit::Pixels = px(560.);
 
 /// 这个标签页的终端从哪儿拿字节。分屏出来的第二个窗格要照着第一个开。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -380,7 +380,12 @@ impl TerminalPanel {
     }
 
     /// 关掉一个窗格：分屏时收回单屏，单屏时关掉整个标签页。
-    fn close_pane(&mut self, pane: gpui::EntityId, window: &mut Window, cx: &mut Context<Self>) {
+    fn close_pane(
+        &mut self,
+        pane: gpui_kit::EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.panes.len() <= 1 {
             self.close(window, cx);
             return;
@@ -743,7 +748,11 @@ impl TerminalPanel {
     // ─── 渲染 ───────────────────────────────────────────────────────────────
 
     /// 终端那一块：一个窗格，或者两个加一条拖得动的分隔条。
-    fn render_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_panes(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
         // 布局和窗格数对不上是画不出来的（少一半会是空白）。分屏那一步失败时
         // （比如新窗格没建起来）就按实际有几个来画，而不是相信那个枚举。
         let Some(axis) = self.split.axis().filter(|_| self.panes.len() >= 2) else {
@@ -765,7 +774,7 @@ impl TerminalPanel {
     /// 我们的 [`crate::ui::elements::TerminalGridElement`] 没有那一层，而给整块
     /// 元素加 `opacity` 会连光标和选区一起变淡，读起来是"这一半坏了"。
     /// 描边只花一像素，还不动任何一个字的颜色。
-    fn render_pane_cell(&self, at: usize, window: &Window, cx: &App) -> gpui::AnyElement {
+    fn render_pane_cell(&self, at: usize, window: &Window, cx: &App) -> gpui_kit::AnyElement {
         let Some(pane) = self.panes.get(at) else {
             return div().size_full().into_any_element();
         };
@@ -1024,8 +1033,8 @@ mod tests {
     /// —— 那就是原因。之后两头都动了：`Cargo.toml` 把自己这个 crate 开到
     /// `opt-level=1`（帧瘦下来，需求落到 0.38~0.5 MiB），`build.rs` 把栈抬到
     /// 8 MiB。哪天这个数字又开始爬，上面那行就能看出来。
-    #[gpui::test]
-    fn the_panel_draws_all_the_way_through(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn the_panel_draws_all_the_way_through(cx: &mut gpui_kit::TestAppContext) {
         let (_panel, cx) = draw_panel(cx);
         // 再画一帧：第一帧和后续帧走的不是同一条路（元素状态、焦点、
         // 上一帧量出来的网格尺寸都只有第二帧才读得到）。
@@ -1033,8 +1042,8 @@ mod tests {
     }
 
     /// 三档分屏都要画得出来，包括中间那条拖得动的分隔条。
-    #[gpui::test]
-    fn every_split_layout_draws(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn every_split_layout_draws(cx: &mut gpui_kit::TestAppContext) {
         let (panel, cx) = draw_panel(cx);
         for layout in [
             SplitLayout::Columns,
@@ -1052,8 +1061,8 @@ mod tests {
     }
 
     /// 收回单屏时留下的必须是**活动的**那一半，而不是排在前面的那一半。
-    #[gpui::test]
-    fn collapsing_keeps_the_active_pane(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn collapsing_keeps_the_active_pane(cx: &mut gpui_kit::TestAppContext) {
         let (panel, cx) = draw_panel(cx);
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
@@ -1081,11 +1090,11 @@ mod tests {
     /// `on_added_to` 的取焦、以及 Dock 交给 [`Focusable`] 的那次问询，
     /// 都只有真的挂进 `DockArea` 才会走到。
     fn draw_panel(
-        cx: &mut gpui::TestAppContext,
-    ) -> (Entity<TerminalPanel>, &mut gpui::VisualTestContext) {
-        use gpui_component::dock::{DockPlacement, DockSkin, panel_handle};
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> (Entity<TerminalPanel>, &mut gpui_kit::VisualTestContext) {
+        use gpui_kit::component::dock::{DockPlacement, DockSkin, panel_handle};
 
-        cx.update(gpui_component::init);
+        cx.update(gpui_kit::init);
         let (harness, cx) = cx.add_window_view(|window, cx| {
             let (dock_area, _skin) = DockSkin::dock_area("test-dock", Some(1), window, cx);
             let panel = TerminalPanel::new_detached(window, cx);
@@ -1106,7 +1115,7 @@ mod tests {
     }
 
     struct Harness {
-        dock_area: Entity<gpui_component::dock::DockArea>,
+        dock_area: Entity<gpui_kit::component::dock::DockArea>,
         panel: Entity<TerminalPanel>,
     }
 

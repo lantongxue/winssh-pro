@@ -2,7 +2,7 @@
 //!
 //! 菜单和卡片一样不持有状态：有哪些项写在菜单里，选了哪一项以回调发回去，
 //! 真正干活的是收到回调的那一层。弹层本身（定位、键盘选择、点外面关掉）
-//! 全部交给 [`gpui_component::menu`]。
+//! 全部交给 [`gpui_kit::component::menu`]。
 
 mod host_menu;
 mod local_entry_menu;

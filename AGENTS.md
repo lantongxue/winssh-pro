@@ -7,7 +7,9 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 - 开发语言：rust
 - 依赖管理：cargo
 - GUI 框架：gpui
-- 三方 UI 组件：gpui-kit（`gpui-component` 是它里面那个带样式的组件 crate）
+- 三方 UI 组件：gpui-kit —— 应用只依赖 `gpui-kit` 这一个门面 crate，
+  gpui 本体是 `gpui_kit::*`，带样式的组件是 `gpui_kit::component`，
+  图标资源是 `gpui_kit::assets`，平台层是 `gpui_kit::platform`
 - SSH+SFTP 核心库：russh
 
 ## 开发规则
@@ -40,11 +42,11 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 | --- | --- | --- |
 | `src/ui/bars/` | `*Bar` | 贴着窗口边缘的固定 chrome，位置不随内容变（`ActivityBar`） |
 | `src/ui/views/` | `*View` | 侧边栏里的整块内容，一次显示一个（`HostExplorerView`、`PlaceholderView`） |
-| `src/ui/panels/` | `*Panel` | 进 `gpui_component::dock` 的面板，可拖拽、分屏、存布局（`TerminalPanel`、`HostInfoPanel`、`EventLogPanel`…） |
+| `src/ui/panels/` | `*Panel` | 进 `gpui_kit::component::dock` 的面板，可拖拽、分屏、存布局（`TerminalPanel`、`HostInfoPanel`、`EventLogPanel`…） |
 | `src/ui/dialogs/` | `*Dialog` | 盖在窗口中央、要用户答复的一层（`HostFormDialog`） |
 | `src/ui/cards/` | `*Card` | 列表或网格里代表一条数据的那一块（`HostCard`） |
 | `src/ui/menus/` | `*Menu` | 点开之后浮在内容之上的一列动作（`HostMenu`） |
-| `src/ui/elements/` | `*Element` | 自己实现 `gpui::Element`，下到布局与绘制里的那一层（`TerminalGridElement`） |
+| `src/ui/elements/` | `*Element` | 自己实现 `gpui_kit::Element`，下到布局与绘制里的那一层（`TerminalGridElement`） |
 
 新增一类组件就照这个样子新开一个目录，不要塞进已有目录里凑合：
 抽屉 → `drawers/` + `*Drawer`，气泡/浮层 → `popovers/` + `*Popover`。
@@ -76,20 +78,19 @@ SeaORM 的异步操作跑在 `db::run` 桥接的应用级 tokio runtime 上，
 
 ## 参考代码
 
-1. @refs/zed 是 gpui 库的完整实现，里面包含了许多重要的组件等
-2. @refs/gpui-kit 是基于 gpui 库封装的三方组件库（原 gpui-component 仓库，已改名并入 gpui-kit），采用了类似 shadcn 的设计模式，是一个综合性的 Rust 桌面应用开发框架。它将生产级 UI 系统、应用级数据与布局能力、编辑能力，以及可复用的行为、状态和基础设施整合在一起。带样式的组件在 `crates/component`（crate 名仍是 `gpui-component`），基础能力在 `crates/base`，图标资源在 `crates/assets`（`gpui-kit-assets`）。
-3. @design/prototype 是基于前端的产品原型设计，可以参考配色、布局、icon 等
-4. @refs/alacritty 是 zed 用的那个 alacritty fork。它和上面两个不一样 ——
+1. @refs/gpui-kit 是基于 gpui 库封装的三方组件库（原 gpui-component 仓库，已改名并入 gpui-kit），采用了类似 shadcn 的设计模式，是一个综合性的 Rust 桌面应用开发框架。它将生产级 UI 系统、应用级数据与布局能力、编辑能力，以及可复用的行为、状态和基础设施整合在一起。应用侧只依赖 `crates/kit`（`gpui-kit`）这一个门面，它下面：带样式的组件在 `crates/component`，基础能力在 `crates/base`，图标资源在 `crates/assets`；gpui 本体由它替我们钉住版本。新写法照 `refs/gpui-kit/examples/` 来。
+2. @design/prototype 是基于前端的产品原型设计，可以参考配色、布局、icon 等
+3. @refs/alacritty 是 zed 用的那个 alacritty fork。它和上面那个不一样 ——
    不是拿来参考的，`alacritty_terminal` 是终端内核的真实依赖（VT 解析、
    屏幕缓冲、PTY），rev 与 zed 自己钉的一致。
 
-对于 gpui-kit，我们只参考并使用 `gpui-component` 里带样式的 ui 组件，对于 base 组件不需要参考。
+对于 gpui-kit，我们只参考并使用 `gpui_kit::component`（`crates/component`）里带样式的 ui 组件，对于 base 组件不需要参考。
 
 上述的参考代码库里面不仅有相关的 demo，还有完善的文档可以参考。
 
 `refs/` 下的目录都是本仓库的 git 子模块（浅克隆），
 初次检出后执行 `git submodule update --init --recursive` 拉起。
-`Cargo.toml` 里 `refs/gpui-kit` 与 `refs/alacritty` 是 path 依赖，缺失时无法编译；
-`refs/zed` 只做代码参考 —— gpui 本体从 crates.io 的 `gpui-pre-*` 快照来
+`Cargo.toml` 里 `refs/gpui-kit`（`crates/kit`）与 `refs/alacritty` 是 path 依赖，
+缺失时无法编译。gpui 本体不单独列 —— 它从 crates.io 的 `gpui-pre-*` 快照来
 （gpui-kit 发的，和它的 component/base 钉在同一个 zed commit 上），
-所以 `refs/zed` 的 rev 和实际编进来的 gpui 可能对不上，抄代码前先确认。
+由 `gpui-kit` 一并带进来，自己再列一份就是两份不同的 gpui 类型，编不过。

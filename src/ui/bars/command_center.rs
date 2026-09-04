@@ -2,21 +2,21 @@
 //!
 //! 版式：常驻标题栏正中的单一入口，看起来像输入框，实则是按钮。
 //! 点触发器弹出的是命令面板（[`crate::ui::dialogs::CommandPaletteDialog`]，
-//! 内部即 `gpui_component::command::Command`），主机、视图与动作都在那一层里找。
-//! 这一段只负责一直待在标题栏中间，用 `Button`（`gpui-component` 样式组件）
+//! 内部即 `gpui_kit::component::command::Command`），主机、视图与动作都在那一层里找。
+//! 这一段只负责一直待在标题栏中间，用 `Button`（`gpui_kit::component` 的样式组件）
 //! 模拟输入框外观，避免手写 `div` 仿输入框；真正的可输入搜索框在弹层 `Command` 内。
 //!
 //! 快捷键提示由调用方传进来（[`CommandCenterBar::shortcut`]），与真实按键绑定同源。
 
-use gpui::{
-    App, ClickEvent, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels,
-    RenderOnce, SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
     kbd::Kbd,
+};
+use gpui_kit::{
+    App, ClickEvent, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels,
+    RenderOnce, SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::ui::theme::palette;

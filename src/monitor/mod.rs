@@ -23,7 +23,7 @@ pub use sample::parse_probe;
 
 use std::sync::OnceLock;
 
-use gpui::SharedString;
+use gpui_kit::SharedString;
 
 use crate::session::SessionTelemetry;
 
@@ -109,7 +109,7 @@ pub struct MonitorTelemetry {
     /// 最近 [`collector::HISTORY_LEN`] 个点的 CPU sparkline，用于卡片顶部的迷你条。
     pub cpu_history: Vec<f32>,
     /// 最近 [`collector::HISTORY_LEN`] 个点的内存占用百分比，喂给 RAM 卡片里的
-    /// [`AreaChart`](gpui_component::chart::AreaChart)。内存不像 CPU 需要采样窗口，
+    /// [`AreaChart`](gpui_kit::component::chart::AreaChart)。内存不像 CPU 需要采样窗口，
     /// 每次采集都直接算得出来，所以这条历史每个轮询周期都长一格。
     pub memory_history: Vec<f32>,
     pub memory_used_gb: f32,

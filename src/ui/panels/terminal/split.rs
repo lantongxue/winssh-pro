@@ -23,12 +23,12 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui::{
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::{
     AnyElement, App, Axis, Bounds, InteractiveElement as _, IntoElement, MouseButton,
     MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, SharedString, Styled as _, canvas,
     div, prelude::FluentBuilder as _, px,
 };
-use gpui_component::ActiveTheme as _;
 
 use crate::ui::theme::AppIcon;
 use rust_i18n::t;

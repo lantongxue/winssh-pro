@@ -15,13 +15,7 @@
 
 use std::rc::Rc;
 
-use gpui::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Task, Window, div, prelude::FluentBuilder as _,
-    px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, Sizable as _,
     StyledExt as _, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
@@ -29,6 +23,12 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     tooltip::Tooltip,
     v_flex,
+};
+use gpui_kit::{
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Task, Window, div, prelude::FluentBuilder as _,
+    px,
 };
 
 use crate::{
@@ -44,11 +44,11 @@ use rust_i18n::t;
 const REFRESH: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// 这一屏里图标的尺寸。
-const ICON: gpui::Pixels = px(14.);
+const ICON: gpui_kit::Pixels = px(14.);
 
 /// 标题行右端给对话框那颗关闭 `×` 让出来的宽度。
 /// 它是绝对定位贴在弹层右上角的，不在标题这条 flex 里，挤不开。
-const CLOSE_BUTTON_ROOM: gpui::Pixels = px(28.);
+const CLOSE_BUTTON_ROOM: gpui_kit::Pixels = px(28.);
 
 /// 转发类型那一组按钮的测试探针名，顺序同 [`ForwardKind::ALL`]。
 /// 用处见 [`PortForwardDialog::render_kind_group`]。
@@ -1268,7 +1268,7 @@ impl Render for PortForwardDialog {
 /// （对话框关着的时候会话断了），记一份就会和实况对不上。
 ///
 /// 右边留出一段空位：对话框自己那颗关闭的 `×` 是绝对定位贴在右上角的
-/// （见 `gpui_component::dialog`），不留位置的话"新增转发"会压在它下面。
+/// （见 `gpui_kit::component::dialog`），不留位置的话"新增转发"会压在它下面。
 fn render_header(host: &Host, dialog: &Entity<PortForwardDialog>, cx: &App) -> AnyElement {
     let active = dialog.read(cx).active_count();
     let teal = palette::teal();
@@ -1504,8 +1504,8 @@ mod tests {
     /// 一整条很深的 builder 链（标题、表单、每条规则三行），而那种深度带来的
     /// 栈溢出 `cargo check` 与 clippy 都看不见，只有真的把树走一遍才掉得出来。
     /// 它不断言任何具体样式，断言的是"画得完"。
-    #[gpui::test]
-    fn the_dialog_draws_all_the_way_through(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn the_dialog_draws_all_the_way_through(cx: &mut gpui_kit::TestAppContext) {
         let (dialog, cx) = draw_dialog(cx, rules());
         // 再画一帧：第一帧和后续帧走的不是同一条路（元素状态、焦点都只有
         // 第二帧才读得到）。
@@ -1540,8 +1540,8 @@ mod tests {
     /// 加起来 300%，后两档跑到可见区域外面 —— 界面上看着就是"转发类型只有
     /// 本地"。这种错**画得完**，所以绘制测试全绿；只有量一量它们落在哪儿才
     /// 掉得出来。
-    #[gpui::test]
-    fn every_forwarding_type_stays_inside_the_selector(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn every_forwarding_type_stays_inside_the_selector(cx: &mut gpui_kit::TestAppContext) {
         let (dialog, cx) = draw_dialog(cx, rules());
         cx.update(|window, cx| {
             dialog.update(cx, |this, cx| this.open_draft(window, cx));
@@ -1575,8 +1575,8 @@ mod tests {
     ///
     /// 这一条盯的是"改"与"新建"共用同一张表单带来的那个风险 —— 走错分支的
     /// 结果不是报错，而是列表里悄悄多出一条几乎一样的规则。
-    #[gpui::test]
-    fn editing_a_rule_replaces_it_in_place(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn editing_a_rule_replaces_it_in_place(cx: &mut gpui_kit::TestAppContext) {
         let (dialog, cx) = draw_dialog(cx, rules());
         let port = crate::db::runtime().block_on(free_port());
 
@@ -1629,8 +1629,8 @@ mod tests {
     ///
     /// 改一条跑着的规则等于让列表和真正听着的那个端口对不上 —— 界面上写着新
     /// 端口，实际听着的还是旧的，那种错要等到客户端连不上才发现。
-    #[gpui::test]
-    fn a_forward_has_to_be_stopped_before_it_can_be_edited(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn a_forward_has_to_be_stopped_before_it_can_be_edited(cx: &mut gpui_kit::TestAppContext) {
         let (dialog, cx) = draw_dialog(cx, rules());
         let service = dialog.read_with(cx, |this, _| this.service.clone());
 
@@ -1662,15 +1662,15 @@ mod tests {
     }
 
     /// 一条规则都没有的时候画的是空状态，那是另一条分支。
-    #[gpui::test]
-    fn the_empty_state_draws(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn the_empty_state_draws(cx: &mut gpui_kit::TestAppContext) {
         let (_dialog, cx) = draw_dialog(cx, Vec::new());
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 
     /// "测试端口"的结果条挂在被测的那一条下面，也要画得出来。
-    #[gpui::test]
-    fn a_test_result_draws_under_its_rule(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn a_test_result_draws_under_its_rule(cx: &mut gpui_kit::TestAppContext) {
         let (dialog, cx) = draw_dialog(cx, rules());
         for outcome in [Ok("通了".into()), Err("连不上".into())] {
             cx.update(|window, cx| {
@@ -1733,9 +1733,9 @@ mod tests {
     /// 标题那一段不在 [`Render`] 里（它是交给对话框外壳的），所以单画正文
     /// 覆盖不到它 —— 而它同样是一条会读实体状态的 builder 链。
     fn draw_dialog(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
         rules: Vec<PortForward>,
-    ) -> (Entity<PortForwardDialog>, &mut gpui::VisualTestContext) {
+    ) -> (Entity<PortForwardDialog>, &mut gpui_kit::VisualTestContext) {
         // 真的连一次进程内的假 sshd：`ForwardService` 要一条活着的连接，而它
         // 不该为了测试变成 `Option`。那台假 sshd 就在回环上，见 `ssh::exec::fake`。
         let (handle, _) =
@@ -1745,7 +1745,7 @@ mod tests {
             forwards: ForwardRegistry::default(),
         });
 
-        cx.update(gpui_component::init);
+        cx.update(gpui_kit::init);
         let (harness, cx) = cx.add_window_view(|_, cx| {
             let dialog = cx.new(|cx| {
                 PortForwardDialog::new(host(), service, rules, Rc::new(|_, _, _| {}), cx)

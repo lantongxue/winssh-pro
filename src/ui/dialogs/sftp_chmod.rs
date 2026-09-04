@@ -11,16 +11,16 @@
 
 use std::rc::Rc;
 
-use gpui::{
-    App, AppContext as _, Context, Entity, Hsla, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Icon, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     v_flex,
+};
+use gpui_kit::{
+    App, AppContext as _, Context, Entity, Hsla, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::ui::theme::{AppIcon, palette};

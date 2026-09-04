@@ -28,7 +28,7 @@ use alacritty_terminal::{
     index::{Boundary, Column, Direction, Line, Point as AlacPoint, Side},
     term::{Term, search::Match, search::RegexSearch},
 };
-use gpui::Context;
+use gpui_kit::Context;
 
 use super::emulator::{Emulator, EventProxy};
 

@@ -3,15 +3,15 @@
 //! 叫“事件”而不是“活动”：左侧那条栏是活动栏，两处都用“活动”会分不清
 //! 说的是导航还是日志。
 
-use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
     dock::{BasePanel, Panel, PanelEvent},
     h_flex, v_flex,
+};
+use gpui_kit::{
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div,
 };
 use rust_i18n::t;
 
@@ -32,7 +32,7 @@ impl LogLevel {
         }
     }
 
-    fn color(&self, cx: &App) -> gpui::Hsla {
+    fn color(&self, cx: &App) -> gpui_kit::Hsla {
         match self {
             Self::Info => cx.theme().muted_foreground,
             Self::Warning => cx.theme().warning,

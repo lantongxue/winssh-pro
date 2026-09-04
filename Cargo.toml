@@ -6,21 +6,21 @@ edition = "2024"
 [dependencies]
 anyhow = "1"
 
-# GPUI 与组件库都来自 gpui-kit（原 longbridge/gpui-component 仓库已并进去，
-# 见 refs/gpui-kit）：`gpui-component` 现在是它的一个 crate，图标资源那份改叫
-# `gpui-kit-assets`。
+# GPUI 与组件库都从 gpui-kit 这一个门面 crate 进来（原 longbridge/gpui-component
+# 仓库已并进去，见 refs/gpui-kit）。应用侧只列这一行，各层按名字取：
 #
-# gpui 本体不再走 zed 的 git 依赖。gpui-kit 把 zed 的 gpui 一族按 `gpui-pre-*`
-# 的名字整套发到 crates.io（`gpui` → `gpui-pre`、`gpui_platform` →
-# `gpui-pre-platform`，同一个 zed commit 同一个版本号），component 与 base 都钉
-# 在那份快照上，所以这里必须用同一组包 —— 换成 `refs/zed` 的 path 依赖就是两份
-# 不同的 gpui 类型，编不过。`package =` 保留原来的库名，`use gpui::..` 不动。
-# 0.3 是个 caret 需求，`cargo update` 就能跟到新快照。
-gpui = { package = "gpui-pre", version = "0.3.1", features = ["profiler"] }
-gpui_platform = { package = "gpui-pre-platform", version = "0.3.1", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
-gpui-component = { path = "refs/gpui-kit/crates/component", version = "0.6.0" }
-gpui-kit-assets = { path = "refs/gpui-kit/crates/assets", version = "0.6.0" }
-gpui-base = { path = "refs/gpui-kit/crates/base", version = "0.6.0" }
+#     gpui_kit::*          gpui 本体
+#     gpui_kit::component  带样式的组件库（原 `gpui-component`）
+#     gpui_kit::assets     默认图标集（原 `gpui-kit-assets`）
+#     gpui_kit::platform   平台层，`gpui_kit::application()` 从这儿来
+#     gpui_kit::init(cx)   一次把上面这些都初始化掉
+#
+# 不再单独列 gpui。zed 的 gpui 一族由 gpui-kit 按 `gpui-pre-*` 的名字整套发到
+# crates.io（`gpui` → `gpui-pre`、`gpui_platform` → `gpui-pre-platform`，同一个
+# zed commit 同一个版本号），component 与 base 都钉在那份快照上 —— 自己再列一份
+# 就是两份不同的 gpui 类型，编不过。整组版本由门面 crate 钉住，这里少一处能钉歪
+# 的地方；跟新快照就是 `cargo update`，0.6 与 0.3 都是 caret 需求。
+gpui-kit = { path = "refs/gpui-kit/crates/kit", version = "0.6.0" }
 
 # 终端内核。VT 解析、屏幕缓冲、滚动回卷与 PTY 都由 alacritty 提供。
 # 用的是 zed 的那个 fork，rev 与 `refs/zed` 自己钉的一致（见 refs/alacritty）：
@@ -87,8 +87,9 @@ aws-lc-rs = { version = "1.16.2", features = ["prebuilt-nasm"] }
 rand = "0.10"
 # 让界面能在无窗口的测试里真的画一遍（`TestAppContext` + `window.draw`）。
 # 有些错只在完整的 layout/prepaint/paint 走完之后才暴露 —— 比如元素树自己
-# 套自己，编译期看不出来，跑起来是栈溢出。
-gpui = { package = "gpui-pre", version = "0.3.1", features = ["test-support"] }
+# 套自己，编译期看不出来，跑起来是栈溢出。门面 crate 的 `test-support` 转开的就是
+# `gpui/test-support`，`#[gpui_kit::test]` 与 `TestAppContext` 由它带出来。
+gpui-kit = { path = "refs/gpui-kit/crates/kit", features = ["test-support"] }
 
 # 依赖全部按发布级优化编译。gpui 与 alacritty_terminal 是每一帧真正在跑的代码，
 # dev 默认的 opt-level=0 会让它们慢出一个数量级 —— 界面卡、CPU 占用高，多半就是

@@ -8,12 +8,7 @@
 //! 提交之后去哪儿由“新建还是编辑”决定，收尾则归 [`HostExplorerView`]：
 //! 新建完跳到目标分组并选中新主机，编辑完刷新列表与右侧的信息面板。
 
-use gpui::{
-    Anchor, AnyElement, App, AppContext as _, Context, Entity, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, prelude::FluentBuilder as _, px, rgb,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Icon, IndexPath, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
@@ -21,6 +16,11 @@ use gpui_component::{
     input::{Input, InputEvent, InputState},
     select::{Select, SelectEvent, SelectState},
     v_flex,
+};
+use gpui_kit::{
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, Hsla, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div, prelude::FluentBuilder as _, px, rgb,
 };
 
 use crate::{
@@ -62,7 +62,7 @@ const BADGE_COLORS: [u32; 7] = [
 ];
 
 /// 色板上一个圆点的直径。
-const BADGE_SWATCH_SIZE: gpui::Pixels = px(22.);
+const BADGE_SWATCH_SIZE: gpui_kit::Pixels = px(22.);
 
 /// 标题行：图标 + 名称 + 副标题，对应设计稿的对话框头部。
 fn render_header(title: SharedString, subtitle: SharedString, cx: &App) -> impl IntoElement {

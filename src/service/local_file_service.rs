@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
-use gpui::SharedString;
+use gpui_kit::SharedString;
 
 use crate::sftp::{FileEntry, FileKind};
 use rust_i18n::t;

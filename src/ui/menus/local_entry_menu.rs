@@ -12,17 +12,17 @@
 //! 上传、复制路径、删除；改名式的单条动作（用默认程序打开、进目录）此时不画 ——
 //! 一次只能进一个目录。列表开头那个 ".." 不是条目，右键它只有"进入目录"。
 //!
-//! 菜单本体仍然是 [`gpui_component::menu::PopupMenu`]：定位、键盘选择、点外面关掉都归
+//! 菜单本体仍然是 [`gpui_kit::component::menu::PopupMenu`]：定位、键盘选择、点外面关掉都归
 //! 它。这里只声明有哪些项、长什么样、点下去往外报哪一个 [`LocalEntryAction`]。
 
 use std::rc::Rc;
 
-use gpui::{
-    App, Context, Hsla, ParentElement as _, Pixels, SharedString, Styled as _, Window, div, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName,
     menu::{PopupMenu, PopupMenuItem},
+};
+use gpui_kit::{
+    App, Context, Hsla, ParentElement as _, Pixels, SharedString, Styled as _, Window, div, px,
 };
 
 use crate::{

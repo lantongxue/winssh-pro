@@ -18,12 +18,14 @@
 
 use std::rc::Rc;
 
-use gpui::{
+use gpui_kit::component::{
+    ActiveTheme as _, StyledExt as _, h_flex, menu::ContextMenuExt as _, v_flex,
+};
+use gpui_kit::{
     AnyElement, App, ClickEvent, ElementId, Hsla, InteractiveElement as _, IntoElement,
     ParentElement as _, Pixels, RenderOnce, SharedString, StatefulInteractiveElement as _,
     Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
-use gpui_component::{ActiveTheme as _, StyledExt as _, h_flex, menu::ContextMenuExt as _, v_flex};
 
 use crate::{
     host::{Host, HostStatus},

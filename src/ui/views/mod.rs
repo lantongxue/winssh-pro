@@ -5,7 +5,7 @@
 //! 落地，统一走 [`PlaceholderView`]。所有视图共用同一条标题行，版式常量也放在
 //! 这里，换视图时这一栏的骨架不会跳。
 //!
-//! 视图不进 [`gpui_component::dock`]：它由 [`crate::ui::Workspace`] 直接渲染在一个
+//! 视图不进 [`gpui_kit::component::dock`]：它由 [`crate::ui::Workspace`] 直接渲染在一个
 //! 可拖宽的区域里，不能被拖走、分屏或另存布局。要那些能力的是 `*Panel`，
 //! 见 [`crate::ui::panels`]。
 
@@ -15,12 +15,12 @@ mod placeholder;
 pub use host_explorer::{HostExplorerEvent, HostExplorerView};
 pub use placeholder::PlaceholderView;
 
-use gpui::{App, Div, ParentElement as _, Pixels, SharedString, Styled as _, div, px};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
 };
+use gpui_kit::{App, Div, ParentElement as _, Pixels, SharedString, Styled as _, div, px};
 
 use crate::ui::theme::{AppIcon, palette};
 use rust_i18n::t;

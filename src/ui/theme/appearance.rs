@@ -6,15 +6,15 @@
 //! 这份订阅同时让运行中的系统深浅切换生效 —— 直到用户在设置里手动指定主题为止，
 //! 手动选择之后系统不再覆盖它。
 
-use gpui::{App, Subscription, Window};
-use gpui_component::{Theme, ThemeMode};
+use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::{App, Subscription, Window};
 
 /// 主题是否仍跟随系统。用户在设置里手动切换主题后置为 `false`。
 struct FollowSystemAppearance(bool);
 
-impl gpui::Global for FollowSystemAppearance {}
+impl gpui_kit::Global for FollowSystemAppearance {}
 
-/// 按系统外观校正主题，必须在 `gpui_component::init` 之后、开窗之前调用。
+/// 按系统外观校正主题，必须在 `gpui_kit::init` 之后、开窗之前调用。
 pub fn init(cx: &mut App) {
     cx.set_global(FollowSystemAppearance(true));
     Theme::sync_system_appearance(None, cx);
@@ -49,7 +49,7 @@ pub fn set_theme_mode(mode: ThemeMode, window: &mut Window, cx: &mut App) {
 /// 整层就不画了；边框换成行分隔线的颜色，叠加层的上下边框正好落在分隔线上，
 /// 行网格看不出变化（调成透明反倒会让选中行底下少一截分隔线）。
 fn override_colors(cx: &mut App) {
-    let transparent = gpui::transparent_black();
+    let transparent = gpui_kit::transparent_black();
     let theme = Theme::global_mut(cx);
     theme.colors.table_active = transparent;
     theme.colors.table_active_border = theme.colors.table_row_border;

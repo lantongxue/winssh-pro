@@ -7,12 +7,7 @@
 
 use std::rc::Rc;
 
-use gpui::{
-    AnyElement, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    MouseButton, ParentElement as _, Render, Styled as _, Window, actions, div,
-    prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, ResizableState, Root, Sizable as _, StyledExt as _, TitleBar,
     WindowExt as _,
     button::{Button, ButtonVariants as _},
@@ -20,6 +15,11 @@ use gpui_component::{
     h_flex, h_resizable,
     kbd::Kbd,
     resizable_panel,
+};
+use gpui_kit::{
+    AnyElement, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    MouseButton, ParentElement as _, Render, Styled as _, Window, actions, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::service::HostService;
@@ -54,12 +54,12 @@ const DOCK_VERSION: usize = 2;
 /// [`TitleBar`] 内部的留白同宽），其余平台的窗口按钮在右边，标题栏左端不留位置。
 /// 右侧补上同样的宽度，中间那一段才落在两侧 chrome 的正中。
 #[cfg(target_os = "macos")]
-const WINDOW_CONTROLS_INSET: gpui::Pixels = px(80.);
+const WINDOW_CONTROLS_INSET: gpui_kit::Pixels = px(80.);
 #[cfg(not(target_os = "macos"))]
-const WINDOW_CONTROLS_INSET: gpui::Pixels = px(0.);
+const WINDOW_CONTROLS_INSET: gpui_kit::Pixels = px(0.);
 
-const SIDEBAR_WIDTH: gpui::Pixels = px(300.);
-const HOST_INFO_WIDTH: gpui::Pixels = px(300.);
+const SIDEBAR_WIDTH: gpui_kit::Pixels = px(300.);
+const HOST_INFO_WIDTH: gpui_kit::Pixels = px(300.);
 
 pub struct Workspace {
     dock_area: Entity<DockArea>,

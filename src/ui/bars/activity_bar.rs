@@ -11,15 +11,15 @@
 
 use std::rc::Rc;
 
-use gpui::{
-    App, ElementId, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
-    RenderOnce, SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonCustomVariant, ButtonRounded, ButtonVariants as _},
     separator::Separator,
     v_flex,
+};
+use gpui_kit::{
+    App, ElementId, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
+    RenderOnce, SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::ui::{

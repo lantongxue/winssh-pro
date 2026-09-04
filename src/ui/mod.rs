@@ -6,12 +6,12 @@
 //! | --- | --- | --- |
 //! | [`bars`] | `*Bar` | 贴着窗口边缘的固定 chrome，位置不随内容变 |
 //! | [`views`] | `*View` | 侧边栏里的整块内容，一次显示一个 |
-//! | [`panels`] | `*Panel` | 进 [`gpui_component::dock`] 的面板，可拖拽、分屏、存布局 |
+//! | [`panels`] | `*Panel` | 进 [`gpui_kit::component::dock`] 的面板，可拖拽、分屏、存布局 |
 //! | [`dialogs`] | `*Dialog` | 盖在窗口中央、要用户答复的一层 |
 //! | [`drawers`] | `*Drawer` | 从边缘拉出来的抽屉（传输队列抽屉） |
 //! | [`cards`] | `*Card` | 列表或网格里代表一条数据的那一块 |
 //! | [`menus`] | `*Menu` | 点开之后浮在内容之上的一列动作 |
-//! | [`elements`] | `*Element` | 自己实现 [`gpui::Element`]，下到布局与绘制里的那一层 |
+//! | [`elements`] | `*Element` | 自己实现 [`gpui_kit::Element`]，下到布局与绘制里的那一层 |
 //!
 //! 新增一类组件（气泡、浮层……）就照这个样子新开一个目录，不要塞进
 //! 已有的目录里凑合 —— 目录名一旦对不上里面的东西，就没人知道该往哪儿找了。
@@ -33,8 +33,8 @@ mod workspace;
 pub use theme::appearance::observe as observe_appearance;
 pub use workspace::Workspace;
 
-use gpui::{App, KeyBinding};
-use gpui_component::dock::{ClosePanel, ToggleZoom};
+use gpui_kit::component::dock::{ClosePanel, ToggleZoom};
+use gpui_kit::{App, KeyBinding};
 
 use panels::{
     BackTab, CloseSearch, CopySelection, ExtendSelectionDown, ExtendSelectionUp, Find,
@@ -49,7 +49,7 @@ const CMD: &str = "cmd";
 #[cfg(not(target_os = "macos"))]
 const CMD: &str = "ctrl";
 
-/// 注册主窗口的快捷键与初始外观，必须在 `gpui_component::init` 之后调用。
+/// 注册主窗口的快捷键与初始外观，必须在 `gpui_kit::init` 之后调用。
 pub fn init(cx: &mut App) {
     theme::appearance::init(cx);
     cx.bind_keys(vec![

@@ -1,16 +1,16 @@
 //! 欢迎面板：窗口首次打开时中心区的内容，说明从哪里开始工作。
 
-use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    Keystroke, ParentElement as _, Render, SharedString, Styled as _, Window, div, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, IconName,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
     kbd::Kbd,
     v_flex,
+};
+use gpui_kit::{
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+    Keystroke, ParentElement as _, Render, SharedString, Styled as _, Window, div, px,
 };
 use rust_i18n::t;
 

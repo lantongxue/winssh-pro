@@ -6,7 +6,7 @@
 //!
 //! GPUI 画一帧是把元素树递归走三遍（`request_layout` → `prepaint` → `paint`），
 //! 每一层都是实打实的栈帧。这个应用画一次"Dock + 终端标签页"要多少栈是量过的
-//! （见 `ui::panels::terminal` 里那几个 `#[gpui::test]`，配合 `RUST_MIN_STACK`
+//! （见 `ui::panels::terminal` 里那几个 `#[gpui_kit::test]`，配合 `RUST_MIN_STACK`
 //! 卡出来的）：`opt-level=0` 下 1.0~1.25 MiB，**已经越过 1 MiB 那条线**。
 //! 表现是一连主机就 `has overflowed its stack`，而且和写错的代码毫无关系：
 //! 界面稍微深一层就翻车，浅一层又好了，很容易一路查到别处去。

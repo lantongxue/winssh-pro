@@ -11,7 +11,7 @@
 
 use std::collections::VecDeque;
 
-use gpui::SharedString;
+use gpui_kit::SharedString;
 
 use super::{
     MonitorTelemetry,

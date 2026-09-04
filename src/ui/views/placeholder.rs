@@ -6,11 +6,11 @@
 
 use std::rc::Rc;
 
-use gpui::{
+use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, v_flex};
+use gpui_kit::{
     App, ClickEvent, IntoElement, ParentElement as _, RenderOnce, SharedString, Styled as _,
     Window, div,
 };
-use gpui_component::{ActiveTheme as _, Icon, Sizable as _, v_flex};
 
 use super::{SidebarView, collapse_button, view_header};
 use crate::ui::theme::palette;

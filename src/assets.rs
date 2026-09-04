@@ -1,6 +1,6 @@
-//! 应用自己的静态资源，叠在 gpui-component 自带的资源之上。
+//! 应用自己的静态资源，叠在组件库自带的那一份（`gpui_kit::assets`）之上。
 //!
-//! gpui-component 的 `IconName` 是在宏展开期从它自己的 `assets/icons` 目录生成的，
+//! `gpui_kit::component` 的 `IconName` 是在宏展开期从那份资源的 `icons` 目录生成的，
 //! 所以那一套图标是固定的。设计稿要用的几个图标不在里面，就放在本仓库的
 //! `assets/icons/` 下，由这里内嵌进二进制，再用 [`crate::ui::AppIcon`] 按路径取用。
 //!
@@ -9,7 +9,7 @@
 
 use std::borrow::Cow;
 
-use gpui::{AssetSource, Result, SharedString};
+use gpui_kit::{AssetSource, Result, SharedString};
 
 /// 本仓库内嵌的资源，路径与 `assets/` 下的相对路径一致。
 ///
@@ -96,7 +96,7 @@ const OWNED: &[(&str, &[u8])] = &[
     ("icons/zap.svg", include_bytes!("../assets/icons/zap.svg")),
 ];
 
-/// 注册给 `gpui_platform::application().with_assets(..)` 的资源源。
+/// 注册给 `gpui_kit::application().with_assets(..)` 的资源源。
 pub struct Assets;
 
 impl AssetSource for Assets {
@@ -105,11 +105,11 @@ impl AssetSource for Assets {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
 
-        gpui_kit_assets::Assets.load(path)
+        gpui_kit::assets::Assets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut paths = gpui_kit_assets::Assets.list(path)?;
+        let mut paths = gpui_kit::assets::Assets.list(path)?;
         paths.extend(
             OWNED
                 .iter()

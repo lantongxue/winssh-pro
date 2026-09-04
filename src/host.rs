@@ -4,7 +4,7 @@
 //! 的那条活着的连接。这个文件只描述前者 —— 落库归 [`crate::service::HostService`]，
 //! 连接、认证与状态同步属于后续的连接层，界面层不应该知道它们如何实现。
 
-use gpui::SharedString;
+use gpui_kit::SharedString;
 use rust_i18n::t;
 
 /// 认证方式。落库时存为字符串，读回时按小写匹配：`password` / `key` / `agent`。

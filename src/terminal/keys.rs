@@ -10,7 +10,7 @@
 use std::borrow::Cow;
 
 use alacritty_terminal::term::TermMode;
-use gpui::Keystroke;
+use gpui_kit::Keystroke;
 
 /// 修饰键的组合。表里绝大多数条目只关心这五种情况，
 /// 其余组合（带 Command / 三键同按）一律落到 [`Modifiers::Other`]。

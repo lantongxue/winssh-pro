@@ -16,7 +16,7 @@
 //! 这个文件只描述规则本身与它的口径（怎么读、怎么写、等价的 `ssh` 命令行长
 //! 什么样），一个字节都不搬。
 
-use gpui::SharedString;
+use gpui_kit::SharedString;
 use serde::{Deserialize, Serialize};
 
 use crate::host::Host;

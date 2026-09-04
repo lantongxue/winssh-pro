@@ -22,14 +22,14 @@
 //! 覆盖范围是 U+2500–U+259F 全段与 U+E0B0/B2/B4/B6/B8/BA/BC/BE。落在外面的
 //! 字符（盲文 U+2800 那一段、六分块 U+1FB00）返回 `None`，照旧走字体。
 
-use gpui::{Bounds, Pixels, Point, point, px, size};
+use gpui_kit::{Bounds, Pixels, Point, point, px, size};
 
 /// 一笔要画的东西。三种：实心矩形、按 alpha 打薄的矩形（`░▒▓`）、路径（圆角、
 /// 斜线、powerline）。
 pub(crate) enum Ink {
     Rect(Bounds<Pixels>),
     Shade(Bounds<Pixels>, f32),
-    Path(gpui::Path<Pixels>),
+    Path(gpui_kit::Path<Pixels>),
 }
 
 /// 这个字符能不能自绘；能的话给出该画的几笔。
@@ -294,7 +294,7 @@ impl Cell {
         const SEGS: usize = 3;
         const INNER_PTS: usize = 4;
         let step = std::f32::consts::FRAC_PI_2 / SEGS as f32;
-        let mut path: Option<gpui::Path<Pixels>> = None;
+        let mut path: Option<gpui_kit::Path<Pixels>> = None;
         for i in 0..SEGS {
             let t0 = step * i as f32;
             let t1 = step * (i + 1) as f32;
@@ -304,7 +304,7 @@ impl Cell {
                     p.move_to(start);
                     p
                 }
-                None => path.insert(gpui::Path::new(start)),
+                None => path.insert(gpui_kit::Path::new(start)),
             };
             let ctrl = at((r + h) / (step / 2.).cos(), (t0 + t1) / 2.);
             p.curve_to(at(r + h, t1), ctrl);
@@ -364,7 +364,7 @@ impl Cell {
         let v = self.t * (w * w + hgt * hgt).sqrt() / w;
         let p = |x: f32, y: f32| point(px(x), px(y));
         let quad = |top_x: f32, bot_x: f32| {
-            let mut path = gpui::Path::new(p(top_x, self.y0));
+            let mut path = gpui_kit::Path::new(p(top_x, self.y0));
             path.line_to(p(top_x, self.y0 + v));
             path.line_to(p(bot_x, self.y1));
             path.line_to(p(bot_x, self.y1 - v));
@@ -577,13 +577,13 @@ pub(crate) fn powerline(
     Some(ink)
 }
 
-fn powerline_path(bounds: Bounds<Pixels>, shape: PowerlineShape) -> gpui::Path<Pixels> {
+fn powerline_path(bounds: Bounds<Pixels>, shape: PowerlineShape) -> gpui_kit::Path<Pixels> {
     let (x0, y0) = (bounds.origin.x, bounds.origin.y);
     let (x1, y1) = (x0 + bounds.size.width, y0 + bounds.size.height);
     let ymid = y0 + bounds.size.height / 2.;
 
     let tri = |a: Point<Pixels>, b: Point<Pixels>, c: Point<Pixels>| {
-        let mut p = gpui::Path::new(a);
+        let mut p = gpui_kit::Path::new(a);
         p.line_to(b);
         p.line_to(c);
         p
@@ -603,7 +603,7 @@ fn powerline_path(bounds: Bounds<Pixels>, shape: PowerlineShape) -> gpui::Path<P
         };
 
         let step = std::f32::consts::PI / SEGS as f32;
-        let mut p = gpui::Path::new(at(1., -std::f32::consts::FRAC_PI_2));
+        let mut p = gpui_kit::Path::new(at(1., -std::f32::consts::FRAC_PI_2));
         for i in 0..SEGS {
             let t0 = -std::f32::consts::FRAC_PI_2 + step * i as f32;
             let t1 = t0 + step;

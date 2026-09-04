@@ -1,7 +1,3 @@
-[submodule "refs/zed"]
-	path = refs/zed
-	url = https://github.com/zed-industries/zed
-	shallow = true
 [submodule "refs/gpui-kit"]
 	path = refs/gpui-kit
 	url = https://github.com/longbridge/gpui-kit

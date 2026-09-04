@@ -1,13 +1,13 @@
 //! 主机信息面板：停靠在 Dock 右侧，描述当前会话所连的主机。
 
-use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Window, div,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
     dock::{BasePanel, Panel, PanelEvent},
     h_flex, v_flex,
+};
+use gpui_kit::{
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+    ParentElement as _, Render, SharedString, Styled as _, Window, div,
 };
 
 use crate::host::Host;

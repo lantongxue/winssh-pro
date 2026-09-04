@@ -20,15 +20,15 @@
 //!
 //! **这个菜单不放图标**，和这个目录里另外三个不一样。那三个是文件动作，
 //! 图标分得出类别；这里的复制／粘贴／全选在图标集里没有对得上的字形
-//! （`gpui-component` 只有 `copy`、`close`、`check` 这么几个），硬凑三个不相干的
+//! （组件库只有 `copy`、`close`、`check` 这么几个），硬凑三个不相干的
 //! 反而比没有更难认。tty7 那个菜单本身也是纯文字的。
 //!
 //! 什么时候**不**弹，见 [`allowed`]。
 
 use std::rc::Rc;
 
-use gpui::{App, Context, Pixels, SharedString, Window, px};
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::{App, Context, Pixels, SharedString, Window, px};
 use rust_i18n::t;
 
 /// 菜单的最小宽度。定死它，菜单才不会随项的长短跳动。

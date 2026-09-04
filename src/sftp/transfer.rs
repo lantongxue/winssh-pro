@@ -7,7 +7,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use gpui::SharedString;
+use gpui_kit::SharedString;
 
 use super::entry::human_size;
 use rust_i18n::t;
@@ -118,7 +118,7 @@ impl TransferItem {
         }
     }
 
-    /// 百分比，给 [`gpui_component::progress::Progress`]（它要 0~100）。
+    /// 百分比，给 [`gpui_kit::component::progress::Progress`]（它要 0~100）。
     pub fn progress(&self) -> f32 {
         self.fraction() * 100.0
     }
@@ -226,7 +226,7 @@ impl TransferChild {
         fraction_of(self.total, self.transferred, self.status)
     }
 
-    /// 百分比，给 [`gpui_component::progress::Progress`]（它要 0~100）。
+    /// 百分比，给 [`gpui_kit::component::progress::Progress`]（它要 0~100）。
     pub fn progress(&self) -> f32 {
         self.fraction() * 100.0
     }

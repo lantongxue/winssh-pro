@@ -1,6 +1,6 @@
 //! 界面的品牌色与表面层级。
 //!
-//! 主题（gpui-component 那套 shadcn neutral）只提供一组中性色 —— 暗色下
+//! 主题（组件库那套 shadcn neutral）只提供一组中性色 —— 暗色下
 //! `primary` 是近白色，没有留给品牌色的语义槽位。设计稿里那几个彩色是产品
 //! 自己的语义色，只能在这里固定下来。结构色（底色、边框、弱化前景）仍然
 //! 全部从主题取，明暗模式才跟得住。
@@ -9,8 +9,8 @@
 //! 一档，主题里没有这一档，用强调色压到很低叠在 `sidebar` 上得到同样的关系。
 //! 因此这些函数返回的都是半透明色，靠叠在父级底色上生效。
 
-use gpui::{App, Hsla, rgb};
-use gpui_component::ActiveTheme as _;
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::{App, Hsla, rgb};
 
 /// 「当前所在」：活动栏里选中的那个图标。
 pub fn teal() -> Hsla {

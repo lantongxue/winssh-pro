@@ -12,14 +12,14 @@
 
 use std::rc::Rc;
 
-use gpui::{
-    AnyElement, App, ClickEvent, Hsla, IntoElement, ParentElement as _, Pixels, RenderOnce,
-    SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px, rgb,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
+};
+use gpui_kit::{
+    AnyElement, App, ClickEvent, Hsla, IntoElement, ParentElement as _, Pixels, RenderOnce,
+    SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px, rgb,
 };
 
 use crate::ui::{

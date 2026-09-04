@@ -5,7 +5,7 @@
 //! 行上的"取消 / 暂停"、工具条上的"暂停全部 / 清除已完成 / 收起"以
 //! [`TransferQueueEvent`] 的形式发回面板 —— 抽屉自己不碰任务调度。
 //!
-//! 表格由 gpui-component 的 [`Table`] 族组件拼成，与文件列表同一套画法：
+//! 表格由组件库的 [`Table`] 族组件拼成，与文件列表同一套画法：
 //! 表头一行列名，行体走 [`v_virtual_list`]（一个目录可能摊出成千上万个文件，
 //! 不能全量渲染）。展开行是"扁平行"的一份映射 —— 目录行带箭头，点开先把
 //! 一行"目录内容"节头铺出来，再列子文件行，各自有自己的进度与状态；表格
@@ -16,12 +16,7 @@
 
 use std::{collections::HashSet, rc::Rc, time::SystemTime};
 
-use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, SharedString, Size, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, div, percentage, prelude::FluentBuilder as _, px, size,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
     VirtualListScrollHandle,
     button::{Button, ButtonVariants as _},
@@ -31,6 +26,11 @@ use gpui_component::{
     scroll::{ScrollableElement as _, ScrollbarAxis},
     table::{Table, TableCell, TableHead, TableHeader, TableRow},
     v_flex, v_virtual_list,
+};
+use gpui_kit::{
+    AnyElement, App, Context, Entity, EventEmitter, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement as _, Pixels, Render, SharedString, Size, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Window, div, percentage, prelude::FluentBuilder as _, px, size,
 };
 
 use crate::{
@@ -693,7 +693,7 @@ impl TransferQueueDrawer {
                 Table::new()
                     .xsmall()
                     .flex_shrink_0()
-                    .bg(gpui::transparent_black())
+                    .bg(gpui_kit::transparent_black())
                     .child(
                         TableHeader::new()
                             .text_xs()

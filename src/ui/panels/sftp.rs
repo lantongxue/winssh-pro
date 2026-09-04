@@ -34,14 +34,7 @@ use std::{
     time::SystemTime,
 };
 
-use gpui::{
-    AnyElement, App, AppContext as _, AsyncApp, ClipboardItem, Context, Div, Entity, EventEmitter,
-    ExternalPaths, FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, Modifiers,
-    MouseButton, ParentElement as _, Pixels, Point, Render, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
-    prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, ResizableState,
     Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
@@ -52,6 +45,13 @@ use gpui_component::{
     resizable_panel,
     table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState},
     v_flex, v_resizable,
+};
+use gpui_kit::{
+    AnyElement, App, AppContext as _, AsyncApp, ClipboardItem, Context, Div, Entity, EventEmitter,
+    ExternalPaths, FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, Modifiers,
+    MouseButton, ParentElement as _, Pixels, Point, Render, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
@@ -136,7 +136,7 @@ pub enum SftpPanelEvent {
     Reconnect,
 }
 
-gpui::actions!(
+gpui_kit::actions!(
     sftp,
     [
         /// 全选当前那一栏里的条目（Ctrl/Cmd+A）。
@@ -1229,7 +1229,7 @@ impl SftpPanel {
         let resizable_state = cx.new(|_| ResizableState::default());
         let queue_state = cx.new(|_| ResizableState::default());
 
-        // TODO: 恢复 `.autofit(true)`。这个方法是 gpui-component 的本地改动
+        // TODO: 恢复 `.autofit(true)`。这个方法是组件库（`refs/gpui-kit`）的本地改动
         // (submodule commit 5491a9ce)，只存在于另一台机器上、未推到任何 remote；
         // 本机 submodule 已前进到上游 20f8a450，不含该 API。在补回之前，列宽退回
         // 各 delegate 里 `col()` 上写的固定 `width`/`min_width`。
@@ -1551,7 +1551,7 @@ impl SftpPanel {
                         this.remote_table.update(cx, |table, _| {
                             table
                                 .vertical_scroll_handle
-                                .scroll_to_item(0, gpui::ScrollStrategy::Top);
+                                .scroll_to_item(0, gpui_kit::ScrollStrategy::Top);
                         });
                     }
                     Err(error) => {
@@ -1583,7 +1583,7 @@ impl SftpPanel {
                     this.local_table.update(cx, |table, _| {
                         table
                             .vertical_scroll_handle
-                            .scroll_to_item(0, gpui::ScrollStrategy::Top);
+                            .scroll_to_item(0, gpui_kit::ScrollStrategy::Top);
                     });
                 }
                 this.local.loading = false;
@@ -2068,9 +2068,9 @@ impl SftpPanel {
                     names => names,
                 )))
                 .button_props(
-                    gpui_component::dialog::DialogButtonProps::default()
+                    gpui_kit::component::dialog::DialogButtonProps::default()
                         .ok_text(t!("sftp.delete"))
-                        .ok_variant(gpui_component::button::ButtonVariant::Danger)
+                        .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
                         .cancel_text(t!("sftp.cancel"))
                         .show_cancel(true),
                 )
@@ -2699,9 +2699,9 @@ impl SftpPanel {
                     names => names,
                 )))
                 .button_props(
-                    gpui_component::dialog::DialogButtonProps::default()
+                    gpui_kit::component::dialog::DialogButtonProps::default()
                         .ok_text(t!("sftp.delete"))
-                        .ok_variant(gpui_component::button::ButtonVariant::Danger)
+                        .ok_variant(gpui_kit::component::button::ButtonVariant::Danger)
                         .cancel_text(t!("sftp.cancel"))
                         .show_cancel(true),
                 )
@@ -3444,9 +3444,13 @@ impl SftpPanel {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .bg(gpui::black().opacity(0.6))
-                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .bg(gpui_kit::black().opacity(0.6))
+                        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation()
+                        })
+                        .on_mouse_up(gpui_kit::MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation()
+                        })
                         .child(
                             div()
                                 .flex()
@@ -3571,9 +3575,13 @@ impl SftpPanel {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .bg(gpui::black().opacity(0.6))
-                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .bg(gpui_kit::black().opacity(0.6))
+                        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation()
+                        })
+                        .on_mouse_up(gpui_kit::MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation()
+                        })
                         .child(
                             div()
                                 .flex()

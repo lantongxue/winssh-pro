@@ -24,7 +24,7 @@
 
 use std::time::Instant;
 
-use gpui::{
+use gpui_kit::{
     App, Bounds, CursorStyle, Element, ElementId, Entity, Font, FontFeatures, FontStyle,
     FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
     LayoutId, Pixels, Point, ShapedLine, StrikethroughStyle, Style, TextAlign, TextRun,
@@ -560,7 +560,7 @@ impl Element for TerminalGridElement {
             window.paint_quad(outline(
                 cursor.bounds,
                 cursor.color,
-                gpui::BorderStyle::Solid,
+                gpui_kit::BorderStyle::Solid,
             ));
         }
 
@@ -691,9 +691,9 @@ fn cell_colors(
 
 /// 把半透明的 `top` 合成到不透明的 `bottom` 上，得到一个不透明色。
 fn over(top: Hsla, bottom: Hsla) -> Hsla {
-    let (top, bottom) = (gpui::Rgba::from(top), gpui::Rgba::from(bottom));
+    let (top, bottom) = (gpui_kit::Rgba::from(top), gpui_kit::Rgba::from(bottom));
     let a = top.a.clamp(0., 1.);
-    gpui::Rgba {
+    gpui_kit::Rgba {
         r: top.r * a + bottom.r * (1. - a),
         g: top.g * a + bottom.g * (1. - a),
         b: top.b * a + bottom.b * (1. - a),

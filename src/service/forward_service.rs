@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow};
-use gpui::SharedString;
+use gpui_kit::SharedString;
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 

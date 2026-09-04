@@ -1,10 +1,10 @@
 //! 命令面板：标题栏 [`crate::ui::bars::CommandCenterBar`]（看起来像输入框的按钮）
-//! 打开的那一层，严格按 `gpui-component` 文档「In a Dialog」模式实现。
+//! 打开的那一层，严格按组件库文档「In a Dialog」模式实现。
 //!
 //! 触发器为 `Button` 样式组件（模拟输入框外观，`ButtonCustomVariant` 压色），
 //! 弹层按文档 In a Dialog 模式 window.open_dialog + dialog.content +
 //! Command::new + bordered(false) 等实现，详见
-//! <https://longbridge.github.io/gpui-component/docs/components/command>。
+//! <https://gpui-kit.com/docs/components/command>。
 //!
 //! 一个搜索框加一列命令，分三段：**主机**是设计稿里“搜索连接”的正题，回车就开终端；
 //! **视图**切换侧边栏显示哪一块；**动作**是新建主机、快速连接与几处开合。
@@ -14,14 +14,14 @@
 //! 已经有 Action 的那几项（切换侧边栏、事件日志、主机信息）不走这条路 ——
 //! 它们直接挂 Action 交给组件派发，快捷键提示因此和真正的绑定同源，不必在这里手写一份。
 
-use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Pixels,
-    Render, SharedString, Styled as _, Window, div, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, WindowExt as _,
     command::{Command, CommandGroup, CommandItem, CommandState},
     h_flex,
+};
+use gpui_kit::{
+    App, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Pixels,
+    Render, SharedString, Styled as _, Window, div, px,
 };
 
 use crate::{

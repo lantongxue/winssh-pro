@@ -32,12 +32,12 @@
 //! 除了网格，其余读数都来自 [`crate::session::SessionTelemetry`] ——
 //! 右侧监控面板每次采集顺带带回来的那一份（见 [`crate::service::MonitorService`]）。
 
-use gpui::{
+use gpui_kit::component::{ActiveTheme as _, h_flex, tooltip::Tooltip};
+use gpui_kit::{
     App, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, RenderOnce,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
     prelude::FluentBuilder as _, px,
 };
-use gpui_component::{ActiveTheme as _, h_flex, tooltip::Tooltip};
 
 use crate::{session::SessionTelemetry, ui::theme::palette};
 use rust_i18n::t;

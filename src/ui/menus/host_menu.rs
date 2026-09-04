@@ -8,7 +8,7 @@
 //! 编辑是蓝色（配置），复制安静，删除是危险色。菜单里一列彩色图标不是装饰 ——
 //! 四项挤在一列，颜色是扫读时最先命中的东西。
 //!
-//! 菜单本体交给 [`gpui_component::menu::PopupMenu`]：弹层的定位、键盘上下选择、
+//! 菜单本体交给 [`gpui_kit::component::menu::PopupMenu`]：弹层的定位、键盘上下选择、
 //! 点外面关掉、Esc 关掉都归它。这里只声明有哪些项、长什么样，以及点下去往外报
 //! 哪一个 [`HostAction`]。
 //!
@@ -17,15 +17,15 @@
 
 use std::rc::Rc;
 
-use gpui::{
-    Anchor, App, Context, ElementId, Hsla, IntoElement, ParentElement as _, Pixels, RenderOnce,
-    SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
+};
+use gpui_kit::{
+    Anchor, App, Context, ElementId, Hsla, IntoElement, ParentElement as _, Pixels, RenderOnce,
+    SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::ui::theme::{AppIcon, palette};
