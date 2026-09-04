@@ -1,17 +1,20 @@
 //! 视图（`*View`）：侧边栏里的整块内容，一次只显示一个。
 //!
 //! 侧边栏是活动栏与 Dock 之间那一栏，显示哪个视图由活动栏决定（[`SidebarView`]）。
-//! 视图各自是独立组件：主机视图有完整实现（[`HostExplorerView`]），其余三个还没
-//! 落地，统一走 [`PlaceholderView`]。所有视图共用同一条标题行，版式常量也放在
-//! 这里，换视图时这一栏的骨架不会跳。
+//! 视图各自是独立组件：主机视图（[`HostExplorerView`]）与保险箱视图
+//! （[`CredentialVaultView`]）有完整实现，其余两个还没落地，统一走
+//! [`PlaceholderView`]。所有视图共用同一条标题行，版式常量也放在这里，
+//! 换视图时这一栏的骨架不会跳。
 //!
 //! 视图不进 [`gpui_kit::component::dock`]：它由 [`crate::ui::Workspace`] 直接渲染在一个
 //! 可拖宽的区域里，不能被拖走、分屏或另存布局。要那些能力的是 `*Panel`，
 //! 见 [`crate::ui::panels`]。
 
+mod credential_vault;
 mod host_explorer;
 mod placeholder;
 
+pub use credential_vault::{CredentialVaultEvent, CredentialVaultView, VaultFilter};
 pub use host_explorer::{HostExplorerEvent, HostExplorerView};
 pub use placeholder::PlaceholderView;
 
@@ -41,7 +44,7 @@ pub enum SidebarView {
     Hosts,
     /// 命令片段：常用命令与脚本，可直接发到会话里。
     Snippets,
-    /// 密钥与凭据：私钥、口令与 known_hosts。
+    /// 保险箱：账号密码、SSH 私钥与 API 令牌。
     Keys,
     /// 资源监控：已连接主机的 CPU、内存与网络。
     Monitor,
@@ -75,7 +78,7 @@ impl SidebarView {
         match self {
             Self::Hosts => AppIcon::Server,
             Self::Snippets => AppIcon::CodeXml,
-            Self::Keys => AppIcon::KeyRound,
+            Self::Keys => AppIcon::ShieldCheck,
             Self::Monitor => AppIcon::Activity,
         }
     }

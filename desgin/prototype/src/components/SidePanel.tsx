@@ -1,9 +1,10 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Server,
   Code2,
   Network,
   KeyRound,
+  ShieldCheck,
   Activity,
   Plus,
   Search,
@@ -28,10 +29,20 @@ import {
   Filter,
   SlidersHorizontal,
   X,
+  Eye,
+  EyeOff,
+  Sparkles,
+  FileCode,
+  Key,
+  Download,
+  FolderLock,
+  Star,
 } from 'lucide-react';
-import { ServerHost, DevOpsSnippet, PortTunnel, SSHKeyItem, TabType } from '../types';
+import { ServerHost, DevOpsSnippet, PortTunnel, SSHKeyItem, TabType, VaultCredential, VaultCredentialType } from '../types';
 import { ActionPanelId } from './ActionBar';
 import { SnippetModal } from './SnippetModal';
+import { calculatePasswordStrength, generateSecurePassword } from './CredentialVaultModal';
+import { OsBadge } from './OsIcon';
 
 interface SidePanelProps {
   activePanel: ActionPanelId;
@@ -58,9 +69,12 @@ interface SidePanelProps {
   tunnels: PortTunnel[];
   onUpdateTunnels: (tunnels: PortTunnel[]) => void;
 
-  // Keys
+  // Keys & Credentials Vault
   keys: SSHKeyItem[];
   onUpdateKeys: (keys: SSHKeyItem[]) => void;
+  credentials?: VaultCredential[];
+  onUpdateCredentials?: (credentials: VaultCredential[]) => void;
+  onOpenVaultModal?: () => void;
 }
 
 export const SidePanel: React.FC<SidePanelProps> = ({
@@ -83,6 +97,9 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   onUpdateTunnels,
   keys,
   onUpdateKeys,
+  credentials = [],
+  onUpdateCredentials = () => {},
+  onOpenVaultModal,
 }) => {
   const [isResizing, setIsResizing] = useState(false);
 
@@ -145,10 +162,9 @@ export const SidePanel: React.FC<SidePanelProps> = ({
 
   // Header Titles & Icons mapping
   const panelMeta: Record<ActionPanelId, { title: string; icon: React.ElementType }> = {
-    hosts: { title: 'HOSTS & FLEET', icon: Server },
+    hosts: { title: 'HOSTS & SERVERS', icon: Server },
     snippets: { title: 'DEVOPS SNIPPETS', icon: Code2 },
-    keys: { title: 'SSH KEY VAULT', icon: KeyRound },
-    monitor: { title: 'FLEET TELEMETRY', icon: Activity },
+    keys: { title: 'CREDENTIAL & KEY VAULT', icon: ShieldCheck },
   };
 
   const meta = panelMeta[activePanel] || panelMeta.hosts;
@@ -185,6 +201,16 @@ export const SidePanel: React.FC<SidePanelProps> = ({
               className="p-1 hover:bg-[#333333] text-[#4EC9B0] hover:text-white rounded transition-colors"
             >
               <Plus className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          {activePanel === 'keys' && onOpenVaultModal && (
+            <button
+              onClick={onOpenVaultModal}
+              title="打开完整保险箱管理面板 (Full Screen Vault)"
+              className="p-1 hover:bg-[#333333] text-[#4EC9B0] hover:text-white rounded transition-colors"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
             </button>
           )}
 
@@ -226,13 +252,11 @@ export const SidePanel: React.FC<SidePanelProps> = ({
         )}
 
         {activePanel === 'keys' && (
-          <KeysPanelContent keys={keys} onUpdateKeys={onUpdateKeys} />
-        )}
-
-        {activePanel === 'monitor' && (
-          <TelemetryPanelContent
-            hosts={hosts}
-            onConnectHost={onConnectHost}
+          <VaultPanelContent
+            credentials={credentials}
+            onUpdateCredentials={onUpdateCredentials}
+            onOpenVaultModal={onOpenVaultModal}
+            onExecuteToTerminal={onExecuteSnippet}
           />
         )}
       </div>
@@ -263,7 +287,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
 };
 
 /* =========================================================================
-   1. HOSTS & FLEET PANEL VIEW
+   1. HOSTS & SERVERS PANEL VIEW
    ========================================================================= */
 const HostsPanelContent: React.FC<{
   hosts: ServerHost[];
@@ -421,9 +445,7 @@ const HostsPanelContent: React.FC<{
 
                             {/* Tags, OS & Ping Latency */}
                             <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                              <span className="text-[9px] px-1 py-0.2 rounded bg-[#2D2D2D] text-[#858585] border border-[#454545] uppercase font-mono">
-                                {host.osType}
-                              </span>
+                              <OsBadge osType={host.osType} size="sm" />
                               {host.pingMs && (
                                 <span className="text-[9px] text-[#27C93F] font-mono flex items-center gap-0.5">
                                   <span className="w-1 h-1 rounded-full bg-[#27C93F] animate-pulse" />
@@ -871,147 +893,405 @@ const SnippetsPanelContent: React.FC<{
 };
 
 /* =========================================================================
-   3. SSH KEYS PANEL VIEW
+   3. ACCOUNT, PASSWORD & KEY VAULT PANEL VIEW
    ========================================================================= */
-const KeysPanelContent: React.FC<{
-  keys: SSHKeyItem[];
-  onUpdateKeys: (keys: SSHKeyItem[]) => void;
-}> = ({ keys, onUpdateKeys }) => {
+const VaultPanelContent: React.FC<{
+  credentials: VaultCredential[];
+  onUpdateCredentials: (credentials: VaultCredential[]) => void;
+  onOpenVaultModal?: () => void;
+  onExecuteToTerminal?: (command: string) => void;
+}> = ({ credentials, onUpdateCredentials, onOpenVaultModal, onExecuteToTerminal }) => {
+  const [filterType, setFilterType] = useState<'all' | VaultCredentialType>('all');
+  const [search, setSearch] = useState('');
+  const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [showQuickGen, setShowQuickGen] = useState(false);
+  const [quickGenPass, setQuickGenPass] = useState(() =>
+    generateSecurePassword({
+      length: 18,
+      useUpper: true,
+      useLower: true,
+      useNumbers: true,
+      useSymbols: true,
+      avoidAmbiguous: false,
+    })
+  );
 
-  const handleCopyPub = (id: string, pub: string) => {
-    navigator.clipboard.writeText(pub);
+  const filtered = useMemo(() => {
+    return credentials.filter((c) => {
+      if (filterType !== 'all' && c.type !== filterType) return false;
+      if (search.trim()) {
+        const q = search.toLowerCase();
+        const matchName = c.name.toLowerCase().includes(q);
+        const matchUser = c.username?.toLowerCase().includes(q) || false;
+        const matchCat = c.category?.toLowerCase().includes(q) || false;
+        const matchTags = c.tags.some((t) => t.toLowerCase().includes(q));
+        if (!matchName && !matchUser && !matchCat && !matchTags) return false;
+      }
+      return true;
+    });
+  }, [credentials, filterType, search]);
+
+  const handleCopy = (id: string, text: string) => {
+    navigator.clipboard.writeText(text);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 1500);
   };
 
+  const handleToggleEye = (id: string) => {
+    setVisiblePasswords((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const handleDownloadPem = (cred: VaultCredential) => {
+    if (!cred.privateKey) return;
+    const blob = new Blob([cred.privateKey], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${cred.name || 'id_rsa'}.pem`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDelete = (id: string) => {
+    onUpdateCredentials(credentials.filter((c) => c.id !== id));
+  };
+
+  const handleRegenerateQuick = () => {
+    setQuickGenPass(
+      generateSecurePassword({
+        length: 18,
+        useUpper: true,
+        useLower: true,
+        useNumbers: true,
+        useSymbols: true,
+        avoidAmbiguous: false,
+      })
+    );
+  };
+
+  const pwCount = credentials.filter((c) => c.type === 'password').length;
+  const keyCount = credentials.filter((c) => c.type === 'privateKey').length;
+  const tokenCount = credentials.filter((c) => c.type === 'token').length;
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="p-2 border-b border-[#333333] bg-[#1E1E1E] flex items-center justify-between text-xs">
-        <span className="text-[#858585] text-[11px]">SSH Keypairs Vault</span>
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#2D2D2D] text-[#CCCCCC] font-mono border border-[#3C3C3C]">
-          {keys.length} Keys
-        </span>
-      </div>
+      {/* Search and Action Bar */}
+      <div className="p-2 border-b border-[#333333] bg-[#1E1E1E] space-y-2">
+        <div className="relative">
+          <Search className="w-3.5 h-3.5 text-[#858585] absolute left-2.5 top-2" />
+          <input
+            type="text"
+            placeholder="搜索密码、账号或私钥..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full pl-8 pr-2 py-1 bg-[#252526] border border-[#3C3C3C] rounded text-xs text-[#D4D4D4] placeholder-[#6D6D6D] focus:outline-none focus:border-[#007ACC]"
+          />
+        </div>
 
-      <div className="flex-1 overflow-y-auto p-2 space-y-2">
-        {keys.map((k) => (
-          <div
-            key={k.id}
-            className="p-2.5 rounded bg-[#1E1E1E] hover:bg-[#2A2D2E] border border-[#333333] transition-all space-y-1.5 group"
+        {/* Filter Type Pills */}
+        <div className="flex items-center gap-1 text-[10.5px]">
+          <button
+            onClick={() => setFilterType('all')}
+            className={`px-2 py-0.5 rounded transition-colors ${
+              filterType === 'all'
+                ? 'bg-[#007ACC] text-white font-medium'
+                : 'bg-[#252526] text-[#858585] hover:text-[#CCCCCC]'
+            }`}
           >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <KeyRound className="w-3.5 h-3.5 text-[#CE9178]" />
-                <span className="font-medium text-xs text-[#D4D4D4] group-hover:text-white">
-                  {k.name}
-                </span>
-              </div>
-              <span className="text-[9px] px-1.5 py-0.2 rounded bg-[#2D2D2D] text-[#4EC9B0] border border-[#454545] font-mono uppercase">
-                {k.type}
-              </span>
-            </div>
+            全部 ({credentials.length})
+          </button>
+          <button
+            onClick={() => setFilterType('password')}
+            className={`px-2 py-0.5 rounded transition-colors ${
+              filterType === 'password'
+                ? 'bg-[#007ACC] text-white font-medium'
+                : 'bg-[#252526] text-[#858585] hover:text-[#CCCCCC]'
+            }`}
+          >
+            密码 ({pwCount})
+          </button>
+          <button
+            onClick={() => setFilterType('privateKey')}
+            className={`px-2 py-0.5 rounded transition-colors ${
+              filterType === 'privateKey'
+                ? 'bg-[#007ACC] text-white font-medium'
+                : 'bg-[#252526] text-[#858585] hover:text-[#CCCCCC]'
+            }`}
+          >
+            私钥 ({keyCount})
+          </button>
+          <button
+            onClick={() => setFilterType('token')}
+            className={`px-2 py-0.5 rounded transition-colors ${
+              filterType === 'token'
+                ? 'bg-[#007ACC] text-white font-medium'
+                : 'bg-[#252526] text-[#858585] hover:text-[#CCCCCC]'
+            }`}
+          >
+            令牌 ({tokenCount})
+          </button>
+        </div>
 
-            <div className="text-[10px] font-mono text-[#858585] truncate bg-[#121212] px-2 py-1 rounded border border-[#2D2D2D]">
-              {k.fingerprint || 'SHA256:4kL89/Nmd39Vxa1028XwQ'}
-            </div>
+        {/* Quick Toolbar */}
+        <div className="flex items-center justify-between pt-1 border-t border-[#2D2D2D] text-[11px]">
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setShowQuickGen(!showQuickGen)}
+              className="flex items-center gap-1 px-2 py-0.5 rounded bg-[#2D2D2D] hover:bg-[#383838] text-[#CCCCCC] transition-colors"
+            >
+              <Sparkles className="w-3 h-3 text-[#E5C07B]" />
+              <span>{showQuickGen ? '收起生成器' : '快速生成密码'}</span>
+            </button>
+          </div>
 
-            <div className="flex items-center justify-between text-[10px] text-[#6D6D6D]">
-              <span>Bit length: {k.bits || 4096}</span>
+          {onOpenVaultModal && (
+            <button
+              onClick={onOpenVaultModal}
+              className="flex items-center gap-1 px-2 py-0.5 rounded bg-[#007ACC]/20 hover:bg-[#007ACC]/30 text-[#4EC9B0] border border-[#007ACC]/30 transition-colors"
+            >
+              <FolderLock className="w-3 h-3" />
+              <span>全屏管理面板</span>
+            </button>
+          )}
+        </div>
+
+        {/* Inline Quick Password Generator Card */}
+        {showQuickGen && (
+          <div className="p-2.5 bg-[#141414] border border-[#3C3C3C] rounded-lg space-y-2 text-xs">
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-[#858585]">18 位高强度随机密码:</span>
               <button
-                onClick={() => handleCopyPub(k.id, k.publicKey)}
-                className="flex items-center gap-1 px-2 py-0.5 rounded bg-[#2D2D2D] hover:bg-[#3C3C3C] text-[#CCCCCC] border border-[#3C3C3C] transition-colors"
+                onClick={handleRegenerateQuick}
+                className="text-[#4EC9B0] hover:underline flex items-center gap-1 text-[10px]"
               >
-                {copiedId === k.id ? (
-                  <Check className="w-3 h-3 text-[#27C93F]" />
+                <RefreshCw className="w-2.5 h-2.5" />
+                <span>换一个</span>
+              </button>
+            </div>
+            <div className="flex items-center justify-between bg-[#1E1E1E] px-2 py-1.5 rounded border border-[#2D2D2D] font-mono text-[11px]">
+              <span className="text-[#E5C07B] truncate">{quickGenPass}</span>
+              <button
+                onClick={() => handleCopy('quick-gen', quickGenPass)}
+                className="ml-2 text-[#CCCCCC] hover:text-white shrink-0"
+                title="复制此密码"
+              >
+                {copiedId === 'quick-gen' ? (
+                  <Check className="w-3.5 h-3.5 text-[#27C93F]" />
                 ) : (
-                  <Copy className="w-3 h-3" />
+                  <Copy className="w-3.5 h-3.5" />
                 )}
-                <span>Copy PubKey</span>
               </button>
             </div>
           </div>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-/* =========================================================================
-   5. FLEET TELEMETRY & HEALTH PANEL VIEW
-   ========================================================================= */
-const TelemetryPanelContent: React.FC<{
-  hosts: ServerHost[];
-  onConnectHost: (host: ServerHost, tabType?: TabType) => void;
-}> = ({ hosts, onConnectHost }) => {
-  const onlineCount = hosts.filter((h) => h.status === 'online').length;
-
-  return (
-    <div className="flex-1 flex flex-col overflow-hidden">
-      {/* Fleet Stats Overview Card */}
-      <div className="p-2.5 border-b border-[#333333] bg-[#1E1E1E] grid grid-cols-2 gap-2 text-xs">
-        <div className="bg-[#252526] p-2 rounded border border-[#333333]">
-          <div className="text-[#858585] text-[10px]">Fleet Availability</div>
-          <div className="text-sm font-bold text-[#27C93F] font-mono mt-0.5">
-            {Math.round((onlineCount / (hosts.length || 1)) * 100)}%
-          </div>
-          <div className="text-[9px] text-[#6D6D6D]">{onlineCount} / {hosts.length} reachable</div>
-        </div>
-
-        <div className="bg-[#252526] p-2 rounded border border-[#333333]">
-          <div className="text-[#858585] text-[10px]">Average Latency</div>
-          <div className="text-sm font-bold text-[#4EC9B0] font-mono mt-0.5">
-            18.4 <span className="text-[10px] font-normal">ms</span>
-          </div>
-          <div className="text-[9px] text-[#6D6D6D]">Global Ping Jitter OK</div>
-        </div>
+        )}
       </div>
 
-      {/* Fleet Node Health List */}
+      {/* Credentials List */}
       <div className="flex-1 overflow-y-auto p-2 space-y-2">
-        {hosts.map((host) => {
-          const isOnline = host.status === 'online';
-          return (
-            <div
-              key={host.id}
-              onClick={() => onConnectHost(host, 'monitor')}
-              className="p-2.5 rounded bg-[#1E1E1E] hover:bg-[#2A2D2E] border border-[#333333] transition-all cursor-pointer space-y-1.5 group"
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5 truncate">
-                  <span
-                    className={`w-2 h-2 rounded-full shrink-0 ${
-                      isOnline ? 'bg-[#27C93F]' : 'bg-[#FF5F56]'
-                    }`}
-                  />
-                  <span className="font-medium text-xs text-[#D4D4D4] truncate group-hover:text-[#4EC9B0]">
-                    {host.name}
-                  </span>
-                </div>
-                <span className="text-[9px] text-[#27C93F] font-mono">
-                  {host.pingMs ? `${host.pingMs}ms` : '12ms'}
-                </span>
-              </div>
+        {filtered.length === 0 ? (
+          <div className="text-center py-10 space-y-2">
+            <ShieldCheck className="w-8 h-8 text-[#555555] mx-auto" />
+            <p className="text-xs text-[#858585]">未找到符合条件的凭据</p>
+            {onOpenVaultModal && (
+              <button
+                onClick={onOpenVaultModal}
+                className="text-xs text-[#007ACC] hover:underline"
+              >
+                打开管理面板添加 &rarr;
+              </button>
+            )}
+          </div>
+        ) : (
+          filtered.map((c) => {
+            const isVisible = visiblePasswords[c.id];
+            const strength = c.password ? calculatePasswordStrength(c.password) : null;
 
-              {/* Mini Health Bars */}
-              <div className="space-y-1 text-[10px]">
-                <div className="flex items-center justify-between text-[#858585]">
-                  <span>CPU Load</span>
-                  <span className="font-mono text-[#D4D4D4]">24%</span>
-                </div>
-                <div className="w-full h-1 bg-[#2D2D2D] rounded-full overflow-hidden">
-                  <div className="h-full bg-[#4EC9B0] rounded-full" style={{ width: '24%' }} />
-                </div>
-              </div>
+            return (
+              <div
+                key={c.id}
+                className="p-2.5 rounded-lg bg-[#1E1E1E] hover:bg-[#2A2D2E] border border-[#333333] transition-all space-y-2 group"
+              >
+                {/* Header line */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 truncate">
+                    {c.type === 'password' ? (
+                      <KeyRound className="w-3.5 h-3.5 text-[#007ACC] shrink-0" />
+                    ) : c.type === 'privateKey' ? (
+                      <FileCode className="w-3.5 h-3.5 text-[#E5C07B] shrink-0" />
+                    ) : (
+                      <Key className="w-3.5 h-3.5 text-[#98C379] shrink-0" />
+                    )}
+                    <span className="font-semibold text-xs text-[#E0E0E0] truncate">
+                      {c.name}
+                    </span>
+                  </div>
 
-              <div className="flex items-center justify-between text-[10px] text-[#6D6D6D] pt-0.5">
-                <span>{host.osType}</span>
-                <span className="text-[#007ACC] group-hover:underline">Open Top Monitor &rarr;</span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span
+                      className={`text-[9px] px-1.5 py-0.2 rounded font-mono uppercase border ${
+                        c.type === 'password'
+                          ? 'bg-[#007ACC]/15 text-[#4EC9B0] border-[#007ACC]/30'
+                          : c.type === 'privateKey'
+                          ? 'bg-[#E5C07B]/15 text-[#E5C07B] border-[#E5C07B]/30'
+                          : 'bg-[#98C379]/15 text-[#98C379] border-[#98C379]/30'
+                      }`}
+                    >
+                      {c.type === 'password' ? '密码' : c.type === 'privateKey' ? (c.keyType || '私钥') : '令牌'}
+                    </span>
+                    <button
+                      onClick={() => handleDelete(c.id)}
+                      title="删除凭据"
+                      className="opacity-0 group-hover:opacity-100 text-[#858585] hover:text-[#FF5F56] p-0.5 transition-opacity"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Credential Data details */}
+                <div className="space-y-1 text-xs bg-[#141414] p-2 rounded border border-[#2D2D2D] font-mono">
+                  {c.username && (
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-[#858585]">账号:</span>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[#D4D4D4] font-medium">{c.username}</span>
+                        <button
+                          onClick={() => handleCopy(`user-${c.id}`, c.username!)}
+                          title="复制用户名"
+                          className="text-[#858585] hover:text-white"
+                        >
+                          {copiedId === `user-${c.id}` ? (
+                            <Check className="w-2.5 h-2.5 text-[#27C93F]" />
+                          ) : (
+                            <Copy className="w-2.5 h-2.5" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {c.type === 'password' && c.password && (
+                    <div className="flex items-center justify-between text-[11px] pt-1 border-t border-[#222222]">
+                      <div className="flex items-center gap-1">
+                        <span className="text-[#858585]">密码:</span>
+                        {strength && (
+                          <span
+                            className="text-[9px] px-1 py-0.1 rounded font-bold"
+                            style={{ color: strength.color }}
+                          >
+                            {strength.label}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[#D4D4D4]">
+                          {isVisible ? c.password : '••••••••••••'}
+                        </span>
+                        <button
+                          onClick={() => handleToggleEye(c.id)}
+                          className="text-[#858585] hover:text-white p-0.5"
+                          title={isVisible ? '隐藏' : '显示密码'}
+                        >
+                          {isVisible ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
+                        </button>
+                        <button
+                          onClick={() => handleCopy(`pw-${c.id}`, c.password!)}
+                          className="text-[#858585] hover:text-white p-0.5"
+                          title="复制密码"
+                        >
+                          {copiedId === `pw-${c.id}` ? (
+                            <Check className="w-2.5 h-2.5 text-[#27C93F]" />
+                          ) : (
+                            <Copy className="w-2.5 h-2.5" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {c.type === 'privateKey' && (
+                    <div className="space-y-1 pt-1 border-t border-[#222222]">
+                      {c.fingerprint && (
+                        <div className="text-[9.5px] text-[#858585] truncate">
+                          指纹: {c.fingerprint}
+                        </div>
+                      )}
+                      <div className="flex items-center justify-end gap-1 pt-0.5">
+                        {c.publicKey && (
+                          <button
+                            onClick={() => handleCopy(`pub-${c.id}`, c.publicKey!)}
+                            className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#252526] hover:bg-[#333333] text-[#CCCCCC] text-[10px] border border-[#3C3C3C]"
+                          >
+                            {copiedId === `pub-${c.id}` ? (
+                              <Check className="w-2.5 h-2.5 text-[#27C93F]" />
+                            ) : (
+                              <Copy className="w-2.5 h-2.5" />
+                            )}
+                            <span>公钥</span>
+                          </button>
+                        )}
+                        {c.privateKey && (
+                          <button
+                            onClick={() => handleDownloadPem(c)}
+                            title="下载私钥 .pem 文件"
+                            className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#252526] hover:bg-[#333333] text-[#4EC9B0] text-[10px] border border-[#3C3C3C]"
+                          >
+                            <Download className="w-2.5 h-2.5" />
+                            <span>下载 PEM</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {c.type === 'token' && c.token && (
+                    <div className="flex items-center justify-between text-[11px] pt-1 border-t border-[#222222]">
+                      <span className="text-[#858585]">Token:</span>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[#D4D4D4] truncate max-w-[120px]">
+                          {isVisible ? c.token : '••••••••••••'}
+                        </span>
+                        <button
+                          onClick={() => handleToggleEye(c.id)}
+                          className="text-[#858585] hover:text-white"
+                        >
+                          {isVisible ? <EyeOff className="w-2.5 h-2.5" /> : <Eye className="w-2.5 h-2.5" />}
+                        </button>
+                        <button
+                          onClick={() => handleCopy(`tok-${c.id}`, c.token!)}
+                          className="text-[#858585] hover:text-white"
+                        >
+                          {copiedId === `tok-${c.id}` ? (
+                            <Check className="w-2.5 h-2.5 text-[#27C93F]" />
+                          ) : (
+                            <Copy className="w-2.5 h-2.5" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Footer tags */}
+                <div className="flex items-center justify-between text-[10px] text-[#6D6D6D]">
+                  <span className="truncate">{c.category || '通用分组'}</span>
+                  {onExecuteToTerminal && c.username && (
+                    <button
+                      onClick={() => onExecuteToTerminal(c.username!)}
+                      className="text-[#007ACC] hover:underline flex items-center gap-0.5"
+                    >
+                      <Terminal className="w-2.5 h-2.5" />
+                      <span>填入终端</span>
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })
+        )}
       </div>
     </div>
   );
 };
+

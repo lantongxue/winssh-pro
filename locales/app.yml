@@ -37,8 +37,8 @@ sidebar.snippets:
   en: Snippets
   zh-CN: 命令片段
 sidebar.keys:
-  en: Keys
-  zh-CN: 密钥
+  en: Vault
+  zh-CN: 保险箱
 sidebar.monitor:
   en: Monitor
   zh-CN: 资源监控
@@ -48,9 +48,6 @@ sidebar.collapse:
 sidebar.snippets_hint:
   en: Frequently used commands and scripts will show up here, ready to send straight to the current session.
   zh-CN: 常用命令与脚本会显示在这里，可以直接发到当前会话。
-sidebar.keys_hint:
-  en: Private keys, passphrases and known_hosts will show up here.
-  zh-CN: 私钥、口令与 known_hosts 会显示在这里。
 sidebar.monitor_hint:
   en: CPU, memory and network usage of connected hosts will show up here.
   zh-CN: 已连接主机的 CPU、内存与网络占用会显示在这里。
@@ -331,6 +328,12 @@ palette.section_actions:
 palette.new_host:
   en: New host
   zh-CN: 新建主机
+palette.new_credential:
+  en: New credential
+  zh-CN: 新建凭据
+palette.open_vault_window:
+  en: Open the vault in its own window
+  zh-CN: 在独立窗口中打开保险箱
 palette.toggle_sidebar:
   en: Toggle sidebar
   zh-CN: 切换侧边栏
@@ -521,6 +524,429 @@ host_form.color_custom:
 host_form.add_tag:
   en: Add
   zh-CN: 添加
+host_form.from_vault:
+  en: From vault
+  zh-CN: 从保险箱选取
+host_form.vault_none:
+  en: — pick from the vault —
+  zh-CN: — 从保险箱选取 —
+host_form.vault_applied:
+  en: Filled in from “%{name}”.
+  zh-CN: 已填入“%{name}”里的内容。
+
+# ── 凭据模型（src/credential.rs） ────────────────────────────────────────
+credential.kind_password:
+  en: Password
+  zh-CN: 账号密码
+credential.kind_private_key:
+  en: SSH key
+  zh-CN: SSH 私钥
+credential.kind_token:
+  en: API token
+  zh-CN: API 令牌
+credential.uncategorized:
+  en: Ungrouped
+  zh-CN: 未分组
+credential.algorithm_ed25519:
+  en: modern, compact, recommended
+  zh-CN: 现代轻量，推荐
+credential.algorithm_rsa4096:
+  en: the classic, widest compatibility
+  zh-CN: 传统标准，兼容性最好
+credential.algorithm_ecdsa_p384:
+  en: elliptic curve standard
+  zh-CN: 椭圆曲线标准
+credential.strength_empty:
+  en: no password
+  zh-CN: 无密码
+credential.strength_weak:
+  en: weak
+  zh-CN: 弱
+credential.strength_fair:
+  en: fair
+  zh-CN: 中等
+credential.strength_strong:
+  en: strong
+  zh-CN: 强
+credential.strength_excellent:
+  en: excellent
+  zh-CN: 极高
+
+# ── 保险箱（侧边栏视图与凭据卡片） ───────────────────────────────────────
+vault.search_placeholder:
+  en: Search names, accounts, groups or tags
+  zh-CN: 搜索名称、账号、分组或标签
+vault.filter_all:
+  en: All (%{count})
+  zh-CN: 全部 (%{count})
+vault.filter_favorite:
+  en: Starred
+  zh-CN: 特别关注
+vault.new_credential:
+  en: New credential
+  zh-CN: 新建凭据
+vault.generate_password:
+  en: Password generator
+  zh-CN: 密码生成器
+vault.generate_keypair:
+  en: Generate an SSH key pair
+  zh-CN: 生成 SSH 密钥对
+vault.field_account:
+  en: "Account:"
+  zh-CN: "账号:"
+vault.field_password:
+  en: "Password:"
+  zh-CN: "密码:"
+vault.field_token:
+  en: "Token:"
+  zh-CN: "令牌:"
+vault.field_fingerprint:
+  en: "Fingerprint:"
+  zh-CN: "指纹:"
+vault.masked:
+  en: ••••••••••••
+  zh-CN: ••••••••••••
+vault.reveal:
+  en: Show in the clear
+  zh-CN: 显示明文
+vault.hide:
+  en: Hide again
+  zh-CN: 重新打码
+vault.copy_account:
+  en: Copy the account
+  zh-CN: 复制账号
+vault.copy_password:
+  en: Copy the password
+  zh-CN: 复制密码
+vault.copy_token:
+  en: Copy the token
+  zh-CN: 复制令牌
+vault.copy_public_key:
+  en: Public key
+  zh-CN: 公钥
+vault.copied:
+  en: Copied “%{name}”.
+  zh-CN: 已复制“%{name}”。
+vault.save_pem:
+  en: Save as .pem
+  zh-CN: 另存为 .pem
+vault.save_pem_done:
+  en: The private key has been written to %{path}.
+  zh-CN: 私钥已写入 %{path}。
+vault.save_pem_failed:
+  en: Could not save the private key
+  zh-CN: 保存私钥失败
+vault.edit:
+  en: Edit this credential
+  zh-CN: 编辑凭据
+vault.delete:
+  en: Delete
+  zh-CN: 删除
+vault.cancel:
+  en: Cancel
+  zh-CN: 取消
+vault.delete_title:
+  en: Delete this credential?
+  zh-CN: 删除这条凭据？
+vault.delete_confirm:
+  en: "“%{name}” will be removed from the vault. Hosts that already took a copy keep working — they hold their own copy of the secret."
+  zh-CN: "“%{name}”会从保险箱里移除。此前从它取用过的主机不受影响 —— 那份内容已经存在主机自己身上。"
+vault.delete_failed:
+  en: Could not delete the credential
+  zh-CN: 删除凭据失败
+vault.favorite:
+  en: Star this credential
+  zh-CN: 标记特别关注
+vault.unfavorite:
+  en: Remove the star
+  zh-CN: 取消特别关注
+vault.favorite_failed:
+  en: Could not update the star
+  zh-CN: 更新特别关注失败
+vault.load_failed:
+  en: Could not read the vault
+  zh-CN: 读取保险箱失败
+vault.empty:
+  en: The vault is empty.
+  zh-CN: 保险箱还是空的。
+vault.empty_hint:
+  en: Passwords, SSH keys and API tokens stored here can be pulled into a host form with one click.
+  zh-CN: 存在这里的账号密码、SSH 私钥与 API 令牌，可以在主机表单里一键取用。
+vault.no_match:
+  en: No credential matches.
+  zh-CN: 没有符合条件的凭据。
+vault.updated_at:
+  en: updated %{at}
+  zh-CN: 更新于 %{at}
+vault.storage_note:
+  en: "Stored in the local database file — not encrypted yet, and never sent anywhere."
+  zh-CN: 存在本机的库文件里 —— 暂未加密，也不会发往任何地方。
+vault.open_window:
+  en: Open the vault in its own window
+  zh-CN: 在独立窗口中打开保险箱
+vault.export_backup:
+  en: Export a backup
+  zh-CN: 导出保险箱备份
+vault.export:
+  en: Export
+  zh-CN: 导出
+vault.export_title:
+  en: Export the whole vault?
+  zh-CN: 导出整个保险箱？
+vault.export_confirm:
+  en: "All %{count} credentials go into one JSON file, secrets in the clear — that is what makes the backup usable, and what makes the file worth guarding. Anyone who opens it holds every password and private key in here."
+  zh-CN: "%{count} 条凭据会写进一个 JSON 文件，其中的密码与私钥都是明文 —— 这正是这份备份能用来重建保险箱的原因，也是它必须收好的原因。拿到这个文件的人就拿到了这里的每一段秘密。"
+vault.export_done:
+  en: The vault backup has been written to %{path}.
+  zh-CN: 保险箱备份已写入 %{path}。
+vault.export_failed:
+  en: Could not write the backup
+  zh-CN: 导出保险箱备份失败
+vault.export_empty:
+  en: The vault is empty — there is nothing to back up yet.
+  zh-CN: 保险箱还是空的，暂时没有东西可以导出。
+
+# ── 保险箱窗口（独立窗口里的全屏保险箱） ─────────────────────────────────
+vault_window.window_title:
+  en: WinSSH Pro — Vault
+  zh-CN: WinSSH Pro — 保险箱
+vault_window.title:
+  en: Account, key and token vault
+  zh-CN: 账号密码与私钥保险箱
+vault_window.subtitle:
+  en: Server accounts, SSH key pairs and API tokens, stored and managed in one place
+  zh-CN: 集中存储管理服务器账号密码、SSH 密钥对、API 令牌与凭据
+vault_window.badge:
+  en: local file · not encrypted
+  zh-CN: 本机存储 · 未加密
+vault_window.section_kinds:
+  en: Credentials
+  zh-CN: 凭据分类
+vault_window.section_groups:
+  en: Groups
+  zh-CN: 所属分组
+vault_window.all:
+  en: All credentials
+  zh-CN: 全部凭据
+vault_window.all_categories:
+  en: All groups
+  zh-CN: 全部目录
+vault_window.count:
+  en: "%{count} shown"
+  zh-CN: 共 %{count} 条凭据
+vault_window.no_match_hint:
+  en: Widen the search or pick another kind on the left, or add a new credential.
+  zh-CN: 可以放宽搜索词、换一个左栏的分类，或者直接新建一条凭据。
+vault_window.new_now:
+  en: New credential
+  zh-CN: 立即新建凭据
+
+# ── 凭据表单（新建 / 编辑凭据的对话框） ──────────────────────────────────
+credential_form.title_new:
+  en: New credential
+  zh-CN: 新建凭据
+credential_form.title_edit:
+  en: Edit credential
+  zh-CN: 编辑凭据
+credential_form.subtitle:
+  en: Server accounts, SSH key pairs and API tokens, kept in one place
+  zh-CN: 服务器账号密码、SSH 密钥对与 API 令牌，集中存放
+credential_form.field_kind:
+  en: Kind
+  zh-CN: 凭据类型
+credential_form.field_name:
+  en: Name
+  zh-CN: 凭据名称
+credential_form.name_placeholder:
+  en: e.g. production root password
+  zh-CN: 例如：生产环境 Root 密码
+credential_form.field_category:
+  en: Group
+  zh-CN: 分组目录
+credential_form.category_placeholder:
+  en: e.g. databases
+  zh-CN: 例如：数据库
+credential_form.field_username:
+  en: Account / user
+  zh-CN: 账号 / 用户名
+credential_form.username_placeholder:
+  en: root or ubuntu
+  zh-CN: root 或 ubuntu
+credential_form.field_password:
+  en: Password
+  zh-CN: 密码
+credential_form.generate:
+  en: Generate
+  zh-CN: 生成强密码
+credential_form.field_algorithm:
+  en: Algorithm
+  zh-CN: 算法
+credential_form.field_passphrase:
+  en: Passphrase (optional)
+  zh-CN: 私钥口令(可选)
+credential_form.passphrase_placeholder:
+  en: leave empty if the key is not encrypted
+  zh-CN: 私钥没加密就留空
+credential_form.field_private_key:
+  en: Private key (OpenSSH PEM)
+  zh-CN: 私钥内容(OpenSSH PEM)
+credential_form.private_key_placeholder:
+  en: "-----BEGIN OPENSSH PRIVATE KEY----- …"
+  zh-CN: "-----BEGIN OPENSSH PRIVATE KEY----- …"
+credential_form.import_key:
+  en: Import from file
+  zh-CN: 从文件导入
+credential_form.import_prompt:
+  en: Pick a private key file
+  zh-CN: 选择私钥文件
+credential_form.import_failed:
+  en: Could not read that file
+  zh-CN: 读取该文件失败
+credential_form.field_public_key:
+  en: Public key (optional)
+  zh-CN: 公钥内容(可选)
+credential_form.public_key_placeholder:
+  en: ssh-ed25519 AAAAC3… user@host
+  zh-CN: ssh-ed25519 AAAAC3… user@host
+credential_form.field_token:
+  en: Token / secret
+  zh-CN: 令牌 / 密钥
+credential_form.token_placeholder:
+  en: eyJhbGciOi… or an API secret key
+  zh-CN: eyJhbGciOi… 或 API Secret Key
+credential_form.field_tags:
+  en: Tags
+  zh-CN: 分类标签
+credential_form.tag_placeholder:
+  en: type a tag and press Enter
+  zh-CN: 输入标签后回车
+credential_form.add_tag:
+  en: Add
+  zh-CN: 添加
+credential_form.field_notes:
+  en: Notes
+  zh-CN: 备注说明
+credential_form.notes_placeholder:
+  en: which servers it is for, how often it rotates…
+  zh-CN: 关联哪些服务器、多久轮换一次……
+credential_form.required_name:
+  en: Give this credential a name.
+  zh-CN: 请给这条凭据起个名字。
+credential_form.required_password:
+  en: A password credential needs a password.
+  zh-CN: 账号密码这一档得填上密码。
+credential_form.required_private_key:
+  en: A key credential needs the private key itself.
+  zh-CN: SSH 私钥这一档得填上私钥内容。
+credential_form.required_token:
+  en: A token credential needs the token.
+  zh-CN: API 令牌这一档得填上令牌。
+credential_form.key_invalid:
+  en: "That private key does not decode: %{error}"
+  zh-CN: 这份私钥解不开：%{error}
+credential_form.save_failed:
+  en: Could not save the credential
+  zh-CN: 保存凭据失败
+credential_form.save:
+  en: Save
+  zh-CN: 保存修改
+credential_form.create:
+  en: Create
+  zh-CN: 确认添加
+credential_form.cancel:
+  en: Cancel
+  zh-CN: 取消
+
+# ── 密码生成器对话框 ─────────────────────────────────────────────────────
+password_generator.title:
+  en: Password generator
+  zh-CN: 随机密码生成器
+password_generator.subtitle:
+  en: Every ticked class is guaranteed to appear at least once.
+  zh-CN: 勾上的每一类字符都保证至少出现一次。
+password_generator.length:
+  en: "Length: %{count}"
+  zh-CN: "长度：%{count}"
+password_generator.upper:
+  en: Uppercase (A-Z)
+  zh-CN: 大写字母 (A-Z)
+password_generator.lower:
+  en: Lowercase (a-z)
+  zh-CN: 小写字母 (a-z)
+password_generator.digits:
+  en: Digits (0-9)
+  zh-CN: 数字 (0-9)
+password_generator.symbols:
+  en: Symbols (!@#$)
+  zh-CN: 特殊符号 (!@#$)
+password_generator.avoid_ambiguous:
+  en: Leave out look-alikes (1 l I 0 O)
+  zh-CN: 排除易混淆字符 (1 l I 0 O)
+password_generator.strength:
+  en: "Strength: %{label}"
+  zh-CN: 强度：%{label}
+password_generator.regenerate:
+  en: Draw another
+  zh-CN: 换一个
+password_generator.copy:
+  en: Copy
+  zh-CN: 复制
+password_generator.copied:
+  en: The password is on the clipboard.
+  zh-CN: 密码已复制到剪贴板。
+password_generator.use_it:
+  en: Create a credential with it
+  zh-CN: 用它新建一条凭据
+
+# ── 生成 SSH 密钥对的对话框 ──────────────────────────────────────────────
+key_generator.title:
+  en: Generate an SSH key pair
+  zh-CN: 生成 SSH 密钥对
+key_generator.subtitle:
+  en: A real key pair, the same one `ssh-keygen` would produce
+  zh-CN: 真的生成一对密钥，和 `ssh-keygen` 出来的是同一种
+key_generator.field_name:
+  en: Name
+  zh-CN: 密钥名称
+key_generator.name_placeholder:
+  en: e.g. id_ed25519_production
+  zh-CN: 例如：id_ed25519_production
+key_generator.field_algorithm:
+  en: Algorithm
+  zh-CN: 加密算法
+key_generator.field_comment:
+  en: Comment
+  zh-CN: 注释
+key_generator.comment_placeholder:
+  en: winssh@workstation
+  zh-CN: winssh@workstation
+key_generator.field_passphrase:
+  en: Passphrase (optional)
+  zh-CN: 私钥口令(可选)
+key_generator.note:
+  en: The SHA256 fingerprint is worked out and the pair goes straight into the vault. RSA 4096 takes a few seconds.
+  zh-CN: 生成后会算出 SHA256 指纹并直接存进保险箱。RSA 4096 那一档要算几秒。
+key_generator.required_name:
+  en: Give this key a name.
+  zh-CN: 请给这把密钥起个名字。
+key_generator.generate:
+  en: Generate and store
+  zh-CN: 立即生成并入库
+key_generator.generating:
+  en: Working out the key pair…
+  zh-CN: 计算密钥对中……
+key_generator.failed:
+  en: Could not generate the key pair
+  zh-CN: 生成密钥对失败
+key_generator.saved:
+  en: "“%{name}” is in the vault — fingerprint %{fingerprint}"
+  zh-CN: "“%{name}”已存进保险箱 —— 指纹 %{fingerprint}"
+key_generator.category:
+  en: SSH keys
+  zh-CN: SSH 密钥
+key_generator.cancel:
+  en: Cancel
+  zh-CN: 取消
 
 # ── SFTP 新建 / 重命名对话框 ─────────────────────────────────────────────
 sftp_form.title_new_file:
@@ -1569,6 +1995,25 @@ host_service.forward_incomplete:
   en: "Forwarding rule “%{name}” is incomplete: %{reason}"
   zh-CN: 转发规则“%{name}”不完整：%{reason}
 
+# ── 保险箱服务 ───────────────────────────────────────────────────────────
+credential_service.missing:
+  en: Credential %{id} does not exist
+  zh-CN: 凭据 %{id} 不存在
+
+# ── 生成 SSH 密钥对 ──────────────────────────────────────────────────────
+keygen.generate_failed:
+  en: Could not generate a %{algorithm} key pair
+  zh-CN: 生成 %{algorithm} 密钥对失败
+keygen.encode_public_failed:
+  en: Could not encode the public key
+  zh-CN: 编码公钥失败
+keygen.encrypt_failed:
+  en: Could not encrypt the private key with that passphrase
+  zh-CN: 用这个口令加密私钥失败
+keygen.encode_private_failed:
+  en: Could not encode the private key
+  zh-CN: 编码私钥失败
+
 # ── 端口转发服务 ─────────────────────────────────────────────────────────
 forward_service.remote_untestable:
   en: A remote listen port lives on the other machine, so it cannot be tested from here.
@@ -1622,6 +2067,12 @@ local_file.delete_interrupted:
 local_file.read_failed:
   en: Could not read %{path}
   zh-CN: 读取 %{path} 失败
+local_file.write_interrupted:
+  en: The local file write task was interrupted
+  zh-CN: 本地文件写入任务中断
+local_file.write_failed:
+  en: Could not write %{path}
+  zh-CN: 写入 %{path} 失败
 local_file.delete_failed:
   en: Could not delete %{path}
   zh-CN: 删除 %{path} 失败

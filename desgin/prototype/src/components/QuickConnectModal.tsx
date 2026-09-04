@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Zap, X, Terminal, ArrowRight, History } from 'lucide-react';
 import { ServerHost } from '../types';
+import { OsIcon } from './OsIcon';
 
 interface QuickConnectModalProps {
   isOpen: boolean;
@@ -88,7 +89,7 @@ export const QuickConnectModal: React.FC<QuickConnectModalProps> = ({
           <div className="space-y-2 pt-2 border-t border-zinc-800">
             <div className="flex items-center gap-1.5 text-xs text-zinc-400 font-medium">
               <History className="w-3.5 h-3.5 text-zinc-500" />
-              <span>Recent Server Fleet</span>
+              <span>Recent Servers</span>
             </div>
 
             <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
@@ -102,6 +103,9 @@ export const QuickConnectModal: React.FC<QuickConnectModalProps> = ({
                   className="flex items-center justify-between p-2 rounded-lg bg-zinc-950/60 hover:bg-zinc-850 border border-zinc-850 hover:border-zinc-700 cursor-pointer transition-all group text-xs"
                 >
                   <div className="flex items-center gap-2">
+                    <div className="w-5 h-5 rounded bg-zinc-900 border border-zinc-750 flex items-center justify-center shrink-0">
+                      <OsIcon osType={h.osType} className="w-3 h-3" />
+                    </div>
                     <span
                       className="w-2 h-2 rounded-full"
                       style={{ backgroundColor: h.color || '#38bdf8' }}

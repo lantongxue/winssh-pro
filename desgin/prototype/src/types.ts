@@ -160,6 +160,31 @@ export interface SSHKeyItem {
   privateKey: string;
   createdDate: string;
   comment: string;
+  bits?: number;
+}
+
+export type VaultCredentialType = 'password' | 'privateKey' | 'token';
+
+export interface VaultCredential {
+  id: string;
+  name: string;
+  type: VaultCredentialType;
+  category?: string;
+  username?: string;
+  password?: string;
+  // Private key fields
+  keyType?: 'Ed25519' | 'RSA 4096' | 'ECDSA P-384';
+  publicKey?: string;
+  privateKey?: string;
+  passphrase?: string;
+  fingerprint?: string;
+  // Token / secret fields
+  token?: string;
+  tags: string[];
+  notes?: string;
+  createdDate: string;
+  updatedDate?: string;
+  favorite?: boolean;
 }
 
 export interface ProcessItem {

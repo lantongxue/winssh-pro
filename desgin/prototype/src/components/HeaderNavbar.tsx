@@ -15,6 +15,7 @@ import {
   Apple,
   AppWindow,
   Search,
+  ShieldCheck,
 } from 'lucide-react';
 import { AppSettings, SessionTab } from '../types';
 
@@ -26,6 +27,7 @@ interface HeaderNavbarProps {
   onToggleCopilot: () => void;
   isCopilotOpen: boolean;
   onOpenSettings: () => void;
+  onOpenVaultModal?: () => void;
   activeTab?: SessionTab;
   onSetSplit: (split: 'none' | 'vertical' | 'horizontal') => void;
   connectedCount: number;
@@ -40,6 +42,7 @@ export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
   onToggleCopilot,
   isCopilotOpen,
   onOpenSettings,
+  onOpenVaultModal,
   activeTab,
   onSetSplit,
   connectedCount,
@@ -204,6 +207,18 @@ export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
           <Sparkles className="w-3.5 h-3.5 text-[#C586C0]" />
           <span className="hidden sm:inline">AI Copilot</span>
         </button>
+
+        {/* Credential & Private Key Vault Button */}
+        {onOpenVaultModal && (
+          <button
+            onClick={onOpenVaultModal}
+            title="账号密码与私钥保险箱 (Alt+3)"
+            className="flex h-7 items-center space-x-1.5 px-2.5 rounded text-xs font-medium transition-all border bg-[#3C3C3C] hover:bg-[#454545] text-[#D4D4D4] hover:text-white border-[#454545] hover:border-[#4EC9B0]/50"
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-[#4EC9B0]" />
+            <span className="hidden md:inline">密码保险箱</span>
+          </button>
+        )}
 
         {/* Audio Mute / Sound Toggle */}
         <button

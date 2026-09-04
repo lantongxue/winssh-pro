@@ -1,6 +1,6 @@
 {
   "name": "WinSSH Pro",
-  "description": "适用于 Linux、Windows 和 macOS 的现代化跨平台专业 SSH 客户端与云运维工具箱，提供智能终端仿真、SFTP双栏文件管理、实时主机监控、端口转发隧道、命令代码段库与AI运维助手。",
+  "description": "适用于 Linux、Windows 和 macOS 的现代化跨平台专业 SSH 客户端与云运维工具箱，提供智能终端仿真、SFTP双栏文件管理、实时主机监控、端口转发隧道、命令代码段库、账号密码与私钥保险箱及AI运维助手。",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

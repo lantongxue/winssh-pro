@@ -137,6 +137,37 @@ impl LocalFileService {
         })
         .await
     }
+
+    /// 把一段文本写成一个本地文件，保险箱里"另存私钥为 .pem"走的就是这条。
+    ///
+    /// 类 Unix 系统上顺手把权限收成 `0600`：OpenSSH 见到一份组内或其他人读得到
+    /// 的私钥会直接拒绝用它（`WARNING: UNPROTECTED PRIVATE KEY FILE!`），
+    /// 那时候用户还得自己 `chmod` 一遍才明白发生了什么。Windows 上没有这一层，
+    /// 文件跟着所在目录的 ACL 走。
+    pub async fn write_text(path: PathBuf, contents: String) -> Result<()> {
+        crate::db::run(async move {
+            tokio::task::spawn_blocking(move || {
+                std::fs::write(&path, contents.as_bytes()).with_context(|| {
+                    t!("local_file.write_failed", path => path.display()).to_string()
+                })?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    // 收紧权限失败不算写失败：文件已经躺在那儿了，报错反而会让
+                    // 用户以为没写成而再存一次。日志留一行。
+                    if let Err(error) =
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                    {
+                        log::warn!("私钥写好了，但没能把权限收成 0600：{error}");
+                    }
+                }
+                Ok(())
+            })
+            .await
+            .with_context(|| t!("local_file.write_interrupted").to_string())?
+        })
+        .await
+    }
 }
 
 /// 真正的删除。同步的 `std::fs`，跑在 blocking 线程上（大目录、网络盘都可能慢）。

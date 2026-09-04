@@ -7,8 +7,12 @@
 use anyhow::Result;
 
 use crate::{
+    credential::KeyAlgorithm,
     host::Host,
-    ssh::{SshConnection, SshSession, WindowSize, decode_private_key},
+    ssh::{
+        GeneratedKey, KeyFacts, SshConnection, SshSession, WindowSize, decode_private_key,
+        generate_key, inspect_private_key,
+    },
 };
 
 /// SSH 连接的业务入口。无状态，廉价克隆。
@@ -57,6 +61,40 @@ impl SshService {
     pub async fn check_private_key(&self, content: String, passphrase: String) -> Result<()> {
         crate::db::run(async move {
             tokio::task::spawn_blocking(move || decode_private_key(&content, &passphrase).map(drop))
+                .await?
+        })
+        .await
+    }
+
+    /// 解开一份私钥，问它自己的指纹、公钥与算法。
+    ///
+    /// 保险箱在存一份粘进来的私钥之前走这条：既当了一次"这份私钥认不认得"的
+    /// 校验（和 [`Self::check_private_key`] 同一条路），又把卡片上那行指纹
+    /// 从钥匙本身算了出来 —— 那一行是要和对端 `authorized_keys` 对得上的。
+    pub async fn inspect_private_key(
+        &self,
+        content: String,
+        passphrase: String,
+    ) -> Result<KeyFacts> {
+        crate::db::run(async move {
+            tokio::task::spawn_blocking(move || inspect_private_key(&content, &passphrase)).await?
+        })
+        .await
+    }
+
+    /// 生成一对新的 SSH 密钥，交给保险箱存起来。
+    ///
+    /// 和上面那条同一个理由派到 `spawn_blocking`，而且更硬：RSA 4096 要找两个
+    /// 2048 位的素数，那是**秒级**的纯计算，在 gpui 线程上跑就是整个界面停住
+    /// 好几秒。真正生成的那几行在 [`crate::ssh::keygen`]。
+    pub async fn generate_key(
+        &self,
+        algorithm: KeyAlgorithm,
+        comment: String,
+        passphrase: String,
+    ) -> Result<GeneratedKey> {
+        crate::db::run(async move {
+            tokio::task::spawn_blocking(move || generate_key(algorithm, &comment, &passphrase))
                 .await?
         })
         .await

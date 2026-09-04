@@ -50,6 +50,23 @@ pub fn amber() -> Hsla {
     rgb(0xd9a03c).into()
 }
 
+/// 密码强度那条小条与它旁边那行字的颜色。
+///
+/// 四档复用已有的语义色，不另开一组：弱是"这里有问题"（危险色），
+/// 中等是"停下来看一眼"（[`amber`]，和暂停状态同一个意思），强是"通过"
+/// （[`green`]，和网络可达同一个意思），极高再进一档到 [`teal`]。
+/// 没填密码时用 [`idle`] —— 那不是一档评价，只是这一格还空着。
+pub fn strength(level: crate::credential::StrengthLevel, cx: &App) -> Hsla {
+    use crate::credential::StrengthLevel;
+    match level {
+        StrengthLevel::Empty => idle(cx),
+        StrengthLevel::Weak => cx.theme().danger,
+        StrengthLevel::Fair => amber(),
+        StrengthLevel::Strong => green(),
+        StrengthLevel::Excellent => teal(),
+    }
+}
+
 /// 落在品牌色实底上的文字与图标。固定近白色：主题前景在浅色模式下会翻成
 /// 深色，压在蓝底上就看不见了。
 pub fn on_accent() -> Hsla {

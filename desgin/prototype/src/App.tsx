@@ -8,11 +8,13 @@ import { HostManagerModal } from './components/HostManagerModal';
 import { QuickConnectModal } from './components/QuickConnectModal';
 import { InteractiveVimModal } from './components/InteractiveVimModal';
 import { SettingsModal } from './components/SettingsModal';
+import { CredentialVaultModal } from './components/CredentialVaultModal';
 import {
   DEFAULT_HOSTS,
   DEFAULT_SNIPPETS,
   DEFAULT_KEYS,
   DEFAULT_TUNNELS,
+  DEFAULT_CREDENTIALS,
   INITIAL_SFTP_FILES,
 } from './data/defaultData';
 import {
@@ -25,6 +27,7 @@ import {
   AppSettings,
   TabType,
   TerminalPane,
+  VaultCredential,
 } from './types';
 import {
   Search,
@@ -36,12 +39,13 @@ import {
   Sparkles,
   Network,
   KeyRound,
+  ShieldCheck,
   Layers,
   Zap,
 } from 'lucide-react';
 
 export function App() {
-  // App State: Fleet & Vaults
+  // App State: Hosts & Vaults
   const [hosts, setHosts] = useState<ServerHost[]>(() => {
     const saved = localStorage.getItem('winssh_hosts');
     return saved ? JSON.parse(saved) : DEFAULT_HOSTS;
@@ -55,6 +59,11 @@ export function App() {
   const [keys, setKeys] = useState<SSHKeyItem[]>(() => {
     const saved = localStorage.getItem('winssh_keys');
     return saved ? JSON.parse(saved) : DEFAULT_KEYS;
+  });
+
+  const [credentials, setCredentials] = useState<VaultCredential[]>(() => {
+    const saved = localStorage.getItem('winssh_vault_credentials');
+    return saved ? JSON.parse(saved) : DEFAULT_CREDENTIALS;
   });
 
   const [tunnels, setTunnels] = useState<PortTunnel[]>(() => {
@@ -127,6 +136,7 @@ export function App() {
   const [showHostModal, setShowHostModal] = useState(false);
   const [editingHost, setEditingHost] = useState<ServerHost | null>(null);
 
+  const [showVaultModal, setShowVaultModal] = useState(false);
   const [showQuickConnect, setShowQuickConnect] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -150,6 +160,10 @@ export function App() {
   useEffect(() => {
     localStorage.setItem('winssh_keys', JSON.stringify(keys));
   }, [keys]);
+
+  useEffect(() => {
+    localStorage.setItem('winssh_vault_credentials', JSON.stringify(credentials));
+  }, [credentials]);
 
   useEffect(() => {
     localStorage.setItem('winssh_tunnels', JSON.stringify(tunnels));
@@ -189,10 +203,6 @@ export function App() {
       } else if (e.altKey && e.key === '3') {
         e.preventDefault();
         setActivePanel('keys');
-        setIsPanelOpen(true);
-      } else if (e.altKey && e.key === '4') {
-        e.preventDefault();
-        setActivePanel('monitor');
         setIsPanelOpen(true);
       }
     };
@@ -430,6 +440,7 @@ export function App() {
         activeHost={activeHost}
         onOpenQuickConnect={() => setShowQuickConnect(true)}
         onOpenSettings={() => setShowSettings(true)}
+        onOpenVaultModal={() => setShowVaultModal(true)}
         onOpenCommandPalette={() => setShowCommandPalette(true)}
         isCopilotOpen={isCopilotOpen}
         onToggleCopilot={() => setIsCopilotOpen(!isCopilotOpen)}
@@ -488,6 +499,9 @@ export function App() {
           onUpdateTunnels={setTunnels}
           keys={keys}
           onUpdateKeys={setKeys}
+          credentials={credentials}
+          onUpdateCredentials={setCredentials}
+          onOpenVaultModal={() => setShowVaultModal(true)}
         />
 
         {/* Center Workspace View: Primary Terminal Workspace */}
@@ -572,6 +586,8 @@ export function App() {
         editingHost={editingHost}
         allHosts={hosts}
         keys={keys}
+        credentials={credentials}
+        onOpenVaultModal={() => setShowVaultModal(true)}
       />
 
       {/* Quick Connect Modal */}
@@ -583,18 +599,27 @@ export function App() {
         onSelectRecent={(h) => handleConnectHost(h, 'terminal')}
       />
 
+      {/* Account Password & SSH Key Vault Management Modal */}
+      <CredentialVaultModal
+        isOpen={showVaultModal}
+        onClose={() => setShowVaultModal(false)}
+        credentials={credentials}
+        onUpdateCredentials={setCredentials}
+      />
+
       {/* Preferences & Backup Settings Modal */}
       <SettingsModal
         isOpen={showSettings}
         onClose={() => setShowSettings(false)}
         settings={settings}
         onUpdateSettings={setSettings}
-        allData={{ hosts, snippets, keys, tunnels }}
+        allData={{ hosts, snippets, keys, tunnels, credentials }}
         onImportData={(data) => {
           if (data.hosts) setHosts(data.hosts);
           if (data.snippets) setSnippets(data.snippets);
           if (data.keys) setKeys(data.keys);
           if (data.tunnels) setTunnels(data.tunnels);
+          if (data.credentials) setCredentials(data.credentials);
           if (data.settings) setSettings(data.settings);
         }}
       />
@@ -636,7 +661,7 @@ export function App() {
               >
                 <div className="flex items-center gap-2.5">
                   <Terminal className="w-4 h-4 text-[#007ACC]" />
-                  <span>Hosts & Fleet Inventory</span>
+                  <span>Hosts & Servers</span>
                 </div>
                 <span className="text-[10px] text-[#6D6D6D] font-mono">Alt+1</span>
               </button>
@@ -677,24 +702,23 @@ export function App() {
                 className="w-full flex items-center justify-between px-3 py-2 hover:bg-[#37373D] rounded text-left text-[#CCCCCC] hover:text-[#4EC9B0]"
               >
                 <div className="flex items-center gap-2.5">
-                  <KeyRound className="w-4 h-4 text-[#CE9178]" />
-                  <span>SSH Key Vault</span>
+                  <ShieldCheck className="w-4 h-4 text-[#4EC9B0]" />
+                  <span>账号密码与私钥保险箱 (Vault)</span>
                 </div>
                 <span className="text-[10px] text-[#6D6D6D] font-mono">Alt+3</span>
               </button>
               <button
                 onClick={() => {
-                  setActivePanel('monitor');
-                  setIsPanelOpen(true);
+                  setShowVaultModal(true);
                   setShowCommandPalette(false);
                 }}
                 className="w-full flex items-center justify-between px-3 py-2 hover:bg-[#37373D] rounded text-left text-[#CCCCCC] hover:text-[#4EC9B0]"
               >
                 <div className="flex items-center gap-2.5">
-                  <Activity className="w-4 h-4 text-[#27C93F]" />
-                  <span>Fleet Health & Telemetry</span>
+                  <KeyRound className="w-4 h-4 text-[#CE9178]" />
+                  <span>打开保险箱全屏管理面板</span>
                 </div>
-                <span className="text-[10px] text-[#6D6D6D] font-mono">Alt+4</span>
+                <span className="text-[10px] text-[#6D6D6D] font-mono">Vault Modal</span>
               </button>
 
               <div className="text-[10px] uppercase font-bold text-[#6D6D6D] px-2 pt-2 border-t border-[#333333]">

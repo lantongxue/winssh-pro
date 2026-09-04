@@ -4,6 +4,7 @@ import {
   X,
   KeyRound,
   Shield,
+  ShieldCheck,
   Tag,
   Palette,
   Layers,
@@ -12,7 +13,8 @@ import {
   Globe,
   Terminal,
 } from 'lucide-react';
-import { ServerHost, SSHKeyItem } from '../types';
+import { ServerHost, SSHKeyItem, VaultCredential } from '../types';
+import { OsIcon, OsBadge } from './OsIcon';
 
 interface HostManagerModalProps {
   isOpen: boolean;
@@ -21,6 +23,8 @@ interface HostManagerModalProps {
   editingHost?: ServerHost | null;
   allHosts: ServerHost[];
   keys: SSHKeyItem[];
+  credentials?: VaultCredential[];
+  onOpenVaultModal?: () => void;
 }
 
 export const HostManagerModal: React.FC<HostManagerModalProps> = ({
@@ -30,6 +34,8 @@ export const HostManagerModal: React.FC<HostManagerModalProps> = ({
   editingHost,
   allHosts,
   keys,
+  credentials = [],
+  onOpenVaultModal,
 }) => {
   const [formData, setFormData] = useState<ServerHost>(
     editingHost || {
@@ -193,8 +199,39 @@ export const HostManagerModal: React.FC<HostManagerModalProps> = ({
 
           {/* Auth credentials fields */}
           {formData.authType === 'password' ? (
-            <div className="space-y-1">
-              <label className="text-zinc-300 font-medium">SSH Password</label>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-zinc-300 font-medium text-xs">SSH Password</label>
+                {credentials.filter((c) => c.type === 'password').length > 0 && (
+                  <div className="flex items-center gap-1">
+                    <ShieldCheck className="w-3 h-3 text-cyan-400" />
+                    <select
+                      aria-label="从保险箱选择"
+                      defaultValue=""
+                      onChange={(e) => {
+                        const sel = credentials.find((c) => c.id === e.target.value);
+                        if (sel && sel.password) {
+                          setFormData({
+                            ...formData,
+                            password: sel.password,
+                            username: sel.username || formData.username,
+                          });
+                        }
+                      }}
+                      className="bg-zinc-900 border border-zinc-700 text-cyan-400 text-[11px] rounded px-1.5 py-0.5 focus:outline-none"
+                    >
+                      <option value="">从密码保险箱选取...</option>
+                      {credentials
+                        .filter((c) => c.type === 'password')
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({c.username || '无用户名'})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                )}
+              </div>
               <input
                 type="password"
                 placeholder="••••••••••••"
@@ -205,18 +242,39 @@ export const HostManagerModal: React.FC<HostManagerModalProps> = ({
             </div>
           ) : formData.authType === 'key' ? (
             <div className="space-y-1">
-              <label className="text-zinc-300 font-medium">Select Saved SSH Key</label>
+              <div className="flex items-center justify-between">
+                <label className="text-zinc-300 font-medium text-xs">Select Saved SSH Key</label>
+                {onOpenVaultModal && (
+                  <button
+                    type="button"
+                    onClick={onOpenVaultModal}
+                    className="text-cyan-400 hover:underline text-[11px] flex items-center gap-1"
+                  >
+                    <ShieldCheck className="w-3 h-3" />
+                    <span>管理私钥保险箱</span>
+                  </button>
+                )}
+              </div>
               <select
                 value={formData.keyId || ''}
                 onChange={(e) => setFormData({ ...formData, keyId: e.target.value })}
                 className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-lg text-zinc-100 focus:outline-none focus:border-cyan-500 font-mono"
               >
                 <option value="">-- Choose Key from Vault --</option>
+                {/* Regular keys */}
                 {keys.map((k) => (
                   <option key={k.id} value={k.id}>
                     {k.name} ({k.type})
                   </option>
                 ))}
+                {/* Vault private keys */}
+                {credentials
+                  .filter((c) => c.type === 'privateKey' && !keys.some((k) => k.id === c.id))
+                  .map((k) => (
+                    <option key={k.id} value={k.id}>
+                      [保险箱] {k.name} ({k.keyType || 'SSH-KEY'})
+                    </option>
+                  ))}
               </select>
             </div>
           ) : null}
@@ -224,7 +282,10 @@ export const HostManagerModal: React.FC<HostManagerModalProps> = ({
           {/* OS Type & Jump Host (ProxyJump Bastion) */}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <label className="text-zinc-300 font-medium">Target OS Platform</label>
+              <div className="flex items-center justify-between">
+                <label className="text-zinc-300 font-medium text-xs">Target OS Platform</label>
+                <OsBadge osType={formData.osType} size="sm" />
+              </div>
               <select
                 value={formData.osType}
                 onChange={(e) => setFormData({ ...formData, osType: e.target.value as any })}
@@ -236,6 +297,7 @@ export const HostManagerModal: React.FC<HostManagerModalProps> = ({
                 <option value="arch">Arch Linux</option>
                 <option value="macos">macOS Darwin</option>
                 <option value="windows">Windows OpenSSH</option>
+                <option value="freebsd">FreeBSD / BSD</option>
               </select>
             </div>
 

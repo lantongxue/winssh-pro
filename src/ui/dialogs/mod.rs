@@ -9,14 +9,20 @@
 //! 那个常驻实体，把结果通过 [`CommandPaletteEvent`] 发回去。
 
 mod command_palette;
+mod credential_form;
 mod host_form;
+mod key_generator;
+mod password_generator;
 mod port_forward;
 mod sftp_chmod;
 mod sftp_editor;
 mod sftp_form;
 
 pub use command_palette::{CommandPaletteDialog, CommandPaletteEvent};
+pub use credential_form::{CredentialFormDialog, CredentialSavedHandler};
 pub use host_form::HostFormDialog;
+pub use key_generator::KeyGeneratorDialog;
+pub use password_generator::PasswordGeneratorDialog;
 pub use port_forward::{ForwardsHandler, PortForwardDialog};
 pub use sftp_chmod::{ChmodHandler, SftpChmodDialog};
 pub use sftp_editor::{SavedHandler as SftpSavedHandler, SftpEditorDialog};

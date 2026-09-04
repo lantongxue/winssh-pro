@@ -12,12 +12,13 @@
 //! | [`cards`] | `*Card` | 列表或网格里代表一条数据的那一块 |
 //! | [`menus`] | `*Menu` | 点开之后浮在内容之上的一列动作 |
 //! | [`elements`] | `*Element` | 自己实现 [`gpui_kit::Element`]，下到布局与绘制里的那一层 |
+//! | [`windows`] | `*Window` | 自己开一扇原生窗口的外壳，有自己的标题栏与 `Root` |
 //!
 //! 新增一类组件（气泡、浮层……）就照这个样子新开一个目录，不要塞进
 //! 已有的目录里凑合 —— 目录名一旦对不上里面的东西，就没人知道该往哪儿找了。
 //!
 //! 另外两处不是组件：[`theme`] 是画法（主题、配色、图标），
-//! [`workspace`] 是把上面这些拼起来的窗口外壳。
+//! [`workspace`] 是把上面这些拼起来的**主**窗口外壳。
 
 mod bars;
 mod cards;
@@ -28,6 +29,7 @@ mod menus;
 mod panels;
 mod theme;
 mod views;
+mod windows;
 mod workspace;
 
 pub use theme::appearance::observe as observe_appearance;

@@ -13,7 +13,7 @@ import {
   Bell,
   Cpu,
 } from 'lucide-react';
-import { AppSettings, ServerHost, DevOpsSnippet, SSHKeyItem, PortTunnel } from '../types';
+import { AppSettings, ServerHost, DevOpsSnippet, SSHKeyItem, PortTunnel, VaultCredential } from '../types';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -25,6 +25,7 @@ interface SettingsModalProps {
     snippets: DevOpsSnippet[];
     keys: SSHKeyItem[];
     tunnels: PortTunnel[];
+    credentials?: VaultCredential[];
   };
   onImportData: (imported: any) => void;
 }
@@ -91,7 +92,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 WinSSH Pro Preferences & Engine Config
               </h3>
               <p className="text-[11px] text-zinc-400">
-                Terminal rendering, theme aesthetics, SFTP engine, and fleet backup
+                Terminal rendering, theme aesthetics, SFTP engine, and system backup
               </p>
             </div>
           </div>
@@ -301,7 +302,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div>
                   <h4 className="font-semibold text-zinc-200">Export WinSSH Pro State</h4>
                   <p className="text-[11px] text-zinc-400">
-                    Export your server fleet inventory, snippets, SSH keys, and tunnels into a secure JSON backup.
+                    Export your server inventory, snippets, SSH keys, and tunnels into a secure JSON backup.
                   </p>
                 </div>
 

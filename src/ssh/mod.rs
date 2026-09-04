@@ -23,6 +23,7 @@ pub mod client;
 pub mod connection;
 pub mod exec;
 pub mod forward;
+pub mod keygen;
 pub mod sftp;
 
 pub use bridge::{SshBridge, SshOutputReceiver, spawn_bridge};
@@ -30,6 +31,9 @@ pub use client::SshHandler;
 pub use connection::{SshConnection, SshSession, WindowSize, decode_private_key};
 pub use exec::exec_script;
 pub use forward::{ForwardMeter, LocalMode, RemoteTarget};
+pub use keygen::{
+    GeneratedKey, KeyFacts, generate as generate_key, inspect as inspect_private_key,
+};
 pub use sftp::open_session as open_sftp_session;
 
 use anyhow::Result;

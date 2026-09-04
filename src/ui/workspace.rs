@@ -22,13 +22,17 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px,
 };
 
-use crate::service::HostService;
+use crate::service::{CredentialService, HostService};
 use crate::ui::{
     bars::{ActivityAction, ActivityBar, CommandCenterBar},
     dialogs::{CommandPaletteDialog, CommandPaletteEvent},
     panels::{HostInfoPanel, SettingsPanel, TerminalPanel, WelcomePanel},
-    theme::AppIcon,
-    views::{HostExplorerEvent, HostExplorerView, PlaceholderView, SidebarView},
+    theme::{AppIcon, palette},
+    views::{
+        CredentialVaultEvent, CredentialVaultView, HostExplorerEvent, HostExplorerView,
+        PlaceholderView, SidebarView,
+    },
+    windows::CredentialVaultWindow,
 };
 use rust_i18n::t;
 
@@ -64,6 +68,12 @@ const HOST_INFO_WIDTH: gpui_kit::Pixels = px(300.);
 pub struct Workspace {
     dock_area: Entity<DockArea>,
     host_explorer: Entity<HostExplorerView>,
+    /// 保险箱视图。和主机视图一样常驻：它持有搜索词、筛选片与那份快照，
+    /// 每帧现搭一个的话，切走再切回来这些就全丢了。
+    credential_vault: Entity<CredentialVaultView>,
+    /// 保险箱服务。留一份在外壳上是为了那扇独立窗口 ——
+    /// 它在自己的窗口里另建一个保险箱组件，得有个入口递过去。
+    credential_service: CredentialService,
     /// 命令面板。它常驻在这里而不是每次现搭：面板的搜索状态归它自己，
     /// 外壳只在打开时把当前的主机递过去。
     command_palette: Entity<CommandPaletteDialog>,
@@ -91,6 +101,11 @@ impl Workspace {
                 window.push_notification(t!("workspace.host_db_failed"), cx);
             });
         }
+        // 保险箱和主机住在同一座库里（[`crate::db::app`]），所以这里只是再取
+        // 一个业务入口，不是再开一条连接 —— 上面那句"库打不开"的提醒同时
+        // 也是替它说的。主机视图也要一份：主机表单里"从保险箱选取"要铺的
+        // 就是它读出来的那份列表。
+        let credential_service = CredentialService::open();
 
         let host_info = HostInfoPanel::new(window, cx);
         let settings = SettingsPanel::new(window, cx);
@@ -98,6 +113,7 @@ impl Workspace {
         let host_explorer = cx.new(|cx| {
             HostExplorerView::new(
                 host_service.clone(),
+                credential_service.clone(),
                 dock_area.downgrade(),
                 host_info.clone(),
                 window,
@@ -116,6 +132,17 @@ impl Workspace {
         )
         .detach();
 
+        let credential_vault =
+            cx.new(|cx| CredentialVaultView::new(credential_service.clone(), window, cx));
+        cx.subscribe(
+            &credential_vault,
+            |this, _, event: &CredentialVaultEvent, cx| match event {
+                CredentialVaultEvent::Collapse => this.toggle_sidebar(cx),
+                CredentialVaultEvent::OpenWindow => this.open_vault_window(cx),
+            },
+        )
+        .detach();
+
         let command_palette = cx.new(|cx| CommandPaletteDialog::new(window, cx));
         cx.subscribe_in(
             &command_palette,
@@ -128,6 +155,14 @@ impl Workspace {
                 CommandPaletteEvent::NewHost => this
                     .host_explorer
                     .update(cx, |explorer, cx| explorer.new_host(window, cx)),
+                CommandPaletteEvent::OpenVaultWindow => this.open_vault_window(cx),
+                CommandPaletteEvent::NewCredential => {
+                    // 先把侧边栏切到保险箱：新建完之后那条凭据要有个地方
+                    // 落下来，不然表单一关就像什么都没发生。
+                    this.show_view(SidebarView::Keys, cx);
+                    this.credential_vault
+                        .update(cx, |vault, cx| vault.new_credential(window, cx));
+                }
                 CommandPaletteEvent::Activity(action) => this.run_action(*action, window, cx),
             },
         )
@@ -164,12 +199,22 @@ impl Workspace {
         Self {
             dock_area,
             host_explorer,
+            credential_vault,
+            credential_service,
             command_palette,
             view: SidebarView::Hosts,
             sidebar_open: true,
             resizable_state,
             _skin: skin,
         }
+    }
+
+    /// 在一扇独立窗口里全屏打开保险箱；已经开着就把它叫到前面来。
+    ///
+    /// 那扇窗自己管单例（见 [`CredentialVaultWindow::open`]），所以三个入口
+    /// （侧边栏标题行、命令面板，以及将来的快捷键）都只管喊这一句。
+    fn open_vault_window(&mut self, cx: &mut Context<Self>) {
+        CredentialVaultWindow::open(self.credential_service.clone(), cx);
     }
 
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
@@ -303,16 +348,31 @@ impl Workspace {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_local_shell(window, cx);
                             })),
+                    )
+                    // 保险箱在标题栏上有一个入口，照原型（`HeaderNavbar` 上那颗
+                    // "密码保险箱"）：它开的是那扇独立窗口，和"取一段密码去登机器"
+                    // 这件事同时要两屏在场的用法对得上。侧边栏那一栏还在，
+                    // 它是边干活边翻的那一份。
+                    .child(
+                        Button::new("title-bar-vault")
+                            .ghost()
+                            .small()
+                            .icon(Icon::new(AppIcon::ShieldCheck).text_color(palette::teal()))
+                            .label(t!("sidebar.keys"))
+                            .tooltip(t!("vault.open_window"))
+                            .accessibility_id(t!("vault.open_window"))
+                            .on_click(cx.listener(|this, _, _, cx| this.open_vault_window(cx))),
                     ),
             )
             .child(h_flex().flex_1().min_w_0().pr(WINDOW_CONTROLS_INSET))
     }
 
-    /// 侧边栏当前那个视图。只有主机视图有实现，其余三个走占位视图 ——
+    /// 侧边栏当前那个视图。主机与保险箱有实现，其余两个走占位视图 ——
     /// 它们的状态还没有，所以不必常驻一个 `Entity`，每帧构建就够了。
     fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.view {
             SidebarView::Hosts => self.host_explorer.clone().into_any_element(),
+            SidebarView::Keys => self.credential_vault.clone().into_any_element(),
             view => PlaceholderView::new(view)
                 .on_collapse(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)))
                 .into_any_element(),

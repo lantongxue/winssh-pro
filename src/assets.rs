@@ -46,6 +46,10 @@ const OWNED: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/download.svg"),
     ),
     (
+        "icons/file-code.svg",
+        include_bytes!("../assets/icons/file-code.svg"),
+    ),
+    (
         "icons/file-plus.svg",
         include_bytes!("../assets/icons/file-plus.svg"),
     ),
@@ -58,6 +62,7 @@ const OWNED: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/folder-sync.svg"),
     ),
     ("icons/home.svg", include_bytes!("../assets/icons/home.svg")),
+    ("icons/key.svg", include_bytes!("../assets/icons/key.svg")),
     (
         "icons/key-round.svg",
         include_bytes!("../assets/icons/key-round.svg"),
@@ -77,6 +82,10 @@ const OWNED: &[(&str, &[u8])] = &[
     (
         "icons/server.svg",
         include_bytes!("../assets/icons/server.svg"),
+    ),
+    (
+        "icons/shield-check.svg",
+        include_bytes!("../assets/icons/shield-check.svg"),
     ),
     (
         "icons/sparkles.svg",

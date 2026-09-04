@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { ServerHost, TerminalPane, SessionTab, ServerTelemetry } from '../types';
 import { MOCK_TELEMETRY_MAP } from '../data/defaultData';
+import { OsIcon } from './OsIcon';
 
 interface SessionStatusBarProps {
   host: ServerHost;
@@ -142,8 +143,8 @@ export const SessionStatusBar: React.FC<SessionStatusBarProps> = ({
         {/* Host Live Status & SSH Badge */}
         <div className="flex items-center gap-1.5 shrink-0">
           <span className="w-2 h-2 rounded-full bg-[#27C93F] animate-pulse" />
-          <span className="text-[#D4D4D4] font-semibold flex items-center gap-1">
-            <Server className="w-3 h-3 text-[#569CD6]" />
+          <span className="text-[#D4D4D4] font-semibold flex items-center gap-1.5">
+            <OsIcon osType={host.osType} className="w-3.5 h-3.5" />
             <span className="truncate max-w-[130px]">{host.name}</span>
           </span>
           <span className="text-[9px] px-1 py-0.2 rounded bg-[#252526] text-[#858585] border border-[#333333]">

@@ -1,6 +1,6 @@
 //! 尚未实现的侧边栏视图的占位。
 //!
-//! 命令片段、密钥与资源监控还没有落地。它们在活动栏上是可以点的，所以这一栏
+//! 命令片段与资源监控还没有落地。它们在活动栏上是可以点的，所以这一栏
 //! 也得给出一个交代：说明这里将来会有什么，而不是一个看起来能用的空列表。
 //! 标题行仍然由 [`view_header`] 提供，切到这些视图时侧边栏的骨架不会跳。
 
@@ -47,10 +47,10 @@ impl PlaceholderView {
 fn hint(view: SidebarView) -> SharedString {
     match view {
         SidebarView::Snippets => t!("sidebar.snippets_hint").into(),
-        SidebarView::Keys => t!("sidebar.keys_hint").into(),
         SidebarView::Monitor => t!("sidebar.monitor_hint").into(),
-        // 主机视图有真正的实现（`HostExplorerView`），走不到这里。
-        SidebarView::Hosts => SharedString::default(),
+        // 这两个视图有真正的实现（`HostExplorerView`、`CredentialVaultView`），
+        // 走不到这里。
+        SidebarView::Hosts | SidebarView::Keys => SharedString::default(),
     }
 }
 

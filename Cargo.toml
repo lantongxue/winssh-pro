@@ -62,6 +62,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "
 # 跨平台的应用数据目录（Windows 是 %APPDATA%，macOS 是 ~/Library/Application Support）。
 dirs = "6"
 
+# 保险箱要的随机源：生成随机密码（`credential::PasswordRecipe::generate`）与
+# 生成 SSH 密钥对（`ssh::keygen`）。`rand::rng()` 是 `ThreadRng`，密码学安全 ——
+# 生成出来的东西是要拿去当身份用的，可预测的伪随机在这里是个漏洞。版本跟着
+# `ssh-key` 要的 `rand_core` 0.10 走，不然 `PrivateKey::random` 收不下它。
+rand = "0.10"
+
 # 界面文案的多语言查表。选 rust-i18n 是因为组件库自己就在用它（见
 # `refs/gpui-kit/crates/component/src/lib.rs` 的 `i18n!`）：同一个库意味着
 # `set_locale` 一次就同时切掉应用和组件库两边的文案，不必各切一遍；4.2 起的
@@ -80,11 +86,7 @@ sys-locale = "0.3"
 [target.'cfg(windows)'.dependencies]
 aws-lc-rs = { version = "1.16.2", features = ["prebuilt-nasm"] }
 
-# `src/ssh/exec.rs` 的回环测试要在进程内起一台 `russh` 服务端，它需要一个临时的
-# 主机密钥，而生成密钥要一个系统随机源。产物本身用不到（密钥交换的随机数在
-# `russh` 里面），所以只在测试里依赖，不进二进制。
 [dev-dependencies]
-rand = "0.10"
 # 让界面能在无窗口的测试里真的画一遍（`TestAppContext` + `window.draw`）。
 # 有些错只在完整的 layout/prepaint/paint 走完之后才暴露 —— 比如元素树自己
 # 套自己，编译期看不出来，跑起来是栈溢出。门面 crate 的 `test-support` 转开的就是

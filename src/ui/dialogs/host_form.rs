@@ -25,6 +25,7 @@ use gpui_kit::{
 };
 
 use crate::{
+    credential::{Credential, CredentialKind},
     host::{AuthMethod, Host, HostDraft, HostGroup},
     service::{HostService, LocalFileService, SshService},
     ui::{
@@ -99,6 +100,31 @@ fn render_header(title: SharedString, subtitle: SharedString, cx: &App) -> impl 
         )
 }
 
+/// 保险箱里属于某一档的那些凭据。
+fn of_kind(vault: &[Credential], kind: CredentialKind) -> Vec<Credential> {
+    vault
+        .iter()
+        .filter(|credential| credential.kind == kind)
+        .cloned()
+        .collect()
+}
+
+/// 取用下拉里的那几行：头一行是"还没挑"，后面每条凭据一行。
+///
+/// 每一行是"名字（注解）"，注解由调用方给 —— 密码那一档给账号，
+/// 私钥那一档给算法，因为那正是同名两条凭据之间要分辨的东西。
+fn pick_labels(credentials: &[Credential], note: fn(&Credential) -> String) -> Vec<SharedString> {
+    let mut labels = vec![SharedString::from(t!("host_form.vault_none"))];
+    labels.extend(credentials.iter().map(|credential| {
+        let note = note(credential);
+        match note.is_empty() {
+            true => credential.name.clone(),
+            false => SharedString::from(format!("{} （{note}）", credential.name)),
+        }
+    }));
+    labels
+}
+
 /// 一个字段：标签 + 输入控件。
 fn field(label: SharedString, input: impl IntoElement, cx: &App) -> impl IntoElement {
     v_flex()
@@ -159,6 +185,19 @@ pub struct HostFormDialog {
     badge_picker: Entity<ColorPickerState>,
     tag_input: Entity<InputState>,
     tags: Vec<SharedString>,
+    /// 保险箱里的账号密码那一档，连同挑它们的那个下拉。
+    ///
+    /// 挑一条是**取用**：把内容填进下面那几格，存进 `hosts` 表的还是这份内容
+    /// 本身，不是一个指向保险箱的 id —— 主机配置必须自成一体
+    /// （见 [`crate::credential`] 的模块文档）。所以之后再改保险箱里那一条，
+    /// 这台主机不跟着变，删掉它这台主机也照样连得上。
+    ///
+    /// 一条都没有时这个下拉整个不画（[`Self::render_vault_picker`]）。
+    vault_passwords: Vec<Credential>,
+    vault_password_pick: Entity<SelectState<Vec<SharedString>>>,
+    /// 同上，SSH 私钥那一档。
+    vault_keys: Vec<Credential>,
+    vault_key_pick: Entity<SelectState<Vec<SharedString>>>,
 }
 
 impl HostFormDialog {
@@ -175,10 +214,11 @@ impl HostFormDialog {
         host_explorer: Entity<HostExplorerView>,
         groups: &[HostGroup],
         editing: Option<EditedHost>,
+        vault: &[Credential],
         window: &mut Window,
         cx: &mut App,
     ) {
-        let form = cx.new(|cx| Self::new(groups, editing.as_ref(), window, cx));
+        let form = cx.new(|cx| Self::new(groups, editing.as_ref(), vault, window, cx));
 
         window.open_dialog(cx, move |dialog, _window, cx| {
             let editing = editing.clone();
@@ -336,6 +376,7 @@ impl HostFormDialog {
     fn new(
         groups: &[HostGroup],
         editing: Option<&EditedHost>,
+        vault: &[Credential],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -477,6 +518,51 @@ impl HostFormDialog {
         )
         .detach();
 
+        // 保险箱里的两档，各配一个下拉。头一行是"还没挑"，所以真正的凭据
+        // 从下标 1 开始 —— 应用的时候要把这一位减回去。
+        let vault_passwords = of_kind(vault, CredentialKind::Password);
+        let vault_keys = of_kind(vault, CredentialKind::PrivateKey);
+        let vault_password_pick = cx.new(|cx| {
+            SelectState::new(
+                pick_labels(&vault_passwords, |credential| {
+                    credential.username.to_string()
+                }),
+                Some(IndexPath::default()),
+                window,
+                cx,
+            )
+        });
+        let vault_key_pick = cx.new(|cx| {
+            SelectState::new(
+                pick_labels(&vault_keys, |credential| {
+                    credential.algorithm.badge().to_string()
+                }),
+                Some(IndexPath::default()),
+                window,
+                cx,
+            )
+        });
+        cx.subscribe_in(
+            &vault_password_pick,
+            window,
+            |this, _, _: &SelectEvent<Vec<SharedString>>, window, cx| {
+                if let Some(name) = this.apply_vault_pick(CredentialKind::Password, window, cx) {
+                    window.push_notification(t!("host_form.vault_applied", name => name), cx);
+                }
+            },
+        )
+        .detach();
+        cx.subscribe_in(
+            &vault_key_pick,
+            window,
+            |this, _, _: &SelectEvent<Vec<SharedString>>, window, cx| {
+                if let Some(name) = this.apply_vault_pick(CredentialKind::PrivateKey, window, cx) {
+                    window.push_notification(t!("host_form.vault_applied", name => name), cx);
+                }
+            },
+        )
+        .detach();
+
         Self {
             name,
             group,
@@ -493,7 +579,60 @@ impl HostFormDialog {
             badge_picker,
             tag_input,
             tags: vec!["Linux".into(), "SSH".into()],
+            vault_passwords,
+            vault_password_pick,
+            vault_keys,
+            vault_key_pick,
         }
+    }
+
+    /// 从保险箱挑中了一条：把它的内容填进这张表对应的那几格，
+    /// 返回填进来的那条凭据的名字。
+    ///
+    /// 填的是**内容**，不是一个引用 —— 见 [`Self::vault_passwords`]。
+    /// 头一行（下标 0）是"还没挑"，落到那儿什么也不做，返回 `None`：
+    /// 下拉每次点开合上都会发一次事件，那不是一次取用。
+    ///
+    /// 弹通知的事留给订阅那一头：这一步只改表单自己的几格，通知要有
+    /// 窗口的 `Root` 层，而这个方法在测试里是单独调得动的。
+    fn apply_vault_pick(
+        &mut self,
+        kind: CredentialKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<SharedString> {
+        let (pick, pool) = match kind {
+            CredentialKind::PrivateKey => (&self.vault_key_pick, &self.vault_keys),
+            _ => (&self.vault_password_pick, &self.vault_passwords),
+        };
+        let row = pick.read(cx).selected_index(cx).map(|index| index.row)?;
+        let credential = row.checked_sub(1).and_then(|ix| pool.get(ix)).cloned()?;
+
+        match kind {
+            CredentialKind::PrivateKey => {
+                self.key_content.update(cx, |state, cx| {
+                    state.set_value(credential.private_key.to_string(), window, cx)
+                });
+                self.key_passphrase.update(cx, |state, cx| {
+                    state.set_value(credential.passphrase.to_string(), window, cx)
+                });
+            }
+            _ => {
+                self.password.update(cx, |state, cx| {
+                    state.set_value(credential.password.to_string(), window, cx)
+                });
+            }
+        }
+        // 账号两档都填：一条凭据说的是"拿这个身份进去"，用户名是那个身份的
+        // 一半。空的就不覆盖 —— 别把表单里已经敲好的用户名抹成空。
+        if !credential.username.is_empty() {
+            self.username.update(cx, |state, cx| {
+                state.set_value(credential.username.to_string(), window, cx)
+            });
+        }
+
+        cx.notify();
+        Some(credential.name)
     }
 
     fn add_tag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -558,7 +697,11 @@ impl HostFormDialog {
                 .map(|index| index.row)
                 .unwrap_or_default(),
         );
-        let password = self.password.read(cx).value().trim().to_string();
+        // 登录密码不 trim，和下面的私钥密码同一个道理：密码里的空格是密码的
+        // 一部分，替用户抹掉一个尾随空格就是替他把密码改了，而那时候只会看到
+        // 一句"认证失败"。从保险箱取用的那一条尤其 —— 保险箱里存的是什么，
+        // 填进来的就该是什么，中间不能有人动手。
+        let password = self.password.read(cx).value().to_string();
         // 私钥前后的空白剪掉：从终端里复制出来的多半带着空行与缩进，而
         // 一份 PEM 的正文本来就从 `-----BEGIN` 那一行开始。
         let key_content = self.key_content.read(cx).value().trim().to_string();
@@ -695,24 +838,63 @@ impl HostFormDialog {
 
         match selected {
             0 => Some(
-                field(
-                    t!("host_form.field_password").into(),
-                    // 尾部那只眼睛来自 `mask_toggle()`：密码默认是打码的
-                    // （`InputState::masked(true)`），点一下明文看一眼，再点回去。
-                    // 明文只是这一次的显示状态，对话框每次打开都新建一份
-                    // `InputState`，所以下次进来仍旧是打码的。
-                    Input::new(&self.password)
-                        .font_family("monospace")
-                        .content_type(InputContentType::Password)
-                        .mask_toggle()
-                        .w_full(),
-                    cx,
-                )
-                .into_any_element(),
+                v_flex()
+                    .gap_3()
+                    .w_full()
+                    .children(self.render_vault_picker(CredentialKind::Password, cx))
+                    .child(field(
+                        t!("host_form.field_password").into(),
+                        // 尾部那只眼睛来自 `mask_toggle()`：密码默认是打码的
+                        // （`InputState::masked(true)`），点一下明文看一眼，再点回去。
+                        // 明文只是这一次的显示状态，对话框每次打开都新建一份
+                        // `InputState`，所以下次进来仍旧是打码的。
+                        Input::new(&self.password)
+                            .font_family("monospace")
+                            .content_type(InputContentType::Password)
+                            .mask_toggle()
+                            .w_full(),
+                        cx,
+                    ))
+                    .into_any_element(),
             ),
             1 => Some(self.render_key_fields(cx).into_any_element()),
             _ => None,
         }
+    }
+
+    /// "从保险箱选取"那个下拉。保险箱里这一档一条都没有时整个不画 ——
+    /// 一个永远只有"还没挑"一行的下拉只是在占地方。
+    fn render_vault_picker(
+        &self,
+        kind: CredentialKind,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement> {
+        let (pick, empty) = match kind {
+            CredentialKind::PrivateKey => (&self.vault_key_pick, self.vault_keys.is_empty()),
+            _ => (&self.vault_password_pick, self.vault_passwords.is_empty()),
+        };
+        if empty {
+            return None;
+        }
+
+        Some(
+            v_flex()
+                .gap_1()
+                .w_full()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .child(field_label(t!("host_form.from_vault").into(), cx))
+                        .child(
+                            Icon::new(AppIcon::ShieldCheck)
+                                .with_size(px(14.))
+                                .text_color(palette::teal()),
+                        ),
+                )
+                .child(Select::new(pick).w_full()),
+        )
     }
 
     /// 密钥认证要采集的两格：私钥本身，以及解开它的密码。
@@ -726,6 +908,7 @@ impl HostFormDialog {
         v_flex()
             .gap_3()
             .w_full()
+            .children(self.render_vault_picker(CredentialKind::PrivateKey, cx))
             .child(
                 v_flex()
                     .gap_1()
@@ -975,13 +1158,44 @@ mod tests {
         )
     }
 
+    /// 保险箱里的一条凭据，用来喂"从保险箱选取"那个下拉。
+    fn vault_credential(name: &str, kind: CredentialKind) -> Credential {
+        Credential {
+            id: SharedString::from(format!("cred-{name}")),
+            name: name.into(),
+            kind,
+            category: "生产".into(),
+            username: "deploy".into(),
+            password: " spaces matter ".into(),
+            algorithm: crate::credential::KeyAlgorithm::Ed25519,
+            public_key: "".into(),
+            private_key: KEY_TEXT.into(),
+            passphrase: "hunter2".into(),
+            fingerprint: "SHA256:abc".into(),
+            token: "".into(),
+            tags: Vec::new(),
+            notes: "".into(),
+            favorite: false,
+            updated_at: "2025-01-10 09:30:00".into(),
+        }
+    }
+
     fn draw_form(
         cx: &mut gpui_kit::TestAppContext,
         editing: Option<EditedHost>,
     ) -> (Entity<HostFormDialog>, &mut gpui_kit::VisualTestContext) {
+        draw_form_with_vault(cx, editing, Vec::new())
+    }
+
+    fn draw_form_with_vault(
+        cx: &mut gpui_kit::TestAppContext,
+        editing: Option<EditedHost>,
+        vault: Vec<Credential>,
+    ) -> (Entity<HostFormDialog>, &mut gpui_kit::VisualTestContext) {
         cx.update(gpui_kit::init);
-        let (form, cx) =
-            cx.add_window_view(|window, cx| HostFormDialog::new(&[], editing.as_ref(), window, cx));
+        let (form, cx) = cx.add_window_view(|window, cx| {
+            HostFormDialog::new(&[], editing.as_ref(), &vault, window, cx)
+        });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         (form, cx)
     }
@@ -1042,5 +1256,123 @@ mod tests {
             .expect("这张表填得是全的");
         assert_eq!(draft.key_content, KEY_TEXT);
         assert_eq!(draft.key_passphrase, " pass ");
+    }
+
+    /// 保险箱里一条都没有时那个下拉整个不画 —— 一个永远只有"还没挑"
+    /// 一行的下拉只是在占地方。
+    #[gpui_kit::test]
+    fn an_empty_vault_draws_no_picker(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form(cx, None);
+
+        form.update(cx, |this, cx| {
+            assert!(
+                this.render_vault_picker(CredentialKind::Password, cx)
+                    .is_none()
+            );
+            assert!(
+                this.render_vault_picker(CredentialKind::PrivateKey, cx)
+                    .is_none()
+            );
+        });
+    }
+
+    /// 从保险箱挑一条账号密码：密码与账号都填进去，而且是**内容**
+    /// —— 存进 `hosts` 表的是这份内容本身，不是一个指回保险箱的 id。
+    #[gpui_kit::test]
+    fn picking_a_password_fills_the_form(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form_with_vault(
+            cx,
+            None,
+            vec![vault_credential("生产 Root", CredentialKind::Password)],
+        );
+
+        // 下标 0 是"还没挑"，真正的第一条在 1。
+        form.update_in(cx, |this, window, cx| {
+            this.vault_password_pick.update(cx, |state, cx| {
+                state.set_selected_index(Some(IndexPath::new(1)), window, cx)
+            });
+            this.apply_vault_pick(CredentialKind::Password, window, cx);
+        });
+
+        form.update_in(cx, |this, window, cx| {
+            this.hostname
+                .update(cx, |state, cx| state.set_value("10.0.0.1", window, cx));
+            this.name
+                .update(cx, |state, cx| state.set_value("web-01", window, cx));
+        });
+        let (_, draft) = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect("这张表填得是全的");
+        assert_eq!(
+            draft.password, " spaces matter ",
+            "密码里的空格是密码的一部分"
+        );
+        assert_eq!(draft.user, "deploy");
+    }
+
+    /// 挑一条私钥：私钥与它的口令一起填进去。
+    #[gpui_kit::test]
+    fn picking_a_key_fills_the_key_fields(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form_with_vault(
+            cx,
+            Some(keyed_host("", "")),
+            vec![vault_credential("生产密钥", CredentialKind::PrivateKey)],
+        );
+
+        form.update_in(cx, |this, window, cx| {
+            this.vault_key_pick.update(cx, |state, cx| {
+                state.set_selected_index(Some(IndexPath::new(1)), window, cx)
+            });
+            this.apply_vault_pick(CredentialKind::PrivateKey, window, cx);
+        });
+
+        let (_, draft) = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect("这张表填得是全的");
+        assert_eq!(draft.key_content, KEY_TEXT);
+        assert_eq!(draft.key_passphrase, "hunter2");
+    }
+
+    /// 停在"还没挑"那一行什么也不该发生 —— 下拉每次点开合上都会发一次事件。
+    #[gpui_kit::test]
+    fn the_placeholder_row_changes_nothing(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form_with_vault(
+            cx,
+            Some(keyed_host(KEY_TEXT, "original")),
+            vec![vault_credential("生产密钥", CredentialKind::PrivateKey)],
+        );
+
+        form.update_in(cx, |this, window, cx| {
+            this.apply_vault_pick(CredentialKind::PrivateKey, window, cx);
+        });
+
+        let (_, draft) = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect("这张表填得是全的");
+        assert_eq!(draft.key_passphrase, "original", "没挑却把口令换掉了");
+    }
+
+    /// 两档的取用下拉都画得通。它们只在各自那一档露出来，
+    /// 所以两屏都真的走一遍。
+    #[gpui_kit::test]
+    fn both_vault_pickers_draw_all_the_way_through(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form_with_vault(
+            cx,
+            None,
+            vec![
+                vault_credential("生产 Root", CredentialKind::Password),
+                vault_credential("生产密钥", CredentialKind::PrivateKey),
+            ],
+        );
+
+        for row in [0, 1] {
+            form.update_in(cx, |this, window, cx| {
+                this.auth_type.update(cx, |state, cx| {
+                    state.set_selected_index(Some(IndexPath::new(row)), window, cx)
+                });
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
     }
 }

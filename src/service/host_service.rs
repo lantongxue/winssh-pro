@@ -5,7 +5,7 @@
 //! 真正的库操作经由 [`crate::db::run`] 跑在数据层 runtime 上，gpui 线程
 //! 只负责等结果。
 
-use anyhow::{Context as _, Result, anyhow, ensure};
+use anyhow::{Result, anyhow, ensure};
 use gpui_kit::SharedString;
 use sea_orm::{
     ActiveValue::{self, Set},
@@ -30,16 +30,15 @@ pub struct HostService {
 }
 
 impl HostService {
-    /// 打开（必要时创建）用户数据目录下的主机库。
-    /// 打不开就退回内存库，应用照常可用，只是改动不留存。
-    ///
-    /// 同步是因为它只在开窗前调用一次；一次性阻塞换组装简单。
+    /// 接上应用那一座库（[`db::app`]）。第一次调用时才真的去开它，
+    /// 打不开就退回内存库：应用照常可用，只是改动不留存。
     pub fn open() -> Self {
-        Self::open_on_disk().unwrap_or_else(|_| {
-            db::runtime()
-                .block_on(Self::in_memory())
-                .expect("初始化内存数据库失败")
-        })
+        let app = db::app();
+        Self {
+            repo: HostRepository,
+            db: app.conn.clone(),
+            persistent: app.persistent,
+        }
     }
 
     /// 数据库是否真的写在磁盘上。
@@ -47,21 +46,8 @@ impl HostService {
         self.persistent
     }
 
-    fn open_on_disk() -> Result<Self> {
-        let dir = dirs::data_dir()
-            .with_context(|| t!("host_service.no_data_dir").to_string())?
-            .join("winssh-pro");
-        std::fs::create_dir_all(&dir)
-            .with_context(|| t!("host_service.create_data_dir_failed").to_string())?;
-        let db = db::connect_blocking(Some(&dir.join("winssh-pro.db")))?;
-        Ok(Self {
-            repo: HostRepository,
-            db,
-            persistent: true,
-        })
-    }
-
-    /// 内存库：测试与磁盘库打不开时的退路。
+    /// 内存库：测试用的独立一座。磁盘库打不开时的退路在 [`db::app`] 那一层。
+    #[cfg(test)]
     async fn in_memory() -> Result<Self> {
         let db = db::connect(None).await?;
         Ok(Self {

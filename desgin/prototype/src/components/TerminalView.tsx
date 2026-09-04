@@ -40,6 +40,7 @@ import { SessionBottomSFTPPanel } from './SessionBottomSFTPPanel';
 import { SessionRightMonitorPanel } from './SessionRightMonitorPanel';
 import { SessionPortForwardModal } from './SessionPortForwardModal';
 import { SessionStatusBar } from './SessionStatusBar';
+import { OsIcon } from './OsIcon';
 
 interface TerminalViewProps {
   tabs: SessionTab[];
@@ -379,6 +380,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
                   className="w-2 h-2 rounded-full shrink-0"
                   style={{ backgroundColor: host.color || '#27C93F' }}
                 />
+                <OsIcon osType={host.osType} className="w-3 h-3 shrink-0" />
                 <span className="truncate max-w-[140px] font-mono text-[11px]">
                   {tab.title || host.name}
                 </span>

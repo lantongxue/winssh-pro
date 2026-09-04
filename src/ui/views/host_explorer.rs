@@ -44,7 +44,7 @@ use gpui_kit::{
 use super::{GUTTER, ICON_SIZE, SidebarView, collapse_button, view_header};
 use crate::{
     host::{Host, HostGroup, HostStatus},
-    service::HostService,
+    service::{CredentialService, HostService},
     ui::{
         cards::{HOST_CARD_HEIGHT, HostCard},
         dialogs::HostFormDialog,
@@ -211,6 +211,9 @@ pub struct HostExplorerView {
     /// 主机服务的入口。列表里的 `groups` 只是数据库的一份快照，
     /// 所有写操作都先经服务层落库，再由 [`Self::reload`] 把快照换回来。
     service: HostService,
+    /// 保险箱服务。这个视图自己一条凭据都不显示，它只在开主机表单之前
+    /// 去取一份列表 —— 表单里那个"从保险箱选取"要铺的就是它。
+    credentials: CredentialService,
     groups: Vec<HostGroup>,
     /// 每台主机的运行时状态。连接层还没接上，开机是空表：
     /// 打开过终端的主机会在这里点亮会话点。
@@ -243,6 +246,7 @@ pub struct HostExplorerView {
 impl HostExplorerView {
     pub fn new(
         service: HostService,
+        credentials: CredentialService,
         dock_area: WeakEntity<DockArea>,
         host_info: Entity<HostInfoPanel>,
         window: &mut Window,
@@ -257,6 +261,7 @@ impl HostExplorerView {
         // 数据库是正本，第一份快照由下面的异步加载取回来。开机先给一份空表。
         let mut this = Self {
             service,
+            credentials,
             groups: Vec::new(),
             statuses: HashMap::new(),
             recent: Vec::new(),
@@ -414,10 +419,8 @@ impl HostExplorerView {
     }
 
     /// 新建一台主机：空表单，提交后由 [`Self::host_created`] 收尾。
-    /// 分组从自己的快照里取着交给表单 —— 见 [`HostFormDialog::open`]。
     pub fn new_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let groups = self.groups.clone();
-        HostFormDialog::open(self.service.clone(), cx.entity(), &groups, None, window, cx);
+        self.open_host_form(None, window, cx);
     }
 
     /// 编辑一台主机：表单对话框按现有配置预填，提交后由 [`Self::host_updated`]
@@ -427,15 +430,35 @@ impl HostExplorerView {
             return;
         };
         let group = group.name.clone();
-        let groups = self.groups.clone();
-        HostFormDialog::open(
-            self.service.clone(),
-            cx.entity(),
-            &groups,
-            Some((host.clone(), group)),
-            window,
-            cx,
-        );
+        self.open_host_form(Some((host.clone(), group)), window, cx);
+    }
+
+    /// 开主机表单。
+    ///
+    /// 先把保险箱读一遍再弹：表单里"从保险箱选取"那个下拉的内容在它构造的
+    /// 那一刻就定死了，弹出来之后再补进去是补不上的。读不出来（库挂了）
+    /// 就当保险箱是空的，那个下拉整个不画 —— 一张少了取用入口的表单，
+    /// 总比一张开不出来的表单强。
+    ///
+    /// 分组也在这儿取好交进去，不由表单自己去 `host_explorer` 里读：
+    /// 这个方法多半是在主机视图自己的回调里调起来的（卡片菜单里的"编辑"
+    /// 就是），那时候它正被租出去 —— 见 [`HostFormDialog::open`]。
+    fn open_host_form(
+        &mut self,
+        editing: Option<(Host, SharedString)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let credentials = self.credentials.clone();
+        let service = self.service.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let vault = credentials.load_all().await.unwrap_or_default();
+            _ = this.update_in(cx, |this, window, cx| {
+                let groups = this.groups.clone();
+                HostFormDialog::open(service, cx.entity(), &groups, editing, &vault, window, cx);
+            });
+        })
+        .detach();
     }
 
     /// 照着一台主机再建一台：服务层里复制一份，选中那份副本。

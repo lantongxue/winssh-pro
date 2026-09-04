@@ -31,6 +31,12 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 
 - **主机（Host）**：一条保存下来的连接配置，对应原型里的 `ServerHost`。分组是 `HostGroup`。
 - **会话（Session）**：照着主机打开的那条活着的连接，也就是中心区的一个终端标签页。
+- **凭据（Credential）**：保险箱里的一条记录 —— 一组账号密码、一把 SSH 私钥，
+  或一个 API 令牌，对应原型里的 `VaultCredential`。保险箱本体是 `CredentialVaultView`
+  （侧边栏那一栏，同时持有快照、筛子与所有落库动作），全屏那一扇独立窗口是
+  `CredentialVaultWindow`，它持有一份前者、只另画版式。
+  凭据和主机是**取用**关系不是引用：主机表单里挑一条，把内容填进表单，
+  存进 `hosts` 表的还是那份内容本身（见 `src/credential.rs` 的模块文档）。
 - **活动栏（ActivityBar）**：最左边那条固定的窄栏，切换侧边栏视图，底部是全局动作。
 - **侧边栏（sidebar）**：活动栏与 Dock 之间那一栏，一次显示一个 `SidebarView`。
 
@@ -47,6 +53,7 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 | `src/ui/cards/` | `*Card` | 列表或网格里代表一条数据的那一块（`HostCard`） |
 | `src/ui/menus/` | `*Menu` | 点开之后浮在内容之上的一列动作（`HostMenu`） |
 | `src/ui/elements/` | `*Element` | 自己实现 `gpui_kit::Element`，下到布局与绘制里的那一层（`TerminalGridElement`） |
+| `src/ui/windows/` | `*Window` | 自己开一扇原生窗口的外壳，有自己的标题栏与 `Root`（`CredentialVaultWindow`） |
 
 新增一类组件就照这个样子新开一个目录，不要塞进已有目录里凑合：
 抽屉 → `drawers/` + `*Drawer`，气泡/浮层 → `popovers/` + `*Popover`。
@@ -56,20 +63,22 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 和 `src/ui/workspace.rs`（把上面这些拼起来的窗口外壳）。
 
 界面之外的领域层直接放在 `src/` 下，不进 `src/ui/`：
-`host.rs`（主机配置）、`session.rs`（会话读数）、`terminal/`（终端内核）、
-`monitor/`（对端资源采集：采集脚本、解析、速率累加）。
+`host.rs`（主机配置）、`credential.rs`（凭据保险箱）、`session.rs`（会话读数）、
+`terminal/`（终端内核）、`monitor/`（对端资源采集：采集脚本、解析、速率累加）。
 
 数据访问走三层，UI 只认最上面那层：
 
 | 层 | 目录 | 职责 |
 | --- | --- | --- |
-| `src/service/` | `*Service` | 业务逻辑与领域模型转换，UI 拿数据的唯一入口（`HostService`、`MonitorService`） |
-| `src/repository/` | `*Repository` | 数据仓，纯数据访问，不掺业务规则（`HostRepository`） |
+| `src/service/` | `*Service` | 业务逻辑与领域模型转换，UI 拿数据的唯一入口（`HostService`、`CredentialService`、`MonitorService`） |
+| `src/repository/` | `*Repository` | 数据仓，纯数据访问，不掺业务规则（`HostRepository`、`CredentialRepository`） |
 | `src/db/` | — | SeaORM 连接、应用级 tokio runtime 与实体定义（`db/entities/`） |
 
 规矩：**UI 层一律通过服务层读写数据**，禁止直接触达 SeaORM 或 SQL；
 SeaORM 的异步操作跑在 `db::run` 桥接的应用级 tokio runtime 上，
 错误以 `anyhow::Result` 抛给调用方决定要不要弹通知。
+库只有一座（`db::app()`），各服务共用同一条连接 —— 各开一条的话，
+退回内存库时每条连接都是独立的一座空库。
 
 一个文件只放一个组件，文件名与它导出的主类型对应：
 `host_explorer.rs` → `HostExplorerView`，`event_log.rs` → `EventLogPanel`，

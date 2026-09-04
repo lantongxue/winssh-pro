@@ -63,6 +63,10 @@ pub enum CommandPaletteEvent {
     ShowView(SidebarView),
     /// 新建一台主机。
     NewHost,
+    /// 往保险箱里新建一条凭据。
+    NewCredential,
+    /// 在一扇独立窗口里全屏打开保险箱。
+    OpenVaultWindow,
     /// 活动栏底部那几个全局动作里的一个。
     Activity(ActivityAction),
 }
@@ -315,6 +319,20 @@ fn action_commands() -> Vec<PaletteCommand> {
                 .icon(IconName::Plus)
                 .keywords(["new", "host", "add"]),
             CommandPaletteEvent::NewHost,
+        ),
+        PaletteCommand::new(
+            CommandItem::new()
+                .label(t!("palette.new_credential"))
+                .icon(AppIcon::ShieldCheck)
+                .keywords(["new", "credential", "password", "key", "vault"]),
+            CommandPaletteEvent::NewCredential,
+        ),
+        PaletteCommand::new(
+            CommandItem::new()
+                .label(t!("palette.open_vault_window"))
+                .icon(IconName::Maximize)
+                .keywords(["vault", "window", "password", "保险箱", "窗口"]),
+            CommandPaletteEvent::OpenVaultWindow,
         ),
         PaletteCommand::new(
             CommandItem::new()

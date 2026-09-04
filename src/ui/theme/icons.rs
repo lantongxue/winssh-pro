@@ -25,6 +25,9 @@ pub enum AppIcon {
     CodeXml,
     /// 向下箭头入盘：下载到本地。
     Download,
+    /// 带 `<>` 的文件：一份 SSH 私钥。和 [`Self::CodeXml`] 分开 ——
+    /// 那个裸尖括号说的是"一段命令"，这个带着文件外框，说的是"一份文本文件"。
+    FileCode,
     /// 带加号的文件：新建远端文件。
     FilePlus,
     /// 带加号的文件夹：新建目录。
@@ -33,7 +36,9 @@ pub enum AppIcon {
     FolderSync,
     /// 屋顶加门：远端家目录。组件库没有 home 那个图标。
     Home,
-    /// 圆头钥匙：密钥与凭据。
+    /// 一把带齿的钥匙：API 令牌那一档凭据。
+    Key,
+    /// 圆头钥匙：账号密码那一档凭据。
     KeyRound,
     /// 开盖的笔记本：本地那一栏。
     Laptop,
@@ -43,7 +48,9 @@ pub enum AppIcon {
     RefreshCw,
     /// 双层机架：主机与会话。
     Server,
-    /// 星芒：AI 助手。
+    /// 打勾的盾牌：凭据保险箱。
+    ShieldCheck,
+    /// 星芒：AI 助手，以及"生成一份新的"这类动作。
     Sparkles,
     /// `>_`：终端。组件库只有加了外框的 `SquareTerminal`，设计稿用的是裸提示符。
     Terminal,
@@ -65,15 +72,18 @@ impl IconNamed for AppIcon {
             Self::Square => "icons/square.svg",
             Self::CodeXml => "icons/code-xml.svg",
             Self::Download => "icons/download.svg",
+            Self::FileCode => "icons/file-code.svg",
             Self::FilePlus => "icons/file-plus.svg",
             Self::FolderPlus => "icons/folder-plus.svg",
             Self::FolderSync => "icons/folder-sync.svg",
             Self::Home => "icons/home.svg",
+            Self::Key => "icons/key.svg",
             Self::KeyRound => "icons/key-round.svg",
             Self::Laptop => "icons/laptop.svg",
             Self::Pencil => "icons/pencil.svg",
             Self::RefreshCw => "icons/refresh-cw.svg",
             Self::Server => "icons/server.svg",
+            Self::ShieldCheck => "icons/shield-check.svg",
             Self::Sparkles => "icons/sparkles.svg",
             Self::Terminal => "icons/terminal.svg",
             Self::Trash => "icons/trash-2.svg",
@@ -176,15 +186,18 @@ mod tests {
             AppIcon::Square.path(),
             AppIcon::CodeXml.path(),
             AppIcon::Download.path(),
+            AppIcon::FileCode.path(),
             AppIcon::FilePlus.path(),
             AppIcon::FolderPlus.path(),
             AppIcon::FolderSync.path(),
             AppIcon::Home.path(),
+            AppIcon::Key.path(),
             AppIcon::KeyRound.path(),
             AppIcon::Laptop.path(),
             AppIcon::Pencil.path(),
             AppIcon::RefreshCw.path(),
             AppIcon::Server.path(),
+            AppIcon::ShieldCheck.path(),
             AppIcon::Sparkles.path(),
             AppIcon::Terminal.path(),
             AppIcon::Trash.path(),

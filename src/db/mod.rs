@@ -22,7 +22,7 @@ use tokio::runtime::Runtime;
 
 /// 建表语句。`CREATE TABLE IF NOT EXISTS` 是幂等的，每次启动都跑一遍；
 /// 老用户的库文件已存在时原样保留，新字段通过 [`MIGRATIONS`] 补齐。
-const SCHEMA: [&str; 2] = [
+const SCHEMA: [&str; 3] = [
     "CREATE TABLE IF NOT EXISTS host_groups (
         id         INTEGER PRIMARY KEY,
         name       TEXT    NOT NULL UNIQUE,
@@ -45,6 +45,27 @@ const SCHEMA: [&str; 2] = [
         monitor_interval_secs INTEGER NOT NULL DEFAULT 3,
         status_interval_secs  INTEGER NOT NULL DEFAULT 8,
         forwards     TEXT    NOT NULL DEFAULT ''
+    )",
+    // 保险箱。和 hosts 之间没有外键：主机存的是凭据的内容本身，不是一个指向
+    // 这里的 id（见 `crate::credential` 的模块文档），删一条凭据不牵动任何主机。
+    "CREATE TABLE IF NOT EXISTS credentials (
+        id           TEXT    PRIMARY KEY,
+        name         TEXT    NOT NULL,
+        kind         TEXT    NOT NULL DEFAULT 'password',
+        category     TEXT    NOT NULL DEFAULT '',
+        username     TEXT    NOT NULL DEFAULT '',
+        password     TEXT    NOT NULL DEFAULT '',
+        algorithm    TEXT    NOT NULL DEFAULT '',
+        public_key   TEXT    NOT NULL DEFAULT '',
+        private_key  TEXT    NOT NULL DEFAULT '',
+        passphrase   TEXT    NOT NULL DEFAULT '',
+        fingerprint  TEXT    NOT NULL DEFAULT '',
+        token        TEXT    NOT NULL DEFAULT '',
+        tags         TEXT    NOT NULL DEFAULT '',
+        notes        TEXT    NOT NULL DEFAULT '',
+        favorite     INTEGER NOT NULL DEFAULT 0,
+        created_at   TEXT    NOT NULL DEFAULT '',
+        updated_at   TEXT    NOT NULL DEFAULT ''
     )",
 ];
 
@@ -96,6 +117,50 @@ where
 /// 一次性阻塞换组装简单。
 pub fn connect_blocking(path: Option<&Path>) -> Result<DatabaseConnection> {
     runtime().block_on(connect(path))
+}
+
+/// 应用的那一座库。
+///
+/// 进程里只有这一座，各个服务共用同一条连接：主机和保险箱住在同一个库文件里，
+/// 各开一条连接的话，磁盘库上是白白多一把写锁，而退回内存库时更糟 ——
+/// 每条连接都是**独立的一座内存库**（连接池因此压到 1，见 [`connect`]），
+/// 那样主机服务和保险箱服务会各自对着一座空库说话。
+pub struct AppDatabase {
+    pub conn: DatabaseConnection,
+    /// 库文件是否真的落在磁盘上。退回内存库时为假 —— 应用照常可用，
+    /// 只是改动不留存，界面装配完之后会就这件事提醒一次。
+    pub persistent: bool,
+}
+
+/// 打开（必要时创建）用户数据目录下的库，进程生命周期内只做一次。
+/// 打不开就退回内存库。
+///
+/// 同步是因为它只在开窗前的启动阶段被第一次调用；一次性阻塞换组装简单。
+pub fn app() -> &'static AppDatabase {
+    static APP: OnceLock<AppDatabase> = OnceLock::new();
+    APP.get_or_init(|| match open_on_disk() {
+        Ok(conn) => AppDatabase {
+            conn,
+            persistent: true,
+        },
+        Err(error) => {
+            log::warn!("磁盘库打不开，这次运行退回内存库：{error:#}");
+            AppDatabase {
+                conn: connect_blocking(None).expect("初始化内存数据库失败"),
+                persistent: false,
+            }
+        }
+    })
+}
+
+/// 用户数据目录下的那个库文件。
+fn open_on_disk() -> Result<DatabaseConnection> {
+    let dir = dirs::data_dir()
+        .with_context(|| t!("host_service.no_data_dir").to_string())?
+        .join("winssh-pro");
+    std::fs::create_dir_all(&dir)
+        .with_context(|| t!("host_service.create_data_dir_failed").to_string())?;
+    connect_blocking(Some(&dir.join("winssh-pro.db")))
 }
 
 /// 连接 SQLite 并确保表都在。`None` 是内存库：测试与磁盘库打不开时的退路。

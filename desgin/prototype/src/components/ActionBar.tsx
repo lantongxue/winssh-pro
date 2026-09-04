@@ -4,14 +4,14 @@ import {
   Code2,
   Network,
   KeyRound,
-  Activity,
+  ShieldCheck,
   Sparkles,
   Zap,
   Settings,
   Terminal,
 } from 'lucide-react';
 
-export type ActionPanelId = 'hosts' | 'snippets' | 'keys' | 'monitor';
+export type ActionPanelId = 'hosts' | 'snippets' | 'keys';
 
 interface ActionBarProps {
   activePanel: ActionPanelId;
@@ -40,7 +40,7 @@ export const ActionBar: React.FC<ActionBarProps> = ({
   }[] = [
     {
       id: 'hosts',
-      label: 'Hosts & Fleet Inventory',
+      label: 'Hosts & Servers',
       icon: Server,
       shortcut: 'Alt+1',
     },
@@ -52,15 +52,9 @@ export const ActionBar: React.FC<ActionBarProps> = ({
     },
     {
       id: 'keys',
-      label: 'SSH Key Vault',
-      icon: KeyRound,
+      label: '账号密码与私钥保险箱 (Vault)',
+      icon: ShieldCheck,
       shortcut: 'Alt+3',
-    },
-    {
-      id: 'monitor',
-      label: 'Fleet Telemetry & Status',
-      icon: Activity,
-      shortcut: 'Alt+4',
     },
   ];
 
