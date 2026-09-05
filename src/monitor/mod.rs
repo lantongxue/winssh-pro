@@ -38,6 +38,7 @@ pub struct ProcessItem {
     pub mem: f32,
     pub command: SharedString,
     /// 进程状态：R / S / D / Z 等。
+    #[allow(dead_code)]
     pub state: SharedString,
 }
 

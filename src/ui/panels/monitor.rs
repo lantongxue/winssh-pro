@@ -808,19 +808,10 @@ impl MonitorPanel {
         column
             .gap_2()
             .p_2()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(self.render_cpu_card(telemetry, cx))
-                    .child(self.render_ram_card(telemetry, mem_percent, cx)),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(self.render_disk_card(telemetry, disk_percent, cx))
-                    .child(self.render_network_card(telemetry, cx)),
-            )
-            .child(self.render_top_processes(telemetry, cx))
+            .child(self.render_cpu_card(telemetry, cx))
+            .child(self.render_ram_card(telemetry, mem_percent, cx))
+            .child(self.render_disk_card(telemetry, disk_percent, cx))
+            .child(self.render_network_card(telemetry, cx))
     }
 
     fn render_cpu_card(&self, telemetry: &MonitorTelemetry, cx: &App) -> impl IntoElement {
@@ -839,7 +830,7 @@ impl MonitorPanel {
             })
             .collect();
         v_flex()
-            .flex_1()
+            .w_full()
             .gap_1()
             .p_2()
             .rounded(cx.theme().radius)
@@ -904,7 +895,7 @@ impl MonitorPanel {
             })
             .collect();
         v_flex()
-            .flex_1()
+            .w_full()
             .gap_1()
             .p_2()
             .rounded(cx.theme().radius)
@@ -967,7 +958,7 @@ impl MonitorPanel {
         cx: &App,
     ) -> impl IntoElement {
         v_flex()
-            .flex_1()
+            .w_full()
             .gap_1()
             .p_2()
             .rounded(cx.theme().radius)
@@ -1028,7 +1019,7 @@ impl MonitorPanel {
 
     fn render_network_card(&self, t: &MonitorTelemetry, cx: &App) -> impl IntoElement {
         v_flex()
-            .flex_1()
+            .w_full()
             .gap_1()
             .p_2()
             .rounded(cx.theme().radius)
@@ -1080,152 +1071,6 @@ impl MonitorPanel {
                             ),
                     ),
             )
-    }
-
-    fn render_top_processes(
-        &self,
-        telemetry: &MonitorTelemetry,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        // "View All" 后面那个数是主机上真正的进程总数，不是截断后这份预览的长度
-        // —— 点进 Procs 页看到的是全量，这里的数要和它以及标签一致。
-        let total = telemetry.process_total.unwrap_or(telemetry.processes.len());
-        v_flex()
-            .rounded(cx.theme().radius)
-            .bg(cx.theme().background)
-            .border_1()
-            .border_color(cx.theme().border)
-            .overflow_hidden()
-            .child(
-                // 这一条**不**照卡片头那样压平：`font_semibold` 挂在行上的话，
-                // 右边那颗 ghost 按钮的字也会跟着变粗 —— 组件库的 Button 自己
-                // 定字号与颜色，字重却是继承来的。
-                h_flex()
-                    .h(px(32.))
-                    .px_2()
-                    .items_center()
-                    .justify_between()
-                    .bg(cx.theme().sidebar)
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .items_center()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(cx.theme().foreground)
-                            .child(
-                                Icon::new(IconName::ArrowUp)
-                                    .with_size(px(14.))
-                                    .text_color(rgb(0x569CD6)),
-                            )
-                            .child("Top High-Load Processes"),
-                    )
-                    .child(
-                        Button::new("monitor-view-all")
-                            .ghost()
-                            .xsmall()
-                            .label(SharedString::from(format!("View All ({total}) ›")))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.active_tab = MonitorTab::Processes;
-                                cx.notify();
-                            })),
-                    ),
-            )
-            // 十行直接挂在这一列上，中间不再夹一层 `v_flex`：那一层不改版式，
-            // 只是让这十行的排版多走一级。
-            .children(telemetry.processes.iter().take(10).map(|p| {
-                let pid = p.pid;
-                let command = p.command.clone();
-                h_flex()
-                    .id(("top-proc-row", pid))
-                    // 悬停高亮整行，和 Procs 页一致。
-                    .hover(|style| style.bg(palette::surface(cx)))
-                    .px_2()
-                    .py(px(6.))
-                    .items_center()
-                    .justify_between()
-                    .border_b_1()
-                    .border_color(cx.theme().border.opacity(0.5))
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .gap(px(2.))
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .text_xs()
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .child(
-                                        div()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .text_xs()
-                                            .child(SharedString::from(format!("[{}]", pid))),
-                                    )
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .max_w(px(140.))
-                                            .text_color(cx.theme().foreground)
-                                            .font_medium()
-                                            .child(p.command.clone()),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(SharedString::from(format!(
-                                        "{} • state {}",
-                                        p.user, p.state
-                                    ))),
-                            ),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .flex_shrink_0()
-                            .child(
-                                v_flex()
-                                    .items_end()
-                                    .gap(px(1.))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_bold()
-                                            .font_family(cx.theme().mono_font_family.clone())
-                                            .text_color(rgb(0x569CD6))
-                                            .child(SharedString::from(format!(
-                                                "{:.1}% CPU",
-                                                p.cpu
-                                            ))),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_family(cx.theme().mono_font_family.clone())
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(SharedString::from(format!(
-                                                "{:.1}% RAM",
-                                                p.mem
-                                            ))),
-                                    ),
-                            )
-                            .child(
-                                Button::new(("kill-top", pid))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(Icon::new(AppIcon::Trash).with_size(px(12.)))
-                                    .tooltip(SharedString::from(format!("kill -15 {pid}")))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.confirm_kill(pid, command.clone(), window, cx);
-                                    })),
-                            ),
-                    )
-            }))
     }
 
     /// Procs 页：筛选/排序条 + 一条虚拟列表。
@@ -1346,6 +1191,7 @@ impl MonitorPanel {
         // 悬停的 `div` 是白搭的一级 —— 一屏三十来行，每行省一级排版。
         h_flex()
             .id(("proc-row", pid))
+            .w_full()
             .h(PROCESS_ROW_HEIGHT)
             // 悬停高亮整行：告诉用户这一条是当前盯着的那一行。
             .hover(|style| style.bg(palette::surface(cx)))
@@ -1356,8 +1202,10 @@ impl MonitorPanel {
             .border_color(cx.theme().border.opacity(0.5))
             .child(
                 h_flex()
-                    .gap_2()
+                    .flex_1()
                     .min_w_0()
+                    .pr_2()
+                    .gap(px(6.))
                     .items_center()
                     .text_xs()
                     .font_family(cx.theme().mono_font_family.clone())
@@ -1374,8 +1222,10 @@ impl MonitorPanel {
                     )
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
                             .truncate()
-                            .max_w(px(160.))
+                            .font_medium()
                             .text_color(cx.theme().foreground)
                             .child(command.clone()),
                     ),

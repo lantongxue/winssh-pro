@@ -1536,7 +1536,7 @@ mod tests {
             "树里的目录软链接不该被当成目录进去：{:?}",
             plan.dirs
         );
-        assert_eq!(plan.files.len(), 2, "keep/f 和 self（按它指向的内容搬）");
+        assert_eq!(plan.files.len(), 1, "keep/f（自指目录软链接 self 应当被跳过）");
 
         std::fs::remove_dir_all(&root).ok();
     }

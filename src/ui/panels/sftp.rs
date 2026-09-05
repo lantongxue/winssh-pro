@@ -609,14 +609,14 @@ impl TableDelegate for LocalTableDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
-        let Some(entry) = self.entries.get(row_ix).cloned() else {
+        let Some(entry) = self.entries.get(row_ix) else {
             // 铺满表格下沿的那些空行：没有条目，也就没有选中、拖拽与菜单。
             return div().id(("local-table-row", row_ix));
         };
         let selected = self.selected.contains(&entry.path);
         // ".." 那一行不是条目：拖它等于拖一个字面的 ".." 路径。
         let dragged =
-            (!entry.is_parent()).then(|| drag_targets(&self.selection_targets, &entry, selected));
+            (!entry.is_parent()).then(|| drag_targets(&self.selection_targets, entry, selected));
         div()
             .id(("local-table-row", row_ix))
             .when(selected, |this| this.bg(palette::selected_row(cx)))
@@ -807,7 +807,7 @@ impl TableDelegate for RemoteTableDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        let Some(entry) = self.entries.get(row_ix).cloned() else {
+        let Some(entry) = self.entries.get(row_ix) else {
             return div().into_any_element();
         };
         let Some(col) = self.columns.get(col_ix) else {
@@ -823,7 +823,7 @@ impl TableDelegate for RemoteTableDelegate {
                 .min_w_0()
                 .truncate()
                 .text_xs()
-                .child(entry_icon(&entry, cx).with_size(px(12.)).flex_shrink_0())
+                .child(entry_icon(entry, cx).with_size(px(12.)).flex_shrink_0())
                 .child(
                     div()
                         .min_w_0()
@@ -936,14 +936,14 @@ impl TableDelegate for RemoteTableDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
-        let Some(entry) = self.entries.get(row_ix).cloned() else {
+        let Some(entry) = self.entries.get(row_ix) else {
             // 铺满表格下沿的那些空行：没有条目，也就没有选中、拖拽与菜单。
             return div().id(("remote-table-row", row_ix));
         };
         let selected = self.selected.contains(&entry.path);
         // ".." 那一行不是条目：拖它等于拖一个字面的 ".." 路径。
         let dragged =
-            (!entry.is_parent()).then(|| drag_targets(&self.selection_targets, &entry, selected));
+            (!entry.is_parent()).then(|| drag_targets(&self.selection_targets, entry, selected));
         div()
             .id(("remote-table-row", row_ix))
             .when(selected, |this| this.bg(palette::selected_row(cx)))
@@ -2910,7 +2910,7 @@ fn count_label(shown: usize, truncated: bool) -> SharedString {
 
 impl Render for SftpPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
+        let mut panel = v_flex()
             .id("sftp-panel")
             .size_full()
             .flex_shrink_0()
@@ -2925,13 +2925,29 @@ impl Render for SftpPanel {
             .on_action(cx.listener(Self::on_extend_up))
             .on_action(cx.listener(Self::on_extend_down))
             .on_action(cx.listener(Self::on_open_selection))
-            .child(self.render_nav(cx))
-            .child(self.render_body(cx))
+            .child(self.render_nav(cx));
+
+        if !self.queue_drawer {
+            panel = panel
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .overflow_hidden()
+                        .child(self.render_panes(cx)),
+                )
+                .child(self.render_action_bar(cx));
+        } else {
+            panel = panel.child(self.render_body(cx));
+        }
+
+        panel
     }
 }
 
 impl SftpPanel {
-    /// 导航条以下那一块。队列拉开时是上下可拖的分栏：上面文件区，
+    /// 导航条以下那一块（队列拉开时使用）。队列拉开时是上下可拖的分栏：上面文件区，
     /// 下面传输队列（含队列头标题栏与列表），分界线位于传输队列标题栏上方
     /// 用于拖动调整传输面板高度。
     ///
@@ -2939,15 +2955,6 @@ impl SftpPanel {
     /// 不画它还有个好处 —— [`ResizableState`] 只在分栏画出来时才被碰，收起再拉开，
     /// 拖出来的高度还在。
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
-        if !self.queue_drawer {
-            return v_flex()
-                .flex_1()
-                .min_h_0()
-                .child(self.render_files(cx))
-                .child(self.render_action_bar(cx))
-                .into_any_element();
-        }
-
         // id 带上主机：两个会话分屏摆在一屏上时，各自的分栏状态互不串线
         // （同 `render_panes`）。
         //
@@ -3335,15 +3342,12 @@ impl SftpPanel {
     fn render_local_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current_local_path = self.local_dir.to_string_lossy().into_owned();
 
-        div()
+        v_flex()
+            .id("sftp-panel-local")
             .relative()
             .size_full()
-            .child(
-                v_flex()
-                    .id("sftp-panel-local")
-                    .size_full()
-                    .min_w_0()
-                    .overflow_hidden()
+            .min_w_0()
+            .overflow_hidden()
                     .child(
                         h_flex()
                             .h(PANE_HEADER_HEIGHT)
@@ -3434,8 +3438,7 @@ impl SftpPanel {
                                             .child(SharedString::from(current_local_path)),
                                     ),
                             ),
-                    ),
-            )
+                    )
             .when(self.local.deleting, |this| {
                 this.child(
                     div()
@@ -3480,17 +3483,14 @@ impl SftpPanel {
     fn render_remote_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current_remote_path = self.remote_path.clone();
 
-        div()
+        v_flex()
+            .id("sftp-panel-remote")
             .relative()
             .size_full()
-            .child(
-                v_flex()
-                    .id("sftp-panel-remote")
-                    .size_full()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .child(self.render_breadcrumb(cx))
-                    .child(self.render_parent_row(cx))
+            .min_w_0()
+            .overflow_hidden()
+            .child(self.render_breadcrumb(cx))
+            .children(self.render_parent_row(cx))
                     .child(
                         div()
                             .relative()
@@ -3565,8 +3565,7 @@ impl SftpPanel {
                                             .child(SharedString::from(current_remote_path)),
                                     ),
                             ),
-                    ),
-            )
+                    )
             .when(self.remote.deleting, |this| {
                 this.child(
                     div()
@@ -3687,13 +3686,14 @@ impl SftpPanel {
         let last = segments.len().saturating_sub(1);
         let panel = cx.entity().downgrade();
 
-        div()
+        h_flex()
+            .id("local-breadcrumb-scroll")
             .flex_1()
             .min_w_0()
-            .id("local-breadcrumb-scroll")
-            .flex()
+            .items_center()
+            .gap_1()
             .overflow_x_scroll()
-            .child(h_flex().items_center().gap_1().flex_none().children(
+            .children(
                 segments.into_iter().enumerate().map(|(ix, (label, path))| {
                     let here = ix == last;
                     let is_drive = is_windows_drive(&label);
@@ -3770,8 +3770,8 @@ impl SftpPanel {
                                 })
                                 .into_any_element()
                         })
-                }),
-            ))
+                })
+            )
     }
 
     /// 面包屑那一行，右边带条目数与刚复制过的路径。
@@ -3794,18 +3794,14 @@ impl SftpPanel {
                     .text_color(palette::green()),
             )
             .child(
-                div()
+                h_flex()
+                    .id("remote-breadcrumb-scroll")
                     .flex_1()
                     .min_w_0()
-                    .id("remote-breadcrumb-scroll")
-                    .flex()
+                    .items_center()
+                    .gap_1()
                     .overflow_x_scroll()
                     .child(
-                        h_flex()
-                            .items_center()
-                            .gap_1()
-                            .flex_none()
-                            .child(
                                 Button::new("sftp-panel-root")
                                     .ghost()
                                     .xsmall()
@@ -3855,7 +3851,6 @@ impl SftpPanel {
                                         )
                                 },
                             )),
-                    ),
             )
             .child(
                 div()
@@ -3881,38 +3876,40 @@ impl SftpPanel {
     }
 
     /// 停在根目录时没有上级可去，那一行就不画。
-    fn render_parent_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_parent_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.at_root() || self.remote_path.is_empty() || !self.remote.view.is_empty() {
-            return div().into_any_element();
+            return None;
         }
         // 列表是空的（刚清完、或者一个都不匹配）时，这一行就是唯一的出路。
-        h_flex()
-            .id("sftp-panel-parent")
-            .h(ROW_HEIGHT)
-            .flex_shrink_0()
-            .w_full()
-            .min_w_0()
-            .px_2()
-            .gap_1p5()
-            .items_center()
-            .text_xs()
-            .overflow_hidden()
-            .cursor_pointer()
-            .hover(|style| style.bg(palette::surface(cx)))
-            .text_color(palette::idle(cx))
-            .child(
-                Icon::new(IconName::ChevronUp)
-                    .with_size(px(12.))
-                    .flex_shrink_0()
-                    .text_color(palette::coral()),
-            )
-            .child("..")
-            .child(div().child(SharedString::from(t!("sftp.parent_row"))))
-            .on_click(cx.listener(|this, _, window, cx| {
-                let up = parent(&this.remote_path);
-                this.load_remote(&up, window, cx);
-            }))
-            .into_any_element()
+        Some(
+            h_flex()
+                .id("sftp-panel-parent")
+                .h(ROW_HEIGHT)
+                .flex_shrink_0()
+                .w_full()
+                .min_w_0()
+                .px_2()
+                .gap_1p5()
+                .items_center()
+                .text_xs()
+                .overflow_hidden()
+                .cursor_pointer()
+                .hover(|style| style.bg(palette::surface(cx)))
+                .text_color(palette::idle(cx))
+                .child(
+                    Icon::new(IconName::ChevronUp)
+                        .with_size(px(12.))
+                        .flex_shrink_0()
+                        .text_color(palette::coral()),
+                )
+                .child("..")
+                .child(div().child(SharedString::from(t!("sftp.parent_row"))))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    let up = parent(&this.remote_path);
+                    this.load_remote(&up, window, cx);
+                }))
+                .into_any_element(),
+        )
     }
 
     /// 底下一条：一句用法提示，加右边的整体传输进度与速度（面板收起时）和传输队列开关。
@@ -3935,20 +3932,22 @@ impl SftpPanel {
             .border_t_1()
             .border_color(cx.theme().border)
             .bg(palette::recessed(cx))
-            .child(
-                div().flex_1().min_w_0().child(match selection {
-                    Some(selection) => div()
-                        .text_xs()
-                        .text_color(cx.theme().foreground)
-                        .truncate()
-                        .child(selection),
-                    None => div()
-                        .text_xs()
-                        .text_color(palette::idle(cx))
-                        .truncate()
-                        .child(SharedString::from(t!("sftp.hint"))),
-                }),
-            )
+            .child(match selection {
+                Some(selection) => div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(cx.theme().foreground)
+                    .truncate()
+                    .child(selection),
+                None => div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .truncate()
+                    .child(SharedString::from(t!("sftp.hint"))),
+            })
             .when(has_active, |this| {
                 this.child(
                     h_flex()
