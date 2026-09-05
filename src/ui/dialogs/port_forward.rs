@@ -1726,6 +1726,7 @@ mod tests {
             jump_host_id: None,
             monitor_intervals: MonitorIntervals::default(),
             forwards: Vec::new(),
+            tags: Vec::new(),
         }
     }
 

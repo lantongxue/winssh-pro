@@ -162,6 +162,8 @@ pub struct Host {
     /// 和采集节奏一样不进 [`HostDraft`]：这些规则是连上之后在端口转发对话框
     /// （`Alt+P`）里加的，主机表单不认这一列。
     pub forwards: Vec<crate::forward::PortForward>,
+    /// 主机标签列表，用于分类与检索，例如 `["生产", "k8s"]`。
+    pub tags: Vec<SharedString>,
 }
 
 impl Host {
@@ -209,6 +211,8 @@ pub struct HostDraft {
     /// 私钥密码，空串表示私钥没加密。见 [`Host::key_passphrase`]。
     pub key_passphrase: String,
     pub jump_host_id: Option<String>,
+    /// 主机标签列表。
+    pub tags: Vec<SharedString>,
 }
 
 /// 一台主机的运行时状态。
@@ -228,4 +232,42 @@ pub struct HostStatus {
 pub struct HostGroup {
     pub name: SharedString,
     pub hosts: Vec<Host>,
+}
+
+/// 把标签写成 `hosts.tags` 那一列。
+pub fn encode_tags(tags: &[SharedString]) -> String {
+    if tags.is_empty() {
+        return String::new();
+    }
+    serde_json::to_string(tags).unwrap_or_default()
+}
+
+/// 从 `hosts.tags` 那一列读回标签。读不动就当没有。
+pub fn decode_tags(raw: &str) -> Vec<SharedString> {
+    if raw.trim().is_empty() {
+        return Vec::new();
+    }
+    match serde_json::from_str::<Vec<SharedString>>(raw) {
+        Ok(tags) => tags,
+        Err(error) => {
+            log::warn!("hosts.tags 解析失败，按空标签处理：{error}");
+            Vec::new()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tags_round_trip() {
+        let tags: Vec<SharedString> = vec!["生产".into(), "K8s".into(), "核心, 数据库".into()];
+        let encoded = encode_tags(&tags);
+        assert_eq!(decode_tags(&encoded), tags);
+        assert!(encode_tags(&[]).is_empty());
+        assert!(decode_tags("").is_empty());
+        assert!(decode_tags("   ").is_empty());
+        assert!(decode_tags("{ invalid json").is_empty());
+    }
 }

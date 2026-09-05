@@ -100,6 +100,7 @@ impl HostService {
                         // 转发规则也不在表单里，新主机是空的；加它们的地方是
                         // 会话里的端口转发对话框（[`Self::update_forwards`]）。
                         forwards: Set(String::new()),
+                        tags: Set(crate::host::encode_tags(&draft.tags)),
                     },
                 )
                 .await?;
@@ -119,6 +120,7 @@ impl HostService {
                 jump_host_id: draft.jump_host_id.map(|value| value.into()),
                 monitor_intervals: MonitorIntervals::default(),
                 forwards: Vec::new(),
+                tags: draft.tags,
             })
         })
         .await
@@ -156,6 +158,7 @@ impl HostService {
                         monitor_interval_secs: ActiveValue::NotSet,
                         status_interval_secs: ActiveValue::NotSet,
                         forwards: ActiveValue::NotSet,
+                        tags: Set(crate::host::encode_tags(&draft.tags)),
                     },
                 )
                 .await;
@@ -249,6 +252,7 @@ impl HostService {
                         monitor_interval_secs: Set(source.monitor_interval_secs),
                         status_interval_secs: Set(source.status_interval_secs),
                         forwards: Set(source.forwards.clone()),
+                        tags: Set(source.tags.clone()),
                     },
                 )
                 .await?;
@@ -272,6 +276,7 @@ impl HostService {
                 }
                 .clamped(),
                 forwards: forward::decode(&source.forwards),
+                tags: crate::host::decode_tags(&source.tags),
             })
         })
         .await
@@ -402,6 +407,7 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                     }
                     .clamped(),
                     forwards: forward::decode(&host.forwards),
+                    tags: crate::host::decode_tags(&host.tags),
                 })
                 .collect(),
         })
@@ -450,6 +456,7 @@ mod tests {
             key_content: String::new(),
             key_passphrase: String::new(),
             jump_host_id: None,
+            tags: Vec::new(),
         }
     }
 
@@ -475,6 +482,7 @@ mod tests {
             key_content: key_content.into(),
             key_passphrase: key_passphrase.into(),
             jump_host_id: None,
+            tags: Vec::new(),
         }
     }
 
@@ -1025,6 +1033,45 @@ mod tests {
             // 目录名已经保证下一次不会撞上它。
             drop(service);
             let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    fn host_tags_insert_update_and_duplicate() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let mut draft1 = draft("k8s-node");
+            draft1.tags = vec!["K8s".into(), "生产".into()];
+
+            // 1. 插入并验证
+            let host = service.insert_host("集群", draft1.clone()).await.unwrap();
+            assert_eq!(host.tags, vec![SharedString::from("K8s"), SharedString::from("生产")]);
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].tags, vec![SharedString::from("K8s"), SharedString::from("生产")]);
+
+            // 2. 更新 tags 并验证
+            draft1.tags = vec!["K8s".into(), "测试".into(), "v1.30".into()];
+            service.update_host(&host.id, "集群", draft1).await.unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].tags, vec![
+                SharedString::from("K8s"),
+                SharedString::from("测试"),
+                SharedString::from("v1.30")
+            ]);
+
+            // 3. 复制主机并验证 tags 继承
+            let duplicated = service.duplicate_host(&host.id).await.unwrap();
+            assert_eq!(duplicated.tags, vec![
+                SharedString::from("K8s"),
+                SharedString::from("测试"),
+                SharedString::from("v1.30")
+            ]);
+
+            let groups = service.load_groups().await.unwrap();
+            let dup_in_db = groups[0].hosts.iter().find(|h| h.id == duplicated.id).unwrap();
+            assert_eq!(dup_in_db.tags, duplicated.tags);
         });
     }
 }

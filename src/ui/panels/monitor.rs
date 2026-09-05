@@ -1596,6 +1596,7 @@ mod tests {
             jump_host_id: None,
             monitor_intervals: intervals,
             forwards: Vec::new(),
+            tags: Vec::new(),
         }
     }
 

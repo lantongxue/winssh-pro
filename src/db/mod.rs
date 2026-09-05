@@ -44,7 +44,8 @@ const SCHEMA: [&str; 3] = [
         jump_host_id TEXT,
         monitor_interval_secs INTEGER NOT NULL DEFAULT 3,
         status_interval_secs  INTEGER NOT NULL DEFAULT 8,
-        forwards     TEXT    NOT NULL DEFAULT ''
+        forwards     TEXT    NOT NULL DEFAULT '',
+        tags         TEXT    NOT NULL DEFAULT ''
     )",
     // 保险箱。和 hosts 之间没有外键：主机存的是凭据的内容本身，不是一个指向
     // 这里的 id（见 `crate::credential` 的模块文档），删一条凭据不牵动任何主机。
@@ -71,7 +72,7 @@ const SCHEMA: [&str; 3] = [
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 8] = [
+const MIGRATIONS: [&str; 9] = [
     "ALTER TABLE hosts ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'password'",
     "ALTER TABLE hosts ADD COLUMN password TEXT NOT NULL DEFAULT ''",
     // 私钥本身与解开它的密码。老库补出来都是空串，也就是"这台主机还没配私钥"。
@@ -89,6 +90,8 @@ const MIGRATIONS: [&str; 8] = [
     // 端口转发规则（见 [`crate::forward`]）。老库补出来的是空串，
     // 读回来就是"这台主机还没有转发规则"，与新库一致。
     "ALTER TABLE hosts ADD COLUMN forwards TEXT NOT NULL DEFAULT ''",
+    // 主机标签列表（JSON 字符串）。老库补出来的是空串，与新库一致。
+    "ALTER TABLE hosts ADD COLUMN tags TEXT NOT NULL DEFAULT ''",
 ];
 
 /// 数据层专用的 tokio runtime，进程生命周期内只建一次。

@@ -8,6 +8,7 @@ use gpui_kit::component::{
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Window, div,
+    prelude::FluentBuilder as _,
 };
 
 use crate::host::Host;
@@ -115,5 +116,14 @@ impl Render for HostInfoPanel {
                 t!("host_info.auth_public_key").into(),
                 cx,
             ))
+            .when(!host.tags.is_empty(), |this| {
+                let tags_str = host
+                    .tags
+                    .iter()
+                    .map(|t| t.as_ref())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                this.child(self.render_row(t!("host_info.tags").into(), tags_str.into(), cx))
+            })
     }
 }

@@ -165,6 +165,9 @@ host_info.auth:
 host_info.auth_public_key:
   en: Public key (ed25519)
   zh-CN: 公钥（ed25519）
+host_info.tags:
+  en: Tags
+  zh-CN: 标签
 
 # ── 事件日志面板 ─────────────────────────────────────────────────────────
 event_log.title:
@@ -360,8 +363,8 @@ palette.toggle_right_dock:
 
 # ── 主机浏览器（侧边栏主机列表） ─────────────────────────────────────────
 host_explorer.search_placeholder:
-  en: Search hosts by name, address or group
-  zh-CN: 按名称、地址或分组搜索主机
+  en: Search hosts by name, address, tag or group
+  zh-CN: 按名称、地址、标签或分组搜索主机
 host_explorer.load_failed:
   en: "Could not read the host configuration: %{error}"
   zh-CN: 读取主机配置失败：%{error}

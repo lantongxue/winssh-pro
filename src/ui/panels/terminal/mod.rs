@@ -180,6 +180,7 @@ impl TerminalPanel {
             jump_host_id: None,
             monitor_intervals: crate::host::MonitorIntervals::default(),
             forwards: Vec::new(),
+            tags: Vec::new(),
         };
         Self::build(host, Source::Local, None, window, cx)
     }
@@ -202,6 +203,7 @@ impl TerminalPanel {
             jump_host_id: None,
             monitor_intervals: crate::host::MonitorIntervals::default(),
             forwards: Vec::new(),
+            tags: Vec::new(),
         };
         Self::build(host, Source::Detached, None, window, cx)
     }

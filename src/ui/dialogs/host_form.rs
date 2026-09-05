@@ -324,12 +324,24 @@ impl HostFormDialog {
                                                             .insert_host(&group, draft)
                                                             .await
                                                             .map(|host| (group, host)),
-                                                        Some((host, _)) => service
-                                                            .update_host(&host.id, &group, draft)
-                                                            .await
-                                                            .map(|_| {
-                                                                (group.clone(), host.clone())
-                                                            }),
+                                                        Some((host, _)) => {
+                                                            let mut updated_host = host.clone();
+                                                            updated_host.name = draft.name.clone().into();
+                                                            updated_host.user = draft.user.clone().into();
+                                                            updated_host.hostname = draft.hostname.clone().into();
+                                                            updated_host.port = draft.port;
+                                                            updated_host.platform = draft.platform.clone().into();
+                                                            updated_host.auth_method = draft.auth_method;
+                                                            updated_host.password = draft.password.clone().into();
+                                                            updated_host.key_content = draft.key_content.clone().into();
+                                                            updated_host.key_passphrase = draft.key_passphrase.clone().into();
+                                                            updated_host.jump_host_id = draft.jump_host_id.clone().map(|v| v.into());
+                                                            updated_host.tags = draft.tags.clone();
+                                                            service
+                                                                .update_host(&host.id, &group, draft)
+                                                                .await
+                                                                .map(|_| (group.clone(), updated_host))
+                                                        }
                                                     };
 
                                                     let saved = outcome.is_ok();
@@ -415,6 +427,11 @@ impl HostFormDialog {
                 host.key_passphrase.to_string(),
             ),
             None => (String::new(), String::new()),
+        };
+
+        let initial_tags = match editing {
+            Some((host, _)) => host.tags.clone(),
+            None => vec!["Linux".into(), "SSH".into()],
         };
 
         let name = cx.new(|cx| {
@@ -578,7 +595,7 @@ impl HostFormDialog {
             badge_color: rgb(BADGE_COLORS[0]).into(),
             badge_picker,
             tag_input,
-            tags: vec!["Linux".into(), "SSH".into()],
+            tags: initial_tags,
             vault_passwords,
             vault_password_pick,
             vault_keys,
@@ -730,6 +747,7 @@ impl HostFormDialog {
                 key_content,
                 key_passphrase,
                 jump_host_id,
+                tags: self.tags.clone(),
             },
         ))
     }
@@ -1153,6 +1171,7 @@ mod tests {
                 jump_host_id: None,
                 monitor_intervals: MonitorIntervals::default(),
                 forwards: Vec::new(),
+                tags: vec!["生产".into(), "web".into()],
             },
             "生产环境".into(),
         )
@@ -1374,5 +1393,23 @@ mod tests {
             cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.update(|window, cx| window.draw(cx).clear(cx));
         }
+    }
+
+    /// 编辑主机时标签正确预填，并在 build_draft 时保存。
+    #[gpui_kit::test]
+    fn editing_host_initializes_and_saves_tags(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form(cx, Some(keyed_host(KEY_TEXT, "hunter2")));
+
+        form.update_in(cx, |this, window, cx| {
+            assert_eq!(this.tags, vec![SharedString::from("生产"), SharedString::from("web")]);
+            this.tag_input.update(cx, |state, cx| state.set_value("集群", window, cx));
+            this.add_tag(window, cx);
+            assert_eq!(this.tags, vec![SharedString::from("生产"), SharedString::from("web"), SharedString::from("集群")]);
+        });
+
+        let (_, draft) = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect("表单数据有效");
+        assert_eq!(draft.tags, vec![SharedString::from("生产"), SharedString::from("web"), SharedString::from("集群")]);
     }
 }

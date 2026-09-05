@@ -45,6 +45,9 @@ pub struct Model {
     /// join 和一套外键。
     #[sea_orm(default_value = "")]
     pub forwards: String,
+    /// 主机标签，JSON 编码的一串字符串列表。空串表示没有标签。
+    #[sea_orm(default_value = "")]
+    pub tags: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

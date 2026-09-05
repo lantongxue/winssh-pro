@@ -210,6 +210,46 @@ impl HostCard {
                     ),
             )
             .children(self.render_latency(cx))
+            .children(self.render_tags_preview(cx))
+    }
+
+    /// 标签预览：在卡片第三行展示前 1~2 个标签，超出以 +N 表示。
+    /// 仅作为视觉摘要，超出单行自动裁剪，不破坏 88px 卡片等高。
+    fn render_tags_preview(&self, cx: &App) -> Option<impl IntoElement> {
+        if self.host.tags.is_empty() {
+            return None;
+        }
+
+        Some(
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .items_center()
+                .gap_1()
+                .overflow_hidden()
+                .children(self.host.tags.iter().take(2).map(|tag| {
+                    div()
+                        .flex_shrink_0()
+                        .max_w(px(60.))
+                        .truncate()
+                        .px_1()
+                        .rounded_sm()
+                        .bg(cx.theme().muted.opacity(0.6))
+                        .text_color(palette::idle(cx))
+                        .text_xs()
+                        .child(tag.clone())
+                }))
+                .when(self.host.tags.len() > 2, |this| {
+                    this.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(format!("+{}", self.host.tags.len() - 2))),
+                    )
+                }),
+        )
     }
 
     /// 可达性：一个点加一个毫秒数。还没探过就整段不画 ——

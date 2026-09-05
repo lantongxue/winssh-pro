@@ -727,10 +727,33 @@ impl HostExplorerView {
     }
 
     fn matches(host: &Host, group: &HostGroup, query: &str) -> bool {
-        query.is_empty()
-            || host.name.to_lowercase().contains(query)
+        if query.is_empty() {
+            return true;
+        }
+
+        // 支持显式按标签前缀过滤，如 "tag:k8s"、"tag: k8s"、"tag：k8s"、"#k8s"
+        if let Some(tag_query) = query
+            .strip_prefix("tag:")
+            .or_else(|| query.strip_prefix("tag："))
+            .or_else(|| query.strip_prefix('#'))
+        {
+            let tag_query = tag_query.trim();
+            if tag_query.is_empty() {
+                return !host.tags.is_empty();
+            }
+            return host
+                .tags
+                .iter()
+                .any(|tag| tag.to_lowercase().contains(tag_query));
+        }
+
+        host.name.to_lowercase().contains(query)
             || host.address().to_lowercase().contains(query)
             || group.name.to_lowercase().contains(query)
+            || host
+                .tags
+                .iter()
+                .any(|tag| tag.to_lowercase().contains(query))
     }
 
     /// 按当前的过滤词和分组筛选重建整个列表。
@@ -1265,5 +1288,65 @@ impl Render for HostExplorerView {
             .child(self.render_list(cx))
             .child(Separator::horizontal().color(cx.theme().sidebar_border))
             .child(self.render_footer(cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::{AuthMethod, MonitorIntervals};
+
+    fn sample_host(name: &str, hostname: &str, tags: Vec<&str>) -> Host {
+        Host {
+            id: name.into(),
+            name: name.into(),
+            user: "root".into(),
+            hostname: hostname.into(),
+            port: 22,
+            platform: "Ubuntu".into(),
+            auth_method: AuthMethod::Password,
+            password: "".into(),
+            key_content: "".into(),
+            key_passphrase: "".into(),
+            jump_host_id: None,
+            monitor_intervals: MonitorIntervals::default(),
+            forwards: Vec::new(),
+            tags: tags.into_iter().map(SharedString::from).collect(),
+        }
+    }
+
+    #[test]
+    fn test_host_explorer_matches_by_tags() {
+        let group = HostGroup {
+            name: "生产集群".into(),
+            hosts: Vec::new(),
+        };
+        let host = sample_host("web-01", "10.0.1.10", vec!["K8s", "生产环境", "Core"]);
+
+        // 1. 空查询匹配全部
+        assert!(HostExplorerView::matches(&host, &group, ""));
+
+        // 2. 匹配名称、地址、分组
+        assert!(HostExplorerView::matches(&host, &group, "web"));
+        assert!(HostExplorerView::matches(&host, &group, "10.0.1"));
+        assert!(HostExplorerView::matches(&host, &group, "生产集群"));
+
+        // 3. 匹配标签（忽略大小写）
+        assert!(HostExplorerView::matches(&host, &group, "k8s"));
+        assert!(HostExplorerView::matches(&host, &group, "生产环境"));
+        assert!(HostExplorerView::matches(&host, &group, "core"));
+
+        // 4. 显式按标签前缀搜索: tag: / tag：/ #
+        assert!(HostExplorerView::matches(&host, &group, "tag:k8s"));
+        assert!(HostExplorerView::matches(&host, &group, "tag: k8s"));
+        assert!(HostExplorerView::matches(&host, &group, "tag：生产"));
+        assert!(HostExplorerView::matches(&host, &group, "#core"));
+
+        // 前缀不匹配
+        assert!(!HostExplorerView::matches(&host, &group, "tag:redis"));
+        assert!(!HostExplorerView::matches(&host, &group, "#redis"));
+
+        // 不匹配的普通查询
+        assert!(!HostExplorerView::matches(&host, &group, "database"));
     }
 }

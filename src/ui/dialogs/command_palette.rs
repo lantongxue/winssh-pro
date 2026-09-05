@@ -258,10 +258,13 @@ fn host_commands(groups: &[HostGroup]) -> Vec<PaletteCommand> {
                 let row_name = name.clone();
                 let row_address = address.clone();
 
+                let mut keywords = vec![address, group.name.clone(), host.platform_tag()];
+                keywords.extend(host.tags.iter().cloned());
+
                 PaletteCommand::new(
                     CommandItem::new()
                         .label(name)
-                        .keywords([address, group.name.clone(), host.platform_tag()])
+                        .keywords(keywords)
                         .child(move |_, cx| {
                             h_flex()
                                 .flex_1()
