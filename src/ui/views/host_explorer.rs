@@ -49,7 +49,7 @@ use crate::{
         cards::{HOST_CARD_HEIGHT, HostCard},
         dialogs::HostFormDialog,
         menus::HostAction,
-        panels::{HostInfoPanel, TerminalPanel},
+        panels::TerminalPanel,
         theme::{AppIcon, palette},
     },
 };
@@ -239,7 +239,6 @@ pub struct HostExplorerView {
     scroll_handle: VirtualListScrollHandle,
     search: Entity<InputState>,
     dock_area: WeakEntity<DockArea>,
-    host_info: Entity<HostInfoPanel>,
     focus_handle: FocusHandle,
 }
 
@@ -248,7 +247,6 @@ impl HostExplorerView {
         service: HostService,
         credentials: CredentialService,
         dock_area: WeakEntity<DockArea>,
-        host_info: Entity<HostInfoPanel>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -276,7 +274,6 @@ impl HostExplorerView {
             scroll_handle: VirtualListScrollHandle::new(),
             search,
             dock_area,
-            host_info,
             focus_handle: cx.focus_handle(),
         };
         this.rebuild_rows(cx);
@@ -348,11 +345,10 @@ impl HostExplorerView {
         self.select_host(&host, cx);
     }
 
-    /// 删除落库之后的收尾：选中与信息面板还指着它的话先清掉，再重读列表。
+    /// 删除落库之后的收尾：选中还指着它的话先清掉，再重读列表。
     pub fn host_deleted(&mut self, id: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected.as_ref() == Some(id) {
             self.selected = None;
-            self.host_info.update(cx, HostInfoPanel::clear);
         }
         self.reload(window, cx);
     }
@@ -373,11 +369,9 @@ impl HostExplorerView {
         self.rebuild_rows(cx);
     }
 
-    /// 单击：把这台主机作为当前工作对象，右侧的主机信息跟着变。
+    /// 单击：把这台主机作为当前选中对象。
     fn select_host(&mut self, host: &Host, cx: &mut Context<Self>) {
         self.selected = Some(host.id.clone());
-        self.host_info
-            .update(cx, |host_info, cx| host_info.show(host.clone(), cx));
         cx.notify();
     }
 

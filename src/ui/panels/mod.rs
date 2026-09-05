@@ -8,16 +8,12 @@
 
 #[allow(dead_code)]
 mod event_log;
-mod host_info;
 mod monitor;
-mod settings;
 mod sftp;
 mod terminal;
 mod welcome;
 
-pub use host_info::HostInfoPanel;
 pub use monitor::{MonitorEvent, MonitorPanel};
-pub use settings::{SettingsPanel, show_fps_monitor};
 pub use sftp::{
     ExtendSelectionDown, ExtendSelectionUp, OpenSelection, SelectAllEntries, SftpPanel,
     SftpPanelEvent,

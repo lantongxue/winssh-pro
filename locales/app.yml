@@ -76,6 +76,9 @@ welcome.toggle_sidebar:
 welcome.toggle_host_info:
   en: Toggle host info
   zh-CN: 打开主机信息
+welcome.open_settings:
+  en: Open settings
+  zh-CN: 打开偏好设置
 
 # ── 会话信息栏（终端上沿） ───────────────────────────────────────────────
 session_info.tunnels:
@@ -186,31 +189,91 @@ event_log.sample_timeout:
   en: web-02 connection timed out (10s), no session established
   zh-CN: web-02 连接超时（10s），未建立会话
 
-# ── 设置面板 ─────────────────────────────────────────────────────────────
+# ── 设置窗口 ─────────────────────────────────────────────────────────────
 settings.title:
   en: Settings
   zh-CN: 设置
+settings.window_title:
+  en: Preferences
+  zh-CN: 偏好设置
+settings.preferences:
+  en: PREFERENCES
+  zh-CN: 偏好配置
+settings.tab_general:
+  en: General
+  zh-CN: 通用外观
+settings.tab_terminal:
+  en: Terminal
+  zh-CN: 终端偏好
+settings.tab_about:
+  en: About
+  zh-CN: 关于软件
 settings.appearance:
   en: Appearance
-  zh-CN: 外观
+  zh-CN: 外观与界面
 settings.dark_theme:
   en: Dark theme
   zh-CN: 深色主题
+settings.dark_theme_desc:
+  en: Switch between dark and light desktop theme
+  zh-CN: 在深色与浅色桌面主题之间切换
 settings.language:
   en: Language
-  zh-CN: 语言
+  zh-CN: 界面语言
+settings.language_desc:
+  en: Set the display language of the application
+  zh-CN: 更改应用程序界面的呈现语言
 settings.performance:
-  en: Performance
-  zh-CN: 性能
+  en: Performance & Diagnostics
+  zh-CN: 性能与诊断
 settings.fps_monitor:
-  en: FPS monitor
-  zh-CN: FPS 监控
+  en: 120 FPS Monitor Overlay
+  zh-CN: 120 FPS 渲染监控浮层
 settings.fps_monitor_hint:
-  en: Overlays the frame rate, frame time and this process' GPU, CPU and memory on the bottom right. It keeps the window drawing back to back, so the reading is the frame rate the application can sustain rather than the rate it happens to be drawing at — and while it is on, the overlay itself keeps the CPU and GPU busy.
-  zh-CN: 在右下角浮一块读数：帧率、每帧耗时，以及本进程的 GPU、CPU 与内存。它会让窗口一帧接一帧地画下去，所以读到的是这台机器上撑得住多少帧，不是此刻正在画多少帧；开着的时候它自己也在占 CPU 与 GPU。
+  en: Overlays the frame rate, frame time and process GPU, CPU and memory metrics on the bottom right. Keeps the window rendering continuously to measure maximum sustained performance.
+  zh-CN: 在右下角浮一块读数：帧率、每帧耗时，以及本进程的 GPU、CPU 与内存。它会让窗口一帧接一帧地画下去，测量设备上撑得住的极限帧率；开启时自身也会占用 CPU 与 GPU。
+settings.terminal_engine:
+  en: Terminal Engine & Rendering
+  zh-CN: 终端内核与渲染引擎
+settings.terminal_renderer:
+  en: Rendering Pipeline
+  zh-CN: 原生渲染管线
+settings.terminal_renderer_desc:
+  en: Hardware-accelerated GPU text grid renderer powered by GPUI & Alacritty VT
+  zh-CN: 基于 GPUI 与 Alacritty VT 的硬件加速原生文本网格渲染器
+settings.terminal_font:
+  en: Default Monospace Font
+  zh-CN: 默认等宽字体
+settings.terminal_font_desc:
+  en: Monospace typeface used for remote and local terminal sessions
+  zh-CN: 会话与终端默认采用的高清等宽代码字体
+settings.terminal_emulation:
+  en: Emulation & Buffers
+  zh-CN: 终端仿真与缓冲区
+settings.scrollback_buffer:
+  en: Scrollback Buffer Size
+  zh-CN: 历史回滚行数
+settings.scrollback_buffer_desc:
+  en: Maximum terminal history lines retained in memory per pane
+  zh-CN: 每个终端窗格在内存中保留的历史回溯行数
+settings.app_subtitle:
+  en: Cross-platform, high-performance native SSH & DevOps client
+  zh-CN: 跨平台、超 120+fps 原生高性能 SSH 与运维工作台
+settings.about_description:
+  en: Crafted with Rust, GPUI, and Russh to deliver native desktop fluidity and rock-solid memory safety.
+  zh-CN: 使用 Rust、GPUI 与 Russh 深度构建，提供极致丝滑的桌面原生体验与现代内存安全保障。
 settings.more_hint:
   en: Connection, key and terminal settings will open up alongside the matching features.
   zh-CN: 连接、密钥与终端设置会随对应功能一起开放。
+palette.open_settings_window:
+  en: Open preferences window
+  zh-CN: 打开偏好设置窗口
+Settings.search_placeholder:
+  en: Search settings...
+  zh-CN: 搜索偏好设置...
+Settings.Reset All:
+  en: Reset All
+  zh-CN: 全部重置
 
 # ── 右键菜单公用 ─────────────────────────────────────────────────────────
 menu.more:

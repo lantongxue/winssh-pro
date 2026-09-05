@@ -1,7 +1,7 @@
 //! 设置按钮的弹出菜单：活动栏底部的设置齿轮按钮点开后的动作列表。
 //!
 //! 包含两个入口：
-//! - 设置：打开右侧的设置与信息面板（与原先的单击行为一致）
+//! - 设置：打开偏好设置独立窗口（快捷键 ⌘, / Ctrl+,）
 //! - 密码库：打开密码库的完整独立管理窗口（快捷键 Alt+3）
 
 use std::rc::Rc;
@@ -29,7 +29,7 @@ const ICON_SIZE: Pixels = px(16.);
 /// 设置菜单里的项。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsMenuAction {
-    /// 打开设置面板。
+    /// 打开设置独立窗口。
     Settings,
     /// 打开密码库完整管理窗口。
     Vault,
@@ -60,7 +60,7 @@ impl SettingsMenuAction {
 
     pub fn shortcut(&self) -> Option<&'static str> {
         match self {
-            Self::Settings => None,
+            Self::Settings => Some(if cfg!(target_os = "macos") { "⌘," } else { "Ctrl+," }),
             Self::Vault => Some("Alt+3"),
         }
     }

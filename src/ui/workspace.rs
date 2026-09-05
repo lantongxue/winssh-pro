@@ -1,8 +1,8 @@
 //! 主窗口外壳：标题栏 + 固定活动栏 + 侧边栏 + Dock 工作区。
 //!
 //! 外壳本身不放业务内容。标题栏正中是命令中心，左侧活动栏是稳定的全局导航，
-//! 紧接着是可收起的侧边栏，右边整块交给 [`DockArea`]：终端占据中心、主机信息与设置在右侧，
-//! 可以拖拽、折叠与缩放。侧边栏不在 dock 系统内 —— 它的宽度归 `ResizableState`，
+//! 紧接着是可收起的侧边栏，右边整块交给 [`DockArea`]：中心区承载终端与欢迎页，
+//! 可以通过分屏、拖拽标签页灵活排列。侧边栏不在 dock 系统内 —— 它的宽度归 `ResizableState`，
 //! 开合归 [`Workspace::sidebar_open`]，显示哪个视图归 [`Workspace::view`]。
 
 use std::rc::Rc;
@@ -27,13 +27,13 @@ use crate::service::{CredentialService, HostService};
 use crate::ui::{
     bars::{ActivityAction, ActivityBar, CommandCenterBar},
     dialogs::{CommandPaletteDialog, CommandPaletteEvent},
-    panels::{HostInfoPanel, SettingsPanel, TerminalPanel, WelcomePanel, show_fps_monitor},
+    panels::{TerminalPanel, WelcomePanel},
     theme::AppIcon,
     views::{
         CredentialVaultEvent, CredentialVaultView, HostExplorerEvent, HostExplorerView,
         PlaceholderView, SidebarView,
     },
-    windows::CredentialVaultWindow,
+    windows::{CredentialVaultWindow, SettingsWindow, show_fps_monitor},
 };
 use rust_i18n::t;
 
@@ -44,12 +44,12 @@ actions!(
         ToggleCommandPalette,
         /// 打开或收起左侧的侧边栏。
         ToggleSidebar,
-        /// 打开或收起右侧的主机信息与设置。
-        ToggleRightDock,
         /// 在中心区新开一个本地 Shell 终端。
         OpenLocalShell,
         /// 打开密码库完整独立管理窗口。
         OpenVaultWindow,
+        /// 打开设置独立管理窗口。
+        OpenSettingsWindow,
     ]
 );
 
@@ -66,7 +66,6 @@ const WINDOW_CONTROLS_INSET: gpui_kit::Pixels = px(80.);
 const WINDOW_CONTROLS_INSET: gpui_kit::Pixels = px(0.);
 
 const SIDEBAR_WIDTH: gpui_kit::Pixels = px(300.);
-const HOST_INFO_WIDTH: gpui_kit::Pixels = px(300.);
 
 pub struct Workspace {
     dock_area: Entity<DockArea>,
@@ -110,15 +109,12 @@ impl Workspace {
         // 就是它读出来的那份列表。
         let credential_service = CredentialService::open();
 
-        let host_info = HostInfoPanel::new(window, cx);
-        let settings = SettingsPanel::new(window, cx);
         let welcome = WelcomePanel::new(window, cx);
         let host_explorer = cx.new(|cx| {
             HostExplorerView::new(
                 host_service.clone(),
                 credential_service.clone(),
                 dock_area.downgrade(),
-                host_info.clone(),
                 window,
                 cx,
             )
@@ -179,23 +175,6 @@ impl Workspace {
                 window,
                 cx,
             );
-
-            area.set_dock(
-                DockPlacement::Right,
-                DockLayout::tabs()
-                    .panel_view(panel_handle(host_info), cx)
-                    .panel_view(panel_handle(settings), cx),
-                window,
-                cx,
-            );
-
-            area.set_dock_size(DockPlacement::Right, HOST_INFO_WIDTH, window, cx);
-            area.set_dock_collapsible(DockPlacement::Right, true, window, cx);
-
-            // 打开窗口时先把空间让给主机列表与终端，主机信息按需唤出。
-            if area.is_dock_open(DockPlacement::Right) {
-                area.toggle_dock(DockPlacement::Right, window, cx);
-            }
         });
 
         Self {
@@ -224,15 +203,9 @@ impl Workspace {
         cx.notify();
     }
 
-    fn toggle_dock(
-        &mut self,
-        placement: DockPlacement,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.dock_area.update(cx, |area, cx| {
-            area.toggle_dock(placement, window, cx);
-        });
+    /// 打开设置独立管理窗口；已经开着就将其激活置顶。
+    fn open_settings_window(&mut self, cx: &mut Context<Self>) {
+        SettingsWindow::open(cx);
     }
 
     /// 选中活动栏条目：切换侧边栏视图。
@@ -263,7 +236,7 @@ impl Workspace {
     /// 执行活动栏底部的全局动作。
     fn run_action(&mut self, action: ActivityAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
-            ActivityAction::Settings => self.toggle_dock(DockPlacement::Right, window, cx),
+            ActivityAction::Settings => self.open_settings_window(cx),
             // 这两个入口的功能还没有落地。先如实说明，而不是让按钮点下去毫无反应。
             ActivityAction::Assistant => {
                 window.push_notification(t!("workspace.assistant_wip"), cx)
@@ -287,13 +260,13 @@ impl Workspace {
         self.toggle_sidebar(cx);
     }
 
-    fn on_toggle_right_dock(
+    fn on_open_settings_window(
         &mut self,
-        _: &ToggleRightDock,
-        window: &mut Window,
+        _: &OpenSettingsWindow,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.toggle_dock(DockPlacement::Right, window, cx);
+        self.open_settings_window(cx);
     }
 
     fn open_local_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -393,7 +366,7 @@ impl Render for Workspace {
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(Self::on_toggle_command_palette))
             .on_action(cx.listener(Self::on_toggle_sidebar))
-            .on_action(cx.listener(Self::on_toggle_right_dock))
+            .on_action(cx.listener(Self::on_open_settings_window))
             .on_action(cx.listener(Self::on_open_local_shell))
             .on_action(cx.listener(Self::on_open_vault_window))
             .child(self.render_title_bar(window, cx))

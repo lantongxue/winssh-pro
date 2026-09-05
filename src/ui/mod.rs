@@ -43,7 +43,7 @@ use panels::{
     OpenSelection, PasteClipboard, SelectAllEntries, Tab, ToggleForwards, ToggleMonitor,
     ToggleSftp,
 };
-use workspace::{OpenVaultWindow, ToggleCommandPalette, ToggleRightDock, ToggleSidebar};
+use workspace::{OpenSettingsWindow, OpenVaultWindow, ToggleCommandPalette, ToggleSidebar};
 
 /// 主修饰键：macOS 用 Command，其余平台用 Ctrl。
 #[cfg(target_os = "macos")]
@@ -57,7 +57,7 @@ pub fn init(cx: &mut App) {
     cx.bind_keys(vec![
         KeyBinding::new(&format!("{CMD}-k"), ToggleCommandPalette, None),
         KeyBinding::new(&format!("{CMD}-b"), ToggleSidebar, None),
-        KeyBinding::new(&format!("{CMD}-alt-b"), ToggleRightDock, None),
+        KeyBinding::new(&format!("{CMD}-,"), OpenSettingsWindow, None),
         KeyBinding::new("alt-3", OpenVaultWindow, None),
         KeyBinding::new(&format!("{CMD}-w"), ClosePanel, None),
         KeyBinding::new("shift-escape", ToggleZoom, None),

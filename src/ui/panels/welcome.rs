@@ -19,13 +19,13 @@ use rust_i18n::t;
 /// 是函数而不是 `const`：文案要查语言表，而语言到运行时才定下来。
 fn shortcuts() -> [(SharedString, &'static str); 2] {
     #[cfg(target_os = "macos")]
-    let keys = ["cmd-b", "cmd-alt-b"];
+    let keys = ["cmd-b", "cmd-,"];
     #[cfg(not(target_os = "macos"))]
-    let keys = ["ctrl-b", "ctrl-alt-b"];
+    let keys = ["ctrl-b", "ctrl-,"];
 
     [
         (t!("welcome.toggle_sidebar").into(), keys[0]),
-        (t!("welcome.toggle_host_info").into(), keys[1]),
+        (t!("welcome.open_settings").into(), keys[1]),
     ]
 }
 

@@ -32,10 +32,13 @@ pub fn observe(window: &mut Window, _: &mut App) -> Subscription {
 }
 
 /// 用户手动指定主题：立即生效，并从此不再跟随系统。
-pub fn set_theme_mode(mode: ThemeMode, window: &mut Window, cx: &mut App) {
+pub fn set_theme_mode(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App) {
     cx.set_global(FollowSystemAppearance(false));
-    Theme::change(mode, Some(window), cx);
+    Theme::change(mode, window, cx);
     override_colors(cx);
+    for handle in cx.windows() {
+        _ = handle.update(cx, |_, window, _| window.refresh());
+    }
 }
 
 /// 改掉组件库主题里与产品读法不符的取值。主题每次重建都会落回默认值，

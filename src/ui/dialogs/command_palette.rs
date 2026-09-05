@@ -30,7 +30,7 @@ use crate::{
         bars::ActivityAction,
         theme::{AppIcon, palette},
         views::SidebarView,
-        workspace::{OpenVaultWindow, ToggleRightDock, ToggleSidebar},
+        workspace::{OpenSettingsWindow, OpenVaultWindow, ToggleSidebar},
     },
 };
 use rust_i18n::t;
@@ -358,10 +358,10 @@ fn action_commands() -> Vec<PaletteCommand> {
         ),
         PaletteCommand::dispatching(
             CommandItem::new()
-                .label(t!("palette.toggle_right_dock"))
-                .icon(IconName::PanelRight)
-                .keywords(["info", "settings", "right"])
-                .action(Box::new(ToggleRightDock)),
+                .label(t!("palette.open_settings_window"))
+                .icon(IconName::Settings)
+                .keywords(["settings", "preferences", "config", "设置", "偏好设置", "窗口"])
+                .action(Box::new(OpenSettingsWindow)),
         ),
     ]
 }
