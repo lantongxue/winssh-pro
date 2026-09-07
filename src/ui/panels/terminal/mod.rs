@@ -72,6 +72,24 @@ actions!(
     ]
 );
 
+/// 这个标签页往外说的一件事：它这条会话的存亡变了。
+///
+/// 主机列表（[`crate::ui::views::HostExplorerView`]）靠它把卡片上那颗会话点
+/// 改回默认色。那个视图不认识 Dock 里的标签页，也不该认识 —— 它只需要知道
+/// "有变化，重新看一眼"，具体还剩几条活着的会话由它自己去数。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionEvent {
+    /// 会话连上了，或者断了（对端退出、连接掉了）。
+    ///
+    /// 只在真的翻面时来一次，见 [`TerminalPanel::sync_liveness`]。
+    LivenessChanged,
+    /// 这个标签页离开了 Dock：这条会话到此结束。
+    ///
+    /// 和"断开"分开说，因为两者的证据不同：断开能从窗格上读出来，而关掉之后
+    /// 这个面板马上就不存在了，没有谁还能被问"你还活着吗"。
+    Ended,
+}
+
 /// 标签页上那个颜色点的直径。
 const TAB_DOT_SIZE: gpui_kit::Pixels = px(6.);
 
@@ -155,6 +173,9 @@ pub struct TerminalPanel {
     /// 主机库。端口转发对话框改完规则要写回这台主机那一行。
     /// 本机 Shell 没有对应的库记录，那时是 `None`。
     hosts: Option<HostService>,
+    /// 上一次报出去的存活状态，[`Self::sync_liveness`] 拿它判断"翻面了没有"。
+    /// 开局是 `false`：还没连上的会话不算活着。
+    alive: bool,
     /// 这条会话的端口转发。连上之后才有 —— 隧道要开在真的连接上。
     ///
     /// 它归标签页而不是归对话框：转发是会话的设施，对话框只是看它的一扇窗。
@@ -269,6 +290,7 @@ impl TerminalPanel {
                 sftp_resizable_id: SharedString::from(format!("terminal-sftp-{}", host.id)),
                 ssh: None,
                 hosts,
+                alive: false,
                 forwards: None,
                 host,
             };
@@ -308,6 +330,10 @@ impl TerminalPanel {
     ) {
         match event {
             TerminalPaneEvent::Connected(session) => {
+                // 又有一个窗格连上了：主机列表上那颗点要跟着亮。这一步在下面
+                // 那个提前返回之前 —— 第一个窗格死了、再分屏连上第二个的时候，
+                // 走到这儿的正是"报的是同一条连接"那一档。
+                self.sync_liveness(cx);
                 // 第一个连上的窗格提供这条会话的连接。第二个窗格是在同一条上
                 // 开出来的，报的是同一条连接，接不接都一样 —— 但监控与 SFTP
                 // 已经挂好了，不能再挂一遍。
@@ -329,6 +355,9 @@ impl TerminalPanel {
             }
             TerminalPaneEvent::Changed => {
                 self.sync_active(window, cx);
+                // 这一条里也带着"对端退出了"（见 `TerminalPane::attach_emulator`），
+                // 会话点该灭的时刻就在这儿。
+                self.sync_liveness(cx);
                 cx.notify();
             }
             TerminalPaneEvent::CloseRequested => {
@@ -386,6 +415,9 @@ impl TerminalPanel {
             // 上下 ↔ 左右：窗格不动，只是排法换了。
             _ => self.split_state.reset(),
         }
+        // 窗格数变了，"还有没有活着的"就可能跟着变：收回单屏留下的那一半
+        // 已经断了、被丢掉的那一半还连着，就是一次翻面。
+        self.sync_liveness(cx);
         cx.notify();
     }
 
@@ -425,6 +457,8 @@ impl TerminalPanel {
         self.split = SplitLayout::Single;
         self.split_state.reset();
         self.focus_active(window, cx);
+        // 关掉的那一半可能是唯一还连着的（见 [`Self::set_split`] 里同一句）。
+        self.sync_liveness(cx);
         cx.notify();
     }
 
@@ -812,6 +846,30 @@ impl TerminalPanel {
             .is_some_and(|pane| pane.read(cx).connected(cx))
     }
 
+    /// 这条会话还活着吗：**任意一个**窗格的子进程没退就算活着。
+    ///
+    /// 和 [`Self::connected`] 的差别是"看哪一个窗格"。上下两条 chrome 和标签页
+    /// 上那颗点说的是**活动窗格**的事 —— 用户正看着它。而主机列表上那颗会话点
+    /// 说的是"这台机器上还有没有开着的会话"：分屏之后在下半边敲 `exit`，上半边
+    /// 还连着，那台主机的点不该灭。
+    pub fn alive(&self, cx: &App) -> bool {
+        self.panes.iter().any(|pane| pane.read(cx).connected(cx))
+    }
+
+    /// 存活状态翻面了就报一声，没变就不报。
+    ///
+    /// 这个"没变就不报"是要紧的：窗格的 [`TerminalPaneEvent::Changed`] 里也
+    /// 包含"标题变了"，而多数 shell 的 `PS1` 每出一次提示符就设一次标题 ——
+    /// 照着它每次都通知主机列表，等于让整张列表跟着对端的提示符重建。
+    fn sync_liveness(&mut self, cx: &mut Context<Self>) {
+        let alive = self.alive(cx);
+        if alive == self.alive {
+            return;
+        }
+        self.alive = alive;
+        cx.emit(SessionEvent::LivenessChanged);
+    }
+
     fn grid(&self, cx: &App) -> TerminalBounds {
         self.active_pane()
             .map(|pane| pane.read(cx).grid())
@@ -880,6 +938,7 @@ impl TerminalPanel {
 }
 
 impl EventEmitter<PanelEvent> for TerminalPanel {}
+impl EventEmitter<SessionEvent> for TerminalPanel {}
 
 impl Focusable for TerminalPanel {
     /// 交出去的是**活动窗格**的句柄，不是面板自己的。
@@ -908,6 +967,16 @@ impl BasePanel for TerminalPanel {
         // 新开的会话直接获得焦点，否则 Tab 会落在活动栏或其它按钮上
         cx.focus_self(window);
         cx.notify();
+    }
+
+    /// 标签页被关掉了（或者整个 Dock 被换掉）：这条会话结束。
+    ///
+    /// 报出去而不是等这个实体被回收：Dock 是在把面板摘出布局树**之后**才通知
+    /// 它的，此刻它还活着、窗格里的 shell 也还没退，谁也读不出"已经没了"这件
+    /// 事。所以由它自己说一句，主机列表照这句把那条会话从名册上划掉。
+    fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.alive = false;
+        cx.emit(SessionEvent::Ended);
     }
 }
 
@@ -1223,6 +1292,97 @@ mod tests {
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         (harness, cx)
+    }
+
+    /// 存活状态翻面了才报，没变就不报。
+    ///
+    /// 后半句和前半句一样要紧：窗格报上来的 `Changed` 里也包含"标题变了"，
+    /// 而多数 shell 的 `PS1` 每出一次提示符就设一次标题 —— 照着它每次都往外
+    /// 报，主机列表就会跟着对端的提示符重建。
+    #[gpui_kit::test]
+    fn liveness_is_reported_only_when_it_flips(cx: &mut gpui_kit::TestAppContext) {
+        use std::{cell::Cell, rc::Rc};
+
+        let (panel, cx) = draw_panel(cx);
+
+        let count = Rc::new(Cell::new(0usize));
+        let seen = count.clone();
+        // 订阅要留着：`Subscription` 一掉这条线就断了。
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&panel, move |_, event: &SessionEvent, _| {
+                if event == &SessionEvent::LivenessChanged {
+                    seen.set(seen.get() + 1);
+                }
+            })
+        });
+
+        // 这个壳里的窗格算"连着"（见 [`PaneOrigin::Detached`]：它有一个不连
+        // 任何东西、也没退出的终端），所以先把记录拨回"没连上"再同步一次,
+        // 那就是一次翻面。
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.alive = false;
+                panel.sync_liveness(cx);
+            })
+        });
+        assert_eq!(count.get(), 1, "翻面了要报一声");
+
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.sync_liveness(cx);
+                panel.sync_liveness(cx);
+            })
+        });
+        assert_eq!(count.get(), 1, "状态没动还在报");
+    }
+
+    /// 关掉标签页要报一声 [`SessionEvent::Ended`]。
+    ///
+    /// 主机列表全靠这一句把那条会话从名册上划掉：Dock 是把面板摘出布局树
+    /// **之后**才通知它的，那一刻它自己还活着、窗格里的 shell 也还没退，
+    /// 除了它自己说，没有谁读得出"这条会话没了"。
+    #[gpui_kit::test]
+    fn closing_a_session_says_so(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::component::dock::panel_handle;
+        use std::{cell::Cell, rc::Rc};
+
+        let (harness, cx) = dock_harness(cx);
+        let (dock_area, panel) = harness.read_with(cx, |harness, _| {
+            (harness.dock_area.clone(), harness.panel.clone())
+        });
+
+        // 中心区里得再停一个面板：一个 dock 里最后剩下的那个是关不掉的
+        // （gpui-kit 的 `TabGroup::close_panel` 守着这条），而真实应用的中心区
+        // 一开始就停着欢迎页，所以关标签页在那里是走得通的。
+        cx.update(|window, cx| {
+            let welcome = crate::ui::panels::WelcomePanel::new(window, cx);
+            dock_area.update(cx, |area, cx| {
+                area.add_panel_view(
+                    panel_handle(welcome),
+                    DockPlacement::Center,
+                    None,
+                    window,
+                    cx,
+                );
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let ended = Rc::new(Cell::new(false));
+        let heard = ended.clone();
+        let _subscription = cx.update(|_, cx| {
+            cx.subscribe(&panel, move |_, event: &SessionEvent, _| {
+                if event == &SessionEvent::Ended {
+                    heard.set(true);
+                }
+            })
+        });
+
+        cx.update(|window, cx| panel.update(cx, |panel, cx| panel.close(window, cx)));
+        // 关闭是挪到帧末做的（见 [`TerminalPanel::close`]），所以要再走一帧。
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert!(ended.get(), "关掉标签页之后没人知道这条会话结束了");
     }
 
     /// 本机 shell 不给隧道、SFTP、监控那三颗按钮。

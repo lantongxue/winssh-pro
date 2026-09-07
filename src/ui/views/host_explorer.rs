@@ -16,10 +16,7 @@
 //! 是移动到那个分组的末尾。顺序就是 [`HostGroup::hosts`] 的顺序，所以拖动改的是
 //! 数据本身，不是一层显示用的排序。
 
-use std::{
-    collections::{HashMap, HashSet},
-    rc::Rc,
-};
+use std::{collections::HashSet, rc::Rc};
 
 use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Icon, IconName, Sizable as _, StyledExt as _,
@@ -49,7 +46,7 @@ use crate::{
         cards::{HOST_CARD_HEIGHT, HostCard},
         dialogs::HostFormDialog,
         menus::HostAction,
-        panels::TerminalPanel,
+        panels::{SessionEvent, TerminalPanel},
         theme::{AppIcon, palette},
     },
 };
@@ -110,9 +107,13 @@ enum Row {
         expanded: bool,
     },
     /// 一台主机，画成一张卡片。
+    ///
+    /// 这里**不存**它的运行时状态（[`HostStatus`]）：那是每一帧从会话名册上
+    /// 数出来的（[`HostExplorerView::status`]）。存进行里的话，一条会话断掉
+    /// 之后就得记得把整张列表重建一遍，漏一次那颗点就一直亮着 —— 正是
+    /// 这个视图曾经犯的错。
     Host {
         host: Host,
-        status: HostStatus,
         /// 是否挂在某个分组下面。“最近”那一档是平铺的，不画缩进导轨。
         nested: bool,
     },
@@ -125,6 +126,17 @@ impl Row {
             Self::Host { .. } => host_row_height(),
         }
     }
+}
+
+/// 名册上的一条会话：这个视图开出去的一个终端标签页。
+///
+/// 拿 [`WeakEntity`] 而不是 `Entity`：会话的正主是 Dock，名册只是"我开过它"
+/// 的一份记录。拿强引用的话，标签页关掉之后这份记录还把整个面板（连着 SSH
+/// 连接、SFTP 通道、监控采集）扣在内存里。
+struct TrackedSession {
+    /// 这条会话开在哪台主机上。
+    host: SharedString,
+    panel: WeakEntity<TerminalPanel>,
 }
 
 /// 正在被拖着的那台主机。
@@ -215,9 +227,13 @@ pub struct HostExplorerView {
     /// 去取一份列表 —— 表单里那个"从保险箱选取"要铺的就是它。
     credentials: CredentialService,
     groups: Vec<HostGroup>,
-    /// 每台主机的运行时状态。连接层还没接上，开机是空表：
-    /// 打开过终端的主机会在这里点亮会话点。
-    statuses: HashMap<SharedString, HostStatus>,
+    /// 这个视图开出去的那些终端标签页，卡片上的会话点就是从这儿数出来的。
+    ///
+    /// 存的是"开过哪些会话"，而不是"哪些主机亮着" —— 一台主机可以同时开好几条
+    /// 会话，关掉其中一条不该让那颗点灭。每条会话到底还活着没有，问它自己
+    /// （[`TerminalPanel::alive`]）；关掉的那条会由它报一声 [`SessionEvent::Ended`]
+    /// 从这里划掉。
+    sessions: Vec<TrackedSession>,
     /// 最近打开过的主机，最新的在前。
     recent: Vec<SharedString>,
     /// 当前选中的筛选片。
@@ -261,7 +277,7 @@ impl HostExplorerView {
             service,
             credentials,
             groups: Vec::new(),
-            statuses: HashMap::new(),
+            sessions: Vec::new(),
             recent: Vec::new(),
             filter: HostFilter::All,
             collapsed: HashSet::new(),
@@ -384,15 +400,43 @@ impl HostExplorerView {
         self.recent.insert(0, host.id.clone());
         self.recent.truncate(RECENT_LIMIT);
 
-        // 连接层还没接上，会话指示点先由这里点亮 —— 有一个打开的终端就算活着。
-        self.statuses.entry(host.id.clone()).or_default().connected = true;
-
         let panel = TerminalPanel::new(host.clone(), self.service.clone(), window, cx);
+        self.track_session(host.id.clone(), &panel, cx);
         _ = self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
         });
 
         self.rebuild_rows(cx);
+    }
+
+    /// 把新开的会话记进名册，并盯着它的存亡。
+    ///
+    /// 卡片上那颗会话点不是"开过就亮"：连着才亮，断了、关了就回到默认色。
+    /// 断和关这两件事都由标签页自己报（[`SessionEvent`]），这里只做两件事 ——
+    /// 关掉的从名册上划掉，然后重画一帧。
+    fn track_session(
+        &mut self,
+        host: SharedString,
+        panel: &Entity<TerminalPanel>,
+        cx: &mut Context<Self>,
+    ) {
+        self.sessions.push(TrackedSession {
+            host,
+            panel: panel.downgrade(),
+        });
+
+        cx.subscribe(panel, |this, panel, event: &SessionEvent, cx| {
+            if event == &SessionEvent::Ended {
+                let closed = panel.entity_id();
+                this.sessions
+                    .retain(|session| session.panel.entity_id() != closed);
+            }
+            // 顺手清掉已经被回收的那几条：窗口整个关掉时没有谁来报 `Ended`。
+            this.sessions
+                .retain(|session| session.panel.upgrade().is_some());
+            cx.notify();
+        })
+        .detach();
     }
 
     /// 卡片菜单里选中的那一项。开会话是这个视图自己的事（它连着 Dock）；
@@ -712,8 +756,31 @@ impl HostExplorerView {
         })
     }
 
-    fn status(&self, id: &SharedString) -> HostStatus {
-        self.statuses.get(id).copied().unwrap_or_default()
+    /// 这台主机此刻的运行时状态，每帧现算。
+    ///
+    /// `connected` 的意思是"这台机器上还有活着的会话"：名册里属于它的那几条，
+    /// 有一条还连着就算。**不留一份点亮过的记录** —— 会话断在什么时候、标签页
+    /// 什么时候被关掉，都不是这个视图能预先知道的事，只有每次问一遍才不会
+    /// 留下一颗永远亮着的点。
+    ///
+    /// `latency_ms` 还是 `None`：延迟要等连接层往这边推探测结果，见
+    /// [`HostStatus::latency_ms`]。没有读数时卡片整段不画。
+    fn status(&self, id: &SharedString, cx: &App) -> HostStatus {
+        let connected = self
+            .sessions
+            .iter()
+            .filter(|session| &session.host == id)
+            .any(|session| {
+                session
+                    .panel
+                    .upgrade()
+                    .is_some_and(|panel| panel.read(cx).alive(cx))
+            });
+
+        HostStatus {
+            connected,
+            latency_ms: None,
+        }
     }
 
     fn query(&self, cx: &App) -> String {
@@ -780,7 +847,6 @@ impl HostExplorerView {
 
                 rows.push(Row::Host {
                     host: host.clone(),
-                    status: self.status(id),
                     nested: false,
                 });
             }
@@ -816,7 +882,6 @@ impl HostExplorerView {
                 for host in hosts {
                     rows.push(Row::Host {
                         host: host.clone(),
-                        status: self.status(&host.id),
                         nested: true,
                     });
                 }
@@ -1065,10 +1130,11 @@ impl HostExplorerView {
         &self,
         ix: usize,
         host: &Host,
-        status: HostStatus,
         nested: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        // 会话点这一帧的答案现算，见 [`Self::status`]。
+        let status = self.status(&host.id, cx);
         let selected = self.selected.as_ref() == Some(&host.id);
         // 拖拽结束后 `dragging` 可能还留着，跟着 `has_active_drag` 一起判断，
         // 拖到一半松手在别处也不会留下一张压暗的卡片。
@@ -1178,12 +1244,8 @@ impl HostExplorerView {
             } => self
                 .render_group_row(ix, name.clone(), *count, *expanded, cx)
                 .into_any_element(),
-            Row::Host {
-                host,
-                status,
-                nested,
-            } => self
-                .render_host_row(ix, host, *status, *nested, cx)
+            Row::Host { host, nested } => self
+                .render_host_row(ix, host, *nested, cx)
                 .into_any_element(),
         }
     }

@@ -19,7 +19,7 @@ pub use sftp::{
     SftpPanelEvent,
 };
 pub use terminal::{
-    BackTab, CloseSearch, CopySelection, Find, PasteClipboard, SplitLayout, Tab, TerminalPanel,
-    ToggleForwards, ToggleMonitor, ToggleSftp,
+    BackTab, CloseSearch, CopySelection, Find, PasteClipboard, SessionEvent, SplitLayout, Tab,
+    TerminalPanel, ToggleForwards, ToggleMonitor, ToggleSftp,
 };
 pub use welcome::WelcomePanel;
