@@ -36,7 +36,7 @@ use gpui_kit::component::{
 use gpui_kit::{
     App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    WeakEntity, Window, actions, div, px,
+    WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 use std::sync::Arc;
 
@@ -94,6 +94,27 @@ enum Source {
     /// 空终端，什么都不连。只在测试里用，理由见 [`PaneOrigin::Detached`]。
     #[cfg(test)]
     Detached,
+}
+
+impl Source {
+    /// 这条会话背后有没有一条 SSH 连接。
+    ///
+    /// 决定信息栏右边那三颗按钮（端口转发、SFTP 面板、资源监控）和它们的
+    /// 快捷键在不在：三件事都是"在这条 SSH 连接上再开一条通道"做出来的
+    /// —— 隧道要 `direct-tcpip`，SFTP 要 sftp 子系统，监控要在对端跑采集
+    /// 脚本。本机 shell 没有连接可开，所以那三颗不画（点不动的控件比没有
+    /// 更让人困惑），三个动作也不注册：Alt+P/F/M 照旧作为转义序列进本机
+    /// shell，那才是本机 shell 里该有的行为。
+    fn over_ssh(self) -> bool {
+        match self {
+            Self::Ssh => true,
+            Self::Local => false,
+            // 测试里那个壳按 SSH 会话算：整帧渲染那个测试要能走到那三颗按钮，
+            // 它们各自都还有点亮/不点亮两条分支。
+            #[cfg(test)]
+            Self::Detached => true,
+        }
+    }
 }
 
 pub struct TerminalPanel {
@@ -948,6 +969,9 @@ impl Render for TerminalPanel {
         let grid = self.grid(cx);
         let monitor_open = self.monitor_open;
         let split = self.split;
+        let over_ssh = self.source.over_ssh();
+        let sftp_open = self.sftp_open;
+        let tunnels = self.active_forwards();
         let terminal = self.render_panes(window, cx);
 
         v_flex()
@@ -957,9 +981,12 @@ impl Render for TerminalPanel {
             // 按键归窗格自己收（它才知道是哪一个终端）。留在这一层的只有
             // 作用于整个标签页的那两个 —— 它们是从窗格那边冒上来的，
             // 所以焦点不在任何一个窗格里时压根不会走到这儿。
-            .on_action(cx.listener(Self::on_toggle_monitor))
-            .on_action(cx.listener(Self::on_toggle_sftp))
-            .on_action(cx.listener(Self::on_toggle_forwards))
+            // 本机 shell 那一档三个都不接，见 [`Source::over_ssh`]。
+            .when(over_ssh, |this| {
+                this.on_action(cx.listener(Self::on_toggle_monitor))
+                    .on_action(cx.listener(Self::on_toggle_sftp))
+                    .on_action(cx.listener(Self::on_toggle_forwards))
+            })
             .child(
                 SessionInfoBar::new(
                     SharedString::from(format!("{}@{}", self.host.user, self.host.hostname)),
@@ -970,18 +997,21 @@ impl Render for TerminalPanel {
                 .on_split(cx.listener(move |this, layout: &SplitLayout, window, cx| {
                     this.set_split(*layout, window, cx);
                 }))
-                .tunnels_count(self.active_forwards())
-                .on_tunnels(cx.listener(|this, _, window, cx| {
-                    this.open_forwards(window, cx);
-                }))
-                .sftp_active(self.sftp_open)
-                .on_sftp(cx.listener(|this, _, window, cx| {
-                    this.toggle_sftp(window, cx);
-                }))
-                .on_monitor(
-                    monitor_open,
-                    cx.listener(|this, _, _, cx| this.toggle_monitor(cx)),
-                )
+                // 隧道、SFTP、监控只对 SSH 会话接：不接的那三颗信息栏不画。
+                .when(over_ssh, |bar| {
+                    bar.tunnels_count(tunnels)
+                        .on_tunnels(cx.listener(|this, _, window, cx| {
+                            this.open_forwards(window, cx);
+                        }))
+                        .sftp_active(sftp_open)
+                        .on_sftp(cx.listener(|this, _, window, cx| {
+                            this.toggle_sftp(window, cx);
+                        }))
+                        .on_monitor(
+                            monitor_open,
+                            cx.listener(|this, _, _, cx| this.toggle_monitor(cx)),
+                        )
+                })
                 .on_copy(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_all(cx)))
                 .on_clear(cx.listener(|this, _: &ClickEvent, _, cx| this.clear(cx))),
             )
@@ -1193,6 +1223,16 @@ mod tests {
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         (harness, cx)
+    }
+
+    /// 本机 shell 不给隧道、SFTP、监控那三颗按钮。
+    ///
+    /// 它们背后都是"在这条 SSH 连接上再开一条通道"，本机根本没有连接 ——
+    /// 点了只会各弹一句"需要 SSH"，或者开出一栏永远连不上的空面板。
+    #[test]
+    fn a_local_shell_has_no_ssh_only_actions() {
+        assert!(Source::Ssh.over_ssh());
+        assert!(!Source::Local.over_ssh(), "本机 shell 不该有那三颗按钮");
     }
 
     /// 中心区里那条活动会话找得到。

@@ -1,14 +1,15 @@
 //! 会话基本信息栏：终端上沿那一条，说明"这个终端是谁"。
 //!
 //! 设计稿里它在标签页下面、终端网格上面，从左到右三段：一个跳动的连接点、
-//! `user@host`、当前目录；右端是两个作用在这个终端上的动作。
+//! `user@host`、当前目录；右端是一排作用在这个终端上的动作。
 //!
 //! 它是这条会话身份的常驻答案。标签页上只放得下一个名字，几个终端并排的时候
 //! 光看名字分不出谁是谁 —— 地址和目录写在这里，眼睛不必离开终端就知道
 //! 自己在哪台机器的哪个目录下敲命令。
 //!
 //! 无状态：显示什么由 [`crate::ui::panels::TerminalPanel`] 每帧给，
-//! 两个动作也只是把意图发回去。
+//! 那几个动作也只是把意图发回去。**每一颗按钮都只在宿主接了它的回调时才画**
+//! —— 本机 shell 那一档没有 SSH 连接，隧道、SFTP、远端监控三颗就整个不出现。
 
 use std::rc::Rc;
 
@@ -214,13 +215,131 @@ impl SessionInfoBar {
             })
             .into_any_element()
     }
+
+    /// 隧道那一颗。
+    ///
+    /// 没接 [`Self::on_tunnels`] 时不画 —— 和分屏组同一条规矩。本机 shell
+    /// 走的就是这一档：端口转发是开在 SSH 连接上的，本机没有可开的连接，
+    /// 画一颗点了没反应的按钮不如没有。
+    fn render_tunnels(&mut self, cx: &App) -> Option<AnyElement> {
+        let handler = self.on_tunnels.take()?;
+        // 有隧道在跑的时候整颗按钮点亮 —— 转发是一件"背后一直
+        // 在发生"的事，它在不在跑得从余光里看得见。
+        let active = self.tunnels_count > 0;
+        let tone = palette::green();
+        let label = match self.tunnels_count {
+            0 => SharedString::from(t!("session_info.tunnels")),
+            count => SharedString::from(t!("session_info.tunnels_count", count => count)),
+        };
+        let mut btn = Button::new("session-info-tunnels")
+            .xsmall()
+            .icon(
+                Icon::new(IconName::Network)
+                    .with_size(ICON_SIZE)
+                    .text_color(if active { tone } else { palette::idle(cx) }),
+            )
+            .label(label)
+            .tooltip(t!("session_info.tunnels_tooltip"))
+            .on_click(handler);
+        btn = if active {
+            btn.custom(
+                ButtonCustomVariant::new(cx)
+                    .color(tone.opacity(0.15))
+                    .foreground(tone)
+                    .hover(tone.opacity(0.22))
+                    .active(tone.opacity(0.28)),
+            )
+            .border_1()
+            .border_color(tone.opacity(0.4))
+        } else {
+            btn.ghost()
+        };
+        Some(btn.into_any_element())
+    }
+
+    /// SFTP 那一颗。没接 [`Self::on_sftp`] 时不画（见 [`Self::render_tunnels`]）。
+    fn render_sftp(&mut self, cx: &App) -> Option<AnyElement> {
+        let handler = self.on_sftp.take()?;
+        // 展开时整颗按钮点亮：这一栏就贴在下面，亮着的是"下面那栏开着"
+        // 这件事，不是"这里有个按钮"。
+        let tone = palette::teal();
+        let mut btn = Button::new("session-info-sftp")
+            .xsmall()
+            .icon(
+                Icon::new(AppIcon::FolderSync)
+                    .with_size(ICON_SIZE)
+                    .text_color(if self.sftp_active {
+                        tone
+                    } else {
+                        palette::idle(cx)
+                    }),
+            )
+            .label(t!("session_info.sftp"))
+            .tooltip(if self.sftp_active {
+                t!("session_info.sftp_hide")
+            } else {
+                t!("session_info.sftp_show")
+            })
+            .on_click(handler);
+        btn = if self.sftp_active {
+            btn.custom(
+                ButtonCustomVariant::new(cx)
+                    .color(tone.opacity(0.15))
+                    .foreground(tone)
+                    .hover(tone.opacity(0.22))
+                    .active(tone.opacity(0.28)),
+            )
+            .border_1()
+            .border_color(tone.opacity(0.4))
+        } else {
+            btn.ghost()
+        };
+        Some(btn.into_any_element())
+    }
+
+    /// 监控那一颗。没接 [`Self::on_monitor`] 时不画（见 [`Self::render_tunnels`]）。
+    fn render_monitor(&mut self, cx: &App) -> Option<AnyElement> {
+        let handler = self.on_monitor.take()?;
+        let green: Hsla = rgb(0x27C93F).into();
+        let mut btn = Button::new("session-info-monitor")
+            .xsmall()
+            .icon(
+                Icon::new(AppIcon::Activity)
+                    .with_size(ICON_SIZE)
+                    .text_color(green),
+            )
+            .label(t!("session_info.monitor"))
+            .tooltip(if self.monitor_active {
+                t!("session_info.monitor_hide")
+            } else {
+                t!("session_info.monitor_show")
+            })
+            .on_click(handler);
+        btn = if self.monitor_active {
+            btn.custom(
+                ButtonCustomVariant::new(cx)
+                    .color(green.opacity(0.15))
+                    .foreground(green)
+                    .hover(green.opacity(0.22))
+                    .active(green.opacity(0.28)),
+            )
+            .border_1()
+            .border_color(green.opacity(0.4))
+        } else {
+            btn.ghost()
+        };
+        Some(btn.into_any_element())
+    }
 }
 
 impl RenderOnce for SessionInfoBar {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        // 先把这一组画出来：下面那条链会一段段把 `self` 拆开搬进元素里，
+    fn render(mut self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        // 先把右半边那几组画出来：下面那条链会一段段把 `self` 拆开搬进元素里，
         // 到右半边的时候就借不到 `&self` 了。
         let split_group = self.render_split_group(cx);
+        let tunnels = self.render_tunnels(cx);
+        let sftp = self.render_sftp(cx);
+        let monitor = self.render_monitor(cx);
 
         h_flex()
             .flex_shrink_0()
@@ -278,108 +397,9 @@ impl RenderOnce for SessionInfoBar {
                     .items_center()
                     .gap_1()
                     .child(split_group)
-                    .child({
-                        // 有隧道在跑的时候整颗按钮点亮 —— 转发是一件"背后一直
-                        // 在发生"的事，它在不在跑得从余光里看得见。
-                        let active = self.tunnels_count > 0;
-                        let tone = palette::green();
-                        let label = match self.tunnels_count {
-                            0 => SharedString::from(t!("session_info.tunnels")),
-                            count => {
-                                SharedString::from(t!("session_info.tunnels_count", count => count))
-                            }
-                        };
-                        let mut btn = Button::new("session-info-tunnels")
-                            .xsmall()
-                            .icon(
-                                Icon::new(IconName::Network)
-                                    .with_size(ICON_SIZE)
-                                    .text_color(if active { tone } else { palette::idle(cx) }),
-                            )
-                            .label(label)
-                            .tooltip(t!("session_info.tunnels_tooltip"));
-                        btn = if active {
-                            btn.custom(
-                                ButtonCustomVariant::new(cx)
-                                    .color(tone.opacity(0.15))
-                                    .foreground(tone)
-                                    .hover(tone.opacity(0.22))
-                                    .active(tone.opacity(0.28)),
-                            )
-                            .border_1()
-                            .border_color(tone.opacity(0.4))
-                        } else {
-                            btn.ghost()
-                        };
-                        btn.when_some(self.on_tunnels, |this, handler| this.on_click(handler))
-                    })
-                    .child({
-                        // 展开时整颗按钮点亮：这一栏就贴在下面，亮着的是"下面那栏开着"
-                        // 这件事，不是"这里有个按钮"。
-                        let tone = palette::teal();
-                        let mut btn = Button::new("session-info-sftp")
-                            .xsmall()
-                            .icon(
-                                Icon::new(AppIcon::FolderSync)
-                                    .with_size(ICON_SIZE)
-                                    .text_color(if self.sftp_active {
-                                        tone
-                                    } else {
-                                        palette::idle(cx)
-                                    }),
-                            )
-                            .label(t!("session_info.sftp"))
-                            .tooltip(if self.sftp_active {
-                                t!("session_info.sftp_hide")
-                            } else {
-                                t!("session_info.sftp_show")
-                            });
-                        btn = if self.sftp_active {
-                            btn.custom(
-                                ButtonCustomVariant::new(cx)
-                                    .color(tone.opacity(0.15))
-                                    .foreground(tone)
-                                    .hover(tone.opacity(0.22))
-                                    .active(tone.opacity(0.28)),
-                            )
-                            .border_1()
-                            .border_color(tone.opacity(0.4))
-                        } else {
-                            btn.ghost()
-                        };
-                        btn.when_some(self.on_sftp, |this, handler| this.on_click(handler))
-                    })
-                    .child({
-                        let green: Hsla = rgb(0x27C93F).into();
-                        let mut btn = Button::new("session-info-monitor")
-                            .xsmall()
-                            .icon(
-                                Icon::new(AppIcon::Activity)
-                                    .with_size(ICON_SIZE)
-                                    .text_color(green),
-                            )
-                            .label(t!("session_info.monitor"))
-                            .tooltip(if self.monitor_active {
-                                t!("session_info.monitor_hide")
-                            } else {
-                                t!("session_info.monitor_show")
-                            });
-                        if self.monitor_active {
-                            btn = btn
-                                .custom(
-                                    ButtonCustomVariant::new(cx)
-                                        .color(green.opacity(0.15))
-                                        .foreground(green)
-                                        .hover(green.opacity(0.22))
-                                        .active(green.opacity(0.28)),
-                                )
-                                .border_1()
-                                .border_color(green.opacity(0.4));
-                        } else {
-                            btn = btn.ghost();
-                        }
-                        btn.when_some(self.on_monitor, |this, handler| this.on_click(handler))
-                    })
+                    .children(tunnels)
+                    .children(sftp)
+                    .children(monitor)
                     .child(
                         Button::new("session-info-copy")
                             .ghost()
