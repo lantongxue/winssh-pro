@@ -556,9 +556,6 @@ host_form.field_platform:
 host_form.field_proxy_jump:
   en: Jump host (ProxyJump)
   zh-CN: 跳板机(ProxyJump)
-host_form.field_badge_color:
-  en: Badge accent colour
-  zh-CN: 徽章强调色
 host_form.field_tags:
   en: Tags
   zh-CN: 标签
@@ -589,9 +586,6 @@ host_form.bastion_item:
 host_form.required_fields:
   en: Fill in the display name, host address and login user.
   zh-CN: 请填写节点显示名称、主机地址与登录用户名。
-host_form.color_custom:
-  en: Custom
-  zh-CN: 自定义
 host_form.add_tag:
   en: Add
   zh-CN: 添加

@@ -2,7 +2,7 @@
 //!
 //! 认证那几格是连接层真的会用的：密码、私钥（整份 PEM 文本）与私钥密码都跟着
 //! [`crate::host::HostDraft`] 落库，开会话时由 [`crate::ssh`] 拿去认证。
-//! 跳板机选择与徽章颜色、标签还只是界面上的东西 —— 模型里没有它们的位置，
+//! 跳板机选择与标签还只是界面上的东西 —— 模型里没有它们的位置，
 //! 提交时也就无处可去，等各自的连接层/展示层落地后再接线。
 //!
 //! 提交之后去哪儿由“新建还是编辑”决定，收尾则归 [`HostExplorerView`]：
@@ -11,17 +11,15 @@
 use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Icon, IndexPath, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
-    color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     h_flex,
     input::{Input, InputContentType, InputEvent, InputState, Textarea, TextareaState},
     select::{Select, SelectEvent, SelectState},
     v_flex,
 };
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, Context, Entity, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
-    rgb,
+    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::{
@@ -65,17 +63,6 @@ const OS_PLATFORMS: [&str; 9] = [
     "macOS",
     "Windows OpenSSH",
 ];
-
-/// 徽章强调色的候选色板，取自设计稿。这是一个独立的展示概念，不复用
-/// [`palette`] 里那几个有语义的颜色（选中态、会话点、可达性……）。
-///
-/// 色板之外还可以用取色器自己挑一个，所以这七个是快捷选项，不是全集。
-const BADGE_COLORS: [u32; 7] = [
-    0x38bdf8, 0x10b981, 0x8b5cf6, 0xf59e0b, 0xef4444, 0xec4899, 0x64748b,
-];
-
-/// 色板上一个圆点的直径。
-const BADGE_SWATCH_SIZE: gpui_kit::Pixels = px(22.);
 
 /// 标题行：图标 + 名称 + 副标题，对应设计稿的对话框头部。
 fn render_header(title: SharedString, subtitle: SharedString, cx: &App) -> impl IntoElement {
@@ -196,12 +183,6 @@ pub struct HostFormDialog {
     proxy_port: Entity<InputState>,
     proxy_username: Entity<InputState>,
     proxy_password: Entity<InputState>,
-    /// 当前的徽章强调色。存颜色本身而不是色板下标：色板和取色器是同一个值的
-    /// 两个入口，只有存成颜色，"选中的是哪一个"才有唯一答案。
-    badge_color: Hsla,
-    /// 取色器的状态。它只管自定义那一个颜色，色板点选不写回它 ——
-    /// 那样它就成了"上一次自己挑的颜色"，换回色板之后还找得回来。
-    badge_picker: Entity<ColorPickerState>,
     tag_input: Entity<InputState>,
     tags: Vec<SharedString>,
     /// 保险箱里的账号密码那一档，连同挑它们的那个下拉。
@@ -591,21 +572,6 @@ impl HostFormDialog {
         )
         .detach();
 
-        // 取色器一开始是空的：方块留白就是"还没自己挑过颜色"，
-        // 当前用的是色板里的第一个。
-        let badge_picker = cx.new(|cx| ColorPickerState::new(window, cx));
-        cx.subscribe(
-            &badge_picker,
-            |this, _, event: &ColorPickerEvent, cx| match event {
-                ColorPickerEvent::Change(Some(color)) => {
-                    this.badge_color = *color;
-                    cx.notify();
-                }
-                ColorPickerEvent::Change(None) => {}
-            },
-        )
-        .detach();
-
         // 保险箱里的两档，各配一个下拉。头一行是"还没挑"，所以真正的凭据
         // 从下标 1 开始 —— 应用的时候要把这一位减回去。
         let vault_passwords = of_kind(vault, CredentialKind::Password);
@@ -668,8 +634,6 @@ impl HostFormDialog {
             proxy_port,
             proxy_username,
             proxy_password,
-            badge_color: rgb(BADGE_COLORS[0]).into(),
-            badge_picker,
             tag_input,
             tags: initial_tags,
             vault_passwords,
@@ -1196,76 +1160,6 @@ impl HostFormDialog {
             })
     }
 
-    /// 徽章强调色：设计稿那七个色板，后面接一个取色器挑别的颜色。
-    ///
-    /// 选中态只画在当前那个颜色上：用了取色器，色板上的白圈就全灭，
-    /// 改回色板，取色器那一格的圈也跟着灭 —— 两处不会同时看着像选中。
-    fn render_color_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let white: Hsla = rgb(0xffffffu32).into();
-        let ring = |selected: bool| if selected { white } else { white.opacity(0.) };
-        // 当前颜色不在色板里，就是从取色器来的。
-        let custom = !BADGE_COLORS
-            .iter()
-            .any(|hex| Hsla::from(rgb(*hex)) == self.badge_color);
-
-        let swatches: Vec<_> = BADGE_COLORS
-            .iter()
-            .enumerate()
-            .map(|(ix, hex)| {
-                let color: Hsla = rgb(*hex).into();
-                div()
-                    .id(("host-form-color", ix))
-                    .size(BADGE_SWATCH_SIZE)
-                    .rounded_full()
-                    .bg(color)
-                    .cursor_pointer()
-                    .border_2()
-                    .border_color(ring(color == self.badge_color))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.badge_color = color;
-                        cx.notify();
-                    }))
-                    .into_any_element()
-            })
-            .collect();
-
-        v_flex()
-            .gap_1p5()
-            .w_full()
-            .child(field_label(t!("host_form.field_badge_color").into(), cx))
-            .child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(h_flex().gap_2().items_center().children(swatches))
-                    .child(
-                        // 选中圈画在外面这一层：取色器那个方块自己的边框归组件管。
-                        // 弹层从右上角展开，不然 288 宽的面板会顶出对话框。
-                        div()
-                            .p_0p5()
-                            .rounded(cx.theme().radius)
-                            .border_2()
-                            .border_color(ring(custom))
-                            .text_xs()
-                            .text_color(palette::idle(cx))
-                            .child(
-                                ColorPicker::new(&self.badge_picker)
-                                    .small()
-                                    .anchor(Anchor::TopRight)
-                                    // 常用色那一行清空：取色器的每一格用颜色的十六进制
-                                    // 值当元素 id（`color-#RRGGBB`），而它默认的常用色
-                                    // 取自主题的 base.red/base.blue…… 那一组，正好又都
-                                    // 落在下面的色阶里 —— 同一个 id 出现两次，a11y 树
-                                    // 建到第二个就 `Duplicate a11y node id` 断言崩了。
-                                    // 快捷色本来也已经画在弹层外面那七个圆点上，弹层里
-                                    // 只留完整色阶与 HSLA 两页，不重复给一遍。
-                                    .featured_colors(Vec::new())
-                                    .label(t!("host_form.color_custom")),
-                            ),
-                    ),
-            )
-    }
-
     fn render_tag_chip(
         &self,
         ix: usize,
@@ -1339,7 +1233,6 @@ impl Render for HostFormDialog {
             .children(self.render_auth_detail(cx))
             .child(self.render_platform_row(cx))
             .child(self.render_proxy_section(cx))
-            .child(self.render_color_row(cx))
             .child(self.render_tags_row(cx))
     }
 }
