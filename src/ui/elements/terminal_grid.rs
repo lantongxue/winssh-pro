@@ -22,8 +22,6 @@
 //! （见 [`crate::ui::panels::TerminalPanel`]），元素只管画。
 //! [`point_at`] 是它们唯一需要的换算：指针位置落在哪个格子上。
 
-use std::time::Instant;
-
 use gpui_kit::{
     App, Bounds, CursorStyle, Element, ElementId, Entity, Font, FontFeatures, FontStyle,
     FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
@@ -35,7 +33,7 @@ use alacritty_terminal::{term::search::Match, vte::ansi::CursorShape};
 
 use crate::{
     terminal::{
-        Content, Emulator, GridCell, GridPoint, SearchState, TerminalBounds, fps,
+        Content, Emulator, GridCell, GridPoint, SearchState, TerminalBounds,
         is_default_background,
     },
     ui::{elements::boxdraw, theme::ansi::AnsiPalette},
@@ -230,9 +228,6 @@ pub struct GridLayout {
     /// 对端此刻自己收鼠标。是的话就不设 I 形指针，让它落回平台默认的箭头
     /// —— 见 [`Element::paint`] 里那一句。
     mouse_reporting: bool,
-    /// 度量关掉时是 `None`，一次 `Instant::now()` 都不取（dev 默认开着，release
-    /// 需 `WINSSH_FPS`）。开着时从 prepaint 记到 paint 末，量的就是这一帧网格的真实成本。
-    painted_at: Option<Instant>,
 }
 
 /// 光标画成的那一块。
@@ -506,9 +501,6 @@ impl Element for TerminalGridElement {
             cursor,
             hitbox,
             mouse_reporting,
-            // 从这一帧 prepaint 起算，到 paint 收尾。中间是取快照、切段、
-            // 排版、画四边形这一整摊本帧的实际开销。
-            painted_at: fps::enabled().then(Instant::now),
         }
     }
 
@@ -595,12 +587,6 @@ impl Element for TerminalGridElement {
         // 闪来闪去比不变更糟，各家终端也都是这么处理的。
         if !layout.mouse_reporting {
             window.set_cursor_style(CursorStyle::IBeam, &layout.hitbox);
-        }
-
-        // 收尾计时。`painted_at` 只有开了 `WINSSH_FPS` 才是 `Some`，
-        // 平时这一句是一次 `Option` 判空，几乎无成本。
-        if let Some(start) = layout.painted_at {
-            fps::record(start.elapsed());
         }
     }
 }
