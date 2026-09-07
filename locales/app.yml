@@ -210,82 +210,40 @@ settings.tab_about:
   zh-CN: 关于软件
 settings.appearance:
   en: Appearance
-  zh-CN: 外观与界面
+  zh-CN: 外观
 settings.dark_theme:
   en: Dark theme
   zh-CN: 深色主题
-settings.dark_theme_desc:
-  en: Switch between dark and light desktop theme
-  zh-CN: 在深色与浅色桌面主题之间切换
 settings.language:
   en: Language
   zh-CN: 界面语言
-settings.language_desc:
-  en: Set the display language of the application
-  zh-CN: 更改应用程序界面的呈现语言
 settings.performance:
-  en: Performance & Diagnostics
-  zh-CN: 性能与诊断
+  en: Performance
+  zh-CN: 性能
 settings.fps_monitor:
-  en: 120 FPS Monitor Overlay
-  zh-CN: 120 FPS 渲染监控浮层
-settings.fps_monitor_hint:
-  en: Overlays the frame rate, frame time and process GPU, CPU and memory metrics on the bottom right. Keeps the window rendering continuously to measure maximum sustained performance.
-  zh-CN: 在右下角浮一块读数：帧率、每帧耗时，以及本进程的 GPU、CPU 与内存。它会让窗口一帧接一帧地画下去，测量设备上撑得住的极限帧率；开启时自身也会占用 CPU 与 GPU。
-settings.terminal_engine:
-  en: Terminal Engine & Rendering
-  zh-CN: 终端内核与渲染引擎
-settings.terminal_renderer:
-  en: Rendering Pipeline
-  zh-CN: 原生渲染管线
-settings.terminal_renderer_desc:
-  en: Hardware-accelerated GPU text grid renderer powered by GPUI & Alacritty VT
-  zh-CN: 基于 GPUI 与 Alacritty VT 的硬件加速原生文本网格渲染器
+  en: FPS monitor
+  zh-CN: FPS 监控
+settings.terminal_appearance:
+  en: Appearance
+  zh-CN: 外观
 settings.terminal_font:
-  en: Default Monospace Font
-  zh-CN: 默认等宽字体
-settings.terminal_font_desc:
-  en: Monospace typeface used for remote and local terminal sessions
-  zh-CN: 会话与终端默认采用的高清等宽代码字体
-settings.terminal_emulation:
-  en: Emulation & Buffers
-  zh-CN: 终端仿真与缓冲区
-settings.scrollback_buffer:
-  en: Scrollback Buffer Size
-  zh-CN: 历史回滚行数
-settings.scrollback_buffer_desc:
-  en: Maximum terminal history lines retained in memory per pane
-  zh-CN: 每个终端窗格在内存中保留的历史回溯行数
-settings.app_subtitle:
-  en: Cross-platform, high-performance native SSH & DevOps client
-  zh-CN: 跨平台、超 120+fps 原生高性能 SSH 与运维工作台
-settings.about_description:
-  en: Crafted with Rust, GPUI, and Russh to deliver native desktop fluidity and rock-solid memory safety.
-  zh-CN: 使用 Rust、GPUI 与 Russh 深度构建，提供极致丝滑的桌面原生体验与现代内存安全保障。
-settings.more_hint:
-  en: Connection, key and terminal settings will open up alongside the matching features.
-  zh-CN: 连接、密钥与终端设置会随对应功能一起开放。
+  en: Font
+  zh-CN: 字体
+settings.terminal_font_size:
+  en: Font size
+  zh-CN: 字号
 settings.tab_proxy:
   en: Network Proxy
   zh-CN: 网络代理
 settings.proxy_socks5:
   en: Global SOCKS5 Proxy
   zh-CN: 全局 SOCKS5 代理
-settings.proxy_group_desc:
-  en: Hosts set to "Follow global" dial through this proxy. A host can opt out or point at its own proxy in its own settings.
-  zh-CN: 代理选择"跟随全局"的主机都经这台代理拨号；某一台要绕开它、或者要走另一台代理，在那台主机自己的设置里改。
 settings.proxy_mode:
   en: Proxy mode
   zh-CN: 代理模式
-settings.proxy_mode_desc:
-  en: Turning this off makes every host that follows the global setting connect directly.
-  zh-CN: 关掉之后，所有"跟随全局"的主机都直连。
 settings.proxy_host:
   en: Proxy server
   zh-CN: 代理服务器
-settings.proxy_host_desc:
-  en: Hostname or IP of the SOCKS5 server. Target addresses are resolved by the proxy, not locally.
-  zh-CN: SOCKS5 服务器的主机名或 IP。目标地址交给代理去解析，不在本机解。
 settings.proxy_port:
   en: Port
   zh-CN: 端口
@@ -295,9 +253,6 @@ settings.proxy_username:
 settings.proxy_password:
   en: Password
   zh-CN: 密码
-settings.proxy_auth_desc:
-  en: Leave the username empty when the proxy needs no authentication.
-  zh-CN: 代理不要认证的话，用户名留空即可。
 settings.proxy_optional:
   en: Optional
   zh-CN: 可留空

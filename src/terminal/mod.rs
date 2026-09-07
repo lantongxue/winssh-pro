@@ -19,6 +19,7 @@
 //! zed 也是用它。依赖钉在 zed 用的同一个 rev 上，移植过来的代码才对得上。
 
 mod emulator;
+pub mod font;
 mod keys;
 mod search;
 

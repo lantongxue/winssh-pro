@@ -1,17 +1,21 @@
 //! 设置窗口：独立的原生设置窗口，承载应用级偏好配置。
 //!
 //! 基于 `gpui-kit` 的 `Settings` 系列组件构建（[`Settings`], [`SettingPage`], [`SettingGroup`], [`SettingItem`], [`SettingField`]）。
-//! 版式照桌面端偏好设置习惯与原型规范：
+//! 版式照桌面端偏好设置习惯：
 //! - 顶部原生标题栏（[`TitleBar`]）
 //! - 左栏分类导航与全局实时搜索过滤（通用外观、终端偏好、网络代理、关于软件）
-//! - 右侧内容区（卡片式分组、开关、下拉菜单、文本及详细说明）
+//! - 右侧内容区（卡片式分组、开关、下拉菜单、输入框）
+//!
+//! **每一项都是真能改的。** 摆一行读数当装饰（"渲染管线：120+ FPS"、
+//! "回滚行数：10,000 行"）看着丰满，但用户点不动它，只会去找哪里能改
+//! —— 找不到就成了一处骗人的界面。同理，一句能从标题读出来的说明也不写：
+//! 每一行说明都要占掉一行版面，读第二遍的人得从里面重新找那个开关。
 //!
 //! 单例由这一扇窗自己管（见 [`SettingsWindow::open`]），多次点击设置入口
 //! 只会把已开着的窗口激活置顶，不会重复开窗。
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Root, Sizable as _, StyledExt as _,
-    ThemeMode, TitleBar,
+    ActiveTheme as _, Icon, IconName, Root, Sizable as _, StyledExt as _, ThemeMode, TitleBar,
     group_box::GroupBoxVariant,
     h_flex,
     input::{Input, InputContentType, InputEvent, InputState},
@@ -21,15 +25,15 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global,
-    IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Subscription, Window, WindowBounds, WindowHandle,
-    WindowKind, WindowOptions, div, prelude::FluentBuilder as _, px, size,
+    App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global, IntoElement,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, WindowBounds,
+    WindowHandle, WindowKind, WindowOptions, div, prelude::FluentBuilder as _, px, size,
 };
 
 use crate::i18n;
 use crate::proxy::{self, GlobalProxy, ProxyConfig};
 use crate::service::SettingService;
+use crate::terminal::font::{self, TerminalFont};
 use crate::ui::theme::{AppIcon, appearance, palette};
 use rust_i18n::t;
 
@@ -75,6 +79,25 @@ fn persist_proxy(global: GlobalProxy, cx: &mut App) {
     cx.background_spawn(async move {
         if let Err(error) = SettingService::open().save_global_proxy(global).await {
             log::error!("全局代理存不下去：{error:#}");
+        }
+    })
+    .detach();
+}
+
+/// 换掉终端字体：进程里那份缓存立刻生效，落库派到后台。
+///
+/// 缓存换完要把所有窗口重画一遍 —— 改的是主窗口里那些终端的字体，而这一下
+/// 点在设置窗口上，不主动叫一声的话主窗口那边这一帧什么都不知道。
+///
+/// 落库与失败处理同 [`persist_proxy`]。
+fn persist_terminal_font(value: TerminalFont, cx: &mut App) {
+    font::set_global(value.clone());
+    for handle in cx.windows() {
+        _ = handle.update(cx, |_, window, _| window.refresh());
+    }
+    cx.background_spawn(async move {
+        if let Err(error) = SettingService::open().save_terminal_font(value).await {
+            log::error!("终端字体存不下去：{error:#}");
         }
     })
     .detach();
@@ -305,7 +328,7 @@ impl SettingsWindow {
     }
 
     /// 构建 Settings 核心组件。
-    fn render_settings(&self) -> impl IntoElement {
+    fn render_settings(&self, cx: &App) -> impl IntoElement {
         let default_index = match self.tab {
             SettingsTab::General => SelectIndex {
                 page_ix: 0,
@@ -330,9 +353,9 @@ impl SettingsWindow {
             .sidebar_width(px(210.))
             .default_selected_index(default_index)
             .page(self.general_page())
-            .page(self.terminal_page())
+            .page(Self::terminal_page(cx))
             .page(self.proxy_page())
-            .page(self.about_page())
+            .page(Self::about_page())
     }
 
     fn general_page(&self) -> SettingPage {
@@ -343,130 +366,136 @@ impl SettingsWindow {
             .group(
                 SettingGroup::new()
                     .title(t!("settings.appearance"))
-                    .item(
-                        SettingItem::new(
-                            t!("settings.dark_theme"),
-                            SettingField::switch(
-                                |cx: &App| cx.theme().is_dark(),
-                                |checked: bool, cx: &mut App| {
-                                    appearance::set_theme_mode(
-                                        if checked {
-                                            ThemeMode::Dark
-                                        } else {
-                                            ThemeMode::Light
-                                        },
-                                        None,
-                                        cx,
-                                    );
-                                },
-                            ),
-                        )
-                        .description(SharedString::from(t!("settings.dark_theme_desc"))),
-                    )
-                    .item(
-                        SettingItem::new(
-                            t!("settings.language"),
-                            SettingField::dropdown(
-                                i18n::AVAILABLE
-                                    .iter()
-                                    .map(|(code, name)| {
-                                        (SharedString::from(*code), SharedString::from(*name))
-                                    })
-                                    .collect(),
-                                |_cx: &App| SharedString::from(&*i18n::locale()),
-                                |new_code: SharedString, cx: &mut App| {
-                                    if new_code.as_str() != &*i18n::locale() {
-                                        i18n::set_locale(new_code.as_str());
-                                        for handle in cx.windows() {
-                                            _ = handle.update(cx, |_, window, _| window.refresh());
-                                        }
+                    .item(SettingItem::new(
+                        t!("settings.dark_theme"),
+                        SettingField::switch(
+                            |cx: &App| cx.theme().is_dark(),
+                            |checked: bool, cx: &mut App| {
+                                appearance::set_theme_mode(
+                                    if checked {
+                                        ThemeMode::Dark
+                                    } else {
+                                        ThemeMode::Light
+                                    },
+                                    None,
+                                    cx,
+                                );
+                            },
+                        ),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.language"),
+                        SettingField::dropdown(
+                            i18n::AVAILABLE
+                                .iter()
+                                .map(|(code, name)| {
+                                    (SharedString::from(*code), SharedString::from(*name))
+                                })
+                                .collect(),
+                            |_cx: &App| SharedString::from(&*i18n::locale()),
+                            |new_code: SharedString, cx: &mut App| {
+                                if new_code.as_str() != &*i18n::locale() {
+                                    i18n::set_locale(new_code.as_str());
+                                    for handle in cx.windows() {
+                                        _ = handle.update(cx, |_, window, _| window.refresh());
                                     }
-                                },
-                            ),
-                        )
-                        .description(SharedString::from(t!("settings.language_desc"))),
-                    ),
+                                }
+                            },
+                        ),
+                    )),
             )
             .group(
                 SettingGroup::new()
                     .title(t!("settings.performance"))
-                    .item(
-                        SettingItem::new(
-                            t!("settings.fps_monitor"),
-                            SettingField::switch(
-                                |cx: &App| show_fps_monitor(cx),
-                                |checked: bool, cx: &mut App| {
-                                    set_show_fps_monitor(checked, None, cx);
-                                },
-                            ),
-                        )
-                        .description(SharedString::from(t!("settings.fps_monitor_hint"))),
-                    ),
+                    .item(SettingItem::new(
+                        t!("settings.fps_monitor"),
+                        SettingField::switch(
+                            |cx: &App| show_fps_monitor(cx),
+                            |checked: bool, cx: &mut App| {
+                                set_show_fps_monitor(checked, None, cx);
+                            },
+                        ),
+                    )),
             )
     }
 
-    fn terminal_page(&self) -> SettingPage {
+    /// 终端页。眼下只有字体与字号这两项 —— 它们是真接到渲染上的
+    /// （[`crate::ui::panels::terminal`] 每帧读 [`font::global`]），
+    /// 别的先不摆。
+    fn terminal_page(cx: &App) -> SettingPage {
+        // 下拉里除了本机装着的等宽字体，还要有"现在用的这个"：没挑过时用的是
+        // 主题给的那个族名，它未必在筛出来的清单里（那个名字恰好过不了筛子
+        // 就会漏掉）。漏掉的话按钮上还是写着它，但展开的那列里没有它这一项，
+        // 一个勾都不打 —— 看着像"当前没有选中任何字体"。
+        let current = font::global().family_or(cx.theme().mono_font_family.clone());
+        let mut families = font::monospace_families(cx).to_vec();
+        if !families.contains(&current) {
+            families.push(current);
+            families.sort_unstable();
+        }
+
+        // 字号同理：库里那个数不一定正好落在选单的档位上（手改过、或者是
+        // 早先版本存下来的），补进去那一列里才有它、才打得上勾。
+        let picked = font::global().size;
+        let mut steps = font::SIZES.to_vec();
+        if !steps.contains(&picked) {
+            steps.push(picked);
+            steps.sort_by(f32::total_cmp);
+        }
+        let sizes: Vec<(SharedString, SharedString)> = steps
+            .into_iter()
+            .map(|size| {
+                let label = font::size_label(size);
+                (label.clone(), label)
+            })
+            .collect();
+
         SettingPage::new(t!("settings.tab_terminal"))
             .icon(AppIcon::Terminal)
             .default_open(true)
             .resettable(false)
             .group(
                 SettingGroup::new()
-                    .title(t!("settings.terminal_engine"))
-                    .item(
-                        SettingItem::new(
-                            t!("settings.terminal_renderer"),
-                            SettingField::render(|_options: &RenderOptions, _window, _cx| {
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_sm()
-                                    .bg(palette::teal().opacity(0.15))
-                                    .border_1()
-                                    .border_color(palette::teal().opacity(0.3))
-                                    .text_xs()
-                                    .text_color(palette::teal())
-                                    .font_semibold()
-                                    .child("120+ FPS Hardware-Accelerated")
-                            }),
-                        )
-                        .description(SharedString::from(t!("settings.terminal_renderer_desc"))),
-                    )
-                    .item(
-                        SettingItem::new(
-                            t!("settings.terminal_font"),
-                            SettingField::render(|_options: &RenderOptions, _window, cx| {
-                                div()
-                                    .font_family("monospace")
-                                    .text_xs()
-                                    .text_color(palette::idle(cx))
-                                    .child("JetBrains Mono, Menlo, monospace")
-                            }),
-                        )
-                        .description(SharedString::from(t!("settings.terminal_font_desc"))),
-                    ),
-            )
-            .group(
-                SettingGroup::new()
-                    .title(t!("settings.terminal_emulation"))
-                    .description(t!("settings.more_hint"))
-                    .item(
-                        SettingItem::new(
-                            t!("settings.scrollback_buffer"),
-                            SettingField::render(|_options: &RenderOptions, _window, cx| {
-                                div()
-                                    .px_2p5()
-                                    .py_0p5()
-                                    .rounded_full()
-                                    .bg(cx.theme().muted)
-                                    .text_xs()
-                                    .font_family("monospace")
-                                    .text_color(palette::idle(cx))
-                                    .child("10,000 lines")
-                            }),
-                        )
-                        .description(SharedString::from(t!("settings.scrollback_buffer_desc"))),
-                    ),
+                    .title(t!("settings.terminal_appearance"))
+                    .item(SettingItem::new(
+                        t!("settings.terminal_font"),
+                        // 可滚动的那一档：装了几十个等宽字体的机器不少，
+                        // 不滚的话后面那些会被顶到屏幕外面去。
+                        SettingField::scrollable_dropdown(
+                            families
+                                .into_iter()
+                                .map(|family| (family.clone(), family))
+                                .collect(),
+                            |cx: &App| {
+                                font::global().family_or(cx.theme().mono_font_family.clone())
+                            },
+                            |family: SharedString, cx: &mut App| {
+                                persist_terminal_font(
+                                    TerminalFont {
+                                        family,
+                                        ..font::global()
+                                    },
+                                    cx,
+                                );
+                            },
+                        ),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.terminal_font_size"),
+                        SettingField::scrollable_dropdown(
+                            sizes,
+                            |_cx: &App| font::size_label(font::global().size),
+                            |label: SharedString, cx: &mut App| {
+                                persist_terminal_font(
+                                    TerminalFont {
+                                        size: font::parse_size(&label),
+                                        ..font::global()
+                                    },
+                                    cx,
+                                );
+                            },
+                        ),
+                    )),
             )
     }
 
@@ -482,11 +511,10 @@ impl SettingsWindow {
         // 地址就走人，存下来的端口会是那个 0。
         let inputs = self.proxy.clone();
 
-        let mut group = SettingGroup::new()
-            .title(t!("settings.proxy_socks5"))
-            .description(t!("settings.proxy_group_desc"))
-            .item(
-                SettingItem::new(
+        let mut group =
+            SettingGroup::new()
+                .title(t!("settings.proxy_socks5"))
+                .item(SettingItem::new(
                     t!("settings.proxy_mode"),
                     SettingField::dropdown(
                         vec![
@@ -511,30 +539,22 @@ impl SettingsWindow {
                             }
                         },
                     ),
-                )
-                .description(SharedString::from(t!("settings.proxy_mode_desc"))),
-            );
+                ));
 
         if enabled {
             group = group
-                .item(
-                    SettingItem::new(
-                        t!("settings.proxy_host"),
-                        self.proxy_input(&self.proxy.host, false),
-                    )
-                    .description(SharedString::from(t!("settings.proxy_host_desc"))),
-                )
+                .item(SettingItem::new(
+                    t!("settings.proxy_host"),
+                    self.proxy_input(&self.proxy.host, false),
+                ))
                 .item(SettingItem::new(
                     t!("settings.proxy_port"),
                     self.proxy_input(&self.proxy.port, false),
                 ))
-                .item(
-                    SettingItem::new(
-                        t!("settings.proxy_username"),
-                        self.proxy_input(&self.proxy.username, false),
-                    )
-                    .description(SharedString::from(t!("settings.proxy_auth_desc"))),
-                )
+                .item(SettingItem::new(
+                    t!("settings.proxy_username"),
+                    self.proxy_input(&self.proxy.username, false),
+                ))
                 .item(SettingItem::new(
                     t!("settings.proxy_password"),
                     self.proxy_input(&self.proxy.password, true),
@@ -566,7 +586,11 @@ impl SettingsWindow {
         })
     }
 
-    fn about_page(&self) -> SettingPage {
+    /// 关于页：图标、名字、版本号，就这三样。
+    ///
+    /// 以前那两段介绍（"跨平台高性能…"、"使用 Rust、GPUI 与 Russh 深度构建…"）
+    /// 是写给还没装的人看的，装完之后每次开设置都要再读一遍。
+    fn about_page() -> SettingPage {
         SettingPage::new(t!("settings.tab_about"))
             .icon(IconName::Info)
             .resettable(false)
@@ -598,32 +622,17 @@ impl SettingsWindow {
                             .child(div().text_lg().font_bold().child("WinSSH Pro"))
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(SharedString::from(t!("settings.app_subtitle"))),
-                            )
-                            .child(
-                                div()
                                     .px_2p5()
                                     .py_0p5()
                                     .rounded_full()
                                     .bg(cx.theme().muted)
                                     .text_xs()
-                                    .font_family("monospace")
+                                    .font_family(cx.theme().mono_font_family.clone())
                                     .text_color(palette::idle(cx))
-                                    .child("v0.1.0 (Native GPUI + Russh)"),
-                            )
-                            .child(
-                                div()
-                                    .pt_2()
-                                    .max_w(px(460.))
-                                    .text_center()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(SharedString::from(t!("settings.about_description"))),
+                                    .child(concat!("v", env!("CARGO_PKG_VERSION"))),
                             )
                     })
-                    .keywords(["WinSSH", "Version", "About", "Russh", "GPUI"]),
+                    .keywords(["WinSSH", "Version", "About"]),
                 ),
             )
     }
@@ -642,12 +651,7 @@ impl Render for SettingsWindow {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar())
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.render_settings()),
-            )
+            .child(div().flex_1().min_h_0().child(self.render_settings(cx)))
     }
 }
 
@@ -703,12 +707,38 @@ mod tests {
         });
     }
 
+    /// 挑过字体之后那一页也要画得通。
+    ///
+    /// 挑中的那个族名多半不在筛出来的清单里（测试用的文字系统一个字体都
+    /// 报不出来），[`SettingsWindow::terminal_page`] 得把它补进下拉 ——
+    /// 那条补齐的路只有真的画一遍才走得到。
+    ///
+    /// 只动进程里那份缓存，不碰服务层。
+    #[gpui_kit::test]
+    fn the_terminal_page_draws_with_a_font_picked(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = font::exclusive_for_test();
+        font::set_global(TerminalFont {
+            family: "JetBrains Mono".into(),
+            size: 18.,
+        });
+
+        cx.update(gpui_kit::init);
+        let (shell, cx) = cx.add_window_view(SettingsWindow::new);
+        shell.update(cx, |shell, cx| shell.set_tab(SettingsTab::Terminal, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        // 第二帧走的不是同一条路：数字输入框的状态只有这一帧才读得到。
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert_eq!(font::global().family, "JetBrains Mono", "画一遍不该改掉它");
+        assert_eq!(font::global().size, 18.);
+    }
+
     #[gpui_kit::test]
     fn settings_window_draws_all_tabs(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
         let (shell, cx) = cx.add_window_view(|window, cx| SettingsWindow::new(window, cx));
 
-        // 验证三个 tab 都能正常绘制不崩溃
+        // 四个 tab 都要画得出来，不崩。
         for tab in SettingsTab::ALL {
             shell.update(cx, |shell, cx| {
                 shell.set_tab(tab, cx);

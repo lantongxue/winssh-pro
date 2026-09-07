@@ -40,7 +40,7 @@ use crate::{
     host::Host,
     ssh::SshSession,
     terminal::{
-        Emulator, EmulatorEvent, GridPoint, SearchQuery, TerminalBounds, rows_under_the_bar,
+        Emulator, EmulatorEvent, GridPoint, SearchQuery, TerminalBounds, font, rows_under_the_bar,
     },
     ui::{
         elements::{TerminalGridElement, cell_at, point_at},
@@ -1095,10 +1095,14 @@ impl Render for TerminalPane {
         self.grid = emulator.read(cx).bounds();
         let focused = self.terminal_is_focused(window);
 
-        // 字体在这里定，元素照着量格子。取主题的等宽字体而不是写死
-        // `"monospace"` —— 那不是任何一个平台上真实存在的字体族名，
+        // 字体在这里定，元素照着量格子（[`TerminalGridElement::prepaint`] 读的
+        // 是从这块 `div` 继承下去的 `text_style`）。取的是终端自己那一份设置
+        // （见 [`crate::terminal::font`]）；没挑过的时候退回主题的等宽字体，
+        // 而不是写死 `"monospace"` —— 那不是任何一个平台上真实存在的字体族名，
         // 落到系统里会退回比例字体，一行字就排不成格子了。
-        let font_size = cx.theme().mono_font_size;
+        let terminal_font = font::global();
+        let font_family = terminal_font.family_or(cx.theme().mono_font_family.clone());
+        let font_size = px(terminal_font.size);
 
         div()
             .id("terminal-grid")
@@ -1108,7 +1112,7 @@ impl Render for TerminalPane {
             .size_full()
             .overflow_hidden()
             .bg(cx.theme().background)
-            .font_family(cx.theme().mono_font_family.clone())
+            .font_family(font_family)
             .text_size(font_size)
             .line_height(font_size * LINE_HEIGHT)
             .on_action(cx.listener(Self::on_copy_selection))
