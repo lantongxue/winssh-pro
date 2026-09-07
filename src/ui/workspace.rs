@@ -31,7 +31,7 @@ use crate::ui::{
     theme::AppIcon,
     views::{
         CredentialVaultEvent, CredentialVaultView, HostExplorerEvent, HostExplorerView,
-        PlaceholderView, SidebarView, SnippetVaultEvent, SnippetVaultView,
+        SidebarView, SnippetVaultEvent, SnippetVaultView,
     },
     windows::{CredentialVaultWindow, SettingsWindow, show_fps_monitor},
 };
@@ -259,12 +259,9 @@ impl Workspace {
     fn run_action(&mut self, action: ActivityAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             ActivityAction::Settings => self.open_settings_window(cx),
-            // 这两个入口的功能还没有落地。先如实说明，而不是让按钮点下去毫无反应。
+            // 这个入口的功能还没有落地。先如实说明，而不是让按钮点下去毫无反应。
             ActivityAction::Assistant => {
                 window.push_notification(t!("workspace.assistant_wip"), cx)
-            }
-            ActivityAction::QuickConnect => {
-                window.push_notification(t!("workspace.quick_connect_wip"), cx)
             }
         }
     }
@@ -359,16 +356,12 @@ impl Workspace {
             .child(h_flex().flex_1().min_w_0().pr(WINDOW_CONTROLS_INSET))
     }
 
-    /// 侧边栏当前那个视图。只剩资源监控还走占位视图 ——
-    /// 它的状态还没有，所以不必常驻一个 `Entity`，每帧构建就够了。
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// 侧边栏当前那个视图。三个视图都常驻一个 `Entity`，切换只换渲染的那一个。
+    fn render_sidebar(&self, _cx: &mut Context<Self>) -> AnyElement {
         match self.view {
             SidebarView::Hosts => self.host_explorer.clone().into_any_element(),
             SidebarView::Snippets => self.snippet_vault.clone().into_any_element(),
             SidebarView::Keys => self.credential_vault.clone().into_any_element(),
-            view => PlaceholderView::new(view)
-                .on_collapse(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)))
-                .into_any_element(),
         }
     }
 }

@@ -57,20 +57,17 @@ const INDICATOR_RADIUS: Pixels = px(2.);
 pub enum ActivityAction {
     /// AI 助手。
     Assistant,
-    /// 快速连接：直接输入地址开一个会话。
-    QuickConnect,
     /// 设置。
     Settings,
 }
 
 impl ActivityAction {
     /// 自上而下的排列顺序。底部的常规动作（设置由专门的菜单组件负责）。
-    pub const ALL: [ActivityAction; 2] = [Self::Assistant, Self::QuickConnect];
+    pub const ALL: [ActivityAction; 1] = [Self::Assistant];
 
     pub fn id(&self) -> &'static str {
         match self {
             Self::Assistant => "assistant",
-            Self::QuickConnect => "quick-connect",
             Self::Settings => "settings",
         }
     }
@@ -78,7 +75,6 @@ impl ActivityAction {
     pub fn label(&self) -> SharedString {
         match self {
             Self::Assistant => t!("activity.assistant"),
-            Self::QuickConnect => t!("activity.quick_connect"),
             Self::Settings => t!("activity.settings"),
         }
         .into()
@@ -87,17 +83,7 @@ impl ActivityAction {
     pub fn icon(&self) -> Icon {
         match self {
             Self::Assistant => Icon::new(AppIcon::Sparkles),
-            Self::QuickConnect => Icon::new(AppIcon::Zap),
             Self::Settings => Icon::new(IconName::Settings),
-        }
-    }
-
-    /// 图标颜色。只有快速连接常驻暖色：它是这一组里唯一“立刻动手”的动作，
-    /// 其余两个和未选中的导航条目一样安静。
-    fn tone(&self, cx: &App) -> Hsla {
-        match self {
-            Self::QuickConnect => palette::coral(),
-            Self::Assistant | Self::Settings => palette::idle(cx),
         }
     }
 }
@@ -184,7 +170,7 @@ impl ActivityBar {
             pill(
                 ElementId::Name(action.id().into()),
                 action.icon(),
-                action.tone(cx),
+                palette::idle(cx),
                 cx,
             )
             .tooltip(action.label())

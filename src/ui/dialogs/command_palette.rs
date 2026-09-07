@@ -346,13 +346,6 @@ fn action_commands() -> Vec<PaletteCommand> {
         ),
         PaletteCommand::new(
             CommandItem::new()
-                .label(ActivityAction::QuickConnect.label())
-                .icon(AppIcon::Zap)
-                .keywords(["quick", "connect", "ssh"]),
-            CommandPaletteEvent::Activity(ActivityAction::QuickConnect),
-        ),
-        PaletteCommand::new(
-            CommandItem::new()
                 .label(ActivityAction::Assistant.label())
                 .icon(AppIcon::Sparkles)
                 .keywords(["ai", "assistant", "copilot"]),

@@ -2,9 +2,8 @@
 //!
 //! 侧边栏是活动栏与 Dock 之间那一栏，显示哪个视图由活动栏决定（[`SidebarView`]）。
 //! 视图各自是独立组件：主机视图（[`HostExplorerView`]）、命令片段视图
-//! （[`SnippetVaultView`]）与保险箱视图（[`CredentialVaultView`]）有完整实现，
-//! 资源监控还没落地，走 [`PlaceholderView`]。所有视图共用同一条标题行，
-//! 版式常量也放在这里，换视图时这一栏的骨架不会跳。
+//! （[`SnippetVaultView`]）与保险箱视图（[`CredentialVaultView`]）。所有视图共用
+//! 同一条标题行，版式常量也放在这里，换视图时这一栏的骨架不会跳。
 //!
 //! 视图不进 [`gpui_kit::component::dock`]：它由 [`crate::ui::Workspace`] 直接渲染在一个
 //! 可拖宽的区域里，不能被拖走、分屏或另存布局。要那些能力的是 `*Panel`，
@@ -12,12 +11,10 @@
 
 mod credential_vault;
 mod host_explorer;
-mod placeholder;
 mod snippet_vault;
 
 pub use credential_vault::{CredentialVaultEvent, CredentialVaultView, VaultFilter};
 pub use host_explorer::{HostExplorerEvent, HostExplorerView};
-pub use placeholder::PlaceholderView;
 pub use snippet_vault::{SnippetVaultEvent, SnippetVaultView};
 
 use gpui_kit::component::{
@@ -48,20 +45,17 @@ pub enum SidebarView {
     Snippets,
     /// 保险箱：账号密码、SSH 私钥与 API 令牌。
     Keys,
-    /// 资源监控：已连接主机的 CPU、内存与网络。
-    Monitor,
 }
 
 impl SidebarView {
     /// 自上而下的排列顺序。活动栏上的侧边栏视图导航条目。
-    pub const ALL: [SidebarView; 3] = [Self::Hosts, Self::Snippets, Self::Monitor];
+    pub const ALL: [SidebarView; 2] = [Self::Hosts, Self::Snippets];
 
     pub fn id(&self) -> &'static str {
         match self {
             Self::Hosts => "hosts",
             Self::Snippets => "snippets",
             Self::Keys => "keys",
-            Self::Monitor => "monitor",
         }
     }
 
@@ -71,7 +65,6 @@ impl SidebarView {
             Self::Hosts => t!("sidebar.hosts"),
             Self::Snippets => t!("sidebar.snippets"),
             Self::Keys => t!("sidebar.keys"),
-            Self::Monitor => t!("sidebar.monitor"),
         }
         .into()
     }
@@ -81,7 +74,6 @@ impl SidebarView {
             Self::Hosts => AppIcon::Server,
             Self::Snippets => AppIcon::CodeXml,
             Self::Keys => AppIcon::ShieldCheck,
-            Self::Monitor => AppIcon::Activity,
         }
     }
 }

@@ -22,7 +22,7 @@ pub fn blue() -> Hsla {
     rgb(0x0c64c0).into()
 }
 
-/// 「分组与即时动作」：分组文件夹、快速连接。
+/// 「分组与即时动作」：分组文件夹、新建文件夹这类当场生效的操作。
 pub fn coral() -> Hsla {
     rgb(0xc27e65).into()
 }

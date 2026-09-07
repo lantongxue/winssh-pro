@@ -14,9 +14,6 @@ app.name:
 activity.assistant:
   en: AI Assistant
   zh-CN: AI 助手
-activity.quick_connect:
-  en: Quick Connect
-  zh-CN: 快速连接
 activity.settings:
   en: Settings
   zh-CN: 设置
@@ -47,15 +44,9 @@ sidebar.snippets:
 sidebar.keys:
   en: Vault
   zh-CN: 保险箱
-sidebar.monitor:
-  en: Monitor
-  zh-CN: 资源监控
 sidebar.collapse:
   en: Collapse sidebar
   zh-CN: 收起侧边栏
-sidebar.monitor_hint:
-  en: CPU, memory and network usage of connected hosts will show up here.
-  zh-CN: 已连接主机的 CPU、内存与网络占用会显示在这里。
 
 # ── 欢迎面板 ─────────────────────────────────────────────────────────────
 welcome.title:
@@ -370,9 +361,6 @@ workspace.host_db_failed:
 workspace.assistant_wip:
   en: The AI assistant is still under development.
   zh-CN: AI 助手还在开发中。
-workspace.quick_connect_wip:
-  en: Quick connect is still under development.
-  zh-CN: 快速连接还在开发中。
 workspace.local_shell:
   en: Local Shell
   zh-CN: 本地 Shell
