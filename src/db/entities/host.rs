@@ -48,6 +48,10 @@ pub struct Model {
     /// 主机标签，JSON 编码的一串字符串列表。空串表示没有标签。
     #[sea_orm(default_value = "")]
     pub tags: String,
+    /// 这台主机走不走代理，JSON 编码的一份 [`crate::proxy::HostProxy`]。
+    /// 空串是出厂档"跟随全局"，见 [`crate::proxy::decode`]。
+    #[sea_orm(default_value = "")]
+    pub proxy: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

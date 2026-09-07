@@ -27,8 +27,10 @@ use gpui_kit::{
 use crate::{
     credential::{Credential, CredentialKind},
     host::{AuthMethod, Host, HostDraft, HostGroup},
+    proxy::{self, HostProxy, ProxyConfig, ProxyMode},
     service::{HostService, LocalFileService, SshService},
     ui::{
+        dialogs::max_form_height,
         theme::{AppIcon, palette},
         views::HostExplorerView,
     },
@@ -42,6 +44,12 @@ use rust_i18n::t;
 /// 是函数而不是 `const`：文案要查语言表，而语言到运行时才定下来。
 fn auth_types() -> Vec<SharedString> {
     AuthMethod::ALL.map(|method| method.label()).to_vec()
+}
+
+/// 代理那一档的三个选项，顺序即 [`crate::proxy::ProxyMode`] 的编号顺序：
+/// 0 不使用代理、1 跟随全局、2 配置代理。和认证方式一样按**下标**判断。
+fn proxy_modes() -> Vec<SharedString> {
+    ProxyMode::ALL.map(|mode| mode.label()).to_vec()
 }
 
 /// 目标操作系统。名字沿用发行版本身的名称，不译——`platform_tag()` 取的是这里的
@@ -177,6 +185,17 @@ pub struct HostFormDialog {
     key_passphrase: Entity<InputState>,
     platform: Entity<SelectState<Vec<&'static str>>>,
     proxy_jump: Entity<SelectState<Vec<SharedString>>>,
+    /// 走不走 SOCKS5 代理：不使用 / 跟随全局 / 配置代理，见 [`proxy_modes`]。
+    ///
+    /// 和跳板机（`proxy_jump`）是两回事，别看名字像：跳板机是**在 SSH 之内**
+    /// 借另一台主机的连接过去，代理换掉的是 SSH 下面那条 TCP。
+    proxy_mode: Entity<SelectState<Vec<SharedString>>>,
+    /// "配置代理"那一档的四格。换到别的档时它们只是不画出来，值还留着 ——
+    /// 切走再切回来不必重填一遍（落库时也一起存，见 [`crate::proxy::encode`]）。
+    proxy_host: Entity<InputState>,
+    proxy_port: Entity<InputState>,
+    proxy_username: Entity<InputState>,
+    proxy_password: Entity<InputState>,
     /// 当前的徽章强调色。存颜色本身而不是色板下标：色板和取色器是同一个值的
     /// 两个入口，只有存成颜色，"选中的是哪一个"才有唯一答案。
     badge_color: Hsla,
@@ -220,7 +239,7 @@ impl HostFormDialog {
     ) {
         let form = cx.new(|cx| Self::new(groups, editing.as_ref(), vault, window, cx));
 
-        window.open_dialog(cx, move |dialog, _window, cx| {
+        window.open_dialog(cx, move |dialog, window, cx| {
             let editing = editing.clone();
             let is_editing = editing.is_some();
             let blue = palette::blue();
@@ -236,6 +255,10 @@ impl HostFormDialog {
 
             dialog
                 .w(px(560.))
+                // 这张表的高度随选项变：认证方式选"密钥"多一个 120 高的粘贴框，
+                // 代理选"配置代理"再多两行。封顶之后超出的部分由对话框自己那层
+                // 滚动条接住，底部的按钮不会被窗口下沿裁掉。见 [`max_form_height`]。
+                .max_h(max_form_height(window))
                 .title(render_header(
                     match is_editing {
                         true => t!("host_form.title_edit").into(),
@@ -337,6 +360,7 @@ impl HostFormDialog {
                                                             updated_host.key_passphrase = draft.key_passphrase.clone().into();
                                                             updated_host.jump_host_id = draft.jump_host_id.clone().map(|v| v.into());
                                                             updated_host.tags = draft.tags.clone();
+                                                            updated_host.proxy = draft.proxy.clone();
                                                             service
                                                                 .update_host(&host.id, &group, draft)
                                                                 .await
@@ -434,6 +458,13 @@ impl HostFormDialog {
             None => vec!["Linux".into(), "SSH".into()],
         };
 
+        // 新建的那一份出厂档是"跟随全局"，端口填上 SOCKS5 的惯例端口 ——
+        // 选了"配置代理"的人十有八九就用这个数。
+        let initial_proxy = match editing {
+            Some((host, _)) => host.proxy.clone(),
+            None => HostProxy::default(),
+        };
+
         let name = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(t!("host_form.name_placeholder"))
@@ -473,6 +504,46 @@ impl HostFormDialog {
         });
         let tag_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(t!("host_form.tag_placeholder")));
+
+        let proxy_host = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("host_form.proxy_host_placeholder"))
+                .default_value(initial_proxy.config.host.to_string())
+        });
+        let proxy_port = cx.new(|cx| {
+            InputState::new(window, cx).default_value(match initial_proxy.config.port {
+                // 老记录里可能是 0（没配过），那一格摆惯例端口而不是一个 0。
+                0 => proxy::DEFAULT_PORT.to_string(),
+                port => port.to_string(),
+            })
+        });
+        let proxy_username = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("host_form.proxy_optional"))
+                .default_value(initial_proxy.config.username.to_string())
+        });
+        let proxy_password = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("host_form.proxy_optional"))
+                .masked(true)
+                .default_value(initial_proxy.config.password.to_string())
+        });
+        let proxy_mode = cx.new(|cx| {
+            SelectState::new(
+                proxy_modes(),
+                Some(IndexPath::new(initial_proxy.mode.index())),
+                window,
+                cx,
+            )
+        });
+        cx.subscribe(
+            &proxy_mode,
+            |_, _, _: &SelectEvent<Vec<SharedString>>, cx| {
+                // 换了档，下面那四格要不要露出来得重新算 —— 交给下一次渲染。
+                cx.notify();
+            },
+        )
+        .detach();
 
         let auth_type =
             cx.new(|cx| SelectState::new(auth_types(), Some(IndexPath::new(auth_ix)), window, cx));
@@ -592,6 +663,11 @@ impl HostFormDialog {
             key_passphrase,
             platform,
             proxy_jump,
+            proxy_mode,
+            proxy_host,
+            proxy_port,
+            proxy_username,
+            proxy_password,
             badge_color: rgb(BADGE_COLORS[0]).into(),
             badge_picker,
             tag_input,
@@ -734,6 +810,13 @@ impl HostFormDialog {
         }
         let jump_host_id: Option<String> = None;
 
+        let proxy = self.build_proxy(cx);
+        // 选了"配置代理"却没填全，存下来的那份配置一开会话就会被
+        // [`crate::proxy::resolve`] 挡回来 —— 那时候这张表已经关掉了。
+        if proxy.mode == ProxyMode::Custom {
+            proxy.config.check()?;
+        }
+
         Ok((
             group.into(),
             HostDraft {
@@ -748,8 +831,45 @@ impl HostFormDialog {
                 key_passphrase,
                 jump_host_id,
                 tags: self.tags.clone(),
+                proxy,
             },
         ))
+    }
+
+    /// 把代理那一段读成一份 [`HostProxy`]。
+    ///
+    /// 四格不管选的是哪一档都照读：换档不清空内容（见 [`Self::proxy_host`]），
+    /// 存下来的也是这四格现在的样子。校验只对"配置代理"那一档做，因为
+    /// 另外两档根本不看它们。
+    fn build_proxy(&self, cx: &App) -> HostProxy {
+        // 档位按下拉的下标折回枚举，不拿那行字反查 —— 见 [`proxy_modes`]。
+        let mode = ProxyMode::from_index(
+            self.proxy_mode
+                .read(cx)
+                .selected_index(cx)
+                .map(|index| index.row)
+                .unwrap_or_default(),
+        );
+
+        HostProxy {
+            mode,
+            config: ProxyConfig {
+                host: self.proxy_host.read(cx).value().trim().to_string().into(),
+                // 空着或者敲了个非数字就是 0，[`ProxyConfig::check`] 会在上面
+                // 那一步把它说清楚。这里不替用户补一个惯例端口 —— 连到 1080
+                // 而他填的是别的数字，那是更难查的一种错。
+                port: self
+                    .proxy_port
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .parse::<u16>()
+                    .unwrap_or_default(),
+                // 用户名和密码不 trim：和登录密码同一个道理，空格是它的一部分。
+                username: self.proxy_username.read(cx).value().to_string().into(),
+                password: self.proxy_password.read(cx).value().to_string().into(),
+            },
+        }
     }
 
     /// 从系统文件对话框里挑一个私钥文件，把**内容**读进框里。
@@ -997,6 +1117,85 @@ impl HostFormDialog {
         )
     }
 
+    /// 代理那一段：一个三档下拉，后面跟着这一档要说的话。
+    ///
+    /// - **不使用代理**：什么也不必再说。
+    /// - **跟随全局**：把现在的全局代理摆出来。看不见它的话，用户要在两扇
+    ///   窗口之间来回切才知道这台主机实际会走哪儿。
+    /// - **配置代理**：露出地址、端口、用户名、密码四格。
+    fn render_proxy_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mode = ProxyMode::from_index(
+            self.proxy_mode
+                .read(cx)
+                .selected_index(cx)
+                .map(|index| index.row)
+                .unwrap_or_default(),
+        );
+
+        v_flex()
+            .gap_3()
+            .w_full()
+            .child(field(
+                t!("host_form.field_proxy").into(),
+                Select::new(&self.proxy_mode).w_full(),
+                cx,
+            ))
+            .when(mode == ProxyMode::Global, |el| {
+                let global = proxy::global();
+                el.child(
+                    div()
+                        .text_xs()
+                        .text_color(palette::idle(cx))
+                        .child(SharedString::from(match global.enabled {
+                            true => t!("host_form.proxy_global_on", proxy => global.config.address()),
+                            false => t!("host_form.proxy_global_off"),
+                        })),
+                )
+            })
+            .when(mode == ProxyMode::Custom, |el| {
+                el.child(two_field_row(
+                    field(
+                        t!("host_form.proxy_host").into(),
+                        Input::new(&self.proxy_host).font_family("monospace").w_full(),
+                        cx,
+                    ),
+                    2.,
+                    field(
+                        t!("host_form.proxy_port").into(),
+                        Input::new(&self.proxy_port).font_family("monospace").w_full(),
+                        cx,
+                    ),
+                    1.,
+                ))
+                .child(two_field_row(
+                    field(
+                        t!("host_form.proxy_username").into(),
+                        Input::new(&self.proxy_username)
+                            .font_family("monospace")
+                            .w_full(),
+                        cx,
+                    ),
+                    1.,
+                    field(
+                        t!("host_form.proxy_password").into(),
+                        Input::new(&self.proxy_password)
+                            .font_family("monospace")
+                            .content_type(InputContentType::Password)
+                            .mask_toggle()
+                            .w_full(),
+                        cx,
+                    ),
+                    1.,
+                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(palette::idle(cx))
+                        .child(SharedString::from(t!("host_form.proxy_auth_hint"))),
+                )
+            })
+    }
+
     /// 徽章强调色：设计稿那七个色板，后面接一个取色器挑别的颜色。
     ///
     /// 选中态只画在当前那个颜色上：用了取色器，色板上的白圈就全灭，
@@ -1139,6 +1338,7 @@ impl Render for HostFormDialog {
             .child(self.render_auth_row(cx))
             .children(self.render_auth_detail(cx))
             .child(self.render_platform_row(cx))
+            .child(self.render_proxy_section(cx))
             .child(self.render_color_row(cx))
             .child(self.render_tags_row(cx))
     }
@@ -1172,6 +1372,7 @@ mod tests {
                 monitor_intervals: MonitorIntervals::default(),
                 forwards: Vec::new(),
                 tags: vec!["生产".into(), "web".into()],
+                proxy: HostProxy::default(),
             },
             "生产环境".into(),
         )
@@ -1388,6 +1589,83 @@ mod tests {
             form.update_in(cx, |this, window, cx| {
                 this.auth_type.update(cx, |state, cx| {
                     state.set_selected_index(Some(IndexPath::new(row)), window, cx)
+                });
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+    }
+
+    /// 编辑一台主机时代理那一段要预填成库里的样子：档位落在原来那一档，
+    /// 四格填回原来的值 —— 不预填的话，改一次端口号就把代理配置清空了。
+    #[gpui_kit::test]
+    fn editing_a_proxied_host_prefills_the_proxy_fields(cx: &mut gpui_kit::TestAppContext) {
+        let (mut host, group) = keyed_host(KEY_TEXT, "hunter2");
+        host.proxy = HostProxy {
+            mode: ProxyMode::Custom,
+            config: ProxyConfig {
+                host: "10.0.0.9".into(),
+                port: 7890,
+                username: "deploy".into(),
+                password: " spaces matter ".into(),
+            },
+        };
+        let expected = host.proxy.clone();
+        let (form, cx) = draw_form(cx, Some((host, group)));
+
+        let (_, draft) = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect("这张表填得是全的");
+        assert_eq!(draft.proxy, expected);
+    }
+
+    /// 新建的那一份停在"跟随全局"上，而且四格空着也存得下去 ——
+    /// 那一档根本不看它们。
+    #[gpui_kit::test]
+    fn a_new_host_follows_the_global_proxy(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form(cx, None);
+
+        form.update_in(cx, |this, window, cx| {
+            this.name
+                .update(cx, |state, cx| state.set_value("web-01", window, cx));
+            this.hostname
+                .update(cx, |state, cx| state.set_value("10.0.0.1", window, cx));
+        });
+
+        let (_, draft) = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect("这张表填得是全的");
+        assert_eq!(draft.proxy.mode, ProxyMode::Global);
+    }
+
+    /// 选了"配置代理"却没填地址，表单就该把人拦下来 —— 存下去的话，
+    /// 下次开会话才会知道，而那时候这张表已经关掉了。
+    #[gpui_kit::test]
+    fn a_custom_proxy_without_an_address_is_refused(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form(cx, Some(keyed_host(KEY_TEXT, "hunter2")));
+
+        form.update_in(cx, |this, window, cx| {
+            this.proxy_mode.update(cx, |state, cx| {
+                state.set_selected_index(Some(IndexPath::new(ProxyMode::Custom.index())), window, cx)
+            });
+        });
+
+        let error = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect_err("地址没填不该存得下去");
+        assert_eq!(error, SharedString::from(t!("proxy.check_host")));
+    }
+
+    /// 三档各画一遍：露出来的东西不一样，深 builder 链上的错只有真的走一趟
+    /// 才掉得出来。
+    #[gpui_kit::test]
+    fn every_proxy_mode_draws_all_the_way_through(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form(cx, None);
+
+        for mode in ProxyMode::ALL {
+            form.update_in(cx, |this, window, cx| {
+                this.proxy_mode.update(cx, |state, cx| {
+                    state.set_selected_index(Some(IndexPath::new(mode.index())), window, cx)
                 });
             });
             cx.update(|window, cx| window.draw(cx).clear(cx));

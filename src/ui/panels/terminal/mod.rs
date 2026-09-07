@@ -181,6 +181,7 @@ impl TerminalPanel {
             monitor_intervals: crate::host::MonitorIntervals::default(),
             forwards: Vec::new(),
             tags: Vec::new(),
+            proxy: Default::default(),
         };
         Self::build(host, Source::Local, None, window, cx)
     }
@@ -204,6 +205,7 @@ impl TerminalPanel {
             monitor_intervals: crate::host::MonitorIntervals::default(),
             forwards: Vec::new(),
             tags: Vec::new(),
+            proxy: Default::default(),
         };
         Self::build(host, Source::Detached, None, window, cx)
     }

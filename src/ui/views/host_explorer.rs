@@ -1306,6 +1306,7 @@ mod tests {
             monitor_intervals: MonitorIntervals::default(),
             forwards: Vec::new(),
             tags: tags.into_iter().map(SharedString::from).collect(),
+            proxy: Default::default(),
         }
     }
 

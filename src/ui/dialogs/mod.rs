@@ -27,3 +27,24 @@ pub use port_forward::{ForwardsHandler, PortForwardDialog};
 pub use sftp_chmod::{ChmodHandler, SftpChmodDialog};
 pub use sftp_editor::{SavedHandler as SftpSavedHandler, SftpEditorDialog};
 pub use sftp_form::{SftpFormDialog, SftpFormKind, SftpNameHandler};
+
+use gpui_kit::{Pixels, Window, px};
+
+/// 一个"内容有多少就多高"的表单对话框最多能长到哪儿。
+///
+/// 组件库的对话框已经把正文放在一层能滚的容器里，但那一层是 `flex_1` ——
+/// **外面没有高度上界的话它永远不必收缩**，整个弹层就顺着内容一路长出窗口
+/// 下沿，最后几行字段连同底部的按钮一起被裁掉，而且没有滚动条可言。
+/// `Dialog` 自己只有 `w` / `max_w` 两档，高度那一档得由调用方给
+/// （它实现了 `Styled`，`max_h` 会落到弹层最外层那个 `v_flex` 上）。
+///
+/// 弹层的顶边落在视口高度的 1/10 处（组件库定的），所以这里留 8/10：
+/// 上下各空出 1/10，正文超出的部分交给它自己那层滚动条。
+///
+/// 字段数会变的表单都该用它 —— 今天够高，明天多一段就不够了，
+/// [`HostFormDialog`] 加代理那一段时正是这么裁掉的。
+pub(crate) fn max_form_height(window: &Window) -> Pixels {
+    // 窗口被拖得很矮时不再按比例缩：那时候要的不是"能滚"，而是"别只剩两行"，
+    // 宁可让弹层顶出去一点。窗口本身有 560 的高度下限（见 `main.rs`）。
+    (window.viewport_size().height * 0.8).max(px(360.))
+}

@@ -50,6 +50,23 @@ ssh-key = { version = "0.7.0-rc.11", features = ["encryption"] }
 # `ssh::sftp` 开。`tokio-util` 是它的传递依赖，这里直接用它的
 # `CancellationToken` 做传输任务的取消。
 russh-sftp = "2.4"
+
+# SOCKS5 客户端。SSH 本身不认识代理，代理换掉的是它下面那条 TCP：这里只用
+# `Socks5Stream::connect` 握一次手，拿到的流交给 `russh::client::connect_stream`
+# （见 src/ssh/connection.rs 的 `dial`）。
+#
+# 是真新增的一份编译，不是白捡的：它确实出现在 Cargo.lock 里（gpui 那条链上的
+# `gpui-pre-reqwest` 列着它），但那是锁文件记的"所有平台所有可选特性的并集"，
+# reqwest 的 socks 特性在我们这张图里没开，`cargo tree -i tokio-socks` 之前是空的。
+# 代价盘干净了才留：新编译的只有它自己和 `either`，`futures-util` 与
+# `thiserror` 本来就在图里。
+#
+# 不自己手写这段握手，尽管 `src/ssh/forward.rs` 里已经有一份手写的 SOCKS5
+# 服务端（动态转发 `-D` 那一头）—— 那两处**故意**保持不同的来源：`-D` 开出来的
+# 监听是台真代理，用户可以把另一台主机的代理指到它上面，那时候是我们的客户端在
+# 连我们自己的服务端。两头共用一份编解码的话，编码错了也会自洽地互通，而
+# 浏览器连不上；各自独立才让那条链路成为一次真正的 RFC 1928 一致性检验。
+tokio-socks = "0.5"
 tokio-util = { version = "0.7", features = ["rt"] }
 
 # 远端 mtime 是 Unix 时间戳，表格要按本地时区显示绝对时间。chrono 本来就在依赖树里

@@ -101,6 +101,7 @@ impl HostService {
                         // 会话里的端口转发对话框（[`Self::update_forwards`]）。
                         forwards: Set(String::new()),
                         tags: Set(crate::host::encode_tags(&draft.tags)),
+                        proxy: Set(crate::proxy::encode(&draft.proxy)),
                     },
                 )
                 .await?;
@@ -121,6 +122,7 @@ impl HostService {
                 monitor_intervals: MonitorIntervals::default(),
                 forwards: Vec::new(),
                 tags: draft.tags,
+                proxy: draft.proxy,
             })
         })
         .await
@@ -159,6 +161,7 @@ impl HostService {
                         status_interval_secs: ActiveValue::NotSet,
                         forwards: ActiveValue::NotSet,
                         tags: Set(crate::host::encode_tags(&draft.tags)),
+                        proxy: Set(crate::proxy::encode(&draft.proxy)),
                     },
                 )
                 .await;
@@ -253,6 +256,7 @@ impl HostService {
                         status_interval_secs: Set(source.status_interval_secs),
                         forwards: Set(source.forwards.clone()),
                         tags: Set(source.tags.clone()),
+                        proxy: Set(source.proxy.clone()),
                     },
                 )
                 .await?;
@@ -277,6 +281,7 @@ impl HostService {
                 .clamped(),
                 forwards: forward::decode(&source.forwards),
                 tags: crate::host::decode_tags(&source.tags),
+                proxy: crate::proxy::decode(&source.proxy),
             })
         })
         .await
@@ -408,6 +413,7 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                     .clamped(),
                     forwards: forward::decode(&host.forwards),
                     tags: crate::host::decode_tags(&host.tags),
+                    proxy: crate::proxy::decode(&host.proxy),
                 })
                 .collect(),
         })
@@ -457,6 +463,7 @@ mod tests {
             key_passphrase: String::new(),
             jump_host_id: None,
             tags: Vec::new(),
+            proxy: Default::default(),
         }
     }
 
@@ -483,6 +490,7 @@ mod tests {
             key_passphrase: key_passphrase.into(),
             jump_host_id: None,
             tags: Vec::new(),
+            proxy: Default::default(),
         }
     }
 
@@ -1033,6 +1041,41 @@ mod tests {
             // 目录名已经保证下一次不会撞上它。
             drop(service);
             let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
+    /// 代理设置存得住、读得回，改一次主机是整份重写，复制一份照抄。
+    ///
+    /// 新主机的出厂档是"跟随全局"，这也是老库补出来的那一列的意思 ——
+    /// 这条同时钉住了这个默认值。
+    #[test]
+    fn host_proxy_round_trips() {
+        use crate::proxy::{HostProxy, ProxyConfig, ProxyMode};
+
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            assert_eq!(host.proxy, HostProxy::default(), "新主机跟随全局");
+            assert_eq!(host.proxy.mode, ProxyMode::Global);
+
+            let configured = HostProxy {
+                mode: ProxyMode::Custom,
+                config: ProxyConfig {
+                    host: "10.0.0.9".into(),
+                    port: 1080,
+                    username: "deploy".into(),
+                    password: " spaces matter ".into(),
+                },
+            };
+            let mut edited = draft("web-01");
+            edited.proxy = configured.clone();
+            service.update_host(&host.id, "分组", edited).await.unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].proxy, configured);
+
+            let copy = service.duplicate_host(&host.id).await.unwrap();
+            assert_eq!(copy.proxy, configured, "副本走同一台代理");
         });
     }
 

@@ -1597,6 +1597,7 @@ mod tests {
             monitor_intervals: intervals,
             forwards: Vec::new(),
             tags: Vec::new(),
+            proxy: Default::default(),
         }
     }
 

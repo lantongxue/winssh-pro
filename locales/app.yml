@@ -265,6 +265,45 @@ settings.about_description:
 settings.more_hint:
   en: Connection, key and terminal settings will open up alongside the matching features.
   zh-CN: 连接、密钥与终端设置会随对应功能一起开放。
+settings.tab_proxy:
+  en: Network Proxy
+  zh-CN: 网络代理
+settings.proxy_socks5:
+  en: Global SOCKS5 Proxy
+  zh-CN: 全局 SOCKS5 代理
+settings.proxy_group_desc:
+  en: Hosts set to "Follow global" dial through this proxy. A host can opt out or point at its own proxy in its own settings.
+  zh-CN: 代理选择"跟随全局"的主机都经这台代理拨号；某一台要绕开它、或者要走另一台代理，在那台主机自己的设置里改。
+settings.proxy_mode:
+  en: Proxy mode
+  zh-CN: 代理模式
+settings.proxy_mode_desc:
+  en: Turning this off makes every host that follows the global setting connect directly.
+  zh-CN: 关掉之后，所有"跟随全局"的主机都直连。
+settings.proxy_host:
+  en: Proxy server
+  zh-CN: 代理服务器
+settings.proxy_host_desc:
+  en: Hostname or IP of the SOCKS5 server. Target addresses are resolved by the proxy, not locally.
+  zh-CN: SOCKS5 服务器的主机名或 IP。目标地址交给代理去解析，不在本机解。
+settings.proxy_port:
+  en: Port
+  zh-CN: 端口
+settings.proxy_username:
+  en: Username
+  zh-CN: 用户名
+settings.proxy_password:
+  en: Password
+  zh-CN: 密码
+settings.proxy_auth_desc:
+  en: Leave the username empty when the proxy needs no authentication.
+  zh-CN: 代理不要认证的话，用户名留空即可。
+settings.proxy_optional:
+  en: Optional
+  zh-CN: 可留空
+settings.proxy_host_placeholder:
+  en: 127.0.0.1
+  zh-CN: 127.0.0.1
 palette.open_settings_window:
   en: Open preferences window
   zh-CN: 打开偏好设置窗口
@@ -616,6 +655,53 @@ host_form.vault_none:
 host_form.vault_applied:
   en: Filled in from “%{name}”.
   zh-CN: 已填入“%{name}”里的内容。
+host_form.field_proxy:
+  en: SOCKS5 Proxy
+  zh-CN: SOCKS5 代理
+host_form.proxy_host:
+  en: Proxy server
+  zh-CN: 代理服务器
+host_form.proxy_port:
+  en: Proxy port
+  zh-CN: 代理端口
+host_form.proxy_username:
+  en: Proxy username
+  zh-CN: 代理用户名
+host_form.proxy_password:
+  en: Proxy password
+  zh-CN: 代理密码
+host_form.proxy_host_placeholder:
+  en: 127.0.0.1
+  zh-CN: 127.0.0.1
+host_form.proxy_optional:
+  en: Optional
+  zh-CN: 可留空
+host_form.proxy_auth_hint:
+  en: Leave the username empty when the proxy needs no authentication. The target address is resolved by the proxy, not locally.
+  zh-CN: 代理不要认证的话，用户名留空即可；目标地址交给代理去解析，不在本机解。
+host_form.proxy_global_on:
+  en: "Currently following the global proxy: %{proxy}"
+  zh-CN: "当前的全局代理：%{proxy}"
+host_form.proxy_global_off:
+  en: No global proxy is set up yet, so this host connects directly. Configure one under Preferences → Network Proxy.
+  zh-CN: 还没配全局代理，这台主机会直连。要配的话去偏好设置 → 网络代理。
+
+# ── 代理模型（src/proxy.rs） ─────────────────────────────────────────────
+proxy.mode_disabled:
+  en: No proxy
+  zh-CN: 不使用代理
+proxy.mode_global:
+  en: Follow global
+  zh-CN: 跟随全局
+proxy.mode_custom:
+  en: Configure proxy
+  zh-CN: 配置代理
+proxy.check_host:
+  en: The proxy server address is empty.
+  zh-CN: 代理服务器地址没填。
+proxy.check_port:
+  en: The proxy port is not a valid port number.
+  zh-CN: 代理端口不是一个有效的端口号。
 
 # ── 凭据模型（src/credential.rs） ────────────────────────────────────────
 credential.kind_password:
@@ -2183,6 +2269,12 @@ emulator.event_loop_failed:
 ssh.connect_failed:
   en: "Connecting to %{host}:%{port} failed"
   zh-CN: "连接到 %{host}:%{port} 失败"
+ssh.proxy_connect_failed:
+  en: "Reaching %{host}:%{port} through the proxy %{proxy} failed"
+  zh-CN: "经代理 %{proxy} 连接到 %{host}:%{port} 失败"
+ssh.proxy_misconfigured:
+  en: "The proxy for %{host} is not set up: %{reason}"
+  zh-CN: "%{host} 的代理没配好：%{reason}"
 ssh.resize_failed:
   en: Sending the window size change failed
   zh-CN: 发送窗口尺寸变化失败

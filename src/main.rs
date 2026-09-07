@@ -7,6 +7,7 @@ mod forward;
 mod host;
 mod i18n;
 mod monitor;
+mod proxy;
 mod repository;
 mod service;
 mod session;
@@ -32,6 +33,9 @@ fn main() {
         // 必须先初始化组件库，再注册应用自己的动作与快捷键。
         gpui_kit::init(cx);
         ui::init(cx);
+        // 全局代理要在第一条会话建起来之前就位：开窗之后主机面板上点一下就
+        // 可能开始拨号，那时候再去读库已经晚了（见 `SettingService::prime`）。
+        service::SettingService::open().prime();
         cx.activate(true);
 
         let mut window_size = size(px(1440.), px(900.));

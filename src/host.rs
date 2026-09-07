@@ -164,6 +164,11 @@ pub struct Host {
     pub forwards: Vec<crate::forward::PortForward>,
     /// 主机标签列表，用于分类与检索，例如 `["生产", "k8s"]`。
     pub tags: Vec<SharedString>,
+    /// 连这台机器之前先经过谁。见 [`crate::proxy::HostProxy`]。
+    ///
+    /// 进 [`HostDraft`]：代理是"怎么连上去"的一部分，和地址、认证方式一样
+    /// 在主机表单里填，不像采集节奏那样是连上之后才调的。
+    pub proxy: crate::proxy::HostProxy,
 }
 
 impl Host {
@@ -213,6 +218,8 @@ pub struct HostDraft {
     pub jump_host_id: Option<String>,
     /// 主机标签列表。
     pub tags: Vec<SharedString>,
+    /// 代理设置，见 [`Host::proxy`]。
+    pub proxy: crate::proxy::HostProxy,
 }
 
 /// 一台主机的运行时状态。

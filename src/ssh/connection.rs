@@ -4,6 +4,10 @@
 //! 之后这条通道就是终端的字节源（[`crate::terminal::Emulator`] 的输入输出）。
 //! 认证按主机配置来：`password` / `key` / `agent`，失败时把对端给的
 //! `remaining_methods` 带回给调用方，便于界面提示"密码错了"还是"密钥不对"。
+//!
+//! 头一步的 `TCP` 未必是直连：主机配了 SOCKS5 代理时，先连代理、请它替我们
+//! 接到目标主机，之后的每一步都在那条流上原样发生（见 [`dial`]）。SSH 协议
+//! 本身对此一无所知 —— 代理换掉的只是它下面那条字节流。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,8 +16,12 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use russh::client::{self, Handle, Msg as ClientMsg};
 use russh::keys::{Error as KeyError, PrivateKey, PrivateKeyWithHashAlg, decode_secret_key};
 use russh::{Channel, Disconnect, Pty};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpStream;
+use tokio_socks::tcp::Socks5Stream;
 
 use crate::host::Host;
+use crate::proxy::{self, ProxyConfig};
 
 use super::client::SshHandler;
 use super::forward::ForwardRegistry;
@@ -67,10 +75,11 @@ impl SshConnection {
         // 途径拿回它，所以这里留一份克隆，两边指向同一张表。
         let forwards = ForwardRegistry::default();
         let handler = SshHandler::new(forwards.clone());
-        let addr = (host.hostname.as_ref().to_owned(), host.port);
         let user = host.user.to_string();
 
-        let mut handle = client::connect(Arc::new(config), addr, handler)
+        // 拨号自己带上下文（直连和走代理该说的话不一样），所以这一层不再包一遍。
+        let stream = dial(host, config.nodelay).await?;
+        let mut handle = client::connect_stream(Arc::new(config), stream, handler)
             .await
             .with_context(|| {
                 t!(
@@ -203,6 +212,85 @@ async fn shell_channel(
     Ok(channel)
 }
 
+/// SSH 跑得起来的那种字节流。
+///
+/// 存在的理由只有一个：直连拿到的是 [`TcpStream`]，走代理拿到的是
+/// [`Socks5Stream`]，而 [`client::connect_stream`] 是泛型的 —— 一个函数
+/// 返回不了两种类型。装箱成同一个 trait 对象，握手之后的每一步就都不必
+/// 再关心这条流是怎么来的了。
+///
+/// 多一层 `Box` 的代价可以忽略：每次读写多一次虚调用，而这条流上真正的
+/// 开销是加解密与系统调用。
+trait Transport: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Transport for T {}
+
+/// 拨到目标主机：直连，或者请一台 SOCKS5 代理替我们接过去。
+///
+/// 走代理时目标地址**原样交给代理去解析**（`(域名, 端口)` 而不是先在本机
+/// 解成 IP）：本机未必解得动对端那个内网域名，而那恰恰是用代理的理由。
+///
+/// 代理没配全时 [`proxy::resolve`] 会报错，这里原样抛出去，不退回直连 ——
+/// 用户选了走代理，悄悄直连是替他做了一个相反的决定。
+async fn dial(host: &Host, nodelay: bool) -> Result<Box<dyn Transport>> {
+    let target = (&*host.hostname, host.port);
+
+    let Some(via) = proxy::resolve(&host.proxy).map_err(|reason| {
+        anyhow!(
+            "{}",
+            t!("ssh.proxy_misconfigured", host => host.name, reason => reason)
+        )
+    })?
+    else {
+        let socket = TcpStream::connect(target).await.with_context(|| {
+            t!(
+                "ssh.connect_failed",
+                host => host.hostname,
+                port => host.port,
+            )
+            .to_string()
+        })?;
+        set_nodelay(&socket, nodelay);
+        return Ok(Box::new(socket));
+    };
+
+    let stream = socks5(&via, target).await.with_context(|| {
+        t!(
+            "ssh.proxy_connect_failed",
+            proxy => via.address(),
+            host => host.hostname,
+            port => host.port,
+        )
+        .to_string()
+    })?;
+    // `Socks5Stream` 解引用到它裹着的那条 TCP，所以这里设的就是真正那个 socket。
+    set_nodelay(&stream, nodelay);
+    Ok(Box::new(stream))
+}
+
+/// 经代理连到目标。用户名为空就是"这个代理不要认证"，见 [`ProxyConfig`]。
+async fn socks5(
+    proxy: &ProxyConfig,
+    target: (&str, u16),
+) -> Result<Socks5Stream<TcpStream>, tokio_socks::Error> {
+    let server = (&*proxy.host, proxy.port);
+    match proxy.username.is_empty() {
+        true => Socks5Stream::connect(server, target).await,
+        false => {
+            Socks5Stream::connect_with_password(server, target, &proxy.username, &proxy.password)
+                .await
+        }
+    }
+}
+
+/// 关掉 Nagle。设不上只记一行日志：那只影响小包的时延，不该让一条已经
+/// 连上的会话就此失败（`russh` 自己在直连那条路上也是这么处理的）。
+fn set_nodelay(socket: &TcpStream, enabled: bool) {
+    if enabled && let Err(error) = socket.set_nodelay(true) {
+        log::warn!("set_nodelay 失败，这条连接的小包会多等一会儿：{error}");
+    }
+}
+
 fn build_config() -> client::Config {
     client::Config {
         inactivity_timeout: Some(Duration::from_secs(600)),
@@ -323,6 +411,13 @@ mod tests {
             monitor_intervals: Default::default(),
             forwards: Vec::new(),
             tags: Vec::new(),
+            // 明确直连：出厂档是"跟随全局"，而全局是个进程级的东西，
+            // 别的测试动过它的话这条就会拨到一台不存在的代理上，
+            // 断言看到的错误信息也就不是这里要的那一句了。
+            proxy: crate::proxy::HostProxy {
+                mode: crate::proxy::ProxyMode::Disabled,
+                ..Default::default()
+            },
         }
     }
 
@@ -342,6 +437,106 @@ mod tests {
                 err.contains("127.0.0.1") || err.contains("22222"),
                 "错误信息应提及目标地址，实际：{err}"
             );
+        });
+    }
+
+    /// 代理没配全就到不了拨号那一步：说的是"这台主机的代理没配好"，
+    /// 而不是一句连不上目标 —— 后者会让人去查目标机器，而错在设置里。
+    #[test]
+    fn a_misconfigured_proxy_never_dials() {
+        crate::db::runtime().block_on(async {
+            let mut host = unreachable_host();
+            host.proxy = crate::proxy::HostProxy {
+                mode: crate::proxy::ProxyMode::Custom,
+                config: crate::proxy::ProxyConfig {
+                    host: "".into(),
+                    port: 1080,
+                    ..Default::default()
+                },
+            };
+
+            let error = match SshConnection::connect(&host, WindowSize::new(80, 24, 640, 384)).await
+            {
+                Ok(_) => panic!("代理没填地址，连不出去"),
+                Err(error) => error,
+            };
+            assert_eq!(
+                format!("{error:#}"),
+                t!(
+                    "ssh.proxy_misconfigured",
+                    host => host.name,
+                    reason => t!("proxy.check_host"),
+                )
+                .to_string()
+            );
+        });
+    }
+
+    /// 配了代理的主机，这次拨号真的是冲着代理去的：目标地址原样交给代理，
+    /// 本机一次都没去解析它。
+    ///
+    /// 假代理答应完就把连接断掉，所以 SSH 握手必然失败 —— 这条测试要的不是
+    /// 连得上，而是代理那一头收到的 CONNECT 请求写着谁。
+    #[test]
+    fn a_proxied_host_is_dialed_through_the_proxy() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::net::TcpListener;
+
+        /// 只够走完一次 SOCKS5 握手的假代理，返回对方要连的目标。
+        async fn accept_one(listener: TcpListener) -> Result<(String, u16)> {
+            let (mut socket, _) = listener.accept().await?;
+
+            // 问候：VER + 方法数 + 方法列表 → 答"不必认证"。
+            let mut greeting = [0u8; 2];
+            socket.read_exact(&mut greeting).await?;
+            let mut methods = vec![0u8; greeting[1] as usize];
+            socket.read_exact(&mut methods).await?;
+            socket.write_all(&[0x05, 0x00]).await?;
+
+            // 请求：VER + CMD + RSV + ATYP，域名那一档是"长度 + 名字"。
+            let mut request = [0u8; 4];
+            socket.read_exact(&mut request).await?;
+            if request[3] != 0x03 {
+                bail!("目标该是域名原样送过来的，实际 ATYP = {}", request[3]);
+            }
+            let mut length = [0u8; 1];
+            socket.read_exact(&mut length).await?;
+            let mut name = vec![0u8; length[0] as usize];
+            socket.read_exact(&mut name).await?;
+            let mut port = [0u8; 2];
+            socket.read_exact(&mut port).await?;
+
+            // 答一句"接上了"，然后这条连接就到此为止。
+            socket
+                .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await?;
+            Ok((String::from_utf8_lossy(&name).into_owned(), u16::from_be_bytes(port)))
+        }
+
+        crate::db::runtime().block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let proxy_port = listener.local_addr().unwrap().port();
+            let proxy = tokio::spawn(accept_one(listener));
+
+            let mut host = unreachable_host();
+            // 这个域名在本机解不出来，解得动它的只有代理那一头。
+            host.hostname = "internal.example".into();
+            host.port = 2222;
+            host.proxy = crate::proxy::HostProxy {
+                mode: crate::proxy::ProxyMode::Custom,
+                config: crate::proxy::ProxyConfig {
+                    host: "127.0.0.1".into(),
+                    port: proxy_port,
+                    ..Default::default()
+                },
+            };
+
+            let outcome = SshConnection::connect(&host, WindowSize::new(80, 24, 640, 384)).await;
+            assert!(outcome.is_err(), "假代理不会说 SSH，握手必然失败");
+
+            let (target_host, target_port) = proxy.await.unwrap().unwrap();
+            assert_eq!(target_host, "internal.example");
+            assert_eq!(target_port, 2222);
         });
     }
 

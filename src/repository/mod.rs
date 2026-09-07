@@ -9,6 +9,8 @@
 
 pub mod credential_repository;
 pub mod host_repository;
+pub mod setting_repository;
 
 pub use credential_repository::CredentialRepository;
 pub use host_repository::HostRepository;
+pub use setting_repository::SettingRepository;

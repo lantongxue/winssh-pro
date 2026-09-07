@@ -6,3 +6,4 @@
 pub mod credential;
 pub mod host;
 pub mod host_group;
+pub mod setting;
