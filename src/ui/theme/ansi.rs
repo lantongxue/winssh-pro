@@ -2,15 +2,24 @@
 //!
 //! 主题（组件库那套 shadcn neutral）里没有终端色 —— 它是给控件用的，
 //! 只有前景、底色、边框那几档。终端要的是另一套东西：程序用 `\x1b[31m` 说
-//! "红"，这一套得回答"红是哪个红"。所以这里固定一组，取自 VS Code 的
-//! Dark+ / Light+，与 [`crate::ui::theme::palette`] 里的品牌色是同一套观感。
+//! "红"，这一套得回答"红是哪个红"。
 //!
-//! 明暗两套都给全了：终端的底色跟着主题走，前景色和 16 色也得跟着换，
-//! 不然浅色模式下一屏字都糊在白底上。
+//! 从哪儿取那一套，由用户在设置里挑的配色方案决定（[`crate::terminal::scheme`]）：
+//!
+//! | 挑的是 | 16 色、前景、底色、光标从哪儿来 |
+//! | --- | --- |
+//! | 跟随界面主题（出厂档） | 这里的 [`DARK`] / [`LIGHT`]，跟着主题的明暗切；底色用主题底色 |
+//! | Dracula、Nord…… | 那一套自己带的整份色表，界面明暗不影响它 |
+//!
+//! 跟随那一档的两套取自 VS Code 的 Dark+ / Light+，与
+//! [`crate::ui::theme::palette`] 里的品牌色是同一套观感。明暗两套都给全了：
+//! 终端的底色跟着主题走，前景色和 16 色也得跟着换，不然浅色模式下一屏字都
+//! 糊在白底上。
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{App, Hsla, Rgba, rgb};
 
+use crate::terminal::scheme::{self, Scheme};
 use crate::ui::theme::palette;
 
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb};
@@ -48,12 +57,65 @@ const LIGHT: [u32; 16] = [
 /// 纯白读久了会晃眼，这也是各家终端的默认做法。
 const DARK_FOREGROUND: u32 = 0xd4d4d4;
 
+/// 终端那块地方的底色。
+///
+/// 网格只画"程序自己设了底色"的那些格子，其余的都是这一层透出来的
+/// （见 [`crate::ui::elements::TerminalGridElement`] 的 `cell_colors`），
+/// 所以画网格的那个容器必须铺的就是这一个色 —— 铺主题底色的话，挑了 Dracula
+/// 之后满屏的空白处仍旧是界面主题那个底，只有写了字的地方是 Dracula。
+pub fn background(cx: &App) -> Hsla {
+    match scheme::active() {
+        Some(scheme) => rgb(scheme.background).into(),
+        // 跟随那一档用主题底色：终端是面板的内容区，它和四周的 chrome
+        // 应该是同一个底。
+        None => cx.theme().background,
+    }
+}
+
+/// 搜索命中的那两档底色：其余命中、当前那一个。
+///
+/// 不跟着配色方案走 —— 那是界面给的一个提示，不是程序输出的一部分。
+/// 琥珀色，各家编辑器找东西时的老规矩，而且终端的 16 色里没有一个是这个
+/// 色相，高亮不会和程序自己的配色撞上。
+///
+/// 两档都是半透明的：底下压着的可能是程序画的底色（`ls` 的目录、diff 的
+/// 红绿），盖死了就分不出命中落在什么东西上。
+fn match_tints() -> (Hsla, Hsla) {
+    (
+        palette::amber().opacity(0.28),
+        palette::amber().opacity(0.62),
+    )
+}
+
 impl AnsiPalette {
-    /// 按当前主题的明暗取一套。底色直接用主题底色：终端是面板的内容区，
-    /// 它和四周的 chrome 应该是同一个底。
+    /// 取当前这一套配色。
     pub fn new(cx: &App) -> Self {
+        match scheme::active() {
+            Some(scheme) => Self::from_scheme(scheme),
+            None => Self::following_the_app_theme(cx),
+        }
+    }
+
+    /// 用户挑定的那一套。界面主题的明暗不参与 —— 挑了 Dracula 的人要的是
+    /// Dracula，不是"浅色界面下的 Dracula"。
+    fn from_scheme(scheme: &Scheme) -> Self {
+        let (match_hit, match_current) = match_tints();
+        Self {
+            colors: scheme.ansi16.map(|color| rgb(color).into()),
+            foreground: rgb(scheme.foreground).into(),
+            background: rgb(scheme.background).into(),
+            cursor: rgb(scheme.cursor()).into(),
+            selection: rgb(scheme.selection()).into(),
+            match_hit,
+            match_current,
+        }
+    }
+
+    /// 出厂那一档：16 色跟着界面主题的明暗切，底色与选中色直接用主题的。
+    fn following_the_app_theme(cx: &App) -> Self {
         let dark = cx.theme().mode.is_dark();
         let colors = if dark { DARK } else { LIGHT };
+        let (match_hit, match_current) = match_tints();
 
         Self {
             colors: colors.map(|color| rgb(color).into()),
@@ -65,13 +127,8 @@ impl AnsiPalette {
             background: cx.theme().background,
             cursor: cx.theme().foreground,
             selection: cx.theme().selection,
-            // 琥珀色，各家编辑器找东西时的老规矩，而且终端的 16 色里没有
-            // 一个是这个色相 —— 高亮不会和程序自己的配色撞上。
-            //
-            // 两档都是半透明的：底下压着的可能是程序画的底色（`ls` 的目录、
-            // diff 的红绿），盖死了就分不出命中落在什么东西上。
-            match_hit: palette::amber().opacity(0.28),
-            match_current: palette::amber().opacity(0.62),
+            match_hit,
+            match_current,
         }
     }
 
@@ -183,4 +240,76 @@ fn spec(color: Rgb) -> Hsla {
         a: 1.,
     }
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use gpui_kit::component::{Theme, ThemeMode};
+
+    /// 挑定的方案说了算：16 色、前景、底色、光标全从它来，界面主题的明暗
+    /// 一格都碰不到。这是"挑了 Dracula 却只有一半是 Dracula"那类错的守门人。
+    #[gpui_kit::test]
+    fn a_picked_scheme_overrides_the_app_theme(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = scheme::exclusive_for_test();
+        cx.update(gpui_kit::init);
+
+        let dracula = scheme::find("dracula").expect("内置方案");
+        scheme::set_global(dracula.id);
+
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            cx.update(|cx| {
+                Theme::change(mode, None, cx);
+                let palette = AnsiPalette::new(cx);
+                assert_eq!(palette.background(), rgb(dracula.background).into());
+                assert_eq!(
+                    palette.color(AnsiColor::Named(NamedColor::Foreground)),
+                    rgb(dracula.foreground).into()
+                );
+                assert_eq!(
+                    palette.color(AnsiColor::Named(NamedColor::Red)),
+                    rgb(dracula.ansi16[1]).into()
+                );
+                assert_eq!(
+                    palette.color(AnsiColor::Indexed(9)),
+                    rgb(dracula.ansi16[9]).into()
+                );
+                assert_eq!(palette.cursor(), rgb(dracula.cursor()).into());
+                assert_eq!(palette.selection(), rgb(dracula.selection()).into());
+            });
+        }
+    }
+
+    /// 出厂那一档仍旧跟着界面主题走 —— 这一版不该改掉没挑过的人看到的样子。
+    #[gpui_kit::test]
+    fn following_the_app_theme_still_tracks_light_and_dark(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = scheme::exclusive_for_test();
+        cx.update(gpui_kit::init);
+
+        let dark = cx.update(|cx| {
+            Theme::change(ThemeMode::Dark, None, cx);
+            AnsiPalette::new(cx).color(AnsiColor::Named(NamedColor::Green))
+        });
+        let light = cx.update(|cx| {
+            Theme::change(ThemeMode::Light, None, cx);
+            AnsiPalette::new(cx).color(AnsiColor::Named(NamedColor::Green))
+        });
+
+        assert_eq!(dark, rgb(DARK[2]).into());
+        assert_eq!(light, rgb(LIGHT[2]).into());
+        assert_ne!(dark, light, "明暗两套得是不同的绿");
+    }
+
+    /// 画网格的那个容器铺的底色，必须和调色板认的底色是同一个 —— 满屏的
+    /// 空白都是那一层透出来的。
+    #[gpui_kit::test]
+    fn the_container_background_matches_the_palette(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = scheme::exclusive_for_test();
+        cx.update(gpui_kit::init);
+
+        cx.update(|cx| assert_eq!(background(cx), AnsiPalette::new(cx).background()));
+        scheme::set_global("tokyo_night");
+        cx.update(|cx| assert_eq!(background(cx), AnsiPalette::new(cx).background()));
+    }
 }

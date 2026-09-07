@@ -34,6 +34,7 @@ use crate::i18n;
 use crate::proxy::{self, GlobalProxy, ProxyConfig};
 use crate::service::SettingService;
 use crate::terminal::font::{self, TerminalFont};
+use crate::terminal::scheme;
 use crate::ui::theme::{AppIcon, appearance, palette};
 use rust_i18n::t;
 
@@ -98,6 +99,21 @@ fn persist_terminal_font(value: TerminalFont, cx: &mut App) {
     cx.background_spawn(async move {
         if let Err(error) = SettingService::open().save_terminal_font(value).await {
             log::error!("终端字体存不下去：{error:#}");
+        }
+    })
+    .detach();
+}
+
+/// 换掉终端配色方案。缓存立刻生效、重画所有窗口、落库派到后台，
+/// 三步都同 [`persist_terminal_font`]。
+fn persist_terminal_scheme(id: SharedString, cx: &mut App) {
+    scheme::set_global(&id);
+    for handle in cx.windows() {
+        _ = handle.update(cx, |_, window, _| window.refresh());
+    }
+    cx.background_spawn(async move {
+        if let Err(error) = SettingService::open().save_terminal_scheme(id).await {
+            log::error!("终端配色存不下去：{error:#}");
         }
     })
     .detach();
@@ -419,9 +435,25 @@ impl SettingsWindow {
             )
     }
 
-    /// 终端页。眼下只有字体与字号这两项 —— 它们是真接到渲染上的
-    /// （[`crate::ui::panels::terminal`] 每帧读 [`font::global`]），
-    /// 别的先不摆。
+    /// 配色下拉那一列：出厂档"跟随界面主题"打头，之后是内置方案
+    /// （深色在前，见 [`scheme::PRESETS`]）。方案名是专有名词，不进 i18n。
+    fn scheme_options() -> Vec<(SharedString, SharedString)> {
+        std::iter::once((
+            SharedString::default(),
+            SharedString::from(t!("settings.terminal_scheme_follow")),
+        ))
+        .chain(scheme::PRESETS.iter().map(|preset| {
+            (
+                SharedString::from(preset.id),
+                SharedString::from(preset.name),
+            )
+        }))
+        .collect()
+    }
+
+    /// 终端页。眼下只有配色、字体与字号这三项 —— 它们是真接到渲染上的
+    /// （[`crate::ui::panels::terminal`] 每帧读 [`font::global`] 与
+    /// [`scheme::active`]），别的先不摆。
     fn terminal_page(cx: &App) -> SettingPage {
         // 下拉里除了本机装着的等宽字体，还要有"现在用的这个"：没挑过时用的是
         // 主题给的那个族名，它未必在筛出来的清单里（那个名字恰好过不了筛子
@@ -457,6 +489,14 @@ impl SettingsWindow {
             .group(
                 SettingGroup::new()
                     .title(t!("settings.terminal_appearance"))
+                    .item(SettingItem::new(
+                        t!("settings.terminal_scheme"),
+                        SettingField::scrollable_dropdown(
+                            Self::scheme_options(),
+                            |_cx: &App| scheme::global(),
+                            |id: SharedString, cx: &mut App| persist_terminal_scheme(id, cx),
+                        ),
+                    ))
                     .item(SettingItem::new(
                         t!("settings.terminal_font"),
                         // 可滚动的那一档：装了几十个等宽字体的机器不少，
@@ -731,6 +771,36 @@ mod tests {
 
         assert_eq!(font::global().family, "JetBrains Mono", "画一遍不该改掉它");
         assert_eq!(font::global().size, 18.);
+    }
+
+    /// 配色下拉画得通，而且那一列里每一套内置方案都在。少一套的话它就永远
+    /// 挑不上 —— 那种缺失从"页面画出来了"上是看不出来的。
+    #[gpui_kit::test]
+    fn the_scheme_dropdown_lists_every_preset(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = scheme::exclusive_for_test();
+        scheme::set_global("gruvbox_dark");
+
+        cx.update(gpui_kit::init);
+        let (shell, cx) = cx.add_window_view(SettingsWindow::new);
+        shell.update(cx, |shell, cx| shell.set_tab(SettingsTab::Terminal, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert_eq!(scheme::global(), "gruvbox_dark", "画一遍不该改掉它");
+
+        // 下拉那一列是在这儿拼的，组件那边只拿得到拼好的结果，所以照着
+        // 同一段逻辑核对一遍。
+        let options = SettingsWindow::scheme_options();
+        assert_eq!(options[0].0, "", "第一项是跟随界面主题");
+        for preset in &scheme::PRESETS {
+            assert!(
+                options
+                    .iter()
+                    .any(|(id, name)| id == preset.id && name == preset.name),
+                "{} 不在下拉里",
+                preset.id
+            );
+        }
     }
 
     #[gpui_kit::test]

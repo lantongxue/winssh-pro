@@ -1,31 +1,38 @@
 //! 应用级偏好服务：`settings` 表那些"不属于某台主机、某条凭据"的设置。
 //!
-//! 现在有两项 —— 全局代理（[`crate::proxy::GlobalProxy`]）与终端字体
-//! （[`crate::terminal::font::TerminalFont`]）。两者的读法一样刁钻：
+//! 现在有三项 —— 全局代理（[`crate::proxy::GlobalProxy`]）、终端字体
+//! （[`crate::terminal::font::TerminalFont`]）与终端配色
+//! （[`crate::terminal::scheme`]）。它们的读法一样刁钻：
 //!
 //! - **设置窗口**在 gpui 线程上读写它们，要的是立刻拿得到、改完立刻画出来；
 //! - **拨号**发生在 tokio 那一侧（[`crate::ssh::connection`]），手上没有 `App`，
-//!   而且每开一条会话就要读一次；**终端字体**更极端，每一帧都要读一次。
+//!   而且每开一条会话就要读一次；**终端字体与配色**更极端，每一帧都要读一次。
 //!
-//! 所以库是正本，[`crate::proxy`] 与 [`crate::terminal::font`] 各留一份进程级
-//! 缓存：启动时 [`Self::prime`] 灌一次，之后每次 `save_*` 两边一起写。少了缓存
-//! 的话，要么让拨号那条路去查库（多一次 await 与一条失败路径），要么让界面
-//! 每帧查库 —— 两样都不划算。
+//! 所以库是正本，[`crate::proxy`]、[`crate::terminal::font`] 与
+//! [`crate::terminal::scheme`] 各留一份进程级缓存：启动时 [`Self::prime`] 灌一次，
+//! 之后每次 `save_*` 两边一起写。少了缓存的话，要么让拨号那条路去查库（多一次
+//! await 与一条失败路径），要么让界面每帧查库 —— 两样都不划算。
 
 use anyhow::Result;
+use gpui_kit::SharedString;
 use sea_orm::DatabaseConnection;
 
 use crate::{
     db,
     proxy::{self, GlobalProxy},
     repository::SettingRepository,
-    terminal::font::{self, TerminalFont},
+    terminal::{
+        font::{self, TerminalFont},
+        scheme,
+    },
 };
 
 /// 全局代理在 `settings` 表里的键。
 const GLOBAL_PROXY_KEY: &str = "proxy.global";
 /// 终端字体在 `settings` 表里的键。
 const TERMINAL_FONT_KEY: &str = "terminal.font";
+/// 终端配色方案在 `settings` 表里的键。存的是方案 id 那一个词。
+const TERMINAL_SCHEME_KEY: &str = "terminal.scheme";
 
 /// 应用级偏好的业务入口。廉价克隆：界面各处各拿一份，共享同一条连接。
 #[derive(Clone)]
@@ -54,10 +61,10 @@ impl SettingService {
 
     /// 启动时把这几项从库里读进各自的进程级缓存。
     ///
-    /// 同步阻塞一次：这一步在开窗之前，读的是两行；而它必须在第一条会话
+    /// 同步阻塞一次：这一步在开窗之前，读的是三行；而它必须在第一条会话
     /// 建起来之前完成 —— 晚一步的话，开机就自动连上的那些主机会以"没有
-    /// 全局代理"直连出去，而用户明明配过；终端字体晚一步则是第一帧用出厂
-    /// 字体画完再跳一下。
+    /// 全局代理"直连出去，而用户明明配过；终端字体与配色晚一步则是第一帧
+    /// 用出厂档画完再跳一下。
     ///
     /// 读不出来只记一行日志：库坏了不该让应用开不起来，界面照常打得开，
     /// 用户在设置里重新配一次就修好了。
@@ -67,6 +74,7 @@ impl SettingService {
             (
                 this.load_global_proxy().await,
                 this.load_terminal_font().await,
+                this.load_terminal_scheme().await,
             )
         });
         match loaded.0 {
@@ -76,6 +84,10 @@ impl SettingService {
         match loaded.1 {
             Ok(terminal_font) => font::set_global(terminal_font),
             Err(error) => log::warn!("终端字体读不出来，这次运行按出厂档处理：{error:#}"),
+        }
+        match loaded.2 {
+            Ok(id) => scheme::set_global(&id),
+            Err(error) => log::warn!("终端配色读不出来，这次运行跟随界面主题：{error:#}"),
         }
     }
 
@@ -127,6 +139,34 @@ impl SettingService {
         db::run(async move {
             this.repo
                 .set(&this.db, TERMINAL_FONT_KEY, &encoded)
+                .await
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    /// 库里那份终端配色方案的 id。没写过、或者认不出来就是空串（跟随界面主题）。
+    pub async fn load_terminal_scheme(&self) -> Result<SharedString> {
+        let this = self.clone();
+        db::run(async move {
+            let raw = this.repo.get(&this.db, TERMINAL_SCHEME_KEY).await?;
+            Ok(scheme::decode(&raw.unwrap_or_default()))
+        })
+        .await
+    }
+
+    /// 写回终端配色方案，并同时换掉进程里那份缓存。
+    ///
+    /// 缓存先换，理由和 [`Self::save_global_proxy`] 一样。
+    pub async fn save_terminal_scheme(&self, id: SharedString) -> Result<()> {
+        scheme::set_global(&id);
+        let this = self.clone();
+        // 存的是规范化之后那一个：认不出来的 id 落库还是那串字，下次启动
+        // 又要认一次、又要写一行日志。
+        let encoded = scheme::encode(&scheme::global());
+        db::run(async move {
+            this.repo
+                .set(&this.db, TERMINAL_SCHEME_KEY, &encoded)
                 .await
                 .map_err(Into::into)
         })
@@ -208,6 +248,32 @@ mod tests {
             service.save_terminal_font(picked.clone()).await.unwrap();
             assert_eq!(service.load_terminal_font().await.unwrap(), picked);
             assert_eq!(font::global(), picked, "缓存也一起换了");
+        });
+    }
+
+    /// 配色存的是 id 那一个词。认不出来的存进去也要规范化成空串，
+    /// 不然下次启动还要再认一次、再记一行日志。
+    #[test]
+    fn the_terminal_scheme_stores_a_normalized_id() {
+        let _guard = scheme::exclusive_for_test();
+        db::runtime().block_on(async {
+            let service = SettingService::in_memory().await.unwrap();
+            assert_eq!(
+                service.load_terminal_scheme().await.unwrap(),
+                "",
+                "没写过就是跟随界面主题"
+            );
+
+            service.save_terminal_scheme("nord".into()).await.unwrap();
+            assert_eq!(service.load_terminal_scheme().await.unwrap(), "nord");
+            assert_eq!(scheme::global(), "nord", "缓存也一起换了");
+
+            service
+                .save_terminal_scheme("查无此色".into())
+                .await
+                .unwrap();
+            assert_eq!(service.load_terminal_scheme().await.unwrap(), "");
+            assert_eq!(scheme::global(), "");
         });
     }
 }

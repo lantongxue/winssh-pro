@@ -21,6 +21,7 @@
 mod emulator;
 pub mod font;
 mod keys;
+pub mod scheme;
 mod search;
 
 pub use emulator::{

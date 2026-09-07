@@ -226,6 +226,12 @@ settings.fps_monitor:
 settings.terminal_appearance:
   en: Appearance
   zh-CN: 外观
+settings.terminal_scheme:
+  en: Color scheme
+  zh-CN: 配色方案
+settings.terminal_scheme_follow:
+  en: Follow app theme
+  zh-CN: 跟随界面主题
 settings.terminal_font:
   en: Font
   zh-CN: 字体

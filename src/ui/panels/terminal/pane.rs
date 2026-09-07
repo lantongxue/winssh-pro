@@ -45,6 +45,7 @@ use crate::{
     ui::{
         elements::{TerminalGridElement, cell_at, point_at},
         menus::{TerminalAction, TerminalActionHandler, TerminalMenu, terminal_menu_allowed},
+        theme::ansi,
     },
 };
 use rust_i18n::t;
@@ -1111,7 +1112,9 @@ impl Render for TerminalPane {
             .relative()
             .size_full()
             .overflow_hidden()
-            .bg(cx.theme().background)
+            // 铺的是配色方案的底色，不是主题底色 —— 网格只画程序自己设了
+            // 底色的那些格子，剩下满屏的空白都是这一层透出来的。
+            .bg(ansi::background(cx))
             .font_family(font_family)
             .text_size(font_size)
             .line_height(font_size * LINE_HEIGHT)
