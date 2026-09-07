@@ -6,8 +6,10 @@
 
 mod credential_card;
 mod host_card;
+mod snippet_card;
 
 pub use credential_card::{
     CredentialAction, CredentialCard, CredentialField, kind_icon, kind_tone,
 };
 pub use host_card::{HOST_CARD_HEIGHT, HostCard};
+pub use snippet_card::{SnippetAction, SnippetCard};

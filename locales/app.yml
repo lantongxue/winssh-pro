@@ -53,9 +53,6 @@ sidebar.monitor:
 sidebar.collapse:
   en: Collapse sidebar
   zh-CN: 收起侧边栏
-sidebar.snippets_hint:
-  en: Frequently used commands and scripts will show up here, ready to send straight to the current session.
-  zh-CN: 常用命令与脚本会显示在这里，可以直接发到当前会话。
 sidebar.monitor_hint:
   en: CPU, memory and network usage of connected hosts will show up here.
   zh-CN: 已连接主机的 CPU、内存与网络占用会显示在这里。
@@ -414,6 +411,9 @@ palette.new_host:
 palette.new_credential:
   en: New credential
   zh-CN: 新建凭据
+palette.new_snippet:
+  en: New command snippet
+  zh-CN: 新建命令片段
 palette.open_vault_window:
   en: Open the vault in its own window
   zh-CN: 在独立窗口中打开保险箱
@@ -984,6 +984,226 @@ credential_form.create:
   en: Create
   zh-CN: 确认添加
 credential_form.cancel:
+  en: Cancel
+  zh-CN: 取消
+
+# ── 命令片段模型（src/snippet.rs） ───────────────────────────────────────
+snippet.category_docker:
+  en: Docker & K8s
+  zh-CN: Docker 与 K8s
+snippet.category_system:
+  en: System & maintenance
+  zh-CN: 系统与运维
+snippet.category_web:
+  en: Nginx & web
+  zh-CN: Nginx 与 Web
+snippet.category_database:
+  en: Database & storage
+  zh-CN: 数据库与存储
+snippet.category_security:
+  en: Security & firewall
+  zh-CN: 安全与防火墙
+snippet.category_network:
+  en: Network & diagnostics
+  zh-CN: 网络与诊断
+snippet.category_git:
+  en: Git & deploy
+  zh-CN: Git 与部署
+
+# 出厂自带的模板。名称套用之后就是片段名，所以两种语言都得像一条片段的名字。
+snippet.preset_docker_prune_title:
+  en: Docker deep clean
+  zh-CN: Docker 深度清理
+snippet.preset_docker_prune_description:
+  en: Remove every stopped container, unused network, dangling image and build cache.
+  zh-CN: 清掉所有停止的容器、无用网络、悬空镜像与构建缓存。
+snippet.preset_docker_logs_title:
+  en: Follow container logs
+  zh-CN: 跟一个容器的日志
+snippet.preset_docker_logs_description:
+  en: Stream a container's output, starting from the last N lines.
+  zh-CN: 从最近若干行开始，实时跟一个容器的输出。
+snippet.preset_large_files_title:
+  en: Ten largest files
+  zh-CN: 最大的十个文件
+snippet.preset_large_files_description:
+  en: Scan a directory and list the ten files taking up the most space.
+  zh-CN: 扫一个目录，列出最占地方的十个文件。
+snippet.preset_nginx_reload_title:
+  en: Nginx check and reload
+  zh-CN: Nginx 检查并热重载
+snippet.preset_nginx_reload_description:
+  en: Verify the configuration first, reload the workers only if it parses.
+  zh-CN: 先验一遍配置，通过了再让 worker 平滑重载。
+snippet.preset_mysql_dump_title:
+  en: MySQL compressed dump
+  zh-CN: MySQL 压缩备份
+snippet.preset_mysql_dump_description:
+  en: Dump a database and gzip it into a file named after today.
+  zh-CN: 导出一个库，压成以当天日期命名的 gz 文件。
+snippet.preset_listening_ports_title:
+  en: Listening ports
+  zh-CN: 监听中的端口
+snippet.preset_listening_ports_description:
+  en: List every listening TCP/UDP socket along with the process holding it.
+  zh-CN: 列出所有监听中的 TCP/UDP 端口，连占用它的进程一起。
+snippet.preset_git_reset_title:
+  en: Force sync with the remote branch
+  zh-CN: 强制同步远端分支
+snippet.preset_git_reset_description:
+  en: Throw away local changes and line up exactly with the upstream branch.
+  zh-CN: 丢掉本地改动，与上游分支完全对齐。
+
+# ── 命令片段（侧边栏视图与片段卡片） ─────────────────────────────────────
+snippet_vault.search_placeholder:
+  en: Search titles, commands and tags
+  zh-CN: 搜索名称、命令与标签
+snippet_vault.filter_all:
+  en: All (%{count})
+  zh-CN: 全部 (%{count})
+snippet_vault.new_snippet:
+  en: New snippet
+  zh-CN: 新建片段
+snippet_vault.run:
+  en: Send
+  zh-CN: 发送
+snippet_vault.run_tooltip:
+  en: Send to the current session
+  zh-CN: 发送到当前会话
+snippet_vault.run_with_params_tooltip:
+  en: Fill in the parameters, then send to the current session
+  zh-CN: 填好参数后发送到当前会话
+snippet_vault.copy:
+  en: Copy the command
+  zh-CN: 复制命令
+snippet_vault.copied:
+  en: Copied the command from “%{name}”.
+  zh-CN: 已复制“%{name}”的命令。
+snippet_vault.edit:
+  en: Edit this snippet
+  zh-CN: 编辑片段
+snippet_vault.delete:
+  en: Delete
+  zh-CN: 删除
+snippet_vault.cancel:
+  en: Cancel
+  zh-CN: 取消
+snippet_vault.delete_title:
+  en: Delete this snippet?
+  zh-CN: 删除这条片段？
+snippet_vault.delete_confirm:
+  en: "“%{name}” will be removed from the list. Commands already sent to a session are not affected."
+  zh-CN: "“%{name}”会从列表里移除。已经发到会话里的命令不受影响。"
+snippet_vault.delete_failed:
+  en: Could not delete the snippet
+  zh-CN: 删除命令片段失败
+snippet_vault.load_failed:
+  en: Could not read the snippets
+  zh-CN: 读取命令片段失败
+snippet_vault.no_session:
+  en: No session is in front — open one, or switch to its tab, and send again.
+  zh-CN: 当前前面没有会话，开一条或者切到它那个标签页再发送。
+snippet_vault.empty:
+  en: No snippets yet.
+  zh-CN: 还没有命令片段。
+snippet_vault.empty_hint:
+  en: "Save a command you keep retyping — one click sends it to the current session, and any {{name}} in it is asked for first."
+  zh-CN: "把总要重打的那条命令存下来 —— 一键发到当前会话，命令里的 {{name}} 会先问你。"
+snippet_vault.no_match:
+  en: No snippet matches.
+  zh-CN: 没有符合条件的片段。
+
+# ── 命令片段表单（新建 / 编辑片段的对话框） ──────────────────────────────
+snippet_form.title_new:
+  en: New command snippet
+  zh-CN: 新建命令片段
+snippet_form.title_edit:
+  en: Edit command snippet
+  zh-CN: 编辑命令片段
+snippet_form.subtitle:
+  en: Reusable commands and scripts, sent to a session in one click
+  zh-CN: 可复用的命令与脚本，一键发到会话里
+snippet_form.presets:
+  en: Templates
+  zh-CN: 快速模板
+snippet_form.presets_hint:
+  en: click to fill the form
+  zh-CN: 点一下填进表单
+snippet_form.field_title:
+  en: Title
+  zh-CN: 片段名称
+snippet_form.title_placeholder:
+  en: e.g. Nginx check and reload
+  zh-CN: 例如：Nginx 检查并热重载
+snippet_form.field_category:
+  en: Category
+  zh-CN: 分类
+snippet_form.field_command:
+  en: Command / script
+  zh-CN: 命令 / 脚本
+snippet_form.command_hint:
+  en: "{{name}} is a parameter"
+  zh-CN: "{{name}} 是参数"
+snippet_form.command_placeholder:
+  en: "e.g. docker logs -f --tail={{lines}} {{container}}"
+  zh-CN: "例如：docker logs -f --tail={{lines}} {{container}}"
+snippet_form.field_parameters:
+  en: Parameters (%{count})
+  zh-CN: 参数 (%{count})
+snippet_form.parameters_hint:
+  en: read from the command; what you type here is the default
+  zh-CN: 从命令里认出来的，这里填的是默认值
+snippet_form.default_placeholder:
+  en: default value
+  zh-CN: 默认值
+snippet_form.field_tags:
+  en: Tags
+  zh-CN: 分类标签
+snippet_form.tag_placeholder:
+  en: type a tag and press Enter
+  zh-CN: 输入标签后回车
+snippet_form.add_tag:
+  en: Add
+  zh-CN: 添加
+snippet_form.field_description:
+  en: Description
+  zh-CN: 说明
+snippet_form.description_placeholder:
+  en: One line on what this command does
+  zh-CN: 一句话说清这条命令干什么
+snippet_form.required_title:
+  en: Give the snippet a title.
+  zh-CN: 片段名称还没填。
+snippet_form.required_command:
+  en: The command is still empty.
+  zh-CN: 命令还没填。
+snippet_form.save_failed:
+  en: Could not save the snippet
+  zh-CN: 保存命令片段失败
+snippet_form.save:
+  en: Save
+  zh-CN: 保存修改
+snippet_form.create:
+  en: Create
+  zh-CN: 确认添加
+snippet_form.cancel:
+  en: Cancel
+  zh-CN: 取消
+
+# ── 命令片段参数对话框（发送带参数的片段之前） ───────────────────────────
+snippet_params.title:
+  en: Fill in the parameters
+  zh-CN: 填写参数
+snippet_params.placeholder:
+  en: value for %{name}
+  zh-CN: "%{name} 的值"
+snippet_params.preview:
+  en: Will be sent
+  zh-CN: 将要发送
+snippet_params.run:
+  en: Send
+  zh-CN: 发送
+snippet_params.cancel:
   en: Cancel
   zh-CN: 取消
 
@@ -2112,6 +2332,11 @@ host_service.forward_incomplete:
 credential_service.missing:
   en: Credential %{id} does not exist
   zh-CN: 凭据 %{id} 不存在
+
+# ── 命令片段服务 ─────────────────────────────────────────────────────────
+snippet_service.missing:
+  en: Snippet %{id} does not exist
+  zh-CN: 命令片段 %{id} 不存在
 
 # ── 生成 SSH 密钥对 ──────────────────────────────────────────────────────
 keygen.generate_failed:

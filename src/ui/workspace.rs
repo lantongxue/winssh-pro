@@ -23,7 +23,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px,
 };
 
-use crate::service::{CredentialService, HostService};
+use crate::service::{CredentialService, HostService, SnippetService};
 use crate::ui::{
     bars::{ActivityAction, ActivityBar, CommandCenterBar},
     dialogs::{CommandPaletteDialog, CommandPaletteEvent},
@@ -31,7 +31,7 @@ use crate::ui::{
     theme::AppIcon,
     views::{
         CredentialVaultEvent, CredentialVaultView, HostExplorerEvent, HostExplorerView,
-        PlaceholderView, SidebarView,
+        PlaceholderView, SidebarView, SnippetVaultEvent, SnippetVaultView,
     },
     windows::{CredentialVaultWindow, SettingsWindow, show_fps_monitor},
 };
@@ -76,6 +76,8 @@ pub struct Workspace {
     /// 保险箱服务。留一份在外壳上是为了那扇独立窗口 ——
     /// 它在自己的窗口里另建一个保险箱组件，得有个入口递过去。
     credential_service: CredentialService,
+    /// 命令片段视图。同样常驻：它持有搜索词、选中的分类与那份快照。
+    snippet_vault: Entity<SnippetVaultView>,
     /// 命令面板。它常驻在这里而不是每次现搭：面板的搜索状态归它自己，
     /// 外壳只在打开时把当前的主机递过去。
     command_palette: Entity<CommandPaletteDialog>,
@@ -142,6 +144,19 @@ impl Workspace {
         )
         .detach();
 
+        // 命令片段也住在同一座库里，同上只是再取一个业务入口。它要一份 Dock 的
+        // 弱引用：卡片上"发送"按下去要找的是中心区里那条活动会话。
+        let snippet_vault = cx.new(|cx| {
+            SnippetVaultView::new(SnippetService::open(), dock_area.downgrade(), window, cx)
+        });
+        cx.subscribe(
+            &snippet_vault,
+            |this, _, event: &SnippetVaultEvent, cx| match event {
+                SnippetVaultEvent::Collapse => this.toggle_sidebar(cx),
+            },
+        )
+        .detach();
+
         let command_palette = cx.new(|cx| CommandPaletteDialog::new(window, cx));
         cx.subscribe_in(
             &command_palette,
@@ -160,6 +175,12 @@ impl Workspace {
                     this.show_view(SidebarView::Keys, cx);
                     this.credential_vault
                         .update(cx, |vault, cx| vault.new_credential(window, cx));
+                }
+                CommandPaletteEvent::NewSnippet => {
+                    // 同上：先切到命令片段，存完的那一条才看得见。
+                    this.show_view(SidebarView::Snippets, cx);
+                    this.snippet_vault
+                        .update(cx, |vault, cx| vault.new_snippet(window, cx));
                 }
                 CommandPaletteEvent::Activity(action) => this.run_action(*action, window, cx),
             },
@@ -182,6 +203,7 @@ impl Workspace {
             host_explorer,
             credential_vault,
             credential_service,
+            snippet_vault,
             command_palette,
             view: SidebarView::Hosts,
             sidebar_open: true,
@@ -337,11 +359,12 @@ impl Workspace {
             .child(h_flex().flex_1().min_w_0().pr(WINDOW_CONTROLS_INSET))
     }
 
-    /// 侧边栏当前那个视图。主机与保险箱有实现，其余两个走占位视图 ——
-    /// 它们的状态还没有，所以不必常驻一个 `Entity`，每帧构建就够了。
+    /// 侧边栏当前那个视图。只剩资源监控还走占位视图 ——
+    /// 它的状态还没有，所以不必常驻一个 `Entity`，每帧构建就够了。
     fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.view {
             SidebarView::Hosts => self.host_explorer.clone().into_any_element(),
+            SidebarView::Snippets => self.snippet_vault.clone().into_any_element(),
             SidebarView::Keys => self.credential_vault.clone().into_any_element(),
             view => PlaceholderView::new(view)
                 .on_collapse(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)))

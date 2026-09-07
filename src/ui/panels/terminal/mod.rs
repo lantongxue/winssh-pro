@@ -30,7 +30,7 @@ pub use split::SplitLayout;
 use gpui_kit::component::{
     ActiveTheme as _, IconName, ResizableState, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
-    dock::{BasePanel, Panel, PanelEvent, PanelId, TabGroup},
+    dock::{BasePanel, DockArea, DockPlacement, PaneRef, Panel, PanelEvent, PanelId, TabGroup},
     h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
 };
 use gpui_kit::{
@@ -425,6 +425,64 @@ impl TerminalPanel {
             return;
         };
         pane.update(cx, |pane, cx| pane.send_line(cmd, cx));
+    }
+
+    /// 打一行命令并把焦点交给那个终端。侧边栏的命令片段走这条路。
+    ///
+    /// 焦点跟着走是这一下的另一半意思：命令是从侧边栏点出去的，发完之后要看
+    /// 的、要接着敲的都在终端里 —— 焦点留在片段列表上的话，用户输入的下一个
+    /// 字会打进搜索框。监控面板与 SFTP 栏送命令时不必这么做，它们本来就在
+    /// 这条会话里面，焦点没跑出去。
+    pub fn run_line(&mut self, cmd: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.send_line(cmd, cx);
+        self.focus_active(window, cx);
+    }
+
+    /// 中心区里那条**活动会话**，眼下没有会话在前面时是 `None`。
+    ///
+    /// 侧边栏的命令片段视图要往"当前这个终端"里发命令，而它不认识 Dock 的
+    /// 布局。这里从中心区的布局树上找：每个标签组各有一个活动标签，其中焦点
+    /// 落在里头的那一个就是"当前"；焦点不在任何一个终端里（刚在侧边栏里点完
+    /// 东西时正是这样）就取头一个 —— 单标签、不分屏的常见情形下这两条给出的
+    /// 是同一个答案。
+    ///
+    /// **只认活动标签**：一个标签组里藏在后面的那几条会话不算，哪怕它们也是
+    /// 终端。往一条看不见的会话里发命令是危险的 —— 用户以为命令进了眼前这台
+    /// 机器，实际进了另一台。所以那种情况按"没有会话在前面"处理，由调用方
+    /// 提示一句，而不是替他挑一台。
+    ///
+    /// 中心区里还停着欢迎页这类别的面板，`downcast` 认不出来的一律跳过。
+    pub fn active_in(
+        dock_area: &Entity<DockArea>,
+        window: &Window,
+        cx: &App,
+    ) -> Option<Entity<Self>> {
+        let area = dock_area.read(cx);
+        let tree = area.layout(DockPlacement::Center)?;
+
+        let mut sessions: Vec<Entity<Self>> = Vec::new();
+        tree.root().walk(&mut |node| {
+            let PaneRef::Tabs { panels, active_ix } = node.kind() else {
+                return;
+            };
+            let Some(panel) = panels.get(active_ix).and_then(|id| area.panel(*id)) else {
+                return;
+            };
+            if let Ok(session) = panel.view().downcast::<Self>() {
+                sessions.push(session);
+            }
+        });
+
+        sessions
+            .iter()
+            .find(|session| {
+                session
+                    .read(cx)
+                    .focus_handle(cx)
+                    .contains_focused(window, cx)
+            })
+            .cloned()
+            .or_else(|| sessions.into_iter().next())
     }
 
     // ─── 子面板 ─────────────────────────────────────────────────────────────
@@ -1107,7 +1165,16 @@ mod tests {
     fn draw_panel(
         cx: &mut gpui_kit::TestAppContext,
     ) -> (Entity<TerminalPanel>, &mut gpui_kit::VisualTestContext) {
-        use gpui_kit::component::dock::{DockPlacement, DockSkin, panel_handle};
+        let (harness, cx) = dock_harness(cx);
+        let panel = harness.read_with(cx, |harness, _| harness.panel.clone());
+        (panel, cx)
+    }
+
+    /// 同上，但把 Dock 也交出来 —— [`TerminalPanel::active_in`] 要从它身上找。
+    fn dock_harness(
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> (Entity<Harness>, &mut gpui_kit::VisualTestContext) {
+        use gpui_kit::component::dock::{DockSkin, panel_handle};
 
         cx.update(gpui_kit::init);
         let (harness, cx) = cx.add_window_view(|window, cx| {
@@ -1124,9 +1191,67 @@ mod tests {
             });
             Harness { dock_area, panel }
         });
-        let panel = harness.read_with(cx, |harness, _| harness.panel.clone());
         cx.update(|window, cx| window.draw(cx).clear(cx));
-        (panel, cx)
+        (harness, cx)
+    }
+
+    /// 中心区里那条活动会话找得到。
+    ///
+    /// 侧边栏的命令片段全靠这一趟：`active_in` 要走一遍 Dock 的布局树，
+    /// 从每个标签组的活动标签上把面板取出来再 `downcast`。这条路认不出面板
+    /// 类型的话它只会安静地返回 `None`，界面上的表现是"发送"按下去永远只弹
+    /// 一句"没有会话在前面"—— 编译器一个字都不会说。
+    #[gpui_kit::test]
+    fn the_active_session_is_found_through_the_dock(cx: &mut gpui_kit::TestAppContext) {
+        let (harness, cx) = dock_harness(cx);
+        let (dock_area, panel) = harness.read_with(cx, |harness, _| {
+            (harness.dock_area.clone(), harness.panel.clone())
+        });
+
+        cx.update(|window, cx| {
+            let found =
+                TerminalPanel::active_in(&dock_area, window, cx).expect("中心区里就停着一条会话");
+            assert_eq!(found.entity_id(), panel.entity_id());
+        });
+    }
+
+    /// 中心区里只有别的面板（欢迎页那种）时是"没有会话"，不是 panic ——
+    /// `downcast` 认不出的一律跳过。
+    #[gpui_kit::test]
+    fn a_dock_without_a_terminal_has_no_active_session(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::component::dock::{DockSkin, panel_handle};
+
+        cx.update(gpui_kit::init);
+        let (harness, cx) = cx.add_window_view(|window, cx| {
+            let (dock_area, _skin) = DockSkin::dock_area("test-dock-empty", Some(1), window, cx);
+            let welcome = crate::ui::panels::WelcomePanel::new(window, cx);
+            dock_area.update(cx, |area, cx| {
+                area.add_panel_view(
+                    panel_handle(welcome),
+                    DockPlacement::Center,
+                    None,
+                    window,
+                    cx,
+                );
+            });
+            EmptyHarness { dock_area }
+        });
+        let dock_area = harness.read_with(cx, |harness, _| harness.dock_area.clone());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        cx.update(|window, cx| {
+            assert!(TerminalPanel::active_in(&dock_area, window, cx).is_none());
+        });
+    }
+
+    struct EmptyHarness {
+        dock_area: Entity<gpui_kit::component::dock::DockArea>,
+    }
+
+    impl Render for EmptyHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.dock_area.clone())
+        }
     }
 
     /// 这条标签页一帧要多少 CPU。**平时不跑**（`#[ignore]`），要量的时候：

@@ -65,6 +65,8 @@ pub enum CommandPaletteEvent {
     NewHost,
     /// 往保险箱里新建一条凭据。
     NewCredential,
+    /// 新建一条命令片段。
+    NewSnippet,
     /// 活动栏底部那几个全局动作里的一个。
     Activity(ActivityAction),
 }
@@ -327,6 +329,13 @@ fn action_commands() -> Vec<PaletteCommand> {
                 .icon(AppIcon::ShieldCheck)
                 .keywords(["new", "credential", "password", "key", "vault"]),
             CommandPaletteEvent::NewCredential,
+        ),
+        PaletteCommand::new(
+            CommandItem::new()
+                .label(t!("palette.new_snippet"))
+                .icon(AppIcon::CodeXml)
+                .keywords(["new", "snippet", "command", "script", "片段", "命令"]),
+            CommandPaletteEvent::NewSnippet,
         ),
         PaletteCommand::dispatching(
             CommandItem::new()

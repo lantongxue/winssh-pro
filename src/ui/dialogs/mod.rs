@@ -17,6 +17,8 @@ mod port_forward;
 mod sftp_chmod;
 mod sftp_editor;
 mod sftp_form;
+mod snippet_form;
+mod snippet_params;
 
 pub use command_palette::{CommandPaletteDialog, CommandPaletteEvent};
 pub use credential_form::{CredentialFormDialog, CredentialSavedHandler};
@@ -27,6 +29,8 @@ pub use port_forward::{ForwardsHandler, PortForwardDialog};
 pub use sftp_chmod::{ChmodHandler, SftpChmodDialog};
 pub use sftp_editor::{SavedHandler as SftpSavedHandler, SftpEditorDialog};
 pub use sftp_form::{SftpFormDialog, SftpFormKind, SftpNameHandler};
+pub use snippet_form::{SnippetFormDialog, SnippetSavedHandler};
+pub use snippet_params::{SnippetParamsDialog, SnippetRunHandler};
 
 use gpui_kit::{Pixels, Window, px};
 

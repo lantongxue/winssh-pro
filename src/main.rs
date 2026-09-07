@@ -12,6 +12,7 @@ mod repository;
 mod service;
 mod session;
 mod sftp;
+mod snippet;
 mod ssh;
 mod terminal;
 mod ui;

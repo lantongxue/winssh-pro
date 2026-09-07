@@ -1,10 +1,10 @@
 //! 视图（`*View`）：侧边栏里的整块内容，一次只显示一个。
 //!
 //! 侧边栏是活动栏与 Dock 之间那一栏，显示哪个视图由活动栏决定（[`SidebarView`]）。
-//! 视图各自是独立组件：主机视图（[`HostExplorerView`]）与保险箱视图
-//! （[`CredentialVaultView`]）有完整实现，其余两个还没落地，统一走
-//! [`PlaceholderView`]。所有视图共用同一条标题行，版式常量也放在这里，
-//! 换视图时这一栏的骨架不会跳。
+//! 视图各自是独立组件：主机视图（[`HostExplorerView`]）、命令片段视图
+//! （[`SnippetVaultView`]）与保险箱视图（[`CredentialVaultView`]）有完整实现，
+//! 资源监控还没落地，走 [`PlaceholderView`]。所有视图共用同一条标题行，
+//! 版式常量也放在这里，换视图时这一栏的骨架不会跳。
 //!
 //! 视图不进 [`gpui_kit::component::dock`]：它由 [`crate::ui::Workspace`] 直接渲染在一个
 //! 可拖宽的区域里，不能被拖走、分屏或另存布局。要那些能力的是 `*Panel`，
@@ -13,10 +13,12 @@
 mod credential_vault;
 mod host_explorer;
 mod placeholder;
+mod snippet_vault;
 
 pub use credential_vault::{CredentialVaultEvent, CredentialVaultView, VaultFilter};
 pub use host_explorer::{HostExplorerEvent, HostExplorerView};
 pub use placeholder::PlaceholderView;
+pub use snippet_vault::{SnippetVaultEvent, SnippetVaultView};
 
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,

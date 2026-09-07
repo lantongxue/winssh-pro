@@ -22,7 +22,7 @@ use tokio::runtime::Runtime;
 
 /// 建表语句。`CREATE TABLE IF NOT EXISTS` 是幂等的，每次启动都跑一遍；
 /// 老用户的库文件已存在时原样保留，新字段通过 [`MIGRATIONS`] 补齐。
-const SCHEMA: [&str; 4] = [
+const SCHEMA: [&str; 5] = [
     "CREATE TABLE IF NOT EXISTS host_groups (
         id         INTEGER PRIMARY KEY,
         name       TEXT    NOT NULL UNIQUE,
@@ -66,6 +66,19 @@ const SCHEMA: [&str; 4] = [
         tags         TEXT    NOT NULL DEFAULT '',
         notes        TEXT    NOT NULL DEFAULT '',
         favorite     INTEGER NOT NULL DEFAULT 0,
+        created_at   TEXT    NOT NULL DEFAULT '',
+        updated_at   TEXT    NOT NULL DEFAULT ''
+    )",
+    // 命令片段。和 hosts 之间也没有关系：一条片段发到哪台机器上，是按下"发送"
+    // 那一刻才决定的（见 `crate::snippet` 的模块文档），所以它不属于任何一台主机。
+    "CREATE TABLE IF NOT EXISTS snippets (
+        id           TEXT    PRIMARY KEY,
+        title        TEXT    NOT NULL,
+        category     TEXT    NOT NULL DEFAULT 'docker',
+        command      TEXT    NOT NULL DEFAULT '',
+        description  TEXT    NOT NULL DEFAULT '',
+        tags         TEXT    NOT NULL DEFAULT '',
+        variables    TEXT    NOT NULL DEFAULT '',
         created_at   TEXT    NOT NULL DEFAULT '',
         updated_at   TEXT    NOT NULL DEFAULT ''
     )",
