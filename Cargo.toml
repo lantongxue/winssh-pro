@@ -20,7 +20,14 @@ anyhow = "1"
 # zed commit 同一个版本号），component 与 base 都钉在那份快照上 —— 自己再列一份
 # 就是两份不同的 gpui 类型，编不过。整组版本由门面 crate 钉住，这里少一处能钉歪
 # 的地方；跟新快照就是 `cargo update`，0.6 与 0.3 都是 caret 需求。
-gpui-kit = { path = "refs/gpui-kit/crates/kit", version = "0.6.0" }
+# `tree-sitter-languages` 一次打开组件库里全部 35 种语法（bash/shell、python、rust、
+# go、c/c++、js/ts、json/yaml/toml、sql、markdown…… 见 refs/gpui-kit 的
+# `crates/component/Cargo.toml`）。不开任何语法 feature 时，编辑器的 `.language(..)`
+# 是空操作、源码不涂色（原 SFTP 编辑对话框就吃过这个亏）；开了之后 `SftpEditorPanel`
+# 才真的高亮。代价是这些语法的 tree-sitter 语法是 C crate，首次要多编一会儿、二进制
+# 大几 MB —— 想瘦身就把这一行换成精选子集（如只留 tree-sitter-bash / -python / -yaml…），
+# 未知语言本就优雅退化为纯文本，改不改都不影响正确性。
+gpui-kit = { path = "refs/gpui-kit/crates/kit", version = "0.6.0", features = ["tree-sitter-languages"] }
 
 # 帧率浮层（设置里那个"FPS 监控"开关点亮的那块 HUD）。读数来自 gpui 自己的
 # 帧追踪（`gpui::FrameTimingCollector`），量的是框架真正花在 `Window::draw`

@@ -20,6 +20,6 @@ pub use host_service::HostService;
 pub use local_file_service::{LocalFileService, unique_local_path};
 pub use monitor_service::MonitorService;
 pub use setting_service::SettingService;
-pub use sftp_service::{MAX_TEXT_BYTES, SftpService, TransferEvent, TransferHandle, TransferJob};
+pub use sftp_service::{SftpService, TransferEvent, TransferHandle, TransferJob};
 pub use snippet_service::SnippetService;
 pub use ssh_service::SshService;

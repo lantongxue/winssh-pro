@@ -40,7 +40,7 @@ use gpui_kit::{App, KeyBinding};
 
 use panels::{
     BackTab, CloseSearch, CopySelection, ExtendSelectionDown, ExtendSelectionUp, Find,
-    OpenSelection, PasteClipboard, SelectAllEntries, Tab, ToggleForwards, ToggleMonitor,
+    OpenSelection, PasteClipboard, SaveFile, SelectAllEntries, Tab, ToggleForwards, ToggleMonitor,
     ToggleSftp,
 };
 use workspace::{OpenSettingsWindow, OpenVaultWindow, ToggleCommandPalette, ToggleSidebar};
@@ -61,6 +61,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("alt-3", OpenVaultWindow, None),
         KeyBinding::new(&format!("{CMD}-w"), ClosePanel, None),
         KeyBinding::new("shift-escape", ToggleZoom, None),
+        // 远端文件编辑标签页里的保存。绑在 `SftpEditor` 上下文而不是全局：焦点落在编辑器
+        // （它是那个面板的孩子）里时冒泡上来命中；别处（终端、表格）的 cmd-s 不受影响。
+        // 编辑器内层是 `Input` 上下文、不绑 cmd-s，所以让得开。
+        KeyBinding::new(&format!("{CMD}-s"), SaveFile, Some("SftpEditor")),
         // 终端内的 Tab / Shift-Tab：必须在 `Terminal` 上下文中显式绑定并消费，
         // 否则会被 `Root` 的 `Tab`（焦点切换）抢走，终端永远收不到 `\x09` / `\x1b[Z`。
         KeyBinding::new("tab", Tab, Some("Terminal")),

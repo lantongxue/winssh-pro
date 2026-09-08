@@ -289,7 +289,7 @@ impl Workspace {
     }
 
     fn open_local_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let panel = TerminalPanel::new_local(window, cx);
+        let panel = TerminalPanel::new_local(self.dock_area.downgrade(), window, cx);
         _ = self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
         });

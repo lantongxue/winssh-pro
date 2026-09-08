@@ -30,7 +30,10 @@ pub use split::SplitLayout;
 use gpui_kit::component::{
     ActiveTheme as _, IconName, ResizableState, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
-    dock::{BasePanel, DockArea, DockPlacement, PaneRef, Panel, PanelEvent, PanelId, TabGroup},
+    dock::{
+        BasePanel, DockArea, DockPlacement, PaneRef, Panel, PanelEvent, PanelId, TabGroup,
+        panel_handle,
+    },
     h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
 };
 use gpui_kit::{
@@ -173,6 +176,9 @@ pub struct TerminalPanel {
     /// 主机库。端口转发对话框改完规则要写回这台主机那一行。
     /// 本机 Shell 没有对应的库记录，那时是 `None`。
     hosts: Option<HostService>,
+    /// 所在的 Dock。SFTP 面板要编辑远端文件时，靠它在中心区开一个编辑器标签页 ——
+    /// 子面板够不到 Dock，这个弱句柄是从工作区一路穿下来的（[`Self::subscribe_sftp`]）。
+    dock_area: WeakEntity<DockArea>,
     /// 上一次报出去的存活状态，[`Self::sync_liveness`] 拿它判断"翻面了没有"。
     /// 开局是 `false`：还没连上的会话不算活着。
     alive: bool,
@@ -187,15 +193,25 @@ impl TerminalPanel {
     /// `hosts` 只为一件事传进来：监控面板的设置页要把采集节奏写回这台主机的
     /// 那一行。本机 shell 没有对应的库记录，走 [`Self::new_local`] 的那一档
     /// 就是 `None`。
-    pub fn new(host: Host, hosts: HostService, window: &mut Window, cx: &mut App) -> Entity<Self> {
-        Self::build(host, Source::Ssh, Some(hosts), window, cx)
+    pub fn new(
+        host: Host,
+        hosts: HostService,
+        dock_area: WeakEntity<DockArea>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        Self::build(host, Source::Ssh, Some(hosts), dock_area, window, cx)
     }
 
     /// 直接在本机开一条登录 shell，不经过 SSH。
     ///
     /// 用于标题栏"本地 Shell"按钮。`Host` 仅用于展示（名字、地址、状态栏读数），
     /// 字节源就是 [`crate::terminal::Emulator::spawn`] 的本机 PTY。
-    pub fn new_local(window: &mut Window, cx: &mut App) -> Entity<Self> {
+    pub fn new_local(
+        dock_area: WeakEntity<DockArea>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<Self> {
         let counter = {
             use std::sync::atomic::{AtomicUsize, Ordering};
             static LOCAL_COUNTER: AtomicUsize = AtomicUsize::new(1);
@@ -225,13 +241,17 @@ impl TerminalPanel {
             tags: Vec::new(),
             proxy: Default::default(),
         };
-        Self::build(host, Source::Local, None, window, cx)
+        Self::build(host, Source::Local, None, dock_area, window, cx)
     }
 
     /// 只在测试里用：窗格拿一个不连任何东西的空终端。理由见
     /// [`PaneOrigin::Detached`]。
     #[cfg(test)]
-    fn new_detached(window: &mut Window, cx: &mut App) -> Entity<Self> {
+    fn new_detached(
+        dock_area: WeakEntity<DockArea>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<Self> {
         let host = Host {
             id: "detached".into(),
             name: "detached".into(),
@@ -249,13 +269,14 @@ impl TerminalPanel {
             tags: Vec::new(),
             proxy: Default::default(),
         };
-        Self::build(host, Source::Detached, None, window, cx)
+        Self::build(host, Source::Detached, None, dock_area, window, cx)
     }
 
     fn build(
         host: Host,
         source: Source,
         hosts: Option<HostService>,
+        dock_area: WeakEntity<DockArea>,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
@@ -290,6 +311,7 @@ impl TerminalPanel {
                 sftp_resizable_id: SharedString::from(format!("terminal-sftp-{}", host.id)),
                 ssh: None,
                 hosts,
+                dock_area,
                 alive: false,
                 forwards: None,
                 host,
@@ -583,6 +605,24 @@ impl TerminalPanel {
                 SftpPanelEvent::Reconnect => {
                     if let Some(session) = this.ssh.clone() {
                         this.open_sftp(session.handle, window, cx);
+                    }
+                }
+                SftpPanelEvent::OpenEditor(editor) => {
+                    // 把 SFTP 面板建好的编辑器面板挂进中心区，开成新标签页（`add_panel_view`
+                    // 会把它选到最前）。从这个订阅回调里调它是安全的：它引起的
+                    // `set_active(false)`（让本终端标签页失活）是 Dock 延后派发的，不会同步
+                    // 重入这个面板。够不到 Dock（弱句柄断了）就什么都不做。
+                    if let Some(area) = this.dock_area.upgrade() {
+                        let editor = editor.clone();
+                        area.update(cx, |area, cx| {
+                            area.add_panel_view(
+                                panel_handle(editor),
+                                DockPlacement::Center,
+                                None,
+                                window,
+                                cx,
+                            );
+                        });
                     }
                 }
             },
@@ -1278,7 +1318,7 @@ mod tests {
         cx.update(gpui_kit::init);
         let (harness, cx) = cx.add_window_view(|window, cx| {
             let (dock_area, _skin) = DockSkin::dock_area("test-dock", Some(1), window, cx);
-            let panel = TerminalPanel::new_detached(window, cx);
+            let panel = TerminalPanel::new_detached(dock_area.downgrade(), window, cx);
             dock_area.update(cx, |area, cx| {
                 area.add_panel_view(
                     panel_handle(panel.clone()),

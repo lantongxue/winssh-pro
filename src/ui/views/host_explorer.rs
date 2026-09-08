@@ -400,7 +400,13 @@ impl HostExplorerView {
         self.recent.insert(0, host.id.clone());
         self.recent.truncate(RECENT_LIMIT);
 
-        let panel = TerminalPanel::new(host.clone(), self.service.clone(), window, cx);
+        let panel = TerminalPanel::new(
+            host.clone(),
+            self.service.clone(),
+            self.dock_area.clone(),
+            window,
+            cx,
+        );
         self.track_session(host.id.clone(), &panel, cx);
         _ = self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);

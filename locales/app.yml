@@ -1340,18 +1340,12 @@ sftp_form.error_dot:
   zh-CN: "`/.` 和 `..` 指的是目录本身与上级，不能当条目名。"
 
 # ── SFTP 文本编辑对话框 ──────────────────────────────────────────────────
-sftp_editor.footer_hint:
-  en: Saves by overwriting the whole file, up to %{limit}
-  zh-CN: 整篇覆盖保存，上限 %{limit}
-sftp_editor.cancel:
-  en: Cancel
-  zh-CN: 取消
 sftp_editor.save:
   en: Save
   zh-CN: 保存
 sftp_editor.save_tooltip:
-  en: Save (⌘S / Ctrl+S)
-  zh-CN: 保存（⌘S / Ctrl+S）
+  en: Overwrite-save the remote file (⌘S / Ctrl+S)
+  zh-CN: 覆盖保存远端文件（⌘S / Ctrl+S）
 sftp_editor.saved:
   en: Saved %{name}
   zh-CN: 已保存 %{name}
@@ -1361,9 +1355,24 @@ sftp_editor.save_failed:
 sftp_editor.loading:
   en: Reading from the remote…
   zh-CN: 正在从远端读取…
-sftp_editor.header_note:
-  en: You are editing the remote file itself
-  zh-CN: 编辑的是远端那份文件本身
+sftp_editor.close_tab:
+  en: Close editor
+  zh-CN: 关闭编辑器
+sftp_editor.close_dirty_title:
+  en: Unsaved changes
+  zh-CN: 有未保存的更改
+sftp_editor.close_dirty_confirm:
+  en: "“%{name}” has unsaved changes. Save before closing?"
+  zh-CN: 「%{name}」有未保存的更改，关闭前要保存吗？
+sftp_editor.close_save:
+  en: Save & close
+  zh-CN: 保存并关闭
+sftp_editor.close_discard:
+  en: Don't save
+  zh-CN: 不保存
+sftp_editor.close_cancel:
+  en: Cancel
+  zh-CN: 取消
 
 # ── SFTP 权限（chmod）对话框 ─────────────────────────────────────────────
 sftp_chmod.title:

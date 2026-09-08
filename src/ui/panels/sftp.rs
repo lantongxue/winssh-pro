@@ -55,8 +55,9 @@ use gpui_kit::{
 };
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
+use super::sftp_editor::{SavedHandler as SftpSavedHandler, SftpEditorPanel};
 use crate::ui::{
-    dialogs::{ChmodHandler, SftpChmodDialog, SftpEditorDialog, SftpFormDialog, SftpSavedHandler},
+    dialogs::{ChmodHandler, SftpChmodDialog, SftpFormDialog},
     drawers::{TransferQueueDrawer, TransferQueueEvent},
     menus::{LocalEntryAction, LocalEntryActionHandler, LocalEntryMenu},
     menus::{SftpEntryAction, SftpEntryActionHandler, SftpEntryMenu},
@@ -134,6 +135,11 @@ pub enum SftpPanelEvent {
     /// 空状态里那下"重试"：请宿主重新开一次 SFTP 通道。
     #[allow(dead_code)]
     Reconnect,
+    /// 编辑一个远端文件：请宿主把这个编辑器面板挂进中心区，开成一个新标签页。
+    ///
+    /// 面板自己够不到 `DockArea`（它嵌在终端标签页里），而中心区的标签页由宿主管，
+    /// 所以把建好的编辑器面板发上去，由宿主 [`crate::ui::panels::TerminalPanel`] 挂。
+    OpenEditor(Entity<SftpEditorPanel>),
 }
 
 gpui_kit::actions!(
@@ -2186,14 +2192,18 @@ impl SftpPanel {
             };
             entity.update(app, |this, cx| this.reload_in_place(&directory, window, cx));
         });
-        SftpEditorDialog::open(
-            service,
-            entry.path.clone(),
-            entry.name.clone(),
-            on_saved,
-            window,
-            cx,
-        );
+        // 建好编辑器面板，交给宿主标签页挂进中心区（它手上才有 DockArea）。
+        let editor = cx.new(|cx| {
+            SftpEditorPanel::new(
+                service,
+                entry.path.clone(),
+                entry.name.clone(),
+                on_saved,
+                window,
+                cx,
+            )
+        });
+        cx.emit(SftpPanelEvent::OpenEditor(editor));
     }
 
     // ------------------------------------------------------------------ 传输

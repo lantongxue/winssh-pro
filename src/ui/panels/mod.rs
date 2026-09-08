@@ -10,6 +10,7 @@
 mod event_log;
 mod monitor;
 mod sftp;
+mod sftp_editor;
 mod terminal;
 mod welcome;
 
@@ -18,6 +19,9 @@ pub use sftp::{
     ExtendSelectionDown, ExtendSelectionUp, OpenSelection, SelectAllEntries, SftpPanel,
     SftpPanelEvent,
 };
+// `SftpEditorPanel` 与 `SavedHandler` 只在 `panels` 内部用（`sftp.rs` 直接从
+// `super::sftp_editor` 取），这里只把 `SaveFile` 抬出去给 `crate::ui::init` 绑键。
+pub use sftp_editor::SaveFile;
 pub use terminal::{
     BackTab, CloseSearch, CopySelection, Find, PasteClipboard, SessionEvent, SplitLayout, Tab,
     TerminalPanel, ToggleForwards, ToggleMonitor, ToggleSftp,
