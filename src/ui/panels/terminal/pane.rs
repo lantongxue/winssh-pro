@@ -848,9 +848,12 @@ impl TerminalPane {
         self.open_search(window, cx);
     }
 
-    /// Esc 关掉搜索栏。焦点在输入框里，所以这个 action 不查终端焦点。
+    /// Esc 关掉搜索栏。搜索栏没开着时放行 —— `cx.propagate()` 让这一下
+    /// 继续走正常的按键派发，最终落到 `on_key_down` → `Emulator::key_down`，
+    /// 把 `\x1b` 送进终端，vim 之类的程序才收得到 Esc。
     fn on_close_search(&mut self, _: &CloseSearch, window: &mut Window, cx: &mut Context<Self>) {
         if self.search_input.is_none() {
+            cx.propagate();
             return;
         }
         self.close_search(window, cx);

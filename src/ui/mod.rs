@@ -75,7 +75,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("alt-p", ToggleForwards, Some("Terminal")),
         // 终端内搜索。`ctrl-f` 在终端里是"光标右移一格"（emacs 键位、readline
         // 默认就绑着它），所以非 macOS 上让给 `ctrl-shift-f`，和复制粘贴让开的
-        // 理由是同一个。Esc 只在搜索栏开着时被消费，见 `on_close_search`。
+        // 理由是同一个。Esc 只在搜索栏开着时消费，没开着时 `on_close_search`
+        // 调 `cx.propagate()` 放行，让这一下继续走 `on_key_down` 送给终端。
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-f", Find, Some("Terminal")),
         #[cfg(not(target_os = "macos"))]
