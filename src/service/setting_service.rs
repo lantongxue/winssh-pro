@@ -1,8 +1,9 @@
 //! 应用级偏好服务：`settings` 表那些"不属于某台主机、某条凭据"的设置。
 //!
-//! 现在有三项 —— 全局代理（[`crate::proxy::GlobalProxy`]）、终端字体
-//! （[`crate::terminal::font::TerminalFont`]）与终端配色
-//! （[`crate::terminal::scheme`]）。它们的读法一样刁钻：
+//! 现在有四项 —— 全局代理（[`crate::proxy::GlobalProxy`]）、终端字体
+//! （[`crate::terminal::font::TerminalFont`]）、终端配色
+//! （[`crate::terminal::scheme`]）与智能助手的供应商配置
+//! （[`crate::assistant::AssistantConfig`]）。它们的读法一样刁钻：
 //!
 //! - **设置窗口**在 gpui 线程上读写它们，要的是立刻拿得到、改完立刻画出来；
 //! - **拨号**发生在 tokio 那一侧（[`crate::ssh::connection`]），手上没有 `App`，
@@ -18,6 +19,7 @@ use gpui_kit::SharedString;
 use sea_orm::DatabaseConnection;
 
 use crate::{
+    assistant::{AssistantConfig, config as assistant_config},
     db,
     proxy::{self, GlobalProxy},
     repository::SettingRepository,
@@ -33,6 +35,8 @@ const GLOBAL_PROXY_KEY: &str = "proxy.global";
 const TERMINAL_FONT_KEY: &str = "terminal.font";
 /// 终端配色方案在 `settings` 表里的键。存的是方案 id 那一个词。
 const TERMINAL_SCHEME_KEY: &str = "terminal.scheme";
+/// 智能助手供应商配置在 `settings` 表里的键。存的是一份 JSON。
+const ASSISTANT_CONFIG_KEY: &str = "assistant.config";
 
 /// 应用级偏好的业务入口。廉价克隆：界面各处各拿一份，共享同一条连接。
 #[derive(Clone)]
@@ -75,6 +79,7 @@ impl SettingService {
                 this.load_global_proxy().await,
                 this.load_terminal_font().await,
                 this.load_terminal_scheme().await,
+                this.load_assistant_config().await,
             )
         });
         match loaded.0 {
@@ -88,6 +93,10 @@ impl SettingService {
         match loaded.2 {
             Ok(id) => scheme::set_global(&id),
             Err(error) => log::warn!("终端配色读不出来，这次运行跟随界面主题：{error:#}"),
+        }
+        match loaded.3 {
+            Ok(config) => assistant_config::set_global(config),
+            Err(error) => log::warn!("助手配置读不出来，这次运行按未配置处理：{error:#}"),
         }
     }
 
@@ -167,6 +176,33 @@ impl SettingService {
         db::run(async move {
             this.repo
                 .set(&this.db, TERMINAL_SCHEME_KEY, &encoded)
+                .await
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    /// 库里那份智能助手配置。没写过就是出厂档（未配置、每条命令都送审）。
+    pub async fn load_assistant_config(&self) -> Result<AssistantConfig> {
+        let this = self.clone();
+        db::run(async move {
+            let raw = this.repo.get(&this.db, ASSISTANT_CONFIG_KEY).await?;
+            Ok(assistant_config::decode(&raw.unwrap_or_default()))
+        })
+        .await
+    }
+
+    /// 写回智能助手配置，并同时换掉进程里那份缓存。
+    ///
+    /// 缓存先换，理由和 [`Self::save_global_proxy`] 一样：设置页改完这一格，
+    /// 助手抽屉那边下一次"发送"就该按新的走。
+    pub async fn save_assistant_config(&self, config: AssistantConfig) -> Result<()> {
+        assistant_config::set_global(config.clone());
+        let this = self.clone();
+        let encoded = assistant_config::encode(&config);
+        db::run(async move {
+            this.repo
+                .set(&this.db, ASSISTANT_CONFIG_KEY, &encoded)
                 .await
                 .map_err(Into::into)
         })

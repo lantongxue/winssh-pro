@@ -253,6 +253,48 @@ settings.proxy_optional:
 settings.proxy_host_placeholder:
   en: 127.0.0.1
   zh-CN: 127.0.0.1
+settings.tab_assistant:
+  en: AI Assistant
+  zh-CN: AI 助手
+settings.assistant_provider:
+  en: Model Provider
+  zh-CN: 模型供应商
+settings.assistant_preset:
+  en: Provider
+  zh-CN: 供应商
+settings.assistant_custom:
+  en: Custom
+  zh-CN: 自定义
+settings.assistant_protocol:
+  en: API protocol
+  zh-CN: 接口协议
+settings.assistant_base_url:
+  en: Base URL
+  zh-CN: 接口地址
+settings.assistant_base_url_placeholder:
+  en: https://api.openai.com/v1
+  zh-CN: https://api.openai.com/v1
+settings.assistant_api_key:
+  en: API Key
+  zh-CN: API Key
+settings.assistant_api_key_placeholder:
+  en: sk-...
+  zh-CN: sk-...
+settings.assistant_model:
+  en: Model
+  zh-CN: 模型
+settings.assistant_model_placeholder:
+  en: gpt-4o
+  zh-CN: gpt-4o
+settings.assistant_execution:
+  en: Command Execution
+  zh-CN: 命令执行
+settings.assistant_auto:
+  en: Fully automatic mode
+  zh-CN: 全自动模式
+settings.assistant_auto_hint:
+  en: Run server commands without asking for approval. Off means every command needs your confirmation.
+  zh-CN: 在服务器上执行命令不再逐条送审。关闭时每一条命令都要你确认。
 palette.open_settings_window:
   en: Open preferences window
   zh-CN: 打开偏好设置窗口
@@ -358,9 +400,6 @@ local_menu.delete:
 workspace.host_db_failed:
   en: Could not open the host database; changes will only apply to this session.
   zh-CN: 主机配置库打开失败，本次的改动只在当前会话里生效。
-workspace.assistant_wip:
-  en: The AI assistant is still under development.
-  zh-CN: AI 助手还在开发中。
 workspace.local_shell:
   en: Local Shell
   zh-CN: 本地 Shell
@@ -2604,3 +2643,71 @@ bridge.remote_exit:
 bridge.remote_signal:
   en: "[the remote was signalled: %{signal}]"
   zh-CN: "[远端信号 %{signal}]"
+
+# ── 智能助手（右侧抽屉与 Agent 运行） ─────────────────────────────────────
+assistant.new_chat:
+  en: New chat
+  zh-CN: 新对话
+assistant.delete_chat:
+  en: Delete this chat
+  zh-CN: 删除这段对话
+assistant.close:
+  en: Close
+  zh-CN: 关闭
+assistant.no_chats:
+  en: No conversations yet
+  zh-CN: 还没有对话
+assistant.auto_badge:
+  en: Auto
+  zh-CN: 自动
+assistant.composer:
+  en: Ask about your servers…
+  zh-CN: 问问你的服务器…
+assistant.send:
+  en: Send
+  zh-CN: 发送
+assistant.stop:
+  en: Stop
+  zh-CN: 停止
+assistant.thinking:
+  en: Working…
+  zh-CN: 正在处理…
+assistant.empty_title:
+  en: WinSSH Pro AI Assistant
+  zh-CN: WinSSH Pro 智能助手
+assistant.empty_hint:
+  en: I can run commands on your connected servers to diagnose and fix issues. Every command asks for your approval before it runs; I never touch local files.
+  zh-CN: 我可以在已连接的服务器上执行命令，帮你排查和处理问题。每条命令执行前都会先请你审核；我不会碰这台电脑上的本地文件。
+assistant.not_configured:
+  en: Configure a model provider in Settings → AI Assistant first.
+  zh-CN: 请先在 设置 → AI 助手 里配置模型供应商。
+assistant.approval_title:
+  en: 'Run on %{session}?'
+  zh-CN: 在 %{session} 上执行这条命令？
+assistant.approve:
+  en: Approve
+  zh-CN: 批准执行
+assistant.deny:
+  en: Deny
+  zh-CN: 拒绝
+assistant.status_ok:
+  en: Succeeded
+  zh-CN: 已执行
+assistant.status_failed:
+  en: Failed
+  zh-CN: 失败
+assistant.status_denied:
+  en: Denied
+  zh-CN: 已拒绝
+assistant.run_failed:
+  en: 'This run failed: %{error}'
+  zh-CN: 这一场运行失败了：%{error}
+assistant.client_failed:
+  en: Could not build the model provider client
+  zh-CN: 模型供应商客户端建不起来
+assistant.missing_conversation:
+  en: This conversation no longer exists.
+  zh-CN: 这段对话已经不存在了。
+assistant.untitled:
+  en: New chat
+  zh-CN: 新对话

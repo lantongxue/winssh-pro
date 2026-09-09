@@ -23,10 +23,11 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px,
 };
 
-use crate::service::{CredentialService, HostService, SnippetService};
+use crate::service::{AssistantService, CredentialService, HostService, SnippetService};
 use crate::ui::{
     bars::{ActivityAction, ActivityBar, CommandCenterBar},
     dialogs::{CommandPaletteDialog, CommandPaletteEvent},
+    drawers::{AssistantDrawer, AssistantDrawerEvent},
     panels::{TerminalPanel, WelcomePanel},
     theme::AppIcon,
     views::{
@@ -81,6 +82,11 @@ pub struct Workspace {
     /// 命令面板。它常驻在这里而不是每次现搭：面板的搜索状态归它自己，
     /// 外壳只在打开时把当前的主机递过去。
     command_palette: Entity<CommandPaletteDialog>,
+    /// 智能助手抽屉。常驻：对话快照、待审核的命令都归它自己，
+    /// 每次现搭的话一收起再打开这些就全丢了。
+    assistant: Entity<AssistantDrawer>,
+    /// 助手抽屉是否展开。活动栏的 AI 助手按钮开合它。
+    assistant_open: bool,
     /// 侧边栏当前显示哪个视图，也就是活动栏上选中的那个条目。
     view: SidebarView,
     /// 侧边栏是否展开。收起时活动栏留在原处，右边整块让给 Dock。
@@ -157,6 +163,22 @@ impl Workspace {
         )
         .detach();
 
+        // 智能助手抽屉。对话存在同一座库里（`ai_conversations` / `ai_messages`）；
+        // 要一份 Dock 的弱引用：按下"发送"那一刻从中心区收集已连接的会话。
+        let assistant = cx.new(|cx| {
+            AssistantDrawer::new(AssistantService::open(), dock_area.downgrade(), window, cx)
+        });
+        cx.subscribe(
+            &assistant,
+            |this, _, event: &AssistantDrawerEvent, cx| match event {
+                AssistantDrawerEvent::Close => {
+                    this.assistant_open = false;
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+
         let command_palette = cx.new(|cx| CommandPaletteDialog::new(window, cx));
         cx.subscribe_in(
             &command_palette,
@@ -205,6 +227,8 @@ impl Workspace {
             credential_service,
             snippet_vault,
             command_palette,
+            assistant,
+            assistant_open: false,
             view: SidebarView::Hosts,
             sidebar_open: true,
             resizable_state,
@@ -256,12 +280,12 @@ impl Workspace {
     }
 
     /// 执行活动栏底部的全局动作。
-    fn run_action(&mut self, action: ActivityAction, window: &mut Window, cx: &mut Context<Self>) {
+    fn run_action(&mut self, action: ActivityAction, _window: &mut Window, cx: &mut Context<Self>) {
         match action {
             ActivityAction::Settings => self.open_settings_window(cx),
-            // 这个入口的功能还没有落地。先如实说明，而不是让按钮点下去毫无反应。
             ActivityAction::Assistant => {
-                window.push_notification(t!("workspace.assistant_wip"), cx)
+                self.assistant_open = !self.assistant_open;
+                cx.notify();
             }
         }
     }
@@ -425,7 +449,12 @@ impl Render for Workspace {
                                         .child(div().size_full().child(self.dock_area.clone())),
                                 ),
                         )
-                    })),
+                    }))
+                    // 智能助手抽屉贴着右缘，宽度固定，不进 resizable ——
+                    // 对话是纵向读的，跟着拖 Dock 的分界一起跳只会打断阅读。
+                    .when(self.assistant_open, |this| {
+                        this.child(self.assistant.clone())
+                    }),
             )
             // 帧率浮层，设置面板里那个开关点亮的就是它。挂在外壳最外面那层
             // （已经是 `relative()`）而不是某个面板里：它量的是这扇窗一整帧的
