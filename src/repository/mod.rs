@@ -7,11 +7,13 @@
 //! 方法都接受 `impl ConnectionTrait`：传 [`DatabaseConnection`] 是单条
 //! 操作，传事务则由服务层把几条捆成一个原子操作。
 
+pub mod assistant_repository;
 pub mod credential_repository;
 pub mod host_repository;
 pub mod setting_repository;
 pub mod snippet_repository;
 
+pub use assistant_repository::AssistantRepository;
 pub use credential_repository::CredentialRepository;
 pub use host_repository::HostRepository;
 pub use setting_repository::SettingRepository;

@@ -8,7 +8,7 @@
 //! | [`views`] | `*View` | 侧边栏里的整块内容，一次显示一个 |
 //! | [`panels`] | `*Panel` | 进 [`gpui_kit::component::dock`] 的面板，可拖拽、分屏、存布局 |
 //! | [`dialogs`] | `*Dialog` | 盖在窗口中央、要用户答复的一层 |
-//! | [`drawers`] | `*Drawer` | 从边缘拉出来的抽屉（传输队列抽屉） |
+//! | [`drawers`] | `*Drawer` | 从边缘拉出来的抽屉（传输队列、智能助手） |
 //! | [`cards`] | `*Card` | 列表或网格里代表一条数据的那一块 |
 //! | [`menus`] | `*Menu` | 点开之后浮在内容之上的一列动作 |
 //! | [`elements`] | `*Element` | 自己实现 [`gpui_kit::Element`]，下到布局与绘制里的那一层 |

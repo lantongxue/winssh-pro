@@ -48,6 +48,7 @@ use self::{
     split::{SplitState, render_split},
 };
 use crate::{
+    assistant::SessionTarget,
     forward::PortForward,
     host::Host,
     service::{ForwardService, HostService},
@@ -560,6 +561,50 @@ impl TerminalPanel {
             })
             .cloned()
             .or_else(|| sessions.into_iter().next())
+    }
+
+    /// 中心区里所有还连着的 SSH 会话，交给智能助手当"可操作的服务器"清单。
+    ///
+    /// 和 [`Self::active_in`] 不同，这里**每个标签**都算，藏在后面的也算：
+    /// 助手按清单点名执行，每一条命令默认还要用户批准，不存在"发进看不见的
+    /// 那台"的歧义。本机 Shell（没有 SSH 连接可借）与已断开的会话不进清单。
+    /// 同一台主机开着几个标签页只算一条 —— 都是同一条连接语义的机器，
+    /// 清单里重复只会让模型多一种选错的方式。
+    pub fn connected_targets_in(dock_area: &Entity<DockArea>, cx: &App) -> Vec<SessionTarget> {
+        let area = dock_area.read(cx);
+        let Some(tree) = area.layout(DockPlacement::Center) else {
+            return Vec::new();
+        };
+
+        let mut targets: Vec<SessionTarget> = Vec::new();
+        tree.root().walk(&mut |node| {
+            let PaneRef::Tabs { panels, .. } = node.kind() else {
+                return;
+            };
+            for id in panels.iter() {
+                let Some(panel) = area.panel(*id) else {
+                    continue;
+                };
+                let Ok(session) = panel.view().downcast::<Self>() else {
+                    continue;
+                };
+                let session = session.read(cx);
+                let Some(ssh) = session.ssh.as_ref() else {
+                    continue;
+                };
+                if !session.alive(cx) || targets.iter().any(|target| target.id == session.host.id) {
+                    continue;
+                }
+                targets.push(SessionTarget {
+                    id: session.host.id.clone(),
+                    name: session.host.name.clone(),
+                    login: format!("{}@{}", session.host.user, session.host.hostname).into(),
+                    platform: session.host.platform.clone(),
+                    handle: ssh.handle.clone(),
+                });
+            }
+        });
+        targets
     }
 
     // ─── 子面板 ─────────────────────────────────────────────────────────────

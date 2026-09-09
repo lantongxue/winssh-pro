@@ -30,6 +30,9 @@ use gpui_kit::{
     WindowHandle, WindowKind, WindowOptions, div, prelude::FluentBuilder as _, px, size,
 };
 
+use crate::assistant::{
+    self, AssistantConfig, PRESETS, ProviderProtocol, config as assistant_config,
+};
 use crate::i18n;
 use crate::proxy::{self, GlobalProxy, ProxyConfig};
 use crate::service::SettingService;
@@ -42,6 +45,9 @@ use rust_i18n::t;
 /// 那行字会跟着语言变。
 const PROXY_OFF: &str = "off";
 const PROXY_ON: &str = "on";
+
+/// 供应商预设下拉里"自定义"那一档的值。内置预设的值是各自的 preset id。
+const ASSISTANT_CUSTOM: &str = "custom";
 
 /// 帧率浮层开着没有。
 ///
@@ -104,6 +110,23 @@ fn persist_terminal_font(value: TerminalFont, cx: &mut App) {
     .detach();
 }
 
+/// 换掉智能助手配置：进程里那份缓存立刻生效，落库派到后台。
+///
+/// 缓存先换的理由同 [`persist_proxy`]：助手抽屉按下"发送"读的就是缓存那份。
+/// 重画所有窗口 —— 抽屉标题行上"自动"那块警示牌要跟着这一位开关走。
+fn persist_assistant_config(config: AssistantConfig, cx: &mut App) {
+    assistant_config::set_global(config.clone());
+    for handle in cx.windows() {
+        _ = handle.update(cx, |_, window, _| window.refresh());
+    }
+    cx.background_spawn(async move {
+        if let Err(error) = SettingService::open().save_assistant_config(config).await {
+            log::error!("助手配置存不下去：{error:#}");
+        }
+    })
+    .detach();
+}
+
 /// 换掉终端配色方案。缓存立刻生效、重画所有窗口、落库派到后台，
 /// 三步都同 [`persist_terminal_font`]。
 fn persist_terminal_scheme(id: SharedString, cx: &mut App) {
@@ -135,13 +158,21 @@ pub enum SettingsTab {
     Terminal,
     /// 网络代理：全局 SOCKS5 代理。
     Proxy,
+    /// 智能助手：模型供应商与执行模式。
+    Assistant,
     /// 关于与数据。
     About,
 }
 
 #[allow(dead_code)]
 impl SettingsTab {
-    pub const ALL: [Self; 4] = [Self::General, Self::Terminal, Self::Proxy, Self::About];
+    pub const ALL: [Self; 5] = [
+        Self::General,
+        Self::Terminal,
+        Self::Proxy,
+        Self::Assistant,
+        Self::About,
+    ];
 }
 
 pub struct SettingsWindow {
@@ -152,6 +183,9 @@ pub struct SettingsWindow {
     /// 全局代理那四格，见 [`ProxyInputs`]。
     proxy: ProxyInputs,
     _proxy_inputs: Vec<Subscription>,
+    /// 智能助手那三格，见 [`AssistantInputs`]。
+    assistant: AssistantInputs,
+    _assistant_inputs: Vec<Subscription>,
 }
 
 /// 全局代理那四格输入框。
@@ -222,6 +256,61 @@ impl ProxyInputs {
             // 用户名密码不 trim：空格是它们的一部分。
             username: self.username.read(cx).value().to_string().into(),
             password: self.password.read(cx).value().to_string().into(),
+        }
+    }
+}
+
+/// 智能助手那三格输入框：Base URL、API Key（打码）、模型名。
+///
+/// 用自己的 [`InputState`] 而不是 [`SettingField::input`]，理由同
+/// [`ProxyInputs`]：API Key 那一格要打码，值也归这扇窗自己管 ——
+/// 供应商预设下拉选中一家时还要往这几格里回填。
+///
+/// 每敲一个字就写回一次，和这一页别的项一样改完即生效。
+#[derive(Clone)]
+struct AssistantInputs {
+    base_url: Entity<InputState>,
+    api_key: Entity<InputState>,
+    model: Entity<InputState>,
+}
+
+impl AssistantInputs {
+    /// 照着现在的助手配置预填三格。
+    fn new(config: &AssistantConfig, window: &mut Window, cx: &mut App) -> Self {
+        Self {
+            base_url: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("settings.assistant_base_url_placeholder"))
+                    .default_value(config.base_url.clone())
+            }),
+            api_key: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("settings.assistant_api_key_placeholder"))
+                    .masked(true)
+                    .default_value(config.api_key.clone())
+            }),
+            model: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("settings.assistant_model_placeholder"))
+                    .default_value(config.model.clone())
+            }),
+        }
+    }
+
+    fn all(&self) -> [&Entity<InputState>; 3] {
+        [&self.base_url, &self.api_key, &self.model]
+    }
+
+    /// 三格现在的样子，协议与自动那一位跟着缓存走 —— 它们归各自的下拉/开关管。
+    fn read(&self, cx: &App) -> AssistantConfig {
+        let cached = assistant_config::global();
+        AssistantConfig {
+            protocol: cached.protocol,
+            base_url: self.base_url.read(cx).value().trim().to_string(),
+            // API Key 不 trim 中间，只去首尾：粘贴时最常见的赃物是换行。
+            api_key: self.api_key.read(cx).value().trim().to_string(),
+            model: self.model.read(cx).value().trim().to_string(),
+            auto_execute: cached.auto_execute,
         }
     }
 }
@@ -302,6 +391,20 @@ impl SettingsWindow {
             .into_iter()
             .collect();
 
+        // 同代理那四格：读进程缓存，不再查一次库。
+        let assistant = AssistantInputs::new(&assistant_config::global(), window, cx);
+        let _assistant_inputs = assistant
+            .all()
+            .map(|input| {
+                cx.subscribe(input, |this, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        persist_assistant_config(this.assistant.read(cx), cx);
+                    }
+                })
+            })
+            .into_iter()
+            .collect();
+
         Self {
             tab: SettingsTab::General,
             tab_seq: 0,
@@ -309,6 +412,8 @@ impl SettingsWindow {
             _appearance,
             proxy,
             _proxy_inputs,
+            assistant,
+            _assistant_inputs,
         }
     }
 
@@ -358,8 +463,12 @@ impl SettingsWindow {
                 page_ix: 2,
                 group_ix: None,
             },
-            SettingsTab::About => SelectIndex {
+            SettingsTab::Assistant => SelectIndex {
                 page_ix: 3,
+                group_ix: None,
+            },
+            SettingsTab::About => SelectIndex {
+                page_ix: 4,
                 group_ix: None,
             },
         };
@@ -371,6 +480,7 @@ impl SettingsWindow {
             .page(self.general_page())
             .page(Self::terminal_page(cx))
             .page(self.proxy_page())
+            .page(self.assistant_page())
             .page(Self::about_page())
     }
 
@@ -585,19 +695,19 @@ impl SettingsWindow {
             group = group
                 .item(SettingItem::new(
                     t!("settings.proxy_host"),
-                    self.proxy_input(&self.proxy.host, false),
+                    self.text_input(&self.proxy.host, false),
                 ))
                 .item(SettingItem::new(
                     t!("settings.proxy_port"),
-                    self.proxy_input(&self.proxy.port, false),
+                    self.text_input(&self.proxy.port, false),
                 ))
                 .item(SettingItem::new(
                     t!("settings.proxy_username"),
-                    self.proxy_input(&self.proxy.username, false),
+                    self.text_input(&self.proxy.username, false),
                 ))
                 .item(SettingItem::new(
                     t!("settings.proxy_password"),
-                    self.proxy_input(&self.proxy.password, true),
+                    self.text_input(&self.proxy.password, true),
                 ));
         }
 
@@ -608,13 +718,13 @@ impl SettingsWindow {
             .group(group)
     }
 
-    /// 代理那几格共用的一个输入框字段。
+    /// 代理与助手那几格共用的一个输入框字段。
     ///
     /// 走 [`SettingField::render`] 而不是 [`SettingField::input`]：后者自己在
     /// 内部按"第几页第几组第几项"造 [`InputState`]，密码那一格没法打码，
-    /// 值也不归这扇窗管。这里把状态留在窗口自己手上（见 [`ProxyInputs`]），
-    /// 写回走那几条输入订阅。
-    fn proxy_input(&self, input: &Entity<InputState>, masked: bool) -> SettingField<SharedString> {
+    /// 值也不归这扇窗管。这里把状态留在窗口自己手上（见 [`ProxyInputs`] 与
+    /// [`AssistantInputs`]），写回走那几条输入订阅。
+    fn text_input(&self, input: &Entity<InputState>, masked: bool) -> SettingField<SharedString> {
         let input = input.clone();
         SettingField::render(move |_options: &RenderOptions, _window, _cx| {
             Input::new(&input)
@@ -624,6 +734,137 @@ impl SettingsWindow {
                 })
                 .w_64()
         })
+    }
+
+    /// 智能助手页：模型供应商（预设一键填表 + 协议 + 三格）与执行模式。
+    ///
+    /// 预设下拉只是填表的捷径：选中一家就把协议、Base URL 与默认模型写进
+    /// 配置并回填输入框，API Key 永远要用户自己给。三格手改之后对不上任何
+    /// 一家，下拉就停在"自定义"。
+    fn assistant_page(&self) -> SettingPage {
+        let inputs = self.assistant.clone();
+
+        let mut provider_options: Vec<(SharedString, SharedString)> = PRESETS
+            .iter()
+            .map(|preset| {
+                (
+                    SharedString::from(preset.id),
+                    SharedString::from(preset.name),
+                )
+            })
+            .collect();
+        provider_options.push((
+            ASSISTANT_CUSTOM.into(),
+            t!("settings.assistant_custom").into(),
+        ));
+
+        let provider_group = SettingGroup::new()
+            .title(t!("settings.assistant_provider"))
+            .item(SettingItem::new(
+                t!("settings.assistant_preset"),
+                SettingField::dropdown(
+                    provider_options,
+                    |_cx: &App| {
+                        assistant::matching_preset(&assistant_config::global())
+                            .map(|preset| SharedString::from(preset.id))
+                            .unwrap_or_else(|| ASSISTANT_CUSTOM.into())
+                    },
+                    {
+                        let inputs = inputs.clone();
+                        move |id: SharedString, cx: &mut App| {
+                            // 挑了"自定义"就什么都不动：那一档只是"三格自己填"。
+                            let Some(preset) = assistant::preset(&id) else {
+                                return;
+                            };
+                            let cached = assistant_config::global();
+                            persist_assistant_config(
+                                AssistantConfig {
+                                    protocol: preset.protocol,
+                                    base_url: preset.base_url.to_owned(),
+                                    model: preset.model.to_owned(),
+                                    api_key: inputs.api_key.read(cx).value().trim().to_string(),
+                                    auto_execute: cached.auto_execute,
+                                },
+                                cx,
+                            );
+                            // 往输入框里回填要一个 `Window`，从这扇窗的单例句柄借。
+                            let (base_url, model) = (preset.base_url, preset.model);
+                            let open = cx.try_global::<ActiveSettingsWindow>().map(|open| open.0);
+                            if let Some(open) = open {
+                                let inputs = inputs.clone();
+                                _ = open.update(cx, move |_, window, cx| {
+                                    inputs.base_url.update(cx, |state, cx| {
+                                        state.set_value(base_url, window, cx)
+                                    });
+                                    inputs
+                                        .model
+                                        .update(cx, |state, cx| state.set_value(model, window, cx));
+                                });
+                            }
+                        }
+                    },
+                ),
+            ))
+            .item(SettingItem::new(
+                t!("settings.assistant_protocol"),
+                SettingField::dropdown(
+                    ProviderProtocol::ALL
+                        .into_iter()
+                        .map(|protocol| {
+                            (
+                                SharedString::from(protocol.as_str()),
+                                SharedString::from(protocol.label()),
+                            )
+                        })
+                        .collect(),
+                    |_cx: &App| SharedString::from(assistant_config::global().protocol.as_str()),
+                    {
+                        let inputs = inputs.clone();
+                        move |value: SharedString, cx: &mut App| {
+                            let mut config = inputs.read(cx);
+                            config.protocol = ProviderProtocol::from_str_or_default(&value);
+                            persist_assistant_config(config, cx);
+                        }
+                    },
+                ),
+            ))
+            .item(SettingItem::new(
+                t!("settings.assistant_base_url"),
+                self.text_input(&self.assistant.base_url, false),
+            ))
+            .item(SettingItem::new(
+                t!("settings.assistant_api_key"),
+                self.text_input(&self.assistant.api_key, true),
+            ))
+            .item(SettingItem::new(
+                t!("settings.assistant_model"),
+                self.text_input(&self.assistant.model, false),
+            ));
+
+        // 执行模式单独一组：它管的不是"用哪家模型"，是"命令要不要送审"。
+        let execution_group = SettingGroup::new()
+            .title(t!("settings.assistant_execution"))
+            .item(
+                SettingItem::new(
+                    t!("settings.assistant_auto"),
+                    SettingField::switch(|_cx: &App| assistant_config::global().auto_execute, {
+                        let inputs = inputs.clone();
+                        move |checked: bool, cx: &mut App| {
+                            let mut config = inputs.read(cx);
+                            config.auto_execute = checked;
+                            persist_assistant_config(config, cx);
+                        }
+                    }),
+                )
+                .description(SharedString::from(t!("settings.assistant_auto_hint"))),
+            );
+
+        SettingPage::new(t!("settings.tab_assistant"))
+            .icon(AppIcon::Sparkles)
+            .default_open(true)
+            .resettable(false)
+            .group(provider_group)
+            .group(execution_group)
     }
 
     /// 关于页：图标、名字、版本号，就这三样。

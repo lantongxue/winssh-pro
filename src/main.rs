@@ -1,6 +1,7 @@
 //! WinSSH Pro：跨平台原生 SSH 客户端。
 
 mod assets;
+mod assistant;
 mod credential;
 mod db;
 mod forward;

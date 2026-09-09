@@ -22,7 +22,7 @@ use tokio::runtime::Runtime;
 
 /// 建表语句。`CREATE TABLE IF NOT EXISTS` 是幂等的，每次启动都跑一遍；
 /// 老用户的库文件已存在时原样保留，新字段通过 [`MIGRATIONS`] 补齐。
-const SCHEMA: [&str; 5] = [
+const SCHEMA: [&str; 7] = [
     "CREATE TABLE IF NOT EXISTS host_groups (
         id         INTEGER PRIMARY KEY,
         name       TEXT    NOT NULL UNIQUE,
@@ -81,6 +81,28 @@ const SCHEMA: [&str; 5] = [
         variables    TEXT    NOT NULL DEFAULT '',
         created_at   TEXT    NOT NULL DEFAULT '',
         updated_at   TEXT    NOT NULL DEFAULT ''
+    )",
+    // 智能助手的对话。一段对话一行；标题取自第一条提问，列表按最近更新排。
+    "CREATE TABLE IF NOT EXISTS ai_conversations (
+        id           TEXT    PRIMARY KEY,
+        title        TEXT    NOT NULL,
+        created_at   TEXT    NOT NULL DEFAULT '',
+        updated_at   TEXT    NOT NULL DEFAULT ''
+    )",
+    // 对话里的每一条消息。`kind` 分两档：`text` 是一段话，`command` 是一次
+    // 服务器命令的执行卡片（command / output / session / status 四列才有值）。
+    // 删一段对话连带删光它的消息，不留孤儿。
+    "CREATE TABLE IF NOT EXISTS ai_messages (
+        id              TEXT    PRIMARY KEY,
+        conversation_id TEXT    NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+        role            TEXT    NOT NULL DEFAULT 'assistant',
+        kind            TEXT    NOT NULL DEFAULT 'text',
+        content         TEXT    NOT NULL DEFAULT '',
+        command         TEXT    NOT NULL DEFAULT '',
+        output          TEXT    NOT NULL DEFAULT '',
+        session         TEXT    NOT NULL DEFAULT '',
+        status          TEXT    NOT NULL DEFAULT '',
+        created_at      TEXT    NOT NULL DEFAULT ''
     )",
     // 应用级偏好的键值对。一张表装下所有"不属于某台主机、某条凭据"的设置
     // （现在只有全局代理，见 `crate::service::SettingService`）：这些东西各自
