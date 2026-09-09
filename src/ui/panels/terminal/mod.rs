@@ -1144,6 +1144,7 @@ impl Render for TerminalPanel {
             .child(
                 SessionInfoBar::new(
                     SharedString::from(format!("{}@{}", self.host.user, self.host.hostname)),
+                    SharedString::from(format!("{}", self.host.hostname)),
                     self.directory(cx),
                 )
                 .connected(connected)

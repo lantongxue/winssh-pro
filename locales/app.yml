@@ -69,6 +69,12 @@ welcome.open_settings:
   zh-CN: 打开偏好设置
 
 # ── 会话信息栏（终端上沿） ───────────────────────────────────────────────
+session_info.copy_address_tooltip:
+  en: Click to copy host address
+  zh-CN: 点击复制主机地址
+session_info.address_copied:
+  en: Host address copied
+  zh-CN: 已复制主机地址
 session_info.tunnels:
   en: Tunnels
   zh-CN: 端口转发
@@ -1379,6 +1385,12 @@ sftp_form.error_dot:
   zh-CN: "`/.` 和 `..` 指的是目录本身与上级，不能当条目名。"
 
 # ── SFTP 文本编辑对话框 ──────────────────────────────────────────────────
+sftp_editor.copy_path_tooltip:
+  en: Click to copy the full remote path
+  zh-CN: 点击复制文件完整路径
+sftp_editor.path_copied:
+  en: Path copied
+  zh-CN: 已复制文件路径
 sftp_editor.save:
   en: Save
   zh-CN: 保存

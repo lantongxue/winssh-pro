@@ -24,12 +24,14 @@ use gpui_kit::component::{
     dock::{BasePanel, Panel, PanelEvent, PanelId, TabGroup},
     h_flex,
     input::{Editor, EditorState, InputEvent},
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    Subscription, WeakEntity, Window, div, prelude::FluentBuilder as _, px, relative,
+    App, AppContext as _, ClipboardItem, Context, CursorStyle, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div,
+    prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::{
@@ -452,14 +454,32 @@ impl Render for SftpEditorPanel {
                                     .flex_shrink_0()
                                     .text_color(palette::sky()),
                             )
-                            .child(
+                            .child({
+                                let path = self.path.clone();
                                 // 路径继承条上的 `text_xs` 与安静前景，只额外要一副等宽字。
                                 div()
+                                    .id("sftp-editor-path")
                                     .min_w_0()
                                     .truncate()
+                                    .cursor(CursorStyle::PointingHand)
                                     .font_family(cx.theme().mono_font_family.clone())
-                                    .child(self.path.clone()),
-                            )
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(SharedString::from(t!(
+                                            "sftp_editor.copy_path_tooltip"
+                                        )))
+                                        .build(window, cx)
+                                    })
+                                    .on_click(move |_, window, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            path.to_string(),
+                                        ));
+                                        window.push_notification(
+                                            t!("sftp_editor.path_copied"),
+                                            cx,
+                                        );
+                                    })
+                                    .child(self.path.clone())
+                            })
                             .when_some(self.language.clone(), |this, lang| {
                                 this.child(
                                     div()
