@@ -1048,7 +1048,7 @@ impl AssistantPanel {
                         .with_size(STOP_ICON_BOX)
                         .size(SEND_BUTTON_SIZE)
                         .rounded(SEND_BUTTON_SIZE / 2.)
-                        .icon(IconName::Pause)
+                        .icon(AppIcon::Squircle)
                         .tooltip(t!("assistant.stop"))
                         .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
                 } else {

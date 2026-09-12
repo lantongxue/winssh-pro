@@ -52,6 +52,9 @@ pub enum AppIcon {
     ShieldCheck,
     /// 星芒：AI 助手，以及"生成一份新的"这类动作。
     Sparkles,
+    /// 圆角到近乎圆的方块：停下正在跑的那一条。和 [`Self::Square`] 分开 ——
+    /// 那个是分屏布局里的"一整格"，这个是播放器上的停止键。
+    Squircle,
     /// `>_`：终端。组件库只有加了外框的 `SquareTerminal`，设计稿用的是裸提示符。
     Terminal,
     /// 垃圾桶：删除。组件库的 `Delete` 是退格键那个图标，不是桶。
@@ -85,6 +88,7 @@ impl IconNamed for AppIcon {
             Self::Server => "icons/server.svg",
             Self::ShieldCheck => "icons/shield-check.svg",
             Self::Sparkles => "icons/sparkles.svg",
+            Self::Squircle => "icons/squircle.svg",
             Self::Terminal => "icons/terminal.svg",
             Self::Trash => "icons/trash-2.svg",
             Self::Upload => "icons/upload.svg",
@@ -199,6 +203,7 @@ mod tests {
             AppIcon::Server.path(),
             AppIcon::ShieldCheck.path(),
             AppIcon::Sparkles.path(),
+            AppIcon::Squircle.path(),
             AppIcon::Terminal.path(),
             AppIcon::Trash.path(),
             AppIcon::Upload.path(),
