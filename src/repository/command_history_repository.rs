@@ -38,6 +38,12 @@ impl CommandHistoryRepository {
         Ok(())
     }
 
+    /// 删掉一条历史，返回删掉了几行（0 就是那一行已经不在了）。
+    pub async fn delete(&self, conn: &impl ConnectionTrait, id: &str) -> Result<u64, DbErr> {
+        let result = command_history::Entity::delete_by_id(id).exec(conn).await?;
+        Ok(result.rows_affected)
+    }
+
     /// 清空一台主机的历史，返回删掉了几行。
     pub async fn delete_for_host(
         &self,

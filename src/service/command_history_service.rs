@@ -4,8 +4,9 @@
 //! 错误一律 [`anyhow::Result`] 抛给调用方；库操作经 [`db::run`] 跑在数据层
 //! runtime 上。id 与时间戳也归这一层分配。
 //!
-//! 只有三个口子（记一条、读一台主机的、清一台主机的）—— 历史是**追加**出来的，
-//! 没有"改一条"这回事：改掉一条跑过的命令，它就不再是历史了。
+//! 只有四个口子（记一条、读一台主机的、删一条、清一台主机的）—— 历史是**追加**
+//! 出来的，没有"改一条"这回事：改掉一条跑过的命令，它就不再是历史了。删得掉是
+//! 另一回事，那是"这一条我不想留着"，不是把它改成别的样子。
 
 use anyhow::Result;
 use sea_orm::{ActiveValue::Set, DatabaseConnection};
@@ -94,6 +95,16 @@ impl CommandHistoryService {
         .await
     }
 
+    /// 删掉一条历史，返回删掉了几条。
+    ///
+    /// 删的是库里那一行，不是"最近那一条" —— 调用方手上有 id
+    /// （[`CommandRecord::id`]），列表过没过搜索都不影响删到哪一条。
+    pub async fn delete(&self, id: &str) -> Result<u64> {
+        let this = self.clone();
+        let id = id.to_owned();
+        db::run(async move { Ok(this.repo.delete(&this.db, &id).await?) }).await
+    }
+
     /// 清空一台主机的历史，返回删掉了几条。
     pub async fn clear_host(&self, host_id: &str) -> Result<u64> {
         let this = self.clone();
@@ -105,6 +116,7 @@ impl CommandHistoryService {
 /// 库里的一行 → 界面拿的那一条。
 fn hydrate(row: command_history::Model) -> CommandRecord {
     CommandRecord {
+        id: row.id.into(),
         command: row.command.into(),
         exit_code: row.exit_code,
         executed_at: row.created_at.into(),
@@ -235,6 +247,32 @@ mod tests {
                     .is_empty(),
                 "主机删掉之后它的历史还留着"
             );
+        });
+    }
+
+    /// 删一条只删那一条，旁边的两条留着。
+    #[test]
+    fn deleting_one_record_leaves_its_neighbours() {
+        db::runtime().block_on(async {
+            let (history, _hosts, host_id) = fixture().await;
+            for command in ["first", "second", "third"] {
+                history
+                    .record(&host_id, run(command, Some(0)))
+                    .await
+                    .expect("记录失败");
+            }
+            let rows = history.load_for_host(&host_id).await.expect("读取失败");
+            let target = rows
+                .iter()
+                .find(|row| row.command == "second")
+                .expect("刚记进去的就是它");
+
+            let deleted = history.delete(&target.id).await.expect("删除失败");
+            assert_eq!(deleted, 1);
+
+            let rows = history.load_for_host(&host_id).await.expect("读取失败");
+            let commands: Vec<_> = rows.iter().map(|row| row.command.as_ref()).collect();
+            assert_eq!(commands, vec!["third", "first"]);
         });
     }
 

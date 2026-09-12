@@ -6,6 +6,8 @@
 //!
 //! 一行一条：跑成了没有、命令本身、什么时候跑的。点一行就把那条命令发回当前
 //! 这条会话的终端里 —— 这一层最常见的用法就是"上次那条长命令是怎么写的"。
+//! 行尾另有一颗删除，悬停才显形：一条历史留不留得住是用户的事，不必为了去掉
+//! 其中一行把一整台机器的历史都清了。
 //!
 //! 数据是打开这一刻从库里取的一份快照（最多 [`HISTORY_LIMIT`] 条），搜索在这份
 //! 快照上过滤，不回库里查：一台主机的历史就这么多，两百毫秒一次的往返换不来
@@ -62,6 +64,13 @@ const LIST_HEIGHT: Pixels = px(320.);
 const STATUS_WIDTH: Pixels = px(34.);
 
 const ICON: Pixels = px(14.);
+
+/// 行尾那颗删除的图标大小。比脚注那颗「清空」小一号：一条和一整台不是同一件事，
+/// 分量也该看得出来。
+const ROW_ICON: Pixels = px(12.);
+
+/// 每一行自己是一个悬停组，行尾那颗删除认它显形。
+const ROW_GROUP: &str = "command-history-row";
 
 /// 确认框里那块脚本最多显示多高，超出的部分滚动。
 ///
@@ -307,6 +316,27 @@ impl CommandHistoryDialog {
         });
     }
 
+    /// 删掉一条历史。界面先少一行，落库随后 —— 和「清空」一个规矩：
+    /// 用户按下去的那一下该立刻看得见。
+    ///
+    /// 删的是**库里那一行**（拿 [`CommandRecord::id`]），不是"列表的第几条"：
+    /// 列表是过了搜索的一份子集，搜着的时候行号和库里对不上。
+    fn delete(&mut self, row: usize, cx: &mut Context<Self>) {
+        let Some(index) = self.visible.get(row).copied() else {
+            return;
+        };
+        let id = self.records.remove(index).id.to_string();
+        self.apply_filter(cx);
+
+        let service = self.service.clone();
+        cx.spawn(async move |_, _| {
+            if let Err(error) = service.delete(&id).await {
+                log::warn!("命令历史删不掉：{error:#}");
+            }
+        })
+        .detach();
+    }
+
     /// 清空这台主机的历史。界面先空掉，落库随后 —— 顺序和别处一致：
     /// 用户按下去的那一下该立刻看得见。
     fn clear(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -351,6 +381,7 @@ impl CommandHistoryDialog {
             .gap_2()
             .items_center()
             .cursor_pointer()
+            .group(ROW_GROUP)
             .hover(|this| this.bg(palette::selected_row(cx)))
             .on_click(cx.listener(move |this, _, window, cx| this.run(row, window, cx)))
             .child(
@@ -378,7 +409,37 @@ impl CommandHistoryDialog {
                     .text_color(palette::idle(cx))
                     .child(record.executed_at.clone()),
             )
+            .child(self.render_row_delete(row, cx))
             .into_any_element()
+    }
+
+    /// 行尾那颗删除：悬停在这一行上才显形，平时隐着但占着位。
+    ///
+    /// 和主机分组那一颗同一套（见 [`crate::ui::views::HostExplorerView`]）——
+    /// 隐着的时候点不到（`invisible` 的元素不参与命中测试），时间那一列也不会
+    /// 因为它来回出现左右挪。
+    ///
+    /// 删一条不问。这一层的分量和「清空」不一样：清空是一台机器的历史全没，
+    /// 而这里去掉的是列表上的一行，代价小到不值得拦一道 —— 何况用户按它的
+    /// 常见理由正是"这行有不该留的东西，现在就拿掉"。
+    fn render_row_delete(&self, row: usize, cx: &mut Context<Self>) -> impl IntoElement {
+        Button::new(("command-history-delete", row))
+            .ghost()
+            .xsmall()
+            .icon(
+                Icon::new(AppIcon::Trash)
+                    .with_size(ROW_ICON)
+                    .text_color(cx.theme().danger),
+            )
+            .tooltip(t!("command_history.delete"))
+            .accessibility_id(t!("command_history.delete"))
+            .invisible()
+            .group_hover(ROW_GROUP, |style| style.visible())
+            .on_click(cx.listener(move |this, _, _, cx| {
+                // 这一击只删这一条，不再冒泡成"把它发进会话"。
+                cx.stop_propagation();
+                this.delete(row, cx);
+            }))
     }
 
     /// 列表空着的时候那句话。读库还没回来、这台机器确实没有历史、
@@ -633,7 +694,9 @@ mod tests {
             ("tail -f /var/log/syslog", None),
         ]
         .into_iter()
-        .map(|(command, exit_code)| CommandRecord {
+        .enumerate()
+        .map(|(at, (command, exit_code))| CommandRecord {
+            id: format!("cmd-{at}").into(),
             command: command.into(),
             exit_code,
             executed_at: "2026-09-12 10:24:31".into(),
@@ -903,9 +966,11 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 
-    // 「清空」那一颗没有界面层的用例：[`CommandHistoryDialog::clear`] 会派一次
-    // 落库到数据层的 tokio runtime 上，而 gpui 的测试调度器一看到来自别的线程
-    // 的唤醒就判这个测试不确定（整个测试进程 abort，不只是这一条挂）。
-    // 清空本身归服务层那条用例
-    // （`CommandHistoryService::tests::clearing_one_host_leaves_the_others_alone`）。
+    // 「清空」和行尾那颗「删除」都没有界面层的用例：
+    // [`CommandHistoryDialog::clear`] 与 [`CommandHistoryDialog::delete`] 都会派
+    // 一次落库到数据层的 tokio runtime 上，而 gpui 的测试调度器一看到来自别的
+    // 线程的唤醒就判这个测试不确定（整个测试进程 abort，不只是这一条挂）。
+    // 这两件事本身归服务层那两条用例
+    // （`CommandHistoryService::tests::clearing_one_host_leaves_the_others_alone`、
+    // `…::deleting_one_record_leaves_its_neighbours`）。
 }

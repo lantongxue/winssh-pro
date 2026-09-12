@@ -31,11 +31,12 @@ pub struct CommandRun {
 }
 
 /// 库里的一条历史，界面列表拿到的就是这个。
-/// 没有 id：界面只列不改，一条历史身上没有任何"指着它做点什么"的动作。
-/// 库里那一行当然有主键，但那是库的事（见
-/// [`crate::db::entities::command_history`]）。
 #[derive(Clone, Debug)]
 pub struct CommandRecord {
+    /// 库里那一行的主键。带着它是因为界面上有一件"指着这一条做"的事 ——
+    /// 删掉它。不能拿行号代替：列表是过了搜索的一份子集，而删除要落到库里
+    /// 那一行上；也不能拿命令原文代替：同一条命令跑过十遍就是十行。
+    pub id: SharedString,
     pub command: SharedString,
     pub exit_code: Option<i32>,
     /// 跑这条命令的时间，`YYYY-MM-DD HH:MM:SS`。存成文本而不是时间戳，
@@ -89,6 +90,7 @@ mod tests {
     #[test]
     fn an_unknown_exit_code_is_neither_success_nor_failure() {
         let record = |exit_code| CommandRecord {
+            id: "cmd-1".into(),
             command: "ls".into(),
             exit_code,
             executed_at: "2026-09-12 10:00:00".into(),

@@ -137,6 +137,9 @@ command_history.no_match:
 command_history.hint:
   en: Click a command to send it to this session · newest %{limit} kept
   zh-CN: 点一条即发进当前会话 · 最近 %{limit} 条
+command_history.delete:
+  en: Delete this command
+  zh-CN: 删除这条命令
 command_history.clear:
   en: Clear history
   zh-CN: 清空历史
