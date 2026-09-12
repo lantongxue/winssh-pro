@@ -133,6 +133,15 @@ const COMPOSER_MAX_ROWS: usize = 8;
 /// 发送/停止那颗圆键的直径。图标按 0.75 倍跟着它走（[`Button`] 自己算的）。
 const SEND_BUTTON_SIZE: Pixels = px(28.);
 
+/// 停止键那颗图标按多大的按钮来算 —— 只管图标，圆本身仍是
+/// [`SEND_BUTTON_SIZE`]。
+///
+/// 箭头是一笔细线，两根几乎顶满画布的实心竖条不是：同样按圆的 0.75 倍画
+/// 出来，Pause 比 ArrowUp 重一大截，像是把整个圆填满了。[`Button`] 不收
+/// 单独的图标尺寸（[`Button::icon`] 收到的那颗会被按钮尺寸覆写），所以这里
+/// 反过来给它一个小一号的按钮尺寸，让那 0.75 倍落在合适的地方。
+const STOP_ICON_BOX: Pixels = px(21.);
+
 /// 一条等着用户答复的命令。`respond` 送回 `true`（批准）或 `false`（拒绝）；
 /// 直接丢掉它（停止运行时）等于让运行收口。
 struct PendingApproval {
@@ -1035,7 +1044,9 @@ impl AssistantPanel {
                 .child(h_flex().justify_end().child(if self.running {
                     Button::new("assistant-stop")
                         .outline()
-                        .with_size(SEND_BUTTON_SIZE)
+                        // 图标按这一档算（见 [`STOP_ICON_BOX`]），圆按下一行。
+                        .with_size(STOP_ICON_BOX)
+                        .size(SEND_BUTTON_SIZE)
                         .rounded(SEND_BUTTON_SIZE / 2.)
                         .icon(IconName::Pause)
                         .tooltip(t!("assistant.stop"))
