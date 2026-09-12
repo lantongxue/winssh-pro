@@ -8,6 +8,7 @@
 //! 命令面板是例外：它常驻在 [`crate::ui::Workspace`] 上，`open()` 因此收的是
 //! 那个常驻实体，把结果通过 [`CommandPaletteEvent`] 发回去。
 
+mod command_history;
 mod command_palette;
 mod credential_form;
 mod host_form;
@@ -19,6 +20,7 @@ mod sftp_form;
 mod snippet_form;
 mod snippet_params;
 
+pub use command_history::{CommandHistoryDialog, HistoryRunHandler, ShellIntegrationHandler};
 pub use command_palette::{CommandPaletteDialog, CommandPaletteEvent};
 pub use credential_form::{CredentialFormDialog, CredentialSavedHandler};
 pub use host_form::HostFormDialog;

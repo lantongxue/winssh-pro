@@ -1,0 +1,160 @@
+//! OSC 133 的**另一半**：往对端 shell 里装那几个标记。
+//!
+//! `super::semantic` 解决的是"标记来了怎么认"，这里解决的是"标记从哪儿来"。
+//! 两件事必须分开说，因为它们的性质不同：认标记是我们自己的事，而打标记是
+//! **对端 shell** 的事 —— 没装集成的 shell 一个标记都不会发，命令历史于是
+//! 一条也记不到（见 [`crate::command_history`] 的模块文档）。
+//!
+//! 多数发行版的出厂 shell 都没装。iTerm2、VS Code、WezTerm 的做法都是同一条：
+//! 往对端送一段脚本，让 shell 自己在提示符前后把 `A`/`B`/`C`/`D` 打出来。
+//! 这里送的就是 [`SCRIPT`]。
+//!
+//! # 送进去的是一行，而且用户看得见
+//!
+//! [`SCRIPT`] 是**一整行**，不是一段多行脚本。三个理由：
+//!
+//! - 它是当成"用户敲的一条命令"送进交互式 shell 的，多行会画出好几个提示符，
+//!   中间任何一行出错后面还照跑；一行就是一条命令，要么成要么不成。
+//! - 一行才好原样摆给用户看。开关打开之前要弹一个框把这一行整段显示出来 ——
+//!   我们是在往用户的服务器上打字，这件事不能瞒着做，也不能只给个摘要。
+//! - 对端的回显会把这一行原样打在屏幕上。那不是噪音，是证据。
+//!
+//! 源码里用 `concat!` 拼，是为了在这边分行读得下去；拼出来的常量和送出去的
+//! 字节逐字相同，界面上显示的也是同一个常量 —— 展示的和发出去的不会走岔。
+//!
+//! # 只认 bash 与 zsh
+//!
+//! fish 的语法和 POSIX shell 完全不同，同一行文本在 fish 里连语法都过不了，
+//! 没有"一行兼容三家"这回事；要支持就得先知道对端是哪个 shell，而在打字进去
+//! 之前我们并不知道。所以这一行只分 bash / zsh 两档，别的 shell 走 `else`
+//! 那一档打印一句话说明 —— 打开了开关却什么都没发生，比报一句错更让人困惑。
+//!
+//! 已经装过集成的 shell（fish、powerlevel10k、bash-preexec、iTerm2/VS Code
+//! 的那几份）本来就在发标记，用户不必打开这个开关；真打开了也不会坏事 ——
+//! `B` 那一段进 `PS1` 之前先看有没有，不会叠第二遍。
+//!
+//! # 这一行里那几个讲究
+//!
+//! - **`A` 从 `PROMPT_COMMAND` / `precmd` 里打，不进 `PS1`。** starship、
+//!   powerlevel10k 这类框架每出一次提示符就把 `PS1` 整个重建一遍，写进 `PS1`
+//!   的东西下一次就没了。只有 `B`（"提示符到此结束"）非在 `PS1` 里不可 ——
+//!   它标的是列位置 —— 所以每次出提示符都回头看一眼，掉了就再接上。
+//! - **`D` 要抢在用户自己的钩子前面。** 退出码是 `$?`，而用户的钩子（git
+//!   状态、conda、时间戳）跑完之后 `$?` 就是那些钩子的了。bash 走
+//!   `PROMPT_COMMAND` 拼接时排在最前，zsh 则把 `D` 单拎一个函数插到
+//!   `precmd_functions` 的头上。
+//! - **bash 的 `C` 走 `PS0`。** `PS0` 是"读完命令、开跑之前"展开的那一段
+//!   （bash 4.4 起），正好是 `C` 的位置。老 bash 上只能没有 `C`，那就记不到
+//!   命令 —— 用 `trap DEBUG` 顶上的话，管道里每一段都会触发一次，宁可不记。
+//! - **`WINSSH_OSC133` 是门闩**，装过一次就不再装第二遍。不 `export`：
+//!   子 shell 继承了这个变量却继承不到那几个钩子，反倒挡住了以后在子 shell
+//!   里重装的可能。
+
+/// 门闩那个变量的名字。
+///
+/// 它同时是这一行的**指纹**：[`crate::command_history::should_record`] 靠它
+/// 认出"这条命令是我们自己敲进去的"，不把它记进用户的命令历史 —— 对端已经
+/// 装过集成的时候，注入的那一行自己也会被标记圈出来，而它不是用户敲的。
+///
+/// 和 [`SCRIPT`] 里那个字面量必须一致，由 `the_guard_name_matches_the_script`
+/// 那条用例钉住（`concat!` 不吃常量，只能两处各写一遍）。
+pub const GUARD: &str = "WINSSH_OSC133";
+
+/// 往对端 shell 里装 OSC 133 标记的那一行。
+///
+/// 原样送进交互式 shell（末尾的回车由调用方补），也原样摆给用户看。
+/// 里头每一段在做什么见模块文档。
+pub const SCRIPT: &str = concat!(
+    // 门闩：装过就什么都不做。
+    r#"if [ -n "$WINSSH_OSC133" ]; then :; "#,
+    // ── bash ────────────────────────────────────────────────────────────
+    r#"elif [ -n "$BASH_VERSION" ]; then "#,
+    // 出提示符之前：先结算上一条的退出码（D），再开新的提示符（A）。
+    // `local r=$?` 必须是第一句 —— 后面任何一条命令都会把 `$?` 冲掉。
+    r#"__winssh_prompt() { local r=$?; printf '\033]133;D;%s\007\033]133;A\007' "$r"; "#,
+    // B 进 PS1，掉了就再接上；结尾把 `$?` 原样交还给用户自己的钩子。
+    r#"case "$PS1" in *'133;B'*) ;; *) PS1="$PS1"'\[\033]133;B\007\]';; esac; return $r; }; "#,
+    r#"PS0='\033]133;C\007'"$PS0"; "#,
+    r#"PROMPT_COMMAND="__winssh_prompt${PROMPT_COMMAND:+;$PROMPT_COMMAND}"; "#,
+    r#"WINSSH_OSC133=1; "#,
+    // ── zsh ─────────────────────────────────────────────────────────────
+    r#"elif [ -n "$ZSH_VERSION" ]; then "#,
+    r#"__winssh_end() { printf '\033]133;D;%s\007' $?; }; "#,
+    r#"__winssh_prompt() { printf '\033]133;A\007'; "#,
+    // `%{...%}` 告诉 zsh 这一段不占宽度，不然提示符的列数会算错。
+    r#"[[ $PS1 = *'133;B'* ]] || PS1="$PS1"$'%{\033]133;B\007%}'; }; "#,
+    r#"__winssh_exec() { printf '\033]133;C\007'; }; "#,
+    r#"autoload -Uz add-zsh-hook; "#,
+    r#"add-zsh-hook precmd __winssh_prompt; add-zsh-hook preexec __winssh_exec; "#,
+    // D 插到队首，`$?` 才还是用户那条命令的。
+    r#"precmd_functions=(__winssh_end $precmd_functions); "#,
+    r#"WINSSH_OSC133=1; "#,
+    // ── 别的 shell ──────────────────────────────────────────────────────
+    r#"else echo 'winssh-pro: shell integration needs bash or zsh'; fi"#,
+);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    /// 送进去的必须是**一行**：调用方在末尾补一个回车就当成一条命令跑。
+    /// 里头混进换行的话，对端会把它拆成几条，而中间那几条多半不成句。
+    #[test]
+    fn the_script_is_a_single_line() {
+        assert!(!SCRIPT.contains('\n'));
+        assert!(!SCRIPT.contains('\r'));
+    }
+
+    /// 四个标记一个都不能少 —— 少 `B` 就不知道提示符停在哪一列，少 `C`
+    /// 就不知道命令什么时候开跑，两者缺一条命令都刮不出来。
+    #[test]
+    fn all_four_marks_are_armed() {
+        for mark in ["133;A", "133;B", "133;C", "133;D"] {
+            assert!(SCRIPT.contains(mark), "{mark} 没装");
+        }
+    }
+
+    /// 两档 shell 都要认，而且要有门闩。
+    #[test]
+    fn both_shells_are_covered_and_guarded() {
+        assert!(SCRIPT.contains("BASH_VERSION"));
+        assert!(SCRIPT.contains("ZSH_VERSION"));
+    }
+
+    /// [`GUARD`] 是另写的一份字面量（`concat!` 不吃常量），两处对不上的话
+    /// 门闩失灵不说，命令历史还会把注入那一行当成用户敲的记下来。
+    #[test]
+    fn the_guard_name_matches_the_script() {
+        assert!(SCRIPT.contains(GUARD));
+    }
+
+    /// 本机上有哪个 shell 就拿哪个做语法检查（`-n` 只解析不执行）。
+    ///
+    /// 装不到就跳过：这一行是送去**远端**跑的，本机有没有 bash 不影响功能，
+    /// 为它把整条测试判红只会让 Windows 上的 CI 常年是红的。
+    fn syntax_check(shell: &str) {
+        let Ok(output) = Command::new(shell).arg("-n").arg("-c").arg(SCRIPT).output() else {
+            eprintln!("本机没有 {shell}，跳过这一档语法检查");
+            return;
+        };
+        assert!(
+            output.status.success(),
+            "{shell} 认为这一行不成句：{}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    /// **两家都要能解析整行**，不只是自己那一档 —— `if/elif` 的每一支在进门
+    /// 时都要先过语法，bash 读不懂 zsh 那一段的话，这一行在 bash 上一句都跑
+    /// 不了。这正是"一行兼容两家"最容易栽的地方。
+    #[test]
+    fn bash_parses_the_whole_line() {
+        syntax_check("bash");
+    }
+
+    #[test]
+    fn zsh_parses_the_whole_line() {
+        syntax_check("zsh");
+    }
+}

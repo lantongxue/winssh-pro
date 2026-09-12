@@ -1728,6 +1728,7 @@ mod tests {
             forwards: Vec::new(),
             tags: Vec::new(),
             proxy: Default::default(),
+            shell_integration: false,
         }
     }
 

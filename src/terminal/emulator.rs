@@ -50,8 +50,13 @@ use gpui_kit::{
     Point, Size, Task, px,
 };
 
-use super::{keys::to_esc_str, search::SearchState};
+use super::{
+    keys::to_esc_str,
+    search::SearchState,
+    semantic::{Mark, MarkScanner, command_bounds},
+};
 
+use crate::command_history::{CommandRun, should_record};
 use crate::ssh::{SshHandler, spawn_bridge};
 use russh::{Channel, client::Handle, client::Msg as ClientMsg};
 use rust_i18n::t;
@@ -291,6 +296,11 @@ pub enum EmulatorEvent {
     Bell,
     /// 子进程结束了，这条会话到此为止。
     Exited,
+    /// 有命令跑完了。跑完的那几条用 [`Emulator::take_commands`] 取。
+    ///
+    /// 和标题一个路子：事件只说"有变化"，内容另取 —— 这个枚举是 `Copy` 的，
+    /// 一条命令文本挂在上面就不是了，而它每帧都在被到处传。
+    CommandRecorded,
 }
 
 /// 终端的字节源：要么是本机 PTY，要么是远端 SSH 通道。
@@ -315,6 +325,13 @@ pub struct Emulator {
     /// 上一次报给对端的鼠标格子。移动与拖动只在**跨过格子边界**时才报一次，
     /// 不然一次划过屏幕就是几百条报文，对端（btop、vim）会被淹掉。
     last_mouse_cell: Option<(usize, usize)>,
+    /// OSC 133 标记的旁路解析（见 [`super::semantic`]）。和 `parser` 一样有
+    /// 跨调用的状态，一条序列可能被切在两次写入之间。
+    marks: MarkScanner,
+    /// 命令识别走到哪一步了。
+    command: CommandState,
+    /// 已经认出来、还没被取走的那几条。通常最多一条 —— 界面在事件里当场就取。
+    recorded: Vec<CommandRun>,
     /// 终端内搜索。`None` 表示搜索栏没开着，那时下面两个字段也没有意义。
     pub(super) search: Option<SearchState>,
     /// 输出批次的计数，防抖重扫用它判断"这一觉里有没有来新东西"。
@@ -386,6 +403,9 @@ impl Emulator {
                 term,
                 transport: Transport::Pty(pty),
                 parser: Processor::new(),
+                marks: MarkScanner::default(),
+                command: CommandState::Idle,
+                recorded: Vec::new(),
                 bounds,
                 content: Content::default(),
                 title: None,
@@ -434,6 +454,9 @@ impl Emulator {
                 term,
                 transport: Transport::Ssh(bridge),
                 parser: Processor::new(),
+                marks: MarkScanner::default(),
+                command: CommandState::Idle,
+                recorded: Vec::new(),
                 bounds,
                 content: Content::default(),
                 title: None,
@@ -474,6 +497,9 @@ impl Emulator {
                 term,
                 transport: Transport::None,
                 parser: Processor::new(),
+                marks: MarkScanner::default(),
+                command: CommandState::Idle,
+                recorded: Vec::new(),
                 bounds,
                 content: Content::default(),
                 title: None,
@@ -551,11 +577,33 @@ impl Emulator {
     /// 从通道里读到的字节 —— 那时候这个方法就是终端的主要输入口。
     ///
     /// 换行要写 `\r\n`：`\n` 只是往下一行，不回到第一列，这是终端而不是文件。
+    ///
+    /// 同一段字节喂两遍：一遍给屏幕（`parser`），一遍给 OSC 133 的旁路扫描器
+    /// （`marks`，见 [`super::semantic`]）。屏幕那一遍一个字节都没变 ——
+    /// 命令历史是从这条流上**看**出来的，没往对端多发过任何东西。
+    ///
+    /// 两遍是错开走的：扫描器扫到一个标记就停，把它**连同标记那串转义序列**
+    /// 吃掉的那一段先交给屏幕，于是标记被处理的那一刻，屏幕正好是标记所指的
+    /// 那一刻 —— 这时候读到的光标才是对的。一口气扫完再读，读到的是这一整段
+    /// 画完之后的样子，`B` 记下的列和 `C` 圈出的行就都错位了。
     pub fn write_output(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
-        let mut term = self.term.lock();
-        self.parser.advance(&mut *term, bytes);
-        drop(term);
+        let recorded = feed(
+            bytes,
+            &self.term,
+            &mut self.parser,
+            &mut self.marks,
+            &mut self.command,
+            &mut self.recorded,
+        );
+        if recorded {
+            cx.emit(EmulatorEvent::CommandRecorded);
+        }
         self.refresh(cx);
+    }
+
+    /// 取走已经认出来的那几条命令，清空队列。
+    pub fn take_commands(&mut self) -> Vec<CommandRun> {
+        std::mem::take(&mut self.recorded)
     }
 
     /// 往对端写一段字节：PTY 时走 PTY，SSH 时走通道。
@@ -917,6 +965,138 @@ impl Drop for Emulator {
 
 impl EventEmitter<EmulatorEvent> for Emulator {}
 
+/// 把一段字节同时喂给屏幕和标记扫描器，认出来的命令追加进 `recorded`。
+/// 返回值是"这一段里记下了新的命令"。
+///
+/// 从 [`Emulator::write_output`] 里分出来，为的是这一段能脱开 GPUI 测
+/// —— 它是真正干活的那部分（错开喂、读光标、刮文本），而 `Context` 在这里
+/// 只用来发一个通知。测试于是可以拿一个真的 `Term` 加一段真的字节流来验，
+/// 不必起一个应用。
+fn feed(
+    bytes: &[u8],
+    term: &FairMutex<Term<EventProxy>>,
+    parser: &mut Processor,
+    marks: &mut MarkScanner,
+    state: &mut CommandState,
+    recorded: &mut Vec<CommandRun>,
+) -> bool {
+    let mut found = false;
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let (consumed, mark) = marks.advance(rest);
+        // 扫描器进门前一定是干净的，所以它必然吃掉至少一个字节。真要是原地
+        // 不动，宁可丢掉这一段里的标记也不能空转 —— 挂死比少记一条坏得多。
+        debug_assert!(consumed > 0, "OSC 扫描器没有前进");
+        let (head, tail) = rest.split_at(if consumed == 0 { rest.len() } else { consumed });
+
+        let mut term = term.lock();
+        parser.advance(&mut *term, head);
+        if let Some(mark) = mark
+            && let Some(run) = apply_mark(state, mark, &term)
+        {
+            recorded.push(run);
+            found = true;
+        }
+        drop(term);
+
+        rest = tail;
+    }
+    found
+}
+
+/// 命令识别走到哪一步了 —— OSC 133 的四个标记就是这台小状态机的输入。
+///
+/// 没有标记的 shell 一辈子停在 [`CommandState::Idle`]，于是一条也不记。
+/// 那是明说的取舍：只记 shell 自己讲出来的，不猜。
+enum CommandState {
+    /// 不在一条命令里：还没见过提示符，或者上一条已经结算完了。
+    Idle,
+    /// 提示符画完了（`B`），记着它停在第几列，等用户敲字。
+    Prompt { column: usize },
+    /// 命令跑起来了（`C`），文本已经从屏幕上刮下来，就等退出码。
+    Running { command: String },
+}
+
+/// 把一个标记喂给状态机。返回值是"这一下结算出了一条命令"。
+///
+/// `term` 必须已经处理到这个标记那一刻为止 —— [`Emulator::write_output`]
+/// 的错开喂法保证了这件事。
+fn apply_mark(
+    state: &mut CommandState,
+    mark: Mark,
+    term: &Term<EventProxy>,
+) -> Option<CommandRun> {
+    match mark {
+        // 新的提示符要开始画了。上一条要是还挂在 `Running` 上，说明这个 shell
+        // 没发过 `D`（有的集成就是只打前三个点）—— 那条命令确实跑过，照记，
+        // 退出码记成"不知道"。
+        Mark::PromptStart => match std::mem::replace(state, CommandState::Idle) {
+            CommandState::Running { command } => Some(CommandRun {
+                command,
+                exit_code: None,
+            }),
+            _ => None,
+        },
+        Mark::PromptEnd => {
+            *state = CommandState::Prompt {
+                column: term.grid().cursor.point.column.0,
+            };
+            None
+        }
+        // 命令开始跑了：这一刻屏幕上那一行就是它的最终形态 —— 补全、调历史、
+        // 行内编辑全都已经回显完了，所以从屏幕上刮比从按键流上攒准得多。
+        Mark::CommandStart => {
+            let CommandState::Prompt { column } = *state else {
+                // 没见过 `B` 就不知道提示符停在哪儿，刮出来的会带一截提示符。
+                *state = CommandState::Idle;
+                return None;
+            };
+            *state = match read_command(term, column) {
+                Some(command) => CommandState::Running { command },
+                None => CommandState::Idle,
+            };
+            None
+        }
+        Mark::CommandEnd(exit_code) => {
+            let CommandState::Running { command } =
+                std::mem::replace(state, CommandState::Idle)
+            else {
+                return None;
+            };
+            Some(CommandRun { command, exit_code })
+        }
+    }
+}
+
+/// 从屏幕上把命令文本刮下来。范围怎么圈的见 [`command_bounds`]。
+fn read_command(term: &Term<EventProxy>, prompt_column: usize) -> Option<String> {
+    let last_column = term.last_column().0;
+    let topmost_line = term.topmost_line().0;
+    let cursor = term.grid().cursor.point;
+
+    let bounds = command_bounds(
+        (cursor.line.0, cursor.column.0),
+        prompt_column,
+        topmost_line,
+        last_column,
+        // 末格带着 `WRAPLINE` 就是这一行软换行接到了下一行。
+        |line| {
+            term.grid()[Line(line)][Column(last_column)]
+                .flags
+                .contains(Flags::WRAPLINE)
+        },
+    )?;
+
+    // `bounds_to_string` 是选区复制用的那一套：软换行会被接成一行，行尾空白
+    // 自己会截掉，宽字符与制表符也都算对了。
+    let text = term.bounds_to_string(
+        AlacPoint::new(Line(bounds.start_line), Column(bounds.start_column)),
+        AlacPoint::new(Line(bounds.end_line), Column(bounds.end_column)),
+    );
+    let text = text.trim();
+    should_record(text).then(|| text.to_owned())
+}
+
 /// 只带 Shift 的修饰键组合。别的组合（Ctrl、Alt、Command）要么已经被
 /// [`to_esc_str`] 翻译掉了，要么是窗口的快捷键，不能当普通字符送进终端。
 const SHIFT_ONLY: gpui_kit::Modifiers = gpui_kit::Modifiers {
@@ -1178,6 +1358,250 @@ impl EventListener for EventProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 一台离线的终端：一份真的屏幕缓冲加一套真的解析器，没有 PTY、没有连接、
+    /// 也没有 GPUI。命令识别的那条链（错开喂 → 读光标 → 刮文本）整条都在这儿，
+    /// 所以这些用例验的是真东西，不是模型。
+    struct Offline {
+        term: FairMutex<Term<EventProxy>>,
+        parser: Processor,
+        marks: MarkScanner,
+        state: CommandState,
+        recorded: Vec<CommandRun>,
+    }
+
+    impl Offline {
+        fn new() -> Self {
+            let (events_tx, _events_rx) = mpsc::unbounded();
+            let bounds = TerminalBounds::default(); // 80 × 24
+            Self {
+                term: FairMutex::new(Term::new(
+                    Config::default(),
+                    &bounds,
+                    EventProxy(events_tx),
+                )),
+                parser: Processor::new(),
+                marks: MarkScanner::default(),
+                state: CommandState::Idle,
+                recorded: Vec::new(),
+            }
+        }
+
+        /// 收一段对端字节，和 [`Emulator::write_output`] 走的是同一条路。
+        fn write(&mut self, bytes: &[u8]) -> &mut Self {
+            feed(
+                bytes,
+                &self.term,
+                &mut self.parser,
+                &mut self.marks,
+                &mut self.state,
+                &mut self.recorded,
+            );
+            self
+        }
+
+        /// 一个字节一个字节地收同一段 —— SSH 那头的切分是任意的。
+        fn write_in_pieces(&mut self, bytes: &[u8]) -> &mut Self {
+            for byte in bytes {
+                self.write(std::slice::from_ref(byte));
+            }
+            self
+        }
+
+        fn commands(&self) -> Vec<(&str, Option<i32>)> {
+            self.recorded
+                .iter()
+                .map(|run| (run.command.as_str(), run.exit_code))
+                .collect()
+        }
+    }
+
+    /// 一条完整的 OSC 133 会话：画提示符、回显命令、跑、报退出码，再画下一个
+    /// 提示符。`D` 在 `A` 前面 —— shell 的 precmd 钩子先结算上一条，再打印新
+    /// 提示符，真实的字节流就是这个顺序。
+    const SESSION: &[u8] =
+        b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\ls -al\r\n\x1b]133;C\x1b\\total 0\r\n\x1b]133;D;0\x1b\\\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\";
+
+    #[test]
+    fn a_marked_shell_yields_the_command_and_its_exit_code() {
+        let mut term = Offline::new();
+        term.write(SESSION);
+        assert_eq!(term.commands(), vec![("ls -al", Some(0))]);
+    }
+
+    /// 同一段字节被切成一个个字节送进来，结果必须一模一样。
+    /// 远端的分包是任意的，这一条是整套做法能不能立住的前提。
+    #[test]
+    fn the_same_stream_split_byte_by_byte_gives_the_same_command() {
+        let mut whole = Offline::new();
+        let mut pieces = Offline::new();
+        whole.write(SESSION);
+        pieces.write_in_pieces(SESSION);
+        assert_eq!(whole.commands(), pieces.commands());
+    }
+
+    /// 没有标记的 shell 一条也记不到 —— 明面上的取舍：只记 shell 自己讲出来的。
+    #[test]
+    fn a_shell_without_marks_records_nothing() {
+        let mut term = Offline::new();
+        term.write(b"$ ls -al\r\ntotal 0\r\n$ ");
+        assert!(term.commands().is_empty());
+    }
+
+    /// 命令长到换行：刮回来的要是接起来的那一整条，不是屏幕上的最后一行。
+    #[test]
+    fn a_command_that_wraps_comes_back_whole() {
+        let long = "echo ".to_owned() + &"x".repeat(100);
+        let mut term = Offline::new();
+        term.write(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\")
+            .write(long.as_bytes())
+            .write(b"\r\n\x1b]133;C\x1b\\\x1b]133;D;0\x1b\\");
+        assert_eq!(term.commands(), vec![(long.as_str(), Some(0))]);
+    }
+
+    /// 提示符里有颜色（真实的 PS1 都有）：转义序列不占格子，刮出来不该带上它们。
+    #[test]
+    fn colour_codes_in_the_prompt_do_not_leak_into_the_command() {
+        let mut term = Offline::new();
+        term.write(b"\x1b]133;A\x1b\\\x1b[32mroot@web-01\x1b[0m:\x1b[34m~\x1b[0m$ \x1b]133;B\x1b\\")
+            .write(b"uptime\r\n\x1b]133;C\x1b\\\x1b]133;D;0\x1b\\");
+        assert_eq!(term.commands(), vec![("uptime", Some(0))]);
+    }
+
+    /// 有的集成只打前三个点，不报退出码。那条命令确实跑过，照记 ——
+    /// 退出码记成"不知道"，界面上那一格显示破折号。
+    #[test]
+    fn a_command_without_a_closing_mark_is_still_recorded_as_unknown() {
+        let mut term = Offline::new();
+        term.write(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\make\r\n\x1b]133;C\x1b\\")
+            .write(b"done\r\n\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\");
+        assert_eq!(term.commands(), vec![("make", None)]);
+    }
+
+    /// 提示符上直接按回车不是一条命令。
+    #[test]
+    fn a_bare_newline_at_the_prompt_is_not_a_command() {
+        let mut term = Offline::new();
+        term.write(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\\r\n\x1b]133;C\x1b\\\x1b]133;D;0\x1b\\");
+        assert!(term.commands().is_empty());
+    }
+
+    /// 失败的命令要带着它的退出码回来 —— 这正是 OSC 133 比刮屏多出来的那一样。
+    #[test]
+    fn a_failing_command_keeps_its_exit_code() {
+        let mut term = Offline::new();
+        term.write(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\false\r\n\x1b]133;C\x1b\\\x1b]133;D;1\x1b\\");
+        assert_eq!(term.commands(), vec![("false", Some(1))]);
+    }
+
+    /// 连着跑几条：每一条各自成行，不会互相粘连。
+    #[test]
+    fn several_commands_in_a_row_stay_separate() {
+        let mut term = Offline::new();
+        for (command, code) in [("pwd", 0), ("whoami", 0), ("cat missing", 1)] {
+            term.write(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\")
+                .write(command.as_bytes())
+                .write(b"\r\n\x1b]133;C\x1b\\out\r\n")
+                .write(format!("\x1b]133;D;{code}\x1b\\").as_bytes());
+        }
+        assert_eq!(
+            term.commands(),
+            vec![("pwd", Some(0)), ("whoami", Some(0)), ("cat missing", Some(1))]
+        );
+    }
+
+    /// 屏幕滚动之后仍然认得准：`B` 记的是列，行号是从 `C` 那一刻的光标往回推的
+    /// —— 记行号的话，这一条就会错位（从 `B` 到 `C` 之间屏幕多半滚过）。
+    #[test]
+    fn a_prompt_at_the_bottom_of_a_scrolled_screen_is_still_read_correctly() {
+        let mut term = Offline::new();
+        // 先把屏幕写满，逼着后面每一条命令都在滚动中进行。
+        for line in 0..40 {
+            term.write(format!("line {line}\r\n").as_bytes());
+        }
+        term.write(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\systemctl restart nginx\r\n")
+            .write(b"\x1b]133;C\x1b\\\x1b]133;D;0\x1b\\");
+        assert_eq!(term.commands(), vec![("systemctl restart nginx", Some(0))]);
+    }
+
+    /// 屏幕那一路必须一个字节都没变：标记是旁路认的，不该在屏幕上留下任何痕迹，
+    /// 也不该把别人的输出吃掉。
+    #[test]
+    fn the_marks_leave_no_trace_on_the_screen() {
+        let mut marked = Offline::new();
+        let mut plain = Offline::new();
+        marked.write(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\ls\r\n\x1b]133;C\x1b\\total 0\r\n\x1b]133;D;0\x1b\\");
+        plain.write(b"$ ls\r\ntotal 0\r\n");
+
+        let screen = |offline: &Offline| {
+            let term = offline.term.lock();
+            term.bounds_to_string(
+                AlacPoint::new(Line(0), Column(0)),
+                AlacPoint::new(Line(3), term.last_column()),
+            )
+        };
+        assert_eq!(screen(&marked), screen(&plain));
+    }
+
+    /// 旁路扫描要多少钱：同一段字节，只喂屏幕 vs. 屏幕加标记扫描。
+    ///
+    /// 量的是**吞吐**不是帧率 —— 这条改动落在 [`Emulator::write_output`] 上，
+    /// 和画一帧没有关系（画的是 `Term` 里已经解析好的格子）。
+    ///
+    /// 落这条量尺时（release 档，8 MiB 的刷屏输出，就是 `cargo build` 那种量）：
+    ///
+    /// | 喂法 | 吞吐 |
+    /// | --- | --- |
+    /// | 只喂屏幕 | 151 MB/s |
+    /// | 屏幕 + 标记扫描 | 127 MB/s |
+    ///
+    /// 慢了约六分之一，因为字节确实走了两遍状态机（第二遍只认 OSC，别的动作
+    /// 全是空实现，所以远不到"翻倍"）。绝对值上仍然远远够用：一条 SSH 会话的
+    /// 输出受网络管着，满速刷屏也就几 MB/s，而 127 MB/s 意味着一帧的预算
+    /// （8.3ms）能吞下 1 MB —— 刷屏时真正的瓶颈在 `Term` 的换行滚动与渲染，
+    /// 不在这儿。
+    #[test]
+    #[ignore = "性能量尺，按需手动跑"]
+    fn parse_cost() {
+        use std::time::Instant;
+
+        // 一段像样的刷屏输出：有颜色、有换行、有长行，和 `cargo build` 一个样子。
+        let line = "\x1b[32m   Compiling\x1b[0m winssh-pro v0.1.0 (/Users/me/workspace)\r\n";
+        let mut flood = String::new();
+        while flood.len() < 8 * 1024 * 1024 {
+            flood.push_str(line);
+        }
+        let flood = flood.as_bytes();
+
+        // 两种喂法交替各跑几轮取最好的一轮：先跑的那一遍要吃冷缓存与首次缺页，
+        // 各跑一次的话，量到的是"谁先跑"而不是"谁更贵"。
+        const ROUNDS: usize = 5;
+        let mut plain = std::time::Duration::MAX;
+        let mut with_tap = std::time::Duration::MAX;
+        for _ in 0..ROUNDS {
+            let mut bare = Offline::new();
+            let start = Instant::now();
+            {
+                let mut term = bare.term.lock();
+                bare.parser.advance(&mut *term, flood);
+            }
+            plain = plain.min(start.elapsed());
+
+            let mut tapped = Offline::new();
+            let start = Instant::now();
+            tapped.write(flood);
+            with_tap = with_tap.min(start.elapsed());
+        }
+
+        let throughput = |elapsed: std::time::Duration| {
+            flood.len() as f64 / elapsed.as_secs_f64() / 1024. / 1024.
+        };
+        println!("只喂屏幕: {:.0} MB/s（{plain:?}）", throughput(plain));
+        println!(
+            "屏幕 + 标记扫描: {:.0} MB/s（{with_tap:?}）",
+            throughput(with_tap)
+        );
+    }
 
     fn mods(shift: bool, alt: bool, control: bool) -> Modifiers {
         Modifiers {

@@ -57,6 +57,7 @@ pub struct SessionInfoBar {
     on_copy: Option<Handler>,
     on_clear: Option<Handler>,
     on_tunnels: Option<Handler>,
+    on_history: Option<Handler>,
     on_sftp: Option<Handler>,
     on_monitor: Option<Handler>,
     on_split: Option<Rc<SplitHandler>>,
@@ -77,6 +78,7 @@ impl SessionInfoBar {
             on_copy: None,
             on_clear: None,
             on_tunnels: None,
+            on_history: None,
             on_sftp: None,
             on_monitor: None,
             on_split: None,
@@ -137,6 +139,16 @@ impl SessionInfoBar {
     }
 
     /// 右侧的 SFTP 面板按钮。
+    /// 命令历史那一颗。和上面几颗一样：没接回调就不画
+    /// —— 本机 shell 没有主机记录，也就没有历史可看。
+    pub fn on_history(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_history = Some(Box::new(handler));
+        self
+    }
+
     pub fn on_sftp(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -261,6 +273,29 @@ impl SessionInfoBar {
         Some(btn.into_any_element())
     }
 
+    /// 命令历史那一颗。没接 [`Self::on_history`] 时不画（见 [`Self::render_tunnels`]）。
+    ///
+    /// 不像 SFTP 与监控那两颗有"开着 / 关着"两副样子：它弹的是一层对话框，
+    /// 不是这一栏里的一块地方，没有"现在开着"这个状态可言。
+    fn render_history(&mut self, cx: &App) -> Option<AnyElement> {
+        let handler = self.on_history.take()?;
+        Some(
+            Button::new("session-info-history")
+                .ghost()
+                .xsmall()
+                .icon(
+                    Icon::new(AppIcon::History)
+                        .with_size(ICON_SIZE)
+                        .text_color(palette::idle(cx)),
+                )
+                .label(t!("session_info.history"))
+                .tooltip(t!("session_info.history_tooltip"))
+                .accessibility_id(t!("session_info.history"))
+                .on_click(handler)
+                .into_any_element(),
+        )
+    }
+
     /// SFTP 那一颗。没接 [`Self::on_sftp`] 时不画（见 [`Self::render_tunnels`]）。
     fn render_sftp(&mut self, cx: &App) -> Option<AnyElement> {
         let handler = self.on_sftp.take()?;
@@ -342,6 +377,7 @@ impl RenderOnce for SessionInfoBar {
         // 到右半边的时候就借不到 `&self` 了。
         let split_group = self.render_split_group(cx);
         let tunnels = self.render_tunnels(cx);
+        let history = self.render_history(cx);
         let sftp = self.render_sftp(cx);
         let monitor = self.render_monitor(cx);
 
@@ -419,6 +455,7 @@ impl RenderOnce for SessionInfoBar {
                     .gap_1()
                     .child(split_group)
                     .children(tunnels)
+                    .children(history)
                     .children(sftp)
                     .children(monitor)
                     .child(

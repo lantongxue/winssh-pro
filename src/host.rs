@@ -169,6 +169,13 @@ pub struct Host {
     /// 进 [`HostDraft`]：代理是"怎么连上去"的一部分，和地址、认证方式一样
     /// 在主机表单里填，不像采集节奏那样是连上之后才调的。
     pub proxy: crate::proxy::HostProxy,
+    /// 每次连上这台机器，要不要往对端 shell 里装一份 OSC 133 标记。
+    ///
+    /// 不进 [`HostDraft`]：和采集节奏、转发规则一样，它是连上之后在命令历史
+    /// 那扇窗里开的，主机表单不认这一列。开它等于"每次连上都替我往这台服务器
+    /// 上打一行字"，所以出厂是关的，打开之前要用户看过那一行并点头 ——
+    /// 送的是什么见 [`crate::terminal::shell_integration::SCRIPT`]。
+    pub shell_integration: bool,
 }
 
 impl Host {

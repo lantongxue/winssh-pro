@@ -23,6 +23,8 @@ pub mod font;
 mod keys;
 pub mod scheme;
 mod search;
+mod semantic;
+pub mod shell_integration;
 
 pub use emulator::{
     Content, Emulator, EmulatorEvent, GridCell, GridPoint, TerminalBounds, is_default_background,

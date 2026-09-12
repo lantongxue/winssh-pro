@@ -22,7 +22,7 @@ use tokio::runtime::Runtime;
 
 /// 建表语句。`CREATE TABLE IF NOT EXISTS` 是幂等的，每次启动都跑一遍；
 /// 老用户的库文件已存在时原样保留，新字段通过 [`MIGRATIONS`] 补齐。
-const SCHEMA: [&str; 7] = [
+const SCHEMA: [&str; 9] = [
     "CREATE TABLE IF NOT EXISTS host_groups (
         id         INTEGER PRIMARY KEY,
         name       TEXT    NOT NULL UNIQUE,
@@ -46,7 +46,8 @@ const SCHEMA: [&str; 7] = [
         status_interval_secs  INTEGER NOT NULL DEFAULT 8,
         forwards     TEXT    NOT NULL DEFAULT '',
         tags         TEXT    NOT NULL DEFAULT '',
-        proxy        TEXT    NOT NULL DEFAULT ''
+        proxy        TEXT    NOT NULL DEFAULT '',
+        shell_integration INTEGER NOT NULL DEFAULT 0
     )",
     // 保险箱。和 hosts 之间没有外键：主机存的是凭据的内容本身，不是一个指向
     // 这里的 id（见 `crate::credential` 的模块文档），删一条凭据不牵动任何主机。
@@ -104,6 +105,26 @@ const SCHEMA: [&str; 7] = [
         status          TEXT    NOT NULL DEFAULT '',
         created_at      TEXT    NOT NULL DEFAULT ''
     )",
+    // 命令历史。和上面几张表相反，这一张**是**挂在主机上的：一条历史的意思是
+    // "在这台机器上跑过这条命令"，换一台机器就不是同一件事了。所以外键指向
+    // `hosts`，删掉一台主机，它的历史跟着一起走（见 `crate::command_history`）。
+    //
+    // 字段只有五个，每一个都得自己挣来：`exit_code` 可空（`133;D` 不带退出码
+    // 时就是不知道，写 0 是句假话），`created_at` 与别处同格式，字典序即时间序。
+    // 会话 id、耗时、工作目录、输出内容都**没有** —— 历史跟着主机走，不跟会话走；
+    // 剩下那几样现在没人读，真要加时 `MIGRATIONS` 里一条 `ADD COLUMN` 的事。
+    "CREATE TABLE IF NOT EXISTS command_history (
+        id         TEXT    PRIMARY KEY,
+        host_id    TEXT    NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+        command    TEXT    NOT NULL,
+        exit_code  INTEGER,
+        created_at TEXT    NOT NULL DEFAULT ''
+    )",
+    // 库里唯一一张会一直长的表：别的表都是用户一条条建出来的（几十行到头），
+    // 这张按"敲过多少条命令"长。列表查询与删主机时的级联都按 `host_id` 走，
+    // 没有这条索引两者都要扫全表 —— 而扫的是那张最大的表。
+    "CREATE INDEX IF NOT EXISTS idx_command_history_host
+        ON command_history (host_id, created_at DESC)",
     // 应用级偏好的键值对。一张表装下所有"不属于某台主机、某条凭据"的设置
     // （现在只有全局代理，见 `crate::service::SettingService`）：这些东西各自
     // 只有一行，每加一项就开一张表的话，库里很快就是一堆单行表。
@@ -115,7 +136,7 @@ const SCHEMA: [&str; 7] = [
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 10] = [
+const MIGRATIONS: [&str; 11] = [
     "ALTER TABLE hosts ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'password'",
     "ALTER TABLE hosts ADD COLUMN password TEXT NOT NULL DEFAULT ''",
     // 私钥本身与解开它的密码。老库补出来都是空串，也就是"这台主机还没配私钥"。
@@ -139,6 +160,11 @@ const MIGRATIONS: [&str; 10] = [
     // 出厂档是不使用代理 —— 所以老库补出来的这一列不改变任何一台主机现在的
     // 连法，仍旧是直连。
     "ALTER TABLE hosts ADD COLUMN proxy TEXT NOT NULL DEFAULT ''",
+    // 连上之后要不要往对端 shell 里装 OSC 133 标记（见
+    // `crate::terminal::shell_integration`）。老库补出来的是 0，也就是"不装"
+    // —— 往用户的服务器上打字这件事只能由他自己开，绝不能因为升级了一版就
+    // 默默开始做。
+    "ALTER TABLE hosts ADD COLUMN shell_integration INTEGER NOT NULL DEFAULT 0",
 ];
 
 /// 数据层专用的 tokio runtime，进程生命周期内只建一次。

@@ -34,6 +34,8 @@ pub enum AppIcon {
     FolderPlus,
     /// 带同步箭头的文件夹：SFTP 传输。
     FolderSync,
+    /// 逆时针箭头绕着一只钟：命令历史。组件库那一套里没有钟。
+    History,
     /// 屋顶加门：远端家目录。组件库没有 home 那个图标。
     Home,
     /// 一把带齿的钥匙：API 令牌那一档凭据。
@@ -79,6 +81,7 @@ impl IconNamed for AppIcon {
             Self::FilePlus => "icons/file-plus.svg",
             Self::FolderPlus => "icons/folder-plus.svg",
             Self::FolderSync => "icons/folder-sync.svg",
+            Self::History => "icons/history.svg",
             Self::Home => "icons/home.svg",
             Self::Key => "icons/key.svg",
             Self::KeyRound => "icons/key-round.svg",
@@ -194,6 +197,7 @@ mod tests {
             AppIcon::FilePlus.path(),
             AppIcon::FolderPlus.path(),
             AppIcon::FolderSync.path(),
+            AppIcon::History.path(),
             AppIcon::Home.path(),
             AppIcon::Key.path(),
             AppIcon::KeyRound.path(),

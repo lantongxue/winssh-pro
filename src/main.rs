@@ -2,6 +2,7 @@
 
 mod assets;
 mod assistant;
+mod command_history;
 mod credential;
 mod db;
 mod forward;

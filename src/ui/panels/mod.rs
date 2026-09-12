@@ -26,6 +26,6 @@ pub use sftp::{
 pub use sftp_editor::SaveFile;
 pub use terminal::{
     BackTab, CloseSearch, CopySelection, Find, PasteClipboard, SessionEvent, SplitLayout, Tab,
-    TerminalPanel, ToggleForwards, ToggleMonitor, ToggleSftp,
+    TerminalPanel, ToggleForwards, ToggleHistory, ToggleMonitor, ToggleSftp,
 };
 pub use welcome::WelcomePanel;

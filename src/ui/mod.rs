@@ -40,8 +40,8 @@ use gpui_kit::{App, KeyBinding};
 
 use panels::{
     BackTab, CloseSearch, CopySelection, ExtendSelectionDown, ExtendSelectionUp, Find,
-    OpenSelection, PasteClipboard, SaveFile, SelectAllEntries, Tab, ToggleForwards, ToggleMonitor,
-    ToggleSftp,
+    OpenSelection, PasteClipboard, SaveFile, SelectAllEntries, Tab, ToggleForwards, ToggleHistory,
+    ToggleMonitor, ToggleSftp,
 };
 use workspace::{OpenSettingsWindow, OpenVaultWindow, ToggleCommandPalette, ToggleSidebar};
 
@@ -73,6 +73,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("alt-t", ToggleMonitor, Some("Terminal")),
         KeyBinding::new("alt-f", ToggleSftp, Some("Terminal")),
         KeyBinding::new("alt-p", ToggleForwards, Some("Terminal")),
+        KeyBinding::new("alt-h", ToggleHistory, Some("Terminal")),
         // 终端内搜索。`ctrl-f` 在终端里是"光标右移一格"（emacs 键位、readline
         // 默认就绑着它），所以非 macOS 上让给 `ctrl-shift-f`，和复制粘贴让开的
         // 理由是同一个。Esc 只在搜索栏开着时消费，没开着时 `on_close_search`

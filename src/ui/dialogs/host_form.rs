@@ -1266,6 +1266,7 @@ mod tests {
                 forwards: Vec::new(),
                 tags: vec!["生产".into(), "web".into()],
                 proxy: HostProxy::default(),
+                shell_integration: false,
             },
             "生产环境".into(),
         )

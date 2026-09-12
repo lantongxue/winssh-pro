@@ -37,10 +37,12 @@ use gpui_kit::{
 };
 
 use crate::{
+    command_history::CommandRun,
     host::Host,
     ssh::SshSession,
     terminal::{
         Emulator, EmulatorEvent, GridPoint, SearchQuery, TerminalBounds, font, rows_under_the_bar,
+        shell_integration,
     },
     ui::{
         elements::{TerminalGridElement, cell_at, point_at},
@@ -128,10 +130,19 @@ pub enum TerminalPaneEvent {
     CloseRequested,
     /// 有话要跟用户说，但只有面板那层拿得到弹通知的上下文。
     Notify(SharedString),
+    /// 这条 shell 里跑完了几条命令（shell 自己打的 OSC 133 标记，见
+    /// [`crate::terminal`]）。窗格不知道自己是哪台主机，落库归标签页。
+    CommandsRecorded(Vec<CommandRun>),
 }
 
 pub struct TerminalPane {
     host: Host,
+    /// 这个窗格背后是不是一条**真的远端 shell**（[`Self::adopt`] 成功过）。
+    ///
+    /// 和 [`Self::connected`] 不是一回事：拨号时摆的占位终端、SSH 失败之后顶上来
+    /// 的本机 shell 也都"连着"，但它们都不是用户点头要往里装东西的那台机器。
+    /// 往对端打字之前问的是这一个。
+    remote_shell: bool,
     /// 这条会话的终端。开不出来时是 `None`，[`Self::error`] 说明原因。
     emulator: Option<Entity<Emulator>>,
     error: Option<SharedString>,
@@ -166,6 +177,7 @@ impl TerminalPane {
         cx.new(|cx| {
             let mut this = Self {
                 host,
+                remote_shell: false,
                 emulator: None,
                 error: None,
                 grid: TerminalBounds::default(),
@@ -343,21 +355,64 @@ impl TerminalPane {
         });
         self.emulator = Some(emulator);
         self.error = None;
+        self.remote_shell = true;
+        // 这台主机上开着开关就在这儿装。只有这条路会走到 —— SSH 拨不通时
+        // 顶上来的是本机 shell（见 [`Self::dial`]），那不是用户点头要装的
+        // 那台机器，一个字都不该往里打。
+        //
+        // 读的是**此刻**的 `self.host`：拨号那会儿用户可能刚在命令历史里把
+        // 开关扳开，[`Self::set_shell_integration`] 已经把新值推下来了。
+        if self.host.shell_integration {
+            self.install_shell_integration(cx);
+        }
         cx.emit(TerminalPaneEvent::Connected(session));
         cx.notify();
     }
 
+    /// 这台主机的 shell 集成开关换了档，标签页把新值推下来。
+    ///
+    /// 窗格手上那份 `Host` 是构造时拷的一份快照，不推的话它会一直停在开会话
+    /// 那一刻的样子 —— 正在拨号的这条连上之后，[`Self::adopt`] 读到的还是旧
+    /// 值，用户刚扳的那一下就丢了。
+    ///
+    /// 已经连上的当场装；还没连上的什么都不做，`adopt` 会照着这个新值补上。
+    pub fn set_shell_integration(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.host.shell_integration = on;
+        if on && self.remote_shell && self.connected(cx) {
+            self.install_shell_integration(cx);
+        }
+    }
+
+    /// 往这条 shell 里装一份 OSC 133 集成。
+    ///
+    /// 就是把 [`shell_integration::SCRIPT`] 当成一条用户敲的命令送进去，所以
+    /// 对端会把它原样回显在屏幕上 —— 那不是噪音，是"我们刚往你的服务器上打了
+    /// 这行字"的证据。装重了也不要紧，那一行自己带门闩。
+    fn install_shell_integration(&mut self, cx: &mut Context<Self>) {
+        self.send_line(shell_integration::SCRIPT, cx);
+    }
+
     fn attach_emulator(&self, emulator: &Entity<Emulator>, cx: &mut Context<Self>) {
         cx.observe(emulator, |_, _, cx| cx.notify()).detach();
-        cx.subscribe(emulator, |_, _, event: &EmulatorEvent, cx| match event {
-            EmulatorEvent::TitleChanged | EmulatorEvent::Exited => {
-                // 标题变了就是目录变了，信息栏那一格跟着走；退出了则是连接点
-                // 该灭。两件事都在标签页那层画，所以要报上去。
-                cx.emit(TerminalPaneEvent::Changed);
-                cx.notify();
-            }
-            EmulatorEvent::Bell => {}
-        })
+        cx.subscribe(
+            emulator,
+            |_, emulator, event: &EmulatorEvent, cx| match event {
+                EmulatorEvent::TitleChanged | EmulatorEvent::Exited => {
+                    // 标题变了就是目录变了，信息栏那一格跟着走；退出了则是连接点
+                    // 该灭。两件事都在标签页那层画，所以要报上去。
+                    cx.emit(TerminalPaneEvent::Changed);
+                    cx.notify();
+                }
+                EmulatorEvent::CommandRecorded => {
+                    // 内容不在事件上（那个枚举是 `Copy` 的），当场去取。
+                    let runs = emulator.update(cx, |em, _| em.take_commands());
+                    if !runs.is_empty() {
+                        cx.emit(TerminalPaneEvent::CommandsRecorded(runs));
+                    }
+                }
+                EmulatorEvent::Bell => {}
+            },
+        )
         .detach();
     }
 

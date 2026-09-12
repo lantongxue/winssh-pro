@@ -5,6 +5,7 @@
 
 pub mod ai_conversation;
 pub mod ai_message;
+pub mod command_history;
 pub mod credential;
 pub mod host;
 pub mod host_group;

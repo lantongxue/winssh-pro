@@ -61,6 +61,10 @@ const OWNED: &[(&str, &[u8])] = &[
         "icons/folder-sync.svg",
         include_bytes!("../assets/icons/folder-sync.svg"),
     ),
+    (
+        "icons/history.svg",
+        include_bytes!("../assets/icons/history.svg"),
+    ),
     ("icons/home.svg", include_bytes!("../assets/icons/home.svg")),
     ("icons/key.svg", include_bytes!("../assets/icons/key.svg")),
     (

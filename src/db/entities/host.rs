@@ -52,6 +52,10 @@ pub struct Model {
     /// 空串是出厂档"跟随全局"，见 [`crate::proxy::decode`]。
     #[sea_orm(default_value = "")]
     pub proxy: String,
+    /// 连上之后要不要往对端 shell 里装 OSC 133 标记，出厂是不装。
+    /// 装的是什么、为什么要用户点头见 [`crate::terminal::shell_integration`]。
+    #[sea_orm(default_value = false)]
+    pub shell_integration: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

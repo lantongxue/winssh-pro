@@ -233,6 +233,23 @@ impl HostRepository {
         Ok(result.rows_affected)
     }
 
+    /// 只改一台主机的 shell 集成开关那一列。
+    ///
+    /// 与上面两条同一个道理：调用方（命令历史那扇窗）手上只有这一个布尔值。
+    pub async fn update_host_shell_integration(
+        &self,
+        conn: &impl ConnectionTrait,
+        id: &str,
+        enabled: bool,
+    ) -> Result<u64, DbErr> {
+        let result = host::Entity::update_many()
+            .col_expr(host::Column::ShellIntegration, Expr::value(enabled))
+            .filter(host::Column::Id.eq(id))
+            .exec(conn)
+            .await?;
+        Ok(result.rows_affected)
+    }
+
     /// 改一台主机的落位：换到哪个分组、排在第几位。
     pub async fn update_host_position(
         &self,

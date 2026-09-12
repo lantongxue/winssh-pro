@@ -5,6 +5,7 @@
 //! 也都收在这里，数据仓只提供一条条数据操作。
 
 pub mod assistant_service;
+pub mod command_history_service;
 pub mod credential_service;
 pub mod forward_service;
 pub mod host_service;
@@ -16,6 +17,7 @@ pub mod snippet_service;
 pub mod ssh_service;
 
 pub use assistant_service::AssistantService;
+pub use command_history_service::CommandHistoryService;
 pub use credential_service::CredentialService;
 pub use forward_service::ForwardService;
 pub use host_service::HostService;

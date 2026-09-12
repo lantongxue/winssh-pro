@@ -41,6 +41,7 @@ use gpui_kit::{
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
     WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px,
 };
+use std::rc::Rc;
 use std::sync::Arc;
 
 use self::{
@@ -49,15 +50,19 @@ use self::{
 };
 use crate::{
     assistant::SessionTarget,
+    command_history::CommandRun,
     forward::PortForward,
     host::Host,
-    service::{ForwardService, HostService},
+    service::{CommandHistoryService, ForwardService, HostService},
     session::SessionTelemetry,
     ssh::SshSession,
     terminal::TerminalBounds,
     ui::{
         bars::{SessionInfoBar, SessionStatusBar},
-        dialogs::{ForwardsHandler, PortForwardDialog},
+        dialogs::{
+            CommandHistoryDialog, ForwardsHandler, HistoryRunHandler, PortForwardDialog,
+            ShellIntegrationHandler,
+        },
         panels::{MonitorEvent, MonitorPanel, SftpPanel, SftpPanelEvent},
         theme::palette,
     },
@@ -73,6 +78,8 @@ actions!(
         ToggleSftp,
         /// 打开这条会话的端口转发对话框（Alt+P）。
         ToggleForwards,
+        /// 打开这台主机的命令历史（Alt+H）。
+        ToggleHistory,
     ]
 );
 
@@ -92,6 +99,14 @@ pub enum SessionEvent {
     /// 和"断开"分开说，因为两者的证据不同：断开能从窗格上读出来，而关掉之后
     /// 这个面板马上就不存在了，没有谁还能被问"你还活着吗"。
     Ended,
+    /// 这个标签页改了**主机那一行**（不是会话状态），库里已经是新值。
+    ///
+    /// 目前只有 shell 集成那个开关走这条路（[`TerminalPanel::save_shell_integration`]）：
+    /// 它是从会话里扳的，可主机列表手上那份快照是开会话那一刻拷的，不说一声
+    /// 的话它会一直停在旧值 —— 下次从列表里开会话，带过去的还是"没开"，
+    /// 用户扳的那一下就等于没扳（窗格照着手上那份 [`Host`] 决定连上之后
+    /// 装不装，见 [`TerminalPane`] 的 `adopt`）。
+    HostChanged,
 }
 
 /// 标签页上那个颜色点的直径。
@@ -177,6 +192,12 @@ pub struct TerminalPanel {
     /// 主机库。端口转发对话框改完规则要写回这台主机那一行。
     /// 本机 Shell 没有对应的库记录，那时是 `None`。
     hosts: Option<HostService>,
+    /// 这台主机的命令历史。
+    ///
+    /// 有没有它跟着 `hosts` 走，因为那正是"库里有没有这台主机"这件事 ——
+    /// 历史那张表的外键指着 `hosts.id`，没有主机记录就没有可挂的地方
+    /// （见 [`crate::command_history`]）。本机 Shell 因此不记。
+    history: Option<CommandHistoryService>,
     /// 所在的 Dock。SFTP 面板要编辑远端文件时，靠它在中心区开一个编辑器标签页 ——
     /// 子面板够不到 Dock，这个弱句柄是从工作区一路穿下来的（[`Self::subscribe_sftp`]）。
     dock_area: WeakEntity<DockArea>,
@@ -241,6 +262,7 @@ impl TerminalPanel {
             forwards: Vec::new(),
             tags: Vec::new(),
             proxy: Default::default(),
+            shell_integration: false,
         };
         Self::build(host, Source::Local, None, dock_area, window, cx)
     }
@@ -272,6 +294,7 @@ impl TerminalPanel {
             forwards: Vec::new(),
             tags: Vec::new(),
             proxy: Default::default(),
+            shell_integration: false,
         };
         Self::build(host, Source::Detached, None, dock_area, window, cx)
     }
@@ -314,6 +337,7 @@ impl TerminalPanel {
                 sftp_resizable_state: cx.new(|_| ResizableState::default()),
                 sftp_resizable_id: SharedString::from(format!("terminal-sftp-{}", host.id)),
                 ssh: None,
+                history: hosts.as_ref().map(|_| CommandHistoryService::open()),
                 hosts,
                 dock_area,
                 alive: false,
@@ -393,7 +417,32 @@ impl TerminalPanel {
             TerminalPaneEvent::Notify(message) => {
                 window.push_notification(message.to_string(), cx);
             }
+            TerminalPaneEvent::CommandsRecorded(runs) => {
+                self.record_commands(runs.clone(), cx);
+            }
         }
+    }
+
+    /// 把刚跑完的这几条记进这台主机的历史。
+    ///
+    /// 分屏出来的两个窗格记的是同一台主机 —— 历史跟着主机走，不跟着窗格或者
+    /// 会话走（见 [`crate::command_history`]），所以这里不必分是哪一半送上来的。
+    ///
+    /// 落库是异步的，也可能失败（库文件没了、盘满了）。失败只记日志，不弹通知：
+    /// 用户正在敲下一条命令，一条历史没记上不值得打断他。
+    fn record_commands(&self, runs: Vec<CommandRun>, cx: &mut Context<Self>) {
+        let Some(history) = self.history.clone() else {
+            return;
+        };
+        let host_id = self.host.id.to_string();
+        cx.spawn(async move |_, _| {
+            for run in runs {
+                if let Err(error) = history.record(&host_id, run).await {
+                    log::warn!("命令历史落库失败：{error:#}");
+                }
+            }
+        })
+        .detach();
     }
 
     /// 焦点落在哪一半，哪一半就是活动的。
@@ -856,6 +905,89 @@ impl TerminalPanel {
         cx.stop_propagation();
     }
 
+    fn on_toggle_history(
+        &mut self,
+        _: &ToggleHistory,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_history(window, cx);
+        // 同上：不拦住的话 Alt+H 还会当成 `\x1bh` 进终端。
+        cx.stop_propagation();
+    }
+
+    /// 打开这台主机的命令历史。
+    ///
+    /// 点中一条就发进**当前**这条会话 —— 历史是按主机存的，但用它的总是
+    /// 手边这个终端（分屏时是活动的那一半，跟着 [`Self::run_line`] 走）。
+    fn open_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(service) = self.history.clone() else {
+            return;
+        };
+        let panel = cx.entity().downgrade();
+        let on_run: HistoryRunHandler = Rc::new(move |command: String, window, cx| {
+            panel
+                .update(cx, |this, cx| this.run_line(&command, window, cx))
+                .ok();
+        });
+        let panel = cx.entity().downgrade();
+        let on_shell_integration: ShellIntegrationHandler = Rc::new(move |on: bool, window, cx| {
+            panel
+                .update(cx, |this, cx| this.save_shell_integration(on, window, cx))
+                .ok();
+        });
+        CommandHistoryDialog::open(
+            self.host.clone(),
+            service,
+            on_run,
+            on_shell_integration,
+            window,
+            cx,
+        );
+    }
+
+    /// 记下这台主机要不要自动装 shell 集成，并在打开时立刻装进当前这条会话。
+    ///
+    /// 顺序和保存转发规则一样：先在本会话里生效，再落库 —— 用户扳开关是想
+    /// **现在**就开始记，不是下次连上才开始。
+    ///
+    /// 新值推给**每一个**窗格，不只是活动的那一半：分屏出来的两条 shell 是各自
+    /// 独立的进程，一条装了另一条照样不发标记，而历史是按主机记的（见
+    /// [`crate::command_history`]）—— 只装一半的话，用户会看到"同一台机器上
+    /// 有时记得下有时记不下"。关掉时也要推，窗格手上那份快照才不会过期。
+    fn save_shell_integration(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.host.shell_integration = on;
+        cx.notify();
+
+        for pane in self.panes.clone() {
+            pane.update(cx, |pane, cx| pane.set_shell_integration(on, cx));
+        }
+
+        let Some(hosts) = self.hosts.clone() else {
+            // 本机 Shell 没有主机记录。这一档根本走不到（命令历史那颗按钮
+            // 跟着 `hosts` 走），留着是为了万一将来走得到时不会悄悄丢掉。
+            return;
+        };
+        let id = self.host.id.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = hosts.update_shell_integration(&id, on).await;
+            this.update_in(cx, |_, window, cx| {
+                match outcome {
+                    // 落库了才报：主机列表听见这一声会回库里重读一份快照
+                    // （[`SessionEvent::HostChanged`]），写失败的话重读出来的
+                    // 还是旧值，报了只是让它白跑一趟。
+                    Ok(()) => cx.emit(SessionEvent::HostChanged),
+                    Err(error) => window.push_notification(
+                        t!("terminal.save_shell_integration_failed", error => format!("{error:#}")),
+                        cx,
+                    ),
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// 展开或收起右侧监控面板。
     ///
     /// 收起之后采集不停 —— 状态栏中间那三个数字一直看得见，而它们来自同一次
@@ -1106,6 +1238,7 @@ impl Render for TerminalPanel {
         let monitor_open = self.monitor_open;
         let split = self.split;
         let over_ssh = self.source.over_ssh();
+        let has_history = self.history.is_some();
         let sftp_open = self.sftp_open;
         let tunnels = self.active_forwards();
         let terminal = self.render_panes(window, cx);
@@ -1122,6 +1255,11 @@ impl Render for TerminalPanel {
                 this.on_action(cx.listener(Self::on_toggle_monitor))
                     .on_action(cx.listener(Self::on_toggle_sftp))
                     .on_action(cx.listener(Self::on_toggle_forwards))
+            })
+            // 历史那一颗跟着"库里有没有这台主机"走，不跟 `over_ssh` 走：
+            // 本机 shell 没有主机记录，它那条外键无处可挂（见 `Self::history`）。
+            .when(has_history, |this| {
+                this.on_action(cx.listener(Self::on_toggle_history))
             })
             .child(
                 SessionInfoBar::new(
@@ -1148,6 +1286,11 @@ impl Render for TerminalPanel {
                             monitor_open,
                             cx.listener(|this, _, _, cx| this.toggle_monitor(cx)),
                         )
+                })
+                .when(has_history, |bar| {
+                    bar.on_history(cx.listener(|this, _, window, cx| {
+                        this.open_history(window, cx);
+                    }))
                 })
                 .on_copy(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_all(cx)))
                 .on_clear(cx.listener(|this, _: &ClickEvent, _, cx| this.clear(cx))),
@@ -1278,6 +1421,30 @@ mod tests {
         let (_panel, cx) = draw_panel(cx);
         // 再画一帧：第一帧和后续帧走的不是同一条路（元素状态、焦点、
         // 上一帧量出来的网格尺寸都只有第二帧才读得到）。
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// 库里有这台主机时，信息栏上多一颗"命令历史"。
+    ///
+    /// 那颗按钮走的是一条单独的分支（`has_history`，跟 `over_ssh` 不是一回事
+    /// —— 本机 shell 没有主机记录），不专门画一遍就没有任何用例走到它。
+    #[gpui_kit::test]
+    fn a_session_backed_by_a_host_record_draws_its_history_button(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        // 开窗之前把这一下阻塞做完，之后一次异步都不能再发
+        // （见 [`crate::service::SnippetService::in_memory_blocking`]）。
+        let history = CommandHistoryService::in_memory_blocking();
+        let (panel, cx) = draw_panel(cx);
+
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.history = Some(history);
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        // 再画一帧：理由同 [`the_panel_draws_all_the_way_through`]。
         cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 

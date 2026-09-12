@@ -46,9 +46,19 @@ impl HostService {
         self.persistent
     }
 
+    /// 这座库的那条连接。
+    ///
+    /// 只给测试用：命令历史那边要和主机在**同一座**内存库里，
+    /// 不然外键指向的那台主机在它眼里根本不存在（见
+    /// [`crate::service::CommandHistoryService`] 的测试）。
+    #[cfg(test)]
+    pub(crate) fn connection(&self) -> sea_orm::DatabaseConnection {
+        self.db.clone()
+    }
+
     /// 内存库：测试用的独立一座。磁盘库打不开时的退路在 [`db::app`] 那一层。
     #[cfg(test)]
-    async fn in_memory() -> Result<Self> {
+    pub(crate) async fn in_memory() -> Result<Self> {
         let db = db::connect(None).await?;
         Ok(Self {
             repo: HostRepository,
@@ -102,6 +112,10 @@ impl HostService {
                         forwards: Set(String::new()),
                         tags: Set(crate::host::encode_tags(&draft.tags)),
                         proxy: Set(crate::proxy::encode(&draft.proxy)),
+                        // shell 集成同理不在表单里，新主机一律不装 ——
+                        // 往对端打字这件事只能由用户自己在命令历史那扇窗里开
+                        // （[`Self::update_shell_integration`]）。
+                        shell_integration: Set(false),
                     },
                 )
                 .await?;
@@ -123,6 +137,7 @@ impl HostService {
                 forwards: Vec::new(),
                 tags: draft.tags,
                 proxy: draft.proxy,
+                shell_integration: false,
             })
         })
         .await
@@ -154,12 +169,13 @@ impl HostService {
                         key_content: Set(draft.key_content.clone()),
                         key_passphrase: Set(draft.key_passphrase.clone()),
                         jump_host_id: Set(draft.jump_host_id.clone()),
-                        // 表单不认这三列，别把用户在监控面板里调好的节奏、
-                        // 在端口转发对话框里加的规则顺手抹掉。
-                        // `NotSet` 的列不会进 UPDATE 语句。
+                        // 表单不认这四列，别把用户在监控面板里调好的节奏、
+                        // 在端口转发对话框里加的规则、在命令历史里开的 shell
+                        // 集成顺手抹掉。`NotSet` 的列不会进 UPDATE 语句。
                         monitor_interval_secs: ActiveValue::NotSet,
                         status_interval_secs: ActiveValue::NotSet,
                         forwards: ActiveValue::NotSet,
+                        shell_integration: ActiveValue::NotSet,
                         tags: Set(crate::host::encode_tags(&draft.tags)),
                         proxy: Set(crate::proxy::encode(&draft.proxy)),
                     },
@@ -257,6 +273,7 @@ impl HostService {
                         forwards: Set(source.forwards.clone()),
                         tags: Set(source.tags.clone()),
                         proxy: Set(source.proxy.clone()),
+                        shell_integration: Set(source.shell_integration),
                     },
                 )
                 .await?;
@@ -282,6 +299,7 @@ impl HostService {
                 forwards: forward::decode(&source.forwards),
                 tags: crate::host::decode_tags(&source.tags),
                 proxy: crate::proxy::decode(&source.proxy),
+                shell_integration: source.shell_integration,
             })
         })
         .await
@@ -341,6 +359,30 @@ impl HostService {
             let affected = this
                 .repo
                 .update_host_forwards(&this.db, &id, &encoded)
+                .await?;
+            ensure!(
+                affected == 1,
+                "{}",
+                t!("host_service.host_missing", id => id)
+            );
+            Ok(())
+        })
+        .await
+    }
+
+    /// 记下这台主机要不要自动装 shell 集成。
+    ///
+    /// 和采集节奏、转发规则一样独立于 [`Self::update_host`]：主机表单不认这一列
+    /// （见 [`Host::shell_integration`]）。这一列的意思是"下次连上它就替我往这台
+    /// 服务器上打一行字"，所以写进来的只能是用户在界面上亲手扳过的那一下 ——
+    /// 装的是什么见 [`crate::terminal::shell_integration::SCRIPT`]。
+    pub async fn update_shell_integration(&self, id: &str, enabled: bool) -> Result<()> {
+        let this = self.clone();
+        let id = id.to_owned();
+        db::run(async move {
+            let affected = this
+                .repo
+                .update_host_shell_integration(&this.db, &id, enabled)
                 .await?;
             ensure!(
                 affected == 1,
@@ -414,6 +456,7 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                     forwards: forward::decode(&host.forwards),
                     tags: crate::host::decode_tags(&host.tags),
                     proxy: crate::proxy::decode(&host.proxy),
+                    shell_integration: host.shell_integration,
                 })
                 .collect(),
         })
@@ -969,6 +1012,86 @@ mod tests {
 
             let groups = service.load_groups().await.unwrap();
             assert!(groups[0].hosts[0].forwards.is_empty(), "一条都不该存进去");
+        });
+    }
+
+    /// shell 集成那个开关存得住、读得回，而且新主机是**关着**的。
+    ///
+    /// 出厂值这一条要钉死：开着的意思是"每次连上这台机器都替我往它上面打一行
+    /// 字"，那种事只能由用户自己开。
+    #[test]
+    fn the_shell_integration_switch_round_trips_and_ships_off() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            assert!(!host.shell_integration, "新主机不该自动往对端打字");
+
+            service
+                .update_shell_integration(&host.id, true)
+                .await
+                .unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert!(groups[0].hosts[0].shell_integration);
+
+            // 关得回去 —— 停手这条路不能只有单程。
+            service
+                .update_shell_integration(&host.id, false)
+                .await
+                .unwrap();
+            let groups = service.load_groups().await.unwrap();
+            assert!(!groups[0].hosts[0].shell_integration);
+        });
+    }
+
+    /// 主机表单不认这一列，改一次连接配置不该把开关抹掉 ——
+    /// 和采集节奏、转发规则是同一条边界。
+    #[test]
+    fn editing_a_host_keeps_its_shell_integration() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            service
+                .update_shell_integration(&host.id, true)
+                .await
+                .unwrap();
+
+            service
+                .update_host(&host.id, "分组", draft("web-01-renamed"))
+                .await
+                .unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert!(groups[0].hosts[0].shell_integration, "开关被表单抹掉了");
+        });
+    }
+
+    /// 副本是同一台机器的另一份配置，这个开关一并照抄。
+    #[test]
+    fn a_duplicate_copies_the_shell_integration() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            service
+                .update_shell_integration(&host.id, true)
+                .await
+                .unwrap();
+
+            let copy = service.duplicate_host(&host.id).await.unwrap();
+            assert!(copy.shell_integration);
+        });
+    }
+
+    #[test]
+    fn shell_integration_for_a_missing_host_fails() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            assert!(
+                service
+                    .update_shell_integration("nope", true)
+                    .await
+                    .is_err()
+            );
         });
     }
 

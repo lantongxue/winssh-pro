@@ -102,12 +102,78 @@ session_info.monitor_hide:
 session_info.monitor_show:
   en: Show right-side monitor (Alt+M)
   zh-CN: 显示右侧资源监控（Alt+M）
+session_info.history:
+  en: History
+  zh-CN: 命令历史
+session_info.history_tooltip:
+  en: Commands run on this host (Alt+H)
+  zh-CN: 这台主机上跑过的命令（Alt+H）
 session_info.copy_all:
   en: Copy all output
   zh-CN: 复制全部输出
 session_info.clear:
   en: Clear screen
   zh-CN: 清屏
+
+# ── 命令历史（会话信息栏上那颗按钮弹出） ─────────────────────────────────
+command_history.title:
+  en: Command History
+  zh-CN: 命令历史
+command_history.search_placeholder:
+  en: Filter commands
+  zh-CN: 筛选命令
+command_history.loading:
+  en: Loading…
+  zh-CN: 正在读取…
+# 一条也没有的两种原因要分开说：这一句是"这台机器上还没记下过命令"，
+# 而最常见的原因是对端的 shell 没有 OSC 133 集成 —— 所以这句话点破它，
+# 不然用户只会觉得功能坏了，并且把人引到底下那个开关上（它就是干这个的）。
+command_history.empty:
+  en: No commands recorded yet. History needs the remote shell to emit OSC 133 marks (fish, powerlevel10k, bash-preexec and the iTerm2 / VS Code shell integrations all do). If yours doesn't, turn on the switch below.
+  zh-CN: 还没有记下命令。命令历史要对端 shell 自己打 OSC 133 标记才认得出来（fish、powerlevel10k、bash-preexec，以及 iTerm2 / VS Code 的 shell 集成都会打）。对端没装的话，打开底下那个开关。
+command_history.no_match:
+  en: Nothing matches
+  zh-CN: 没有匹配的命令
+command_history.hint:
+  en: Click a command to send it to this session · newest %{limit} kept
+  zh-CN: 点一条即发进当前会话 · 最近 %{limit} 条
+command_history.clear:
+  en: Clear history
+  zh-CN: 清空历史
+command_history.close:
+  en: Close
+  zh-CN: 关闭
+
+# ── shell 集成开关（命令历史那扇窗底下那一块） ────────────────────────────
+# 这一段的文案比别处都要实在：开关一扳，我们就会往用户的服务器上打一行字。
+# 说清楚"装什么、什么时候装、装了会看见什么"，比说得好听重要。
+shell_integration.label:
+  en: Install shell integration on this host
+  zh-CN: 为这台主机装 shell 集成
+shell_integration.note_off:
+  en: The remote shell emits no OSC 133 marks, so nothing gets recorded. Turn this on and WinSSH Pro types one line into the shell on every connect.
+  zh-CN: 对端 shell 不打 OSC 133 标记就一条也记不到。打开之后，每次连上这台机器都会替你往 shell 里敲一行命令。
+shell_integration.note_on:
+  en: Installed on every connect (bash / zsh). Turning it off stops the next connect — the shell already running keeps its marks until you reconnect.
+  zh-CN: 每次连上都装（bash / zsh）。关掉只对下次连接有效 —— 已经装好的这条 shell 要重连才干净。
+shell_integration.confirm_title:
+  en: Type this into the remote shell?
+  zh-CN: 要往对端 shell 里敲这行命令吗？
+shell_integration.confirm_body:
+  en: WinSSH Pro will run the line below in this session, and again on every future connect to this host. It only sets prompt hooks (PS0/PS1/PROMPT_COMMAND on bash 4.4+, precmd/preexec on zsh) so the shell reports where each command starts, ends and what it exited with. Nothing is written to disk, and it lasts only as long as the shell. Make sure the session is sitting at a prompt — the keystrokes go wherever the input goes.
+  zh-CN: WinSSH Pro 会在当前这条会话里跑下面这一行，以后每次连上这台主机也照跑一遍。它只设提示符钩子（bash 4.4+ 走 PS0/PS1/PROMPT_COMMAND，zsh 走 precmd/preexec），让 shell 自己报出每条命令的起止与退出码；不往磁盘写任何东西，shell 一关就没了。动手前请确认会话停在提示符上 —— 这些字符会进当前正在读输入的那个程序。
+shell_integration.script_caption:
+  en: Sent verbatim, as one line
+  zh-CN: 原样发送，就这一行
+shell_integration.copy:
+  en: Copy
+  zh-CN: 复制
+shell_integration.confirm_ok:
+  en: Install
+  zh-CN: 装上
+shell_integration.confirm_cancel:
+  en: Cancel
+  zh-CN: 取消
 
 # ── 分屏档位 ─────────────────────────────────────────────────────────────
 split.single:
@@ -1698,6 +1764,10 @@ terminal.forwards_need_ssh:
 terminal.save_forwards_failed:
   en: "Could not save the port forwarding rules: %{error}"
   zh-CN: 保存端口转发规则失败：%{error}
+# 装是装上了（那一行已经敲进去了），只是没记住"下次也装"。
+terminal.save_shell_integration_failed:
+  en: "Shell integration is active in this session, but the setting could not be saved: %{error}"
+  zh-CN: shell 集成在当前会话里已经生效，但这个开关没存下来：%{error}
 terminal.banner_local_ready:
   en: Local shell is ready.
   zh-CN: 本机 Shell 已就绪。

@@ -418,6 +418,7 @@ mod tests {
                 mode: crate::proxy::ProxyMode::Disabled,
                 ..Default::default()
             },
+            shell_integration: false,
         }
     }
 

@@ -407,7 +407,7 @@ impl HostExplorerView {
             window,
             cx,
         );
-        self.track_session(host.id.clone(), &panel, cx);
+        self.track_session(host.id.clone(), &panel, window, cx);
         _ = self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
         });
@@ -420,10 +420,16 @@ impl HostExplorerView {
     /// 卡片上那颗会话点不是"开过就亮"：连着才亮，断了、关了就回到默认色。
     /// 断和关这两件事都由标签页自己报（[`SessionEvent`]），这里只做两件事 ——
     /// 关掉的从名册上划掉，然后重画一帧。
+    ///
+    /// 还有一件：会话里也能改主机那一行（命令历史里那个 shell 集成开关），
+    /// 那一下绕过了这个视图直接落库。手上这份 `groups` 是快照，听见
+    /// [`SessionEvent::HostChanged`] 就得回库里重读一份，不然下次从列表里
+    /// 开会话，带过去的还是开关扳之前的那份主机。
     fn track_session(
         &mut self,
         host: SharedString,
         panel: &Entity<TerminalPanel>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.sessions.push(TrackedSession {
@@ -431,17 +437,25 @@ impl HostExplorerView {
             panel: panel.downgrade(),
         });
 
-        cx.subscribe(panel, |this, panel, event: &SessionEvent, cx| {
-            if event == &SessionEvent::Ended {
-                let closed = panel.entity_id();
+        cx.subscribe_in(
+            panel,
+            window,
+            |this, panel, event: &SessionEvent, window, cx| {
+                match event {
+                    SessionEvent::Ended => {
+                        let closed = panel.entity_id();
+                        this.sessions
+                            .retain(|session| session.panel.entity_id() != closed);
+                    }
+                    SessionEvent::HostChanged => this.reload(window, cx),
+                    SessionEvent::LivenessChanged => {}
+                }
+                // 顺手清掉已经被回收的那几条：窗口整个关掉时没有谁来报 `Ended`。
                 this.sessions
-                    .retain(|session| session.panel.entity_id() != closed);
-            }
-            // 顺手清掉已经被回收的那几条：窗口整个关掉时没有谁来报 `Ended`。
-            this.sessions
-                .retain(|session| session.panel.upgrade().is_some());
-            cx.notify();
-        })
+                    .retain(|session| session.panel.upgrade().is_some());
+                cx.notify();
+            },
+        )
         .detach();
     }
 
@@ -1375,6 +1389,7 @@ mod tests {
             forwards: Vec::new(),
             tags: tags.into_iter().map(SharedString::from).collect(),
             proxy: Default::default(),
+            shell_integration: false,
         }
     }
 
