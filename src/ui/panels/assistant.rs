@@ -14,6 +14,10 @@
 //! 消息本体三种画法：用户的话靠右的实底气泡、助手的话靠左的 Markdown、
 //! 命令执行卡片一块带命令与输出的边框盒。
 //!
+//! 输入行是一块卡片：多行输入框（[`Textarea`]，跟着内容长）在上，发送/停止
+//! 那颗圆键在它右下角，边框、底色与聚焦光环归卡片。回车发送、Shift+回车
+//! 换行 —— 见 [`AssistantPanel::render_composer`]。
+//!
 //! **命令卡片默认是收起的**：一条 `cat /etc/os-release; free -h; df -hT`
 //! 的输出能有几十行，摊开来会把对话本身顶出屏幕。收着的时候留一行截断的
 //! 命令（跑了什么得看得见），点一下卡片头才展开全文与输出。哪几张是开着的
@@ -58,12 +62,12 @@ use futures::StreamExt as _;
 use futures::channel::{mpsc, oneshot};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
-    WindowExt as _,
+    ThemeStyled as _, WindowExt as _,
     bubble::{Bubble, BubbleVariant},
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, DockArea, DockEvent, Panel, PanelEvent},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{InputEvent, Textarea, TextareaState},
     menu::{DropdownMenu as _, PopupMenuItem},
     message::{Message, MessageAlignment, MessageContent, MessageFooter},
     message_scroller::{MessageScroller, MessageScrollerState},
@@ -118,6 +122,17 @@ const CARD_HEAD_SELECTOR: &str = "assistant-card-head";
 /// 查不到它正是"默认收起"的证据。
 const CARD_OUTPUT_SELECTOR: &str = "assistant-card-output";
 
+/// 输入框空着的时候占几行。一行的框看起来像个搜索栏，而这里等的是一个问题
+/// —— 两行既摆得下一句话，也不至于在一块 380px 宽的面板里喧宾夺主。
+const COMPOSER_MIN_ROWS: usize = 2;
+
+/// 输入框最多长到几行，再多就在框里滚。不封顶的话，粘一段几十行的日志进来
+/// 会把整条对话顶出屏幕 —— 而那正是用户粘它进来想让助手看的东西。
+const COMPOSER_MAX_ROWS: usize = 8;
+
+/// 发送/停止那颗圆键的直径。图标按 0.75 倍跟着它走（[`Button`] 自己算的）。
+const SEND_BUTTON_SIZE: Pixels = px(28.);
+
 /// 一条等着用户答复的命令。`respond` 送回 `true`（批准）或 `false`（拒绝）；
 /// 直接丢掉它（停止运行时）等于让运行收口。
 struct PendingApproval {
@@ -156,7 +171,7 @@ pub struct AssistantPanel {
     /// 摊开着的那几张命令卡片（按消息 id）。默认一张都不开。
     expanded: HashSet<SharedString>,
     scroller: Entity<MessageScrollerState>,
-    composer: Entity<InputState>,
+    composer: Entity<TextareaState>,
     /// 一场运行正在进行。进行中不许发第二条、不许切换或删除对话。
     running: bool,
     /// 正在流式写入的那条消息，没有就是这一轮还没开口（或者已经说完了）。
@@ -217,13 +232,21 @@ impl AssistantPanel {
     ) -> Self {
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
         cx.observe(&scroller, |_, _, cx| cx.notify()).detach();
-        let composer =
-            cx.new(|cx| InputState::new(window, cx).placeholder(t!("assistant.composer")));
+        let composer = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder(t!("assistant.composer"))
+                // 回车发送、Shift+回车换行：聊天框的通行约定。换行得留着 ——
+                // 一段贴进来的报错或者配置不该在输入框里被拍平成一行。
+                .submit_on_enter(true)
+                .auto_grow(COMPOSER_MIN_ROWS, COMPOSER_MAX_ROWS)
+        });
         let _composer_subscription = cx.subscribe_in(
             &composer,
             window,
             |this, _, event: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
+                // Shift+回车换的那一行也报一条 PressEnter（`shift: true`），
+                // 不挑一下的话每换一行就发一次。
+                if let InputEvent::PressEnter { shift: false, .. } = event {
                     this.send(window, cx);
                 }
             },
@@ -981,34 +1004,52 @@ impl AssistantPanel {
             )
     }
 
-    /// 输入行。运行中输入框还在（可以先打下一句），发送键换成停止键。
-    fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
-            .flex_shrink_0()
-            .gap_2()
-            .p_3()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(div().flex_1().min_w_0().child(Input::new(&self.composer)))
-            .map(|this| {
-                if self.running {
-                    this.child(
-                        Button::new("assistant-stop")
-                            .outline()
-                            .icon(IconName::Pause)
-                            .tooltip(t!("assistant.stop"))
-                            .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
-                    )
+    /// 输入行：一块把输入框和那颗圆键装在一起的卡片。
+    ///
+    /// 输入框是 [`Textarea`] 而不是单行输入 —— 问到服务器上的事常常要带一段
+    /// 报错或者一段配置进来，单行框把它们压成一条缝，看不见自己发的是什么。
+    /// 它跟着内容长（[`COMPOSER_MIN_ROWS`] 起，[`COMPOSER_MAX_ROWS`] 封顶），
+    /// 回车发送、Shift+回车换行。
+    ///
+    /// 发送键落在卡片里的右下角，不摆在输入框旁边：框会长高，旁边那颗按钮
+    /// 要么跟着被拉长，要么贴着一块高框的腰飘着。
+    ///
+    /// 边框、底色和聚焦那圈光环都归卡片（输入框自己那层外观关掉了）：用户
+    /// 点进去的是整块卡片，亮起来的就该是整块卡片。
+    ///
+    /// 运行中输入框还在（可以先打下一句），发送键换成停止键。
+    fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let focused = self.composer.focus_handle(cx).is_focused(window);
+
+        div().flex_shrink_0().px_3().pb_3().child(
+            v_flex()
+                .w_full()
+                .gap_1()
+                .p_1p5()
+                .rounded_lg()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(palette::surface(cx))
+                .when(focused, |this| this.focus_ring_style(window, cx))
+                .child(Textarea::new(&self.composer).appearance(false).w_full())
+                .child(h_flex().justify_end().child(if self.running {
+                    Button::new("assistant-stop")
+                        .outline()
+                        .with_size(SEND_BUTTON_SIZE)
+                        .rounded(SEND_BUTTON_SIZE / 2.)
+                        .icon(IconName::Pause)
+                        .tooltip(t!("assistant.stop"))
+                        .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
                 } else {
-                    this.child(
-                        Button::new("assistant-send")
-                            .primary()
-                            .icon(IconName::ArrowUp)
-                            .tooltip(t!("assistant.send"))
-                            .on_click(cx.listener(|this, _, window, cx| this.send(window, cx))),
-                    )
-                }
-            })
+                    Button::new("assistant-send")
+                        .primary()
+                        .with_size(SEND_BUTTON_SIZE)
+                        .rounded(SEND_BUTTON_SIZE / 2.)
+                        .icon(IconName::ArrowUp)
+                        .tooltip(t!("assistant.send"))
+                        .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
+                })),
+        )
     }
 }
 
@@ -1088,7 +1129,7 @@ impl Panel for AssistantPanel {
 }
 
 impl Render for AssistantPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .id("assistant-panel")
             .size_full()
@@ -1118,7 +1159,7 @@ impl Render for AssistantPanel {
                 None => this,
             })
             .child(self.render_current_session(cx))
-            .child(self.render_composer(cx))
+            .child(self.render_composer(window, cx))
     }
 }
 
@@ -1525,6 +1566,58 @@ mod tests {
 
         let copied = cx.read_from_clipboard().and_then(|item| item.text());
         assert_eq!(copied.as_deref(), Some(TEXT), "复制的该是 Markdown 原文");
+    }
+
+    /// 回车发送，Shift+回车只换行。
+    ///
+    /// 输入框是多行的，换行那一下和发送那一下报的是**同一条**
+    /// [`InputEvent::PressEnter`]，只差一个 `shift`。漏挑它的话，用户每换一行
+    /// 就把写了一半的问题发出去一次 —— 而 `cargo check` 一个字都不会说。
+    ///
+    /// 配置摆成"填好了"，不然发送在开头就被拦下，两种按法看起来一模一样。
+    /// 真跑起来要连模型，所以拿到证据（消息落了、面板转成运行中）就把那场
+    /// 运行掐掉 —— 它还没被轮询过，丢掉就等于没发生。
+    #[gpui_kit::test]
+    fn shift_enter_breaks_the_line_instead_of_sending(cx: &mut gpui_kit::TestAppContext) {
+        let _exclusive = assistant_config::exclusive_for_test();
+        assistant_config::set_global(assistant_config::AssistantConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            ..Default::default()
+        });
+
+        let (_root, panel, cx) = root_harness(cx, Vec::new());
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.composer.update(cx, |composer, cx| {
+                    composer.set_value("看看磁盘还剩多少", window, cx);
+                });
+            });
+        });
+
+        let press_enter = |cx: &mut gpui_kit::VisualTestContext, shift: bool| {
+            panel.update(cx, |panel, cx| {
+                panel.composer.update(cx, |_, cx| {
+                    cx.emit(InputEvent::PressEnter {
+                        secondary: false,
+                        shift,
+                    });
+                });
+            });
+        };
+
+        press_enter(cx, true);
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.messages.is_empty(), "Shift+回车只换行，不该发出去");
+            assert!(!panel.running);
+        });
+
+        press_enter(cx, false);
+        panel.update(cx, |panel, _| {
+            assert_eq!(panel.messages.len(), 1, "回车该把这句发出去");
+            assert!(panel.running);
+            panel._run = None;
+        });
     }
 
     /// 命令卡片一上屏是收着的：输出压根不画，点一下卡片头才摊开，再点一下
