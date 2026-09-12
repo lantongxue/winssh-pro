@@ -2,7 +2,7 @@
 //!
 //! 外壳本身不放业务内容。标题栏正中是命令中心，左侧活动栏是稳定的全局导航，
 //! 紧接着是可收起的侧边栏，右边整块交给 [`DockArea`]：中心区承载终端与欢迎页，
-//! 右侧 dock 默认停着智能助手（[`AssistantPanel`]），都可以通过分屏、拖拽
+//! 右侧 dock 停着智能助手（[`AssistantPanel`]，默认收起），都可以通过分屏、拖拽
 //! 标签页灵活排列。侧边栏不在 dock 系统内 —— 它的宽度归 `ResizableState`，
 //! 开合归 [`Workspace::sidebar_open`]，显示哪个视图归 [`Workspace::view`]。
 //!
@@ -211,16 +211,22 @@ impl Workspace {
                 window,
                 cx,
             );
-            // 智能助手默认就停在右侧 dock 里、开着。新建的 dock 本来就是
-            // 开的（`Dock::new`），这里只把宽度定到对话读得舒服的那一档 ——
-            // 之后用户拖多宽，Dock 自己记着。
+            // 智能助手停在右侧 dock 里，但**默认收起**：开软件是来连机器的，
+            // 助手是想起来才叫的那一档，一进门就占掉右边三百多像素不合适。
+            // 面板本身照样在这儿装好 —— 活动栏那颗 AI 助手键按下去就是把这条
+            // dock 展开，不必等那一下才现搭。
             area.set_dock(
                 DockPlacement::Right,
                 DockLayout::tabs().panel_view(panel_handle(assistant.clone()), cx),
                 window,
                 cx,
             );
+            // 宽度还是先定到对话读得舒服的那一档：它是展开时的宽度，
+            // 之后用户拖多宽，Dock 自己记着。
             area.set_dock_size(DockPlacement::Right, ASSISTANT_DOCK_WIDTH, window, cx);
+            // 新建的 dock 是开着的（`Dock::new`），这里把它扳回去。
+            // Dock 没有"直接设开合"的口子，只有这一个扳手。
+            area.toggle_dock(DockPlacement::Right, window, cx);
         });
 
         Self {
