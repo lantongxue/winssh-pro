@@ -2,8 +2,13 @@
 //!
 //! 外壳本身不放业务内容。标题栏正中是命令中心，左侧活动栏是稳定的全局导航，
 //! 紧接着是可收起的侧边栏，右边整块交给 [`DockArea`]：中心区承载终端与欢迎页，
-//! 可以通过分屏、拖拽标签页灵活排列。侧边栏不在 dock 系统内 —— 它的宽度归 `ResizableState`，
+//! 右侧 dock 默认停着智能助手（[`AssistantPanel`]），都可以通过分屏、拖拽
+//! 标签页灵活排列。侧边栏不在 dock 系统内 —— 它的宽度归 `ResizableState`，
 //! 开合归 [`Workspace::sidebar_open`]，显示哪个视图归 [`Workspace::view`]。
+//!
+//! 助手那条 dock 的开合与宽度都归 Dock 自己记，外壳不留副本：活动栏上的
+//! AI 助手键和中心区标签条右端那颗 `PanelRight` 按的是同一个
+//! [`DockArea::toggle_dock`]。
 
 use std::rc::Rc;
 
@@ -27,8 +32,7 @@ use crate::service::{AssistantService, CredentialService, HostService, SnippetSe
 use crate::ui::{
     bars::{ActivityAction, ActivityBar, CommandCenterBar},
     dialogs::{CommandPaletteDialog, CommandPaletteEvent},
-    drawers::{AssistantDrawer, AssistantDrawerEvent},
-    panels::{TerminalPanel, WelcomePanel},
+    panels::{ASSISTANT_DOCK_WIDTH, AssistantPanel, TerminalPanel, WelcomePanel},
     theme::AppIcon,
     views::{
         CredentialVaultEvent, CredentialVaultView, HostExplorerEvent, HostExplorerView,
@@ -56,7 +60,8 @@ actions!(
 
 /// Dock 布局的持久化标识与版本。改变默认布局时提升版本号。
 const DOCK_ID: &str = "winssh-main-dock";
-const DOCK_VERSION: usize = 2;
+/// 3：智能助手从贴右缘的一层抽屉变成右侧 dock 里的一块面板。
+const DOCK_VERSION: usize = 3;
 
 /// 标题栏左端让给窗口按钮的宽度：macOS 上是红绿灯占的那一段（与
 /// [`TitleBar`] 内部的留白同宽），其余平台的窗口按钮在右边，标题栏左端不留位置。
@@ -82,11 +87,6 @@ pub struct Workspace {
     /// 命令面板。它常驻在这里而不是每次现搭：面板的搜索状态归它自己，
     /// 外壳只在打开时把当前的主机递过去。
     command_palette: Entity<CommandPaletteDialog>,
-    /// 智能助手抽屉。常驻：对话快照、待审核的命令都归它自己，
-    /// 每次现搭的话一收起再打开这些就全丢了。
-    assistant: Entity<AssistantDrawer>,
-    /// 助手抽屉是否展开。活动栏的 AI 助手按钮开合它。
-    assistant_open: bool,
     /// 侧边栏当前显示哪个视图，也就是活动栏上选中的那个条目。
     view: SidebarView,
     /// 侧边栏是否展开。收起时活动栏留在原处，右边整块让给 Dock。
@@ -163,21 +163,14 @@ impl Workspace {
         )
         .detach();
 
-        // 智能助手抽屉。对话存在同一座库里（`ai_conversations` / `ai_messages`）；
-        // 要一份 Dock 的弱引用：按下"发送"那一刻从中心区收集已连接的会话。
+        // 智能助手。对话存在同一座库里（`ai_conversations` / `ai_messages`）；
+        // 要一份 Dock 的弱引用：助手只操作中心区当前那条会话，标签页换了
+        // 它得跟着换（面板自己订 Dock 的布局事件）。它自己也是 Dock 的面板，
+        // 下面停进右侧 dock —— 那条 dock 与它的宽度都归 Dock 记着，外壳
+        // 不再留一份"开着没有"。
         let assistant = cx.new(|cx| {
-            AssistantDrawer::new(AssistantService::open(), dock_area.downgrade(), window, cx)
+            AssistantPanel::new(AssistantService::open(), dock_area.downgrade(), window, cx)
         });
-        cx.subscribe(
-            &assistant,
-            |this, _, event: &AssistantDrawerEvent, cx| match event {
-                AssistantDrawerEvent::Close => {
-                    this.assistant_open = false;
-                    cx.notify();
-                }
-            },
-        )
-        .detach();
 
         let command_palette = cx.new(|cx| CommandPaletteDialog::new(window, cx));
         cx.subscribe_in(
@@ -218,6 +211,16 @@ impl Workspace {
                 window,
                 cx,
             );
+            // 智能助手默认就停在右侧 dock 里、开着。新建的 dock 本来就是
+            // 开的（`Dock::new`），这里只把宽度定到对话读得舒服的那一档 ——
+            // 之后用户拖多宽，Dock 自己记着。
+            area.set_dock(
+                DockPlacement::Right,
+                DockLayout::tabs().panel_view(panel_handle(assistant.clone()), cx),
+                window,
+                cx,
+            );
+            area.set_dock_size(DockPlacement::Right, ASSISTANT_DOCK_WIDTH, window, cx);
         });
 
         Self {
@@ -227,8 +230,6 @@ impl Workspace {
             credential_service,
             snippet_vault,
             command_palette,
-            assistant,
-            assistant_open: false,
             view: SidebarView::Hosts,
             sidebar_open: true,
             resizable_state,
@@ -280,12 +281,15 @@ impl Workspace {
     }
 
     /// 执行活动栏底部的全局动作。
-    fn run_action(&mut self, action: ActivityAction, _window: &mut Window, cx: &mut Context<Self>) {
+    fn run_action(&mut self, action: ActivityAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             ActivityAction::Settings => self.open_settings_window(cx),
+            // 助手是右侧 dock 里的一块面板，开合就是开合那条 dock ——
+            // 和中心区标签条右端那颗 `PanelRight` 是同一个动作。
             ActivityAction::Assistant => {
-                self.assistant_open = !self.assistant_open;
-                cx.notify();
+                self.dock_area.update(cx, |area, cx| {
+                    area.toggle_dock(DockPlacement::Right, window, cx);
+                });
             }
         }
     }
@@ -449,12 +453,7 @@ impl Render for Workspace {
                                         .child(div().size_full().child(self.dock_area.clone())),
                                 ),
                         )
-                    }))
-                    // 智能助手抽屉贴着右缘，宽度固定，不进 resizable ——
-                    // 对话是纵向读的，跟着拖 Dock 的分界一起跳只会打断阅读。
-                    .when(self.assistant_open, |this| {
-                        this.child(self.assistant.clone())
-                    }),
+                    })),
             )
             // 帧率浮层，设置面板里那个开关点亮的就是它。挂在外壳最外面那层
             // （已经是 `relative()`）而不是某个面板里：它量的是这扇窗一整帧的

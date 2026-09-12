@@ -247,8 +247,11 @@ impl TerminalPanel {
 
     /// 只在测试里用：窗格拿一个不连任何东西的空终端。理由见
     /// [`PaneOrigin::Detached`]。
+    ///
+    /// `pub(crate)`：智能助手抽屉那边也要往 Dock 里停几个标签页，验它认不认
+    /// 得出当前是哪一条会话。
     #[cfg(test)]
-    fn new_detached(
+    pub(crate) fn new_detached(
         dock_area: WeakEntity<DockArea>,
         window: &mut Window,
         cx: &mut App,
@@ -524,6 +527,9 @@ impl TerminalPanel {
     /// 东西时正是这样）就取头一个 —— 单标签、不分屏的常见情形下这两条给出的
     /// 是同一个答案。
     ///
+    /// 智能助手认的也是这一条（见 [`Self::session_target`]）："当前会话"在
+    /// 这个应用里只有一种意思，发片段发去哪台，助手就在哪台上跑命令。
+    ///
     /// **只认活动标签**：一个标签组里藏在后面的那几条会话不算，哪怕它们也是
     /// 终端。往一条看不见的会话里发命令是危险的 —— 用户以为命令进了眼前这台
     /// 机器，实际进了另一台。所以那种情况按"没有会话在前面"处理，由调用方
@@ -563,48 +569,24 @@ impl TerminalPanel {
             .or_else(|| sessions.into_iter().next())
     }
 
-    /// 中心区里所有还连着的 SSH 会话，交给智能助手当"可操作的服务器"清单。
+    /// 这条会话在智能助手眼里的样子，够不着就是 `None`。
     ///
-    /// 和 [`Self::active_in`] 不同，这里**每个标签**都算，藏在后面的也算：
-    /// 助手按清单点名执行，每一条命令默认还要用户批准，不存在"发进看不见的
-    /// 那台"的歧义。本机 Shell（没有 SSH 连接可借）与已断开的会话不进清单。
-    /// 同一台主机开着几个标签页只算一条 —— 都是同一条连接语义的机器，
-    /// 清单里重复只会让模型多一种选错的方式。
-    pub fn connected_targets_in(dock_area: &Entity<DockArea>, cx: &App) -> Vec<SessionTarget> {
-        let area = dock_area.read(cx);
-        let Some(tree) = area.layout(DockPlacement::Center) else {
-            return Vec::new();
-        };
-
-        let mut targets: Vec<SessionTarget> = Vec::new();
-        tree.root().walk(&mut |node| {
-            let PaneRef::Tabs { panels, .. } = node.kind() else {
-                return;
-            };
-            for id in panels.iter() {
-                let Some(panel) = area.panel(*id) else {
-                    continue;
-                };
-                let Ok(session) = panel.view().downcast::<Self>() else {
-                    continue;
-                };
-                let session = session.read(cx);
-                let Some(ssh) = session.ssh.as_ref() else {
-                    continue;
-                };
-                if !session.alive(cx) || targets.iter().any(|target| target.id == session.host.id) {
-                    continue;
-                }
-                targets.push(SessionTarget {
-                    id: session.host.id.clone(),
-                    name: session.host.name.clone(),
-                    login: format!("{}@{}", session.host.user, session.host.hostname).into(),
-                    platform: session.host.platform.clone(),
-                    handle: ssh.handle.clone(),
-                });
-            }
-        });
-        targets
+    /// 助手只操作当前打开的那条会话（[`Self::active_in`] 找出来的那一个），
+    /// 这里把它译成助手认得的 [`SessionTarget`]。两种情况没得译：本机 Shell
+    /// 没有 SSH 连接可借，已经断掉的会话没有活着的通道 —— 两者都是 `None`，
+    /// 助手那边看到的就是"眼下没有会话在前面"。
+    pub fn session_target(&self, cx: &App) -> Option<SessionTarget> {
+        let ssh = self.ssh.as_ref()?;
+        if !self.alive(cx) {
+            return None;
+        }
+        Some(SessionTarget {
+            id: self.host.id.clone(),
+            name: self.host.name.clone(),
+            login: format!("{}@{}", self.host.user, self.host.hostname).into(),
+            platform: self.host.platform.clone(),
+            handle: ssh.handle.clone(),
+        })
     }
 
     // ─── 子面板 ─────────────────────────────────────────────────────────────
@@ -1479,6 +1461,20 @@ mod tests {
     fn a_local_shell_has_no_ssh_only_actions() {
         assert!(Source::Ssh.over_ssh());
         assert!(!Source::Local.over_ssh(), "本机 shell 不该有那三颗按钮");
+    }
+
+    /// 没有 SSH 连接的会话对智能助手是不存在的。
+    ///
+    /// 助手唯一的工具是"在这条连接上另开一条 exec 通道"，本机 shell 没有
+    /// 连接可借。这条守的是那道结构上的门：不是提示词里说它不该碰本机，
+    /// 而是它压根拿不到本机这一条。
+    #[gpui_kit::test]
+    fn a_session_without_ssh_is_invisible_to_the_assistant(cx: &mut gpui_kit::TestAppContext) {
+        let (panel, cx) = draw_panel(cx);
+        panel.read_with(cx, |panel, cx| {
+            assert!(panel.ssh.is_none(), "这个壳本来就没有 SSH 连接");
+            assert!(panel.session_target(cx).is_none(), "没有连接却译得出目标");
+        });
     }
 
     /// 中心区里那条活动会话找得到。

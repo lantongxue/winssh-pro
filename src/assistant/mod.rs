@@ -10,7 +10,7 @@
 pub mod agent;
 pub mod config;
 
-pub use agent::{AgentEvent, RunInput, SessionTarget, run};
+pub use agent::{AgentEvent, CurrentSession, RunInput, SessionTarget, run};
 pub use config::{
     AssistantConfig, ChatMessage, ChatRole, CommandStatus, Conversation, MessageBody, PRESETS,
     ProviderProtocol, matching_preset, preset,

@@ -6,6 +6,7 @@
 //! 命名约定：进 Dock 的才叫 `*Panel`；侧边栏里那些不进 Dock 的组件叫 `*View`，
 //! 放在 [`crate::ui::sidebar`]。
 
+mod assistant;
 #[allow(dead_code)]
 mod event_log;
 mod monitor;
@@ -14,6 +15,7 @@ mod sftp_editor;
 mod terminal;
 mod welcome;
 
+pub use assistant::{ASSISTANT_DOCK_WIDTH, AssistantPanel};
 pub use monitor::{MonitorEvent, MonitorPanel};
 pub use sftp::{
     ExtendSelectionDown, ExtendSelectionUp, OpenSelection, SelectAllEntries, SftpPanel,

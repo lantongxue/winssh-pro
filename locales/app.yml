@@ -2665,16 +2665,19 @@ bridge.remote_signal:
   en: "[the remote was signalled: %{signal}]"
   zh-CN: "[远端信号 %{signal}]"
 
-# ── 智能助手（右侧抽屉与 Agent 运行） ─────────────────────────────────────
+# ── 智能助手（右侧 dock 里的面板与 Agent 运行） ───────────────────────────
 assistant.new_chat:
   en: New chat
   zh-CN: 新对话
 assistant.delete_chat:
   en: Delete this chat
   zh-CN: 删除这段对话
-assistant.close:
-  en: Close
-  zh-CN: 关闭
+assistant.copy:
+  en: Copy message
+  zh-CN: 复制这条消息
+assistant.copied:
+  en: Message copied
+  zh-CN: 已复制这条消息
 assistant.no_chats:
   en: No conversations yet
   zh-CN: 还没有对话
@@ -2697,8 +2700,14 @@ assistant.empty_title:
   en: WinSSH Pro AI Assistant
   zh-CN: WinSSH Pro 智能助手
 assistant.empty_hint:
-  en: I can run commands on your connected servers to diagnose and fix issues. Every command asks for your approval before it runs; I never touch local files.
-  zh-CN: 我可以在已连接的服务器上执行命令，帮你排查和处理问题。每条命令执行前都会先请你审核；我不会碰这台电脑上的本地文件。
+  en: I can run commands on the session you currently have open to diagnose and fix issues — switch tabs and I follow you there. Every command asks for your approval before it runs; I never touch local files.
+  zh-CN: 我可以在你当前打开的这条会话上执行命令，帮你排查和处理问题 —— 换个标签页我就跟到哪台机器上。每条命令执行前都会先请你审核；我不会碰这台电脑上的本地文件。
+assistant.current_session:
+  en: 'Current session:'
+  zh-CN: 当前会话：
+assistant.no_session:
+  en: none open
+  zh-CN: 没有打开的会话
 assistant.not_configured:
   en: Configure a model provider in Settings → AI Assistant first.
   zh-CN: 请先在 设置 → AI 助手 里配置模型供应商。
