@@ -67,6 +67,9 @@ welcome.toggle_host_info:
 welcome.open_settings:
   en: Open settings
   zh-CN: 打开偏好设置
+welcome.close:
+  en: Close welcome page
+  zh-CN: 关闭欢迎页
 
 # ── 会话信息栏（终端上沿） ───────────────────────────────────────────────
 session_info.copy_address_tooltip:

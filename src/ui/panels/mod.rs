@@ -28,4 +28,4 @@ pub use terminal::{
     BackTab, CloseSearch, CopySelection, Find, PasteClipboard, SessionEvent, SplitLayout, Tab,
     TerminalPanel, ToggleForwards, ToggleHistory, ToggleMonitor, ToggleSftp,
 };
-pub use welcome::WelcomePanel;
+pub use welcome::{WelcomeEvent, WelcomePanel};

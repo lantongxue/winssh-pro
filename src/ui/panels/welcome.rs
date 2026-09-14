@@ -1,7 +1,7 @@
 //! 欢迎面板：窗口首次打开时中心区的内容，说明从哪里开始工作。
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName,
+    ActiveTheme as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
@@ -33,6 +33,11 @@ pub struct WelcomePanel {
     focus_handle: FocusHandle,
 }
 
+/// 欢迎页标题栏上的动作。
+pub enum WelcomeEvent {
+    Close,
+}
+
 impl WelcomePanel {
     pub fn new(_: &mut Window, cx: &mut App) -> Entity<Self> {
         cx.new(|cx| Self {
@@ -42,6 +47,7 @@ impl WelcomePanel {
 }
 
 impl EventEmitter<PanelEvent> for WelcomePanel {}
+impl EventEmitter<WelcomeEvent> for WelcomePanel {}
 
 impl Focusable for WelcomePanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
@@ -56,8 +62,24 @@ impl BasePanel for WelcomePanel {
 }
 
 impl Panel for WelcomePanel {
-    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from(t!("welcome.title"))
+    fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .items_center()
+            .gap_1()
+            .child(SharedString::from(t!("welcome.title")))
+            .child(
+                Button::new("welcome-panel-close")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Close)
+                    .tooltip(t!("welcome.close"))
+                    .accessibility_id(t!("welcome.close"))
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        // 关闭按钮位于标签标题中，不能让这一下再触发标签选中。
+                        cx.stop_propagation();
+                        cx.emit(WelcomeEvent::Close);
+                    })),
+            )
     }
 }
 

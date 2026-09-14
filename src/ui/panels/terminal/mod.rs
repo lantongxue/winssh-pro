@@ -31,7 +31,7 @@ use gpui_kit::component::{
     ActiveTheme as _, IconName, ResizableState, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{
-        BasePanel, DockArea, DockPlacement, PaneRef, Panel, PanelEvent, PanelId, TabGroup,
+        BasePanel, DockArea, DockPlacement, PaneRef, Panel, PanelEvent, TabGroup,
         panel_handle,
     },
     h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
@@ -168,9 +168,6 @@ pub struct TerminalPanel {
     active: usize,
     split: SplitLayout,
     split_state: SplitState,
-    /// 所在的标签组。标签页上的关闭按钮要通过它把自己摘掉 ——
-    /// 面板不知道自己在布局树的哪个位置，只有标签组知道。
-    group: Option<WeakEntity<TabGroup>>,
     /// 面板自己的焦点句柄。**只是个兜底** —— [`Focusable`] 实际交出去的是
     /// 活动窗格的句柄，见那边的说明。
     focus_handle: FocusHandle,
@@ -326,7 +323,6 @@ impl TerminalPanel {
                 active: 0,
                 split: SplitLayout::Single,
                 split_state: SplitState::default(),
-                group: None,
                 focus_handle: cx.focus_handle(),
                 monitor_open: false,
                 monitor_panel: monitor_panel.clone(),
@@ -1016,20 +1012,24 @@ impl TerminalPanel {
 
     /// 关掉自己这个标签页。
     ///
-    /// 走标签组而不是自己发个事件出去：能不能关是容器的规矩（一个 dock 的
-    /// 最后一组不许关空），面板只有请求权。
+    /// 直接请 DockArea 把自己摘掉。
     ///
-    /// 挪到帧末执行，不在这次更新里做：标签组处理关闭时要回头读这个面板
-    /// （问它 `closable`、通知它 `on_removed`），而调用这个方法的按钮回调
-    /// 正借着它 —— 同一个 `Entity` 借两次会 panic。
+    /// 通常标签组会拒绝关闭中心区最后一个面板；欢迎页被用户关掉之后，最后
+    /// 一条服务器会话正是这种情况，但它仍然应该可以关闭。因此这里走
+    /// `DockArea::remove_panel`，由 Dock 统一完成布局更新与 `on_removed` 通知，
+    /// 同时不受“最后一组不得为空”的交互限制。
+    ///
+    /// 挪到帧末执行，不在这次更新里做：Dock 摘除面板时会回头读这个面板并
+    /// 通知它 `on_removed`，而调用这个方法的按钮回调正借着它 —— 同一个
+    /// `Entity` 借两次会 panic。
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let panel = PanelId::from(cx.entity_id());
-        let Some(group) = self.group.clone() else {
+        let Some(dock_area) = self.dock_area.upgrade() else {
             return;
         };
+        let panel = cx.entity().clone();
 
-        window.defer(cx, move |_, cx| {
-            _ = group.update(cx, |group, cx| group.close_panel(panel, cx));
+        window.defer(cx, move |window, cx| {
+            _ = dock_area.update(cx, |area, cx| area.remove_panel(panel, window, cx));
         });
     }
 
@@ -1158,11 +1158,10 @@ impl BasePanel for TerminalPanel {
 
     fn on_added_to(
         &mut self,
-        group: WeakEntity<TabGroup>,
+        _: WeakEntity<TabGroup>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.group = Some(group);
         // 新开的会话直接获得焦点，否则 Tab 会落在活动栏或其它按钮上
         cx.focus_self(window);
         cx.notify();
@@ -1578,7 +1577,7 @@ mod tests {
     /// 除了它自己说，没有谁读得出"这条会话没了"。
     #[gpui_kit::test]
     fn closing_a_session_says_so(cx: &mut gpui_kit::TestAppContext) {
-        use gpui_kit::component::dock::panel_handle;
+        use gpui_kit::component::dock::{DockLayout, panel_handle};
         use std::{cell::Cell, rc::Rc};
 
         let (harness, cx) = dock_harness(cx);
@@ -1586,14 +1585,24 @@ mod tests {
             (harness.dock_area.clone(), harness.panel.clone())
         });
 
-        // 中心区里得再停一个面板：一个 dock 里最后剩下的那个是关不掉的
-        // （gpui-kit 的 `TabGroup::close_panel` 守着这条），而真实应用的中心区
-        // 一开始就停着欢迎页，所以关标签页在那里是走得通的。
-        cx.update(|window, cx| {
+        // 先让中心区只放欢迎页，再移除它并重新接入会话，复现真实流程：
+        // 欢迎页关闭后中心区只剩下一条会话，此时会话仍然应该能关掉。
+        let welcome = cx.update(|window, cx| {
             let welcome = crate::ui::panels::WelcomePanel::new(window, cx);
             dock_area.update(cx, |area, cx| {
+                area.set_center(
+                    DockLayout::tabs().panel_view(panel_handle(welcome.clone()), cx),
+                    window,
+                    cx,
+                );
+            });
+            welcome
+        });
+        cx.update(|window, cx| {
+            dock_area.update(cx, |area, cx| {
+                area.remove_panel(welcome.clone(), window, cx);
                 area.add_panel_view(
-                    panel_handle(welcome),
+                    panel_handle(panel.clone()),
                     DockPlacement::Center,
                     None,
                     window,

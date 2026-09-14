@@ -32,7 +32,7 @@ use crate::service::{AssistantService, CredentialService, HostService, SnippetSe
 use crate::ui::{
     bars::{ActivityAction, ActivityBar, CommandCenterBar},
     dialogs::{CommandPaletteDialog, CommandPaletteEvent},
-    panels::{ASSISTANT_DOCK_WIDTH, AssistantPanel, TerminalPanel, WelcomePanel},
+    panels::{ASSISTANT_DOCK_WIDTH, AssistantPanel, TerminalPanel, WelcomeEvent, WelcomePanel},
     theme::AppIcon,
     views::{
         CredentialVaultEvent, CredentialVaultView, HostExplorerEvent, HostExplorerView,
@@ -118,6 +118,24 @@ impl Workspace {
         let credential_service = CredentialService::open();
 
         let welcome = WelcomePanel::new(window, cx);
+        // 欢迎页是中心区的引导面板。Dock 为了不让普通标签把最后一个中心组关空，
+        // 不会给它提供常规的关闭动作；这里接住标题栏按钮，直接移除欢迎页。
+        cx.subscribe_in(
+            &welcome,
+            window,
+            |this, welcome, event: &WelcomeEvent, window, cx| {
+                if matches!(event, WelcomeEvent::Close) {
+                    let dock_area = this.dock_area.clone();
+                    let welcome = welcome.clone();
+                    window.defer(cx, move |window, cx| {
+                        dock_area.update(cx, |area, cx| {
+                            area.remove_panel(welcome, window, cx);
+                        });
+                    });
+                }
+            },
+        )
+        .detach();
         let host_explorer = cx.new(|cx| {
             HostExplorerView::new(
                 host_service.clone(),
