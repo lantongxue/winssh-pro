@@ -2,6 +2,20 @@
 name = "winssh-pro"
 version = "0.1.0"
 edition = "2024"
+description = "A native cross-platform SSH client"
+license = "MIT"
+
+[package.metadata.deb]
+maintainer = "WinSSH Pro contributors <noreply@github.com>"
+copyright = "2026 WinSSH Pro contributors"
+depends = "$auto, libfontconfig1, libwayland-client0, libx11-xcb1, libxkbcommon0, libxkbcommon-x11-0"
+section = "net"
+priority = "optional"
+
+[package.metadata.generate-rpm]
+assets = [
+	{ source = "target/release/winssh-pro", dest = "/usr/bin/winssh-pro", mode = "755" },
+]
 
 [dependencies]
 anyhow = "1"
