@@ -1,8 +1,9 @@
 //! 应用级偏好服务：`settings` 表那些"不属于某台主机、某条凭据"的设置。
 //!
-//! 现在有四项 —— 全局代理（[`crate::proxy::GlobalProxy`]）、终端字体
+//! 现在有五项 —— 全局代理（[`crate::proxy::GlobalProxy`]）、终端字体
 //! （[`crate::terminal::font::TerminalFont`]）、终端配色
-//! （[`crate::terminal::scheme`]）与智能助手的供应商配置
+//! （[`crate::terminal::scheme`]）、终端光标闪烁（[`crate::terminal::cursor`]）
+//! 与智能助手的供应商配置
 //! （[`crate::assistant::AssistantConfig`]）。它们的读法一样刁钻：
 //!
 //! - **设置窗口**在 gpui 线程上读写它们，要的是立刻拿得到、改完立刻画出来；
@@ -24,6 +25,7 @@ use crate::{
     proxy::{self, GlobalProxy},
     repository::SettingRepository,
     terminal::{
+        cursor,
         font::{self, TerminalFont},
         scheme,
     },
@@ -37,6 +39,8 @@ const TERMINAL_FONT_KEY: &str = "terminal.font";
 const TERMINAL_SCHEME_KEY: &str = "terminal.scheme";
 /// 智能助手供应商配置在 `settings` 表里的键。存的是一份 JSON。
 const ASSISTANT_CONFIG_KEY: &str = "assistant.config";
+/// 终端光标闪烁在 `settings` 表里的键。存的是 "true" 或 "false"。
+const CURSOR_BLINK_KEY: &str = "terminal.cursor_blink";
 
 /// 应用级偏好的业务入口。廉价克隆：界面各处各拿一份，共享同一条连接。
 #[derive(Clone)]
@@ -80,6 +84,7 @@ impl SettingService {
                 this.load_terminal_font().await,
                 this.load_terminal_scheme().await,
                 this.load_assistant_config().await,
+                this.load_cursor_blink().await,
             )
         });
         match loaded.0 {
@@ -97,6 +102,10 @@ impl SettingService {
         match loaded.3 {
             Ok(config) => assistant_config::set_global(config),
             Err(error) => log::warn!("助手配置读不出来，这次运行按未配置处理：{error:#}"),
+        }
+        match loaded.4 {
+            Ok(blink) => cursor::set_global(blink),
+            Err(error) => log::warn!("光标闪烁读不出来，这次运行按出厂档处理：{error:#}"),
         }
     }
 
@@ -208,6 +217,32 @@ impl SettingService {
         })
         .await
     }
+
+    /// 库里那份光标闪烁设置。没写过就是出厂档（闪烁）。
+    pub async fn load_cursor_blink(&self) -> Result<bool> {
+        let this = self.clone();
+        db::run(async move {
+            let raw = this.repo.get(&this.db, CURSOR_BLINK_KEY).await?;
+            Ok(cursor::decode(&raw.unwrap_or_default()))
+        })
+        .await
+    }
+
+    /// 写回光标闪烁设置，并同时换掉进程里那份缓存。
+    ///
+    /// 缓存先换，理由和 [`Self::save_global_proxy`] 一样。
+    pub async fn save_cursor_blink(&self, blink: bool) -> Result<()> {
+        cursor::set_global(blink);
+        let this = self.clone();
+        let encoded = cursor::encode(blink);
+        db::run(async move {
+            this.repo
+                .set(&this.db, CURSOR_BLINK_KEY, &encoded)
+                .await
+                .map_err(Into::into)
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -310,6 +345,27 @@ mod tests {
                 .unwrap();
             assert_eq!(service.load_terminal_scheme().await.unwrap(), "");
             assert_eq!(scheme::global(), "");
+        });
+    }
+
+    /// 光标闪烁走的是另一行、另一份缓存，读写与出厂档都要各自成立。
+    #[test]
+    fn the_cursor_blink_round_trips_into_its_own_row() {
+        let _guard = cursor::exclusive_for_test();
+        db::runtime().block_on(async {
+            let service = SettingService::in_memory().await.unwrap();
+            assert!(
+                service.load_cursor_blink().await.unwrap(),
+                "没写过就是闪烁（true）"
+            );
+
+            service.save_cursor_blink(false).await.unwrap();
+            assert!(!service.load_cursor_blink().await.unwrap());
+            assert!(!cursor::global(), "缓存也一起换了");
+
+            service.save_cursor_blink(true).await.unwrap();
+            assert!(service.load_cursor_blink().await.unwrap());
+            assert!(cursor::global(), "缓存也一起换了");
         });
     }
 }

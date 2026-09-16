@@ -41,8 +41,8 @@ use crate::{
     host::Host,
     ssh::SshSession,
     terminal::{
-        Emulator, EmulatorEvent, GridPoint, SearchQuery, TerminalBounds, font, rows_under_the_bar,
-        shell_integration,
+        Emulator, EmulatorEvent, GridPoint, SearchQuery, TerminalBounds, cursor, font,
+        rows_under_the_bar, shell_integration,
     },
     ui::{
         elements::{TerminalGridElement, cell_at, point_at},
@@ -167,6 +167,9 @@ pub struct TerminalPane {
     /// 这是安全的：那个元素在 `window.defer` 里才建菜单，那时候整轮鼠标派发
     /// 已经走完了。
     context_menu_allowed: bool,
+    /// 光标这一帧画不画。闪烁开着时由计时器 530ms 翻一次，每次按键重置为
+    /// `true`（用户看到的行为是"打字时光标常亮，停下来才闪"）。
+    cursor_visible: bool,
     focus_handle: FocusHandle,
 }
 
@@ -175,6 +178,7 @@ impl EventEmitter<TerminalPaneEvent> for TerminalPane {}
 impl TerminalPane {
     pub fn new(host: Host, origin: PaneOrigin, window: &mut Window, cx: &mut App) -> Entity<Self> {
         cx.new(|cx| {
+            let focus_handle = cx.focus_handle();
             let mut this = Self {
                 host,
                 remote_shell: false,
@@ -186,7 +190,8 @@ impl TerminalPane {
                 _search_sub: None,
                 last_query: SearchQuery::default(),
                 context_menu_allowed: true,
-                focus_handle: cx.focus_handle(),
+                cursor_visible: true,
+                focus_handle,
             };
             match origin {
                 PaneOrigin::Local => this.spawn_local(cx),
@@ -197,6 +202,41 @@ impl TerminalPane {
                     this.show_placeholder("detached\r\n", cx);
                 }
             }
+
+            // 光标闪烁计时器：530ms 翻一次可见性。照 tty7 的节奏走 —— 那个
+            // 数是 macOS 插入点的闪烁周期，各家终端也差不多。
+            //
+            // 闪烁开不开是每一帧读一次进程级缓存（`cursor::global()`），改了
+            // 设置立刻生效，不必重建窗格。闪烁关着的时候计时器只做一件事：确保
+            // `cursor_visible` 回到 `true`。
+            let handle = this.focus_handle.clone();
+            cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(530))
+                        .await;
+                    if this
+                        .update_in(cx, |pane, window, cx| {
+                            if handle.is_focused(window) {
+                                if cursor::global() {
+                                    pane.cursor_visible = !pane.cursor_visible;
+                                    cx.notify();
+                                } else if !pane.cursor_visible {
+                                    pane.cursor_visible = true;
+                                    cx.notify();
+                                }
+                            } else if !pane.cursor_visible {
+                                pane.cursor_visible = true;
+                            }
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .detach();
+
             this
         })
     }
@@ -568,6 +608,9 @@ impl TerminalPane {
         // 又触发了窗口的快捷键。Tab / Shift-Tab 尤其需要拦住，否则会被 `Root` 的
         // `Tab` / `TabPrev`（焦点切换）抢走，终端里就永远收不到 `\x09` / `\x1b[Z`。
         if handled {
+            // 按键时光标立刻亮起来，重置闪烁周期 —— 用户看到的行为是
+            // "打字时光标常亮，停下来之后才开始闪"。
+            self.cursor_visible = true;
             cx.stop_propagation();
         }
     }
@@ -640,6 +683,7 @@ impl TerminalPane {
         // 点一下终端就把焦点收回来，否则焦点还在侧边栏或按钮上，Tab 会跑去切焦点而不是进终端。
         // 分屏之后这一下还兼作"切换活动窗格"：点哪一半，上下两条 chrome 就说哪一半的事。
         cx.focus_self(window);
+        self.cursor_visible = true;
         cx.emit(TerminalPaneEvent::Changed);
 
         // 右键的结论要在这儿记下来给菜单构建器读，理由见
@@ -1204,7 +1248,7 @@ impl Render for TerminalPane {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Middle, cx.listener(Self::on_mouse_up))
-            .child(TerminalGridElement::new(emulator, focused))
+            .child(TerminalGridElement::new(emulator, focused, self.cursor_visible))
             // 搜索栏浮在网格上（`absolute`），所以放在网格之后当兄弟画，
             // 而不是把网格顶下去 —— 顶下去会让终端重排，开关一次抖一屏。
             .children(self.render_search_bar(cx))

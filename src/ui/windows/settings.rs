@@ -36,6 +36,7 @@ use crate::assistant::{
 use crate::i18n;
 use crate::proxy::{self, GlobalProxy, ProxyConfig};
 use crate::service::SettingService;
+use crate::terminal::cursor;
 use crate::terminal::font::{self, TerminalFont};
 use crate::terminal::scheme;
 use crate::ui::theme::{AppIcon, appearance, palette};
@@ -137,6 +138,21 @@ fn persist_terminal_scheme(id: SharedString, cx: &mut App) {
     cx.background_spawn(async move {
         if let Err(error) = SettingService::open().save_terminal_scheme(id).await {
             log::error!("终端配色存不下去：{error:#}");
+        }
+    })
+    .detach();
+}
+
+/// 换掉终端光标闪烁设置。缓存立刻生效、重画所有窗口、落库派到后台，
+/// 三步都同 [`persist_terminal_font`]。
+fn persist_cursor_blink(blink: bool, cx: &mut App) {
+    cursor::set_global(blink);
+    for handle in cx.windows() {
+        _ = handle.update(cx, |_, window, _| window.refresh());
+    }
+    cx.background_spawn(async move {
+        if let Err(error) = SettingService::open().save_cursor_blink(blink).await {
+            log::error!("终端光标闪烁存不下去：{error:#}");
         }
     })
     .detach();
@@ -640,10 +656,17 @@ impl SettingsWindow {
                                     TerminalFont {
                                         size: font::parse_size(&label),
                                         ..font::global()
-                                    },
+                                     },
                                     cx,
                                 );
                             },
+                        ),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.terminal_cursor_blink"),
+                        SettingField::switch(
+                            |_cx: &App| cursor::global(),
+                            |checked: bool, cx: &mut App| persist_cursor_blink(checked, cx),
                         ),
                     )),
             )

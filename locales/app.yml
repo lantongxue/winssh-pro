@@ -304,6 +304,9 @@ settings.terminal_font:
 settings.terminal_font_size:
   en: Font size
   zh-CN: 字号
+settings.terminal_cursor_blink:
+  en: Cursor blinking
+  zh-CN: 光标闪烁
 settings.tab_proxy:
   en: Network Proxy
   zh-CN: 网络代理

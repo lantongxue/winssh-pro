@@ -26,7 +26,7 @@ use gpui_kit::{
     App, Bounds, CursorStyle, Element, ElementId, Entity, Font, FontFeatures, FontStyle,
     FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
     LayoutId, Pixels, Point, ShapedLine, StrikethroughStyle, Style, TextAlign, TextRun,
-    UnderlineStyle, Window, fill, outline, point, px, relative, size,
+    UnderlineStyle, Window, Rgba, fill, outline, point, px, relative, size,
 };
 
 use alacritty_terminal::{term::search::Match, vte::ansi::CursorShape};
@@ -242,11 +242,18 @@ pub struct TerminalGridElement {
     /// 有焦点时光标按终端要求的形状画，没有焦点时一律是空心框
     /// —— 那时候它说的不是"光标什么样"，而是"敲键盘不会进这里"。
     focused: bool,
+    /// 光标这一帧画不画。闪烁的 off 阶段此值为 `false`，光标整个不画
+    /// —— 和 `focused = false`（空心框）不是一回事。
+    cursor_visible: bool,
 }
 
 impl TerminalGridElement {
-    pub fn new(emulator: Entity<Emulator>, focused: bool) -> Self {
-        Self { emulator, focused }
+    pub fn new(emulator: Entity<Emulator>, focused: bool, cursor_visible: bool) -> Self {
+        Self {
+            emulator,
+            focused,
+            cursor_visible,
+        }
     }
 
     /// 把快照里的格子切成"底色块"、"自绘格"与"文字段"三串。
@@ -263,6 +270,7 @@ impl TerminalGridElement {
         bounds: &TerminalBounds,
         scale: f32,
         matches: &MatchMap,
+        block_cursor: Option<GridPoint>,
     ) -> (Vec<Region>, Vec<Native>, Vec<Run>) {
         let mut regions: Vec<Region> = Vec::new();
         let mut natives: Vec<Native> = Vec::new();
@@ -285,7 +293,23 @@ impl TerminalGridElement {
                 line: cell.point.line + content.display_offset as i32,
                 column: cell.point.column,
             };
-            let (foreground, background) = cell_colors(cell, palette, selected, matches.at(at));
+            let (mut foreground, mut background) =
+                cell_colors(cell, palette, selected, matches.at(at));
+
+            // A focused block cursor is an opaque reverse-video cell. Paint its
+            // background before glyphs and redraw the glyph in a contrasting
+            // colour so the cursor never hides the character underneath it.
+            let is_block_cursor = block_cursor.is_some_and(|cursor| {
+                cell.point == cursor
+                    || (cell.is_wide_char_spacer()
+                        && cursor.column > 0
+                        && cell.point.line == cursor.line
+                        && cell.point.column + 1 == cursor.column)
+            });
+            if is_block_cursor {
+                foreground = cursor_ink(palette.cursor(), palette.background(), foreground);
+                background = Some(palette.cursor());
+            }
 
             if let Some(background) = background {
                 // 能接上就把上一块拉长，接不上另起一块 —— 块数越少画得越少。
@@ -471,9 +495,32 @@ impl Element for TerminalGridElement {
         let content = emulator.content();
         // 搜索命中摊平成按屏幕坐标查的一张表。没开搜索时它是空的，不分配。
         let matches = MatchMap::new(emulator.search(), content);
-        let (regions, natives, runs) =
-            Self::layout_cells(content, &palette, &grid_bounds, scale, &matches);
-        let cursor = cursor(content, &grid_bounds, &palette, self.focused);
+        let cursor = if self.focused && !self.cursor_visible {
+            None
+        } else {
+            cursor(content, &grid_bounds, &palette, self.focused)
+        };
+        let block_cursor = if cursor
+            .as_ref()
+            .is_some_and(|cursor| cursor.shape == CursorShape::Block)
+        {
+            content.cursor.map(|cursor| {
+                GridPoint {
+                    line: cursor.point.line,
+                    column: cursor.point.column,
+                }
+            })
+        } else {
+            None
+        };
+        let (regions, natives, runs) = Self::layout_cells(
+            content,
+            &palette,
+            &grid_bounds,
+            scale,
+            &matches,
+            block_cursor,
+        );
         let lines = runs
             .into_iter()
             .map(|run| {
@@ -570,6 +617,7 @@ impl Element for TerminalGridElement {
 
         if let Some(cursor) = &layout.cursor
             && cursor.shape != CursorShape::HollowBlock
+            && cursor.shape != CursorShape::Block
         {
             window.paint_quad(fill(cursor.bounds, cursor.color));
         }
@@ -673,6 +721,35 @@ fn cell_colors(
     }
 
     (foreground, background)
+}
+
+/// Pick the glyph colour for an opaque block cursor. The terminal background
+/// is the conventional choice; fall back to the normal foreground when the
+/// caret is closer to the background than to the text colour.
+fn cursor_ink(caret: Hsla, background: Hsla, foreground: Hsla) -> Hsla {
+    fn luminance(color: Hsla) -> f32 {
+        let rgba: Rgba = color.into();
+        let linear = |channel: f32| {
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(rgba.r) + 0.7152 * linear(rgba.g) + 0.0722 * linear(rgba.b)
+    }
+
+    fn contrast(a: Hsla, b: Hsla) -> f32 {
+        let (a, b) = (luminance(a), luminance(b));
+        let (lighter, darker) = if a >= b { (a, b) } else { (b, a) };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    if contrast(caret, background) >= contrast(caret, foreground) {
+        background
+    } else {
+        foreground
+    }
 }
 
 /// 把半透明的 `top` 合成到不透明的 `bottom` 上，得到一个不透明色。
