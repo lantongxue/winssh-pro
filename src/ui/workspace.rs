@@ -51,6 +51,8 @@ actions!(
         ToggleSidebar,
         /// 在中心区新开一个本地 Shell 终端。
         OpenLocalShell,
+        /// 打开新建主机对话框（与主机面板的“新建主机”、命令面板的 `NewHost` 同一入口）。
+        NewHost,
         /// 打开密码库完整独立管理窗口。
         OpenVaultWindow,
         /// 打开设置独立管理窗口。
@@ -356,6 +358,12 @@ impl Workspace {
         self.open_local_shell(window, cx);
     }
 
+    /// 新建主机：交给主机视图去开表单（与它自己的“新建主机”按钮、命令面板项同一条路径）。
+    fn on_new_host(&mut self, _: &NewHost, window: &mut Window, cx: &mut Context<Self>) {
+        self.host_explorer
+            .update(cx, |explorer, cx| explorer.new_host(window, cx));
+    }
+
     fn on_open_vault_window(
         &mut self,
         _: &OpenVaultWindow,
@@ -436,6 +444,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_sidebar))
             .on_action(cx.listener(Self::on_open_settings_window))
             .on_action(cx.listener(Self::on_open_local_shell))
+            .on_action(cx.listener(Self::on_new_host))
             .on_action(cx.listener(Self::on_open_vault_window))
             .child(self.render_title_bar(window, cx))
             .child(
