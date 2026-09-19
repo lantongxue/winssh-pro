@@ -22,7 +22,7 @@ use tokio::runtime::Runtime;
 
 /// 建表语句。`CREATE TABLE IF NOT EXISTS` 是幂等的，每次启动都跑一遍；
 /// 老用户的库文件已存在时原样保留，新字段通过 [`MIGRATIONS`] 补齐。
-const SCHEMA: [&str; 9] = [
+const SCHEMA: [&str; 10] = [
     "CREATE TABLE IF NOT EXISTS host_groups (
         id         INTEGER PRIMARY KEY,
         name       TEXT    NOT NULL UNIQUE,
@@ -131,6 +131,19 @@ const SCHEMA: [&str; 9] = [
     "CREATE TABLE IF NOT EXISTS settings (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL DEFAULT ''
+    )",
+    // SSH 主机信任记录（known_hosts 的应用内等价物）。
+    // hostname + port 联合唯一：同一台服务器不同端口算两条独立记录。
+    // 与 hosts 表无外键：信任按地址认定，与保存的主机配置无关。
+    "CREATE TABLE IF NOT EXISTS trusted_hosts (
+        id           TEXT    PRIMARY KEY,
+        hostname     TEXT    NOT NULL,
+        port         INTEGER NOT NULL DEFAULT 22,
+        key_type     TEXT    NOT NULL DEFAULT '',
+        fingerprint  TEXT    NOT NULL DEFAULT '',
+        created_at   TEXT    NOT NULL DEFAULT '',
+        last_seen    TEXT    NOT NULL DEFAULT '',
+        UNIQUE (hostname, port)
     )",
 ];
 

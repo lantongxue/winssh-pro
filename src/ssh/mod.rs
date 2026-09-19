@@ -35,17 +35,3 @@ pub use keygen::{
     GeneratedKey, KeyFacts, generate as generate_key, inspect as inspect_private_key,
 };
 pub use sftp::open_session as open_sftp_session;
-
-use anyhow::Result;
-
-use crate::host::Host;
-
-/// 便捷入口：按主机配置直接建一条已认证的交互式 Shell 通道。
-///
-/// 调用方通常是 [`crate::ui::panels::TerminalPanel`] 的连接任务，
-/// 成功后把返回的 `(Handle, Channel)` 交给 [`crate::terminal::Emulator`] 的
-/// `from_ssh_channel` 构造真正的终端。
-#[allow(dead_code)]
-pub async fn connect_host(host: &Host, window: WindowSize) -> Result<SshConnection> {
-    SshConnection::connect(host, window).await
-}

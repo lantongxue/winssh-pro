@@ -311,7 +311,11 @@ pub(crate) mod fake {
         let mut handle = client::connect(
             Arc::new(client::Config::default()),
             ("127.0.0.1", port),
-            SshHandler::default(),
+            SshHandler::new(
+                Default::default(),
+                ("127.0.0.1".into(), port),
+                crate::trusted_host::TrustPolicy::Skip,
+            ),
         )
         .await
         .expect("连上回环 sshd");

@@ -1,8 +1,9 @@
 //! 设置按钮的弹出菜单：活动栏底部的设置齿轮按钮点开后的动作列表。
 //!
-//! 包含两个入口：
+//! 包含三个入口：
 //! - 设置：打开偏好设置独立窗口（快捷键 ⌘, / Ctrl+,）
 //! - 密码库：打开密码库的完整独立管理窗口（快捷键 Alt+3）
+//! - 可信主机：打开可信主机管理弹窗（快捷键 Alt+4）
 
 use std::rc::Rc;
 
@@ -33,6 +34,8 @@ pub enum SettingsMenuAction {
     Settings,
     /// 打开密码库完整管理窗口。
     Vault,
+    /// 打开可信主机管理弹窗。
+    TrustedHosts,
 }
 
 impl SettingsMenuAction {
@@ -40,6 +43,7 @@ impl SettingsMenuAction {
         match self {
             Self::Settings => t!("settings_menu.settings"),
             Self::Vault => t!("settings_menu.vault"),
+            Self::TrustedHosts => t!("settings_menu.trusted_hosts"),
         }
         .into()
     }
@@ -48,6 +52,7 @@ impl SettingsMenuAction {
         match self {
             Self::Settings => Icon::new(IconName::Settings),
             Self::Vault => Icon::new(AppIcon::ShieldCheck),
+            Self::TrustedHosts => Icon::new(AppIcon::Server),
         }
     }
 
@@ -55,6 +60,7 @@ impl SettingsMenuAction {
         match self {
             Self::Settings => palette::sky(),
             Self::Vault => palette::teal(),
+            Self::TrustedHosts => palette::green(),
         }
     }
 
@@ -62,6 +68,7 @@ impl SettingsMenuAction {
         match self {
             Self::Settings => Some(if cfg!(target_os = "macos") { "⌘," } else { "Ctrl+," }),
             Self::Vault => Some("Alt+3"),
+            Self::TrustedHosts => Some("Alt+4"),
         }
     }
 
@@ -137,6 +144,7 @@ impl SettingsMenu {
                 .item(SettingsMenuAction::Settings.menu_item(on_action.clone(), cx))
                 .separator()
                 .item(SettingsMenuAction::Vault.menu_item(on_action.clone(), cx))
+                .item(SettingsMenuAction::TrustedHosts.menu_item(on_action.clone(), cx))
         }
     }
 }

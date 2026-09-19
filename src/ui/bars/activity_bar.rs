@@ -99,6 +99,8 @@ pub struct ActivityBar {
     on_select: Option<ViewHandler>,
     on_action: Option<ActionHandler>,
     on_open_vault: Option<VaultHandler>,
+    /// 弹可信主机管理弹窗，与 [`Self::on_open_vault`] 同形状（无参事件）。
+    on_open_trusted_hosts: Option<VaultHandler>,
 }
 
 impl ActivityBar {
@@ -108,6 +110,7 @@ impl ActivityBar {
             on_select: None,
             on_action: None,
             on_open_vault: None,
+            on_open_trusted_hosts: None,
         }
     }
 
@@ -135,6 +138,15 @@ impl ActivityBar {
         handler: impl Fn(&(), &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_open_vault = Some(Rc::new(handler));
+        self
+    }
+
+    /// 打开可信主机管理弹窗。
+    pub fn on_open_trusted_hosts(
+        mut self,
+        handler: impl Fn(&(), &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_open_trusted_hosts = Some(Rc::new(handler));
         self
     }
 
@@ -186,6 +198,7 @@ impl ActivityBar {
     fn render_settings_menu(&self, _cx: &App) -> impl IntoElement {
         let on_action = self.on_action.clone();
         let on_open_vault = self.on_open_vault.clone();
+        let on_open_trusted_hosts = self.on_open_trusted_hosts.clone();
 
         slot(
             None,
@@ -199,6 +212,11 @@ impl ActivityBar {
                     SettingsMenuAction::Vault => {
                         if let Some(on_open_vault) = on_open_vault.as_ref() {
                             on_open_vault(&(), window, cx);
+                        }
+                    }
+                    SettingsMenuAction::TrustedHosts => {
+                        if let Some(on_open_trusted_hosts) = on_open_trusted_hosts.as_ref() {
+                            on_open_trusted_hosts(&(), window, cx);
                         }
                     }
                 }),

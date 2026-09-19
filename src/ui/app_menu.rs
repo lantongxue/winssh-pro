@@ -16,8 +16,8 @@ use gpui_kit::{App, KeyBinding, Menu, MenuItem, SystemMenuType, actions};
 use rust_i18n::t;
 
 use super::workspace::{
-    OpenLocalShell, OpenSettingsWindow, OpenVaultWindow, NewHost, ToggleCommandPalette,
-    ToggleSidebar,
+    OpenLocalShell, OpenSettingsWindow, OpenTrustedHosts, OpenVaultWindow, NewHost,
+    ToggleCommandPalette, ToggleSidebar,
 };
 
 actions!(
@@ -82,6 +82,7 @@ fn build_menus() -> Vec<Menu> {
         MenuItem::action(t!("menu.command_palette"), ToggleCommandPalette),
         MenuItem::action(t!("menu.toggle_sidebar"), ToggleSidebar),
         MenuItem::action(t!("menu.vault"), OpenVaultWindow),
+        MenuItem::action(t!("menu.trusted_hosts"), OpenTrustedHosts),
     ]);
 
     vec![app_menu, file_menu, go_menu]

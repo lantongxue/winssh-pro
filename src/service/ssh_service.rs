@@ -13,6 +13,7 @@ use crate::{
         GeneratedKey, KeyFacts, SshConnection, SshSession, WindowSize, decode_private_key,
         generate_key, inspect_private_key,
     },
+    trusted_host::TrustPolicy,
 };
 
 /// SSH 连接的业务入口。无状态，廉价克隆。
@@ -33,9 +34,26 @@ impl SshService {
     /// `gpui` executor 没有 reactor，直接 `await` 会 panic（`there is no
     /// reactor running`）。因此这里经由 [`crate::db::run`] 派到应用级
     /// `tokio` runtime 上，`await` 到的仍是普通 future，GPUI 侧可直接等。
+    #[allow(dead_code)]
     pub async fn connect(&self, host: &Host, window: WindowSize) -> Result<SshConnection> {
         let host = host.clone();
         crate::db::run(async move { SshConnection::connect(&host, window).await }).await
+    }
+
+    /// 建一条带主机密钥信任检查的连接。
+    ///
+    /// `trust` 决定握手时 `check_server_key` 的处置，见 [`TrustPolicy`]。
+    /// 典型用法：首次连接传 `CaptureAndAbort`，失败后检查 `capture` 槽位，
+    /// 展示确认框让用户决定是否信任；已有记录传 `Verify`。
+    pub async fn connect_trusted(
+        &self,
+        host: &Host,
+        window: WindowSize,
+        trust: TrustPolicy,
+    ) -> Result<SshConnection> {
+        let host = host.clone();
+        crate::db::run(async move { SshConnection::connect_trusted(&host, window, trust).await })
+            .await
     }
 
     /// 在一条已经建立好的连接上再开一条交互式 Shell。

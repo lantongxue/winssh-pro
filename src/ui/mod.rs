@@ -45,7 +45,7 @@ use panels::{
     OpenSelection, PasteClipboard, SaveFile, SelectAllEntries, Tab, ToggleForwards, ToggleHistory,
     ToggleMonitor, ToggleSftp,
 };
-use workspace::{OpenSettingsWindow, OpenVaultWindow, ToggleCommandPalette, ToggleSidebar};
+use workspace::{OpenSettingsWindow, OpenTrustedHosts, OpenVaultWindow, ToggleCommandPalette, ToggleSidebar};
 
 /// 主修饰键：macOS 用 Command，其余平台用 Ctrl。
 #[cfg(target_os = "macos")]
@@ -61,6 +61,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(&format!("{CMD}-b"), ToggleSidebar, None),
         KeyBinding::new(&format!("{CMD}-,"), OpenSettingsWindow, None),
         KeyBinding::new("alt-3", OpenVaultWindow, None),
+        KeyBinding::new("alt-4", OpenTrustedHosts, None),
         KeyBinding::new(&format!("{CMD}-w"), ClosePanel, None),
         KeyBinding::new("shift-escape", ToggleZoom, None),
         // 远端文件编辑标签页里的保存。绑在 `SftpEditor` 上下文而不是全局：焦点落在编辑器

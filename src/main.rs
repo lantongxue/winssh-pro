@@ -17,6 +17,7 @@ mod sftp;
 mod snippet;
 mod ssh;
 mod terminal;
+mod trusted_host;
 mod ui;
 
 use gpui_kit::component::{Root, TitleBar};

@@ -1094,7 +1094,11 @@ mod tests {
             let mut handle = client::connect(
                 Arc::new(client::Config::default()),
                 ("127.0.0.1", port),
-                SshHandler::new(registry.clone()),
+                SshHandler::new(
+                    registry.clone(),
+                    ("127.0.0.1".into(), port),
+                    crate::trusted_host::TrustPolicy::Skip,
+                ),
             )
             .await
             .expect("连上回环 sshd");

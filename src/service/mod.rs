@@ -15,6 +15,7 @@ pub mod setting_service;
 pub mod sftp_service;
 pub mod snippet_service;
 pub mod ssh_service;
+pub mod trusted_host_service;
 
 pub use assistant_service::AssistantService;
 pub use command_history_service::CommandHistoryService;
@@ -27,3 +28,4 @@ pub use setting_service::SettingService;
 pub use sftp_service::{SftpService, TransferEvent, TransferHandle, TransferJob};
 pub use snippet_service::SnippetService;
 pub use ssh_service::SshService;
+pub use trusted_host_service::TrustedHostService;

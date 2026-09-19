@@ -22,6 +22,7 @@ use tokio_socks::tcp::Socks5Stream;
 
 use crate::host::Host;
 use crate::proxy::{self, ProxyConfig};
+use crate::trusted_host::TrustPolicy;
 
 use super::client::SshHandler;
 use super::forward::ForwardRegistry;
@@ -69,12 +70,20 @@ impl SshConnection {
     ///
     /// `window` 是终端当前的列/行与像素尺寸，SSH 的 PTY 请求需要它；
     /// 之后窗口大小变化由 [`Self::window_change`] 另行通知。
-    pub async fn connect(host: &Host, window: WindowSize) -> Result<Self> {
+    ///
+    /// `trust` 决定 `check_server_key` 的处置：首次连接传 `CaptureAndAbort`，
+    /// 已有记录传 `Verify`，本机 Shell / 测试传 `Skip`。
+    pub async fn connect_trusted(
+        host: &Host,
+        window: WindowSize,
+        trust: TrustPolicy,
+    ) -> Result<Self> {
         let config = build_config();
         // 登记处要在建连之前就造好：Handler 会被 `russh` 拿走，之后再没有
         // 途径拿回它，所以这里留一份克隆，两边指向同一张表。
         let forwards = ForwardRegistry::default();
-        let handler = SshHandler::new(forwards.clone());
+        let host_addr = (host.hostname.to_string(), host.port);
+        let handler = SshHandler::new(forwards.clone(), host_addr, trust);
         let user = host.user.to_string();
 
         // 拨号自己带上下文（直连和走代理该说的话不一样），所以这一层不再包一遍。
@@ -99,6 +108,12 @@ impl SshConnection {
             session: SshSession { handle, forwards },
             channel,
         })
+    }
+
+    /// 按 [`Host`] 拨号，不做主机密钥校验（本机 Shell 测试等场景）。
+    #[allow(dead_code)]
+    pub async fn connect(host: &Host, window: WindowSize) -> Result<Self> {
+        Self::connect_trusted(host, window, TrustPolicy::Skip).await
     }
 
     /// 在一条**已经认证过**的连接上再开一条交互式 Shell。

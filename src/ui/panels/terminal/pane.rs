@@ -18,7 +18,7 @@
 //! 由面板决定那意味着什么 —— 同一句"我要关掉"，在单屏时是关标签页，
 //! 分屏时只是收掉这一半。
 
-use std::rc::Rc;
+use std::{rc::Rc, sync::{Arc, Mutex}};
 
 use alacritty_terminal::selection::SelectionType;
 use gpui_kit::component::{
@@ -39,12 +39,15 @@ use gpui_kit::{
 use crate::{
     command_history::CommandRun,
     host::Host,
+    service::TrustedHostService,
     ssh::SshSession,
     terminal::{
         Emulator, EmulatorEvent, GridPoint, SearchQuery, TerminalBounds, cursor, font,
         rows_under_the_bar, shell_integration,
     },
+    trusted_host::{HostKeyInfo, TrustPolicy},
     ui::{
+        dialogs::{HostTrustDialog, TrustDecision, TrustDecisionHandler},
         elements::{TerminalGridElement, cell_at, point_at},
         menus::{TerminalAction, TerminalActionHandler, TerminalMenu, terminal_menu_allowed},
         theme::ansi,
@@ -267,11 +270,14 @@ impl TerminalPane {
         }
     }
 
-    /// 开出这条会话的字节源：优先走 SSH，失败则回退到本机 shell。
+    /// 开出这条会话的字节源：带主机密钥信任检查，失败则回退到本机 shell。
     ///
-    /// 闭环的关键是：`Host` → `SshService::connect` → `Emulator::from_ssh` →
-    /// 终端渲染。对终端来说，SSH 通道与本机 PTY 都是字节流，
-    /// 解析、缓冲与渲染都不用动。
+    /// 流程：
+    /// 1. 查询 `trusted_hosts` 表，看 `hostname:port` 是否已有记录。
+    /// 2. 有记录 → `TrustPolicy::Verify`；无记录 → `TrustPolicy::CaptureAndAbort`。
+    /// 3. 连接失败且 capture 槽有值 → 首次连接未知主机，弹信任确认框。
+    /// 4. 用户确认 → （可选）保存记录 → 发起第二次连接；用户拒绝 → 写拒绝提示。
+    /// 5. 其他连接错误（网络、认证、密钥变更）→ 回退到本机 shell（保持已有行为）。
     fn dial(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let host = self.host.clone();
         let placeholder = self.show_placeholder(
@@ -286,51 +292,158 @@ impl TerminalPane {
         );
 
         cx.spawn_in(window, async move |this, cx| {
-            let service = crate::service::SshService::new();
-            let outcome = service.connect(&host, window_size()).await;
+            let hostname = host.hostname.to_string();
+            let port = host.port;
 
-            this.update(cx, |this, cx| match outcome {
-                Ok(conn) => this.adopt(conn, cx),
-                Err(error) => {
-                    // SSH 失败：把原因写进已有的占位终端，再起一个本机 shell
-                    // 顶上，界面始终可用。
-                    placeholder.update(cx, |em, cx| {
-                        let msg = format!(
-                            "\r\n\x1b[31m{}\x1b[0m\r\n\x1b[33m{}\x1b[0m\r\n\x1b[90m{}\x1b[0m\r\n\r\n",
-                            t!("terminal.banner_ssh_failed", error => format!("{error:#}")),
-                            t!("terminal.banner_fell_back"),
-                            t!("terminal.banner_ssh_hint"),
-                        );
-                        em.write_output(msg.as_bytes(), cx);
-                    });
-                    match Emulator::spawn(None, cx) {
-                        Ok(local) => {
-                            this.attach_emulator(&local, cx);
-                            local.update(cx, |em, cx| {
-                                em.write_output(this.banner_fallback().as_bytes(), cx);
-                            });
-                            this.emulator = Some(local);
-                            this.error = None;
-                            cx.emit(TerminalPaneEvent::Notify(SharedString::from(t!(
-                                "terminal.ssh_failed_notify",
-                                name => host.name,
-                                error => format!("{error:#}"),
-                            ))));
-                        }
-                        Err(local_err) => {
-                            this.error = Some(SharedString::from(t!(
-                                "terminal.both_failed",
-                                error => format!("{error:#}"),
-                                local_error => format!("{local_err:#}"),
-                            )));
-                        }
-                    }
-                    cx.notify();
+            // ── 查询信任库 ─────────────────────────────────────────────────────
+            let stored_fp = TrustedHostService::open()
+                .fingerprint_for(&hostname, port)
+                .await
+                .ok()
+                .flatten();
+
+            let capture = Arc::new(Mutex::new(None::<HostKeyInfo>));
+            let trust = match stored_fp {
+                Some(fp) => TrustPolicy::Verify { expected: fp },
+                None => TrustPolicy::CaptureAndAbort {
+                    capture: capture.clone(),
+                },
+            };
+
+            // ── 第一次连接尝试 ───────────────────────────────────────────────
+            let outcome = crate::service::SshService::new()
+                .connect_trusted(&host, window_size(), trust)
+                .await;
+
+            match outcome {
+                Ok(conn) => {
+                    let _ = this.update(cx, |this, cx| this.adopt(conn, cx));
+                    // 刷新 last_seen，等待完成后继续
+                    TrustedHostService::open().touch(&hostname, port).await.ok();
                 }
-            })
-            .ok();
+                Err(error) => {
+                    let info = capture.lock().ok().and_then(|mut s| s.take());
+                    if let Some(info) = info {
+                        // 首次未知主机：弹信任确认框
+                        let host2 = host.clone();
+                        let ph2 = placeholder.clone();
+                        let entity2 = this.clone();
+                        let _ = this.update_in(cx, |_, window, app| {
+                            let cb_info = info.clone();
+                            let cb_host = host2.clone();
+                            let cb_ph = ph2.clone();
+                            let cb_entity = entity2.clone();
+                            let handler: TrustDecisionHandler =
+                                Rc::new(move |decision, win, app| match decision {
+                                    TrustDecision::Accept { save } => {
+                                        let info = cb_info.clone();
+                                        let host = cb_host.clone();
+                                        let ph = cb_ph.clone();
+                                        let entity = cb_entity.clone();
+                                        let fp = info.fingerprint.clone();
+                                        win.spawn(app, async move |cx| {
+                                            if save {
+                                                TrustedHostService::open()
+                                                    .save(&info)
+                                                    .await
+                                                    .ok();
+                                            }
+                                            let trust = if save {
+                                                TrustPolicy::Verify { expected: fp }
+                                            } else {
+                                                TrustPolicy::TrustOnce
+                                            };
+                                            let outcome = crate::service::SshService::new()
+                                                .connect_trusted(&host, window_size(), trust)
+                                                .await;
+                                            let _ =
+                                                entity.update_in(cx, |this, _, cx| match outcome {
+                                                    Ok(conn) => this.adopt(conn, cx),
+                                                    Err(e) => {
+                                                        this.handle_fallback(&e, &ph, cx)
+                                                    }
+                                                });
+                                        })
+                                        .detach();
+                                    }
+                                    TrustDecision::Reject => {
+                                        let ph = cb_ph.clone();
+                                        let _ = cb_entity.update(app, |this, cx| {
+                                            this.show_trust_rejected(&ph, cx);
+                                        });
+                                    }
+                                });
+                            HostTrustDialog::open(&info, handler, window, app);
+                        });
+                    } else {
+                        // 真实连接错误（网络不通、认证失败、密钥变更等）
+                        let _ = this.update(cx, |this, cx| {
+                            this.handle_fallback(&error, &placeholder, cx);
+                        });
+                    }
+                }
+            }
         })
         .detach();
+    }
+
+    /// SSH 失败时展示错误并回退到本机 shell，保持界面始终可用。
+    ///
+    /// 这是原本 `dial()` 内嵌的错误处理逻辑提取而来，供信任流程重试失败也复用。
+    fn handle_fallback(
+        &mut self,
+        error: &anyhow::Error,
+        placeholder: &Entity<Emulator>,
+        cx: &mut Context<Self>,
+    ) {
+        let err_text = format!("{error:#}");
+        placeholder.update(cx, |em, cx| {
+            let msg = format!(
+                "\r\n\x1b[31m{}\x1b[0m\r\n\x1b[33m{}\x1b[0m\r\n\x1b[90m{}\x1b[0m\r\n\r\n",
+                t!("terminal.banner_ssh_failed", error => err_text),
+                t!("terminal.banner_fell_back"),
+                t!("terminal.banner_ssh_hint"),
+            );
+            em.write_output(msg.as_bytes(), cx);
+        });
+        match Emulator::spawn(None, cx) {
+            Ok(local) => {
+                self.attach_emulator(&local, cx);
+                let banner = self.banner_fallback();
+                local.update(cx, |em, cx| em.write_output(banner.as_bytes(), cx));
+                self.emulator = Some(local);
+                self.error = None;
+                let name = self.host.name.clone();
+                cx.emit(TerminalPaneEvent::Notify(SharedString::from(t!(
+                    "terminal.ssh_failed_notify",
+                    name => name,
+                    error => err_text,
+                ))));
+            }
+            Err(local_err) => {
+                self.error = Some(SharedString::from(t!(
+                    "terminal.both_failed",
+                    error => err_text,
+                    local_error => format!("{local_err:#}"),
+                )));
+            }
+        }
+        cx.notify();
+    }
+
+    /// 用户拒绝信任：在占位终端写一行提示。不回退到本机 shell（用户主动取消）。
+    fn show_trust_rejected(&mut self, placeholder: &Entity<Emulator>, cx: &mut Context<Self>) {
+        placeholder.update(cx, |em, cx| {
+            em.write_output(
+                format!(
+                    "\r\n\x1b[33m{}\x1b[0m\r\n",
+                    t!("terminal.banner_trust_rejected"),
+                )
+                .as_bytes(),
+                cx,
+            );
+        });
+        cx.notify();
     }
 
     /// 在标签页已有的那条连接上再开一条 shell。分屏走这条。

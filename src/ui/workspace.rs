@@ -28,7 +28,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px,
 };
 
-use crate::service::{AssistantService, CredentialService, HostService, SnippetService};
+use crate::service::{AssistantService, CredentialService, HostService, SnippetService, TrustedHostService};
 use crate::ui::{
     bars::{ActivityAction, ActivityBar, CommandCenterBar},
     dialogs::{CommandPaletteDialog, CommandPaletteEvent},
@@ -38,7 +38,7 @@ use crate::ui::{
         CredentialVaultEvent, CredentialVaultView, HostExplorerEvent, HostExplorerView,
         SidebarView, SnippetVaultEvent, SnippetVaultView,
     },
-    windows::{CredentialVaultWindow, SettingsWindow, show_fps_monitor},
+    windows::{CredentialVaultWindow, SettingsWindow, TrustedHostsWindow, show_fps_monitor},
 };
 use rust_i18n::t;
 
@@ -51,10 +51,12 @@ actions!(
         ToggleSidebar,
         /// 在中心区新开一个本地 Shell 终端。
         OpenLocalShell,
-        /// 打开新建主机对话框（与主机面板的“新建主机”、命令面板的 `NewHost` 同一入口）。
+        /// 打开新建主机对话框（与主机面板的"新建主机"、命令面板的 `NewHost` 同一入口）。
         NewHost,
         /// 打开密码库完整独立管理窗口。
         OpenVaultWindow,
+        /// 打开可信主机管理弹窗。
+        OpenTrustedHosts,
         /// 打开设置独立管理窗口。
         OpenSettingsWindow,
     ]
@@ -373,6 +375,22 @@ impl Workspace {
         self.open_vault_window(cx);
     }
 
+    /// 在一扇独立窗口里打开可信主机管理；已经开着就把它叫到前面来。
+    ///
+    /// 那扇窗自己管单例（见 [`TrustedHostsWindow::open`]），与保险箱同构。
+    fn open_trusted_hosts_window(&mut self, cx: &mut Context<Self>) {
+        TrustedHostsWindow::open(TrustedHostService::open(), cx);
+    }
+
+    fn on_open_trusted_hosts(
+        &mut self,
+        _: &OpenTrustedHosts,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_trusted_hosts_window(cx);
+    }
+
     /// 标题栏：左边应用名，正中命令中心与本地 Shell，右侧留空补窗口按钮。
     ///
     /// 两侧 `flex_1` 把中间这组（搜索框＋本地 Shell）夹在正中，
@@ -446,6 +464,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open_local_shell))
             .on_action(cx.listener(Self::on_new_host))
             .on_action(cx.listener(Self::on_open_vault_window))
+            .on_action(cx.listener(Self::on_open_trusted_hosts))
             .child(self.render_title_bar(window, cx))
             .child(
                 // 活动栏宽度固定，不参与拖拽，所以它在 resizable 之外；
@@ -465,6 +484,9 @@ impl Render for Workspace {
                             }))
                             .on_open_vault(cx.listener(|this, _, _, cx| {
                                 this.open_vault_window(cx);
+                            }))
+                            .on_open_trusted_hosts(cx.listener(|this, _, _, cx| {
+                                this.open_trusted_hosts_window(cx);
                             })),
                     )
                     .child(div().flex_1().min_w_0().map(|this| {

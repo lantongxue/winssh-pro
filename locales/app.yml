@@ -51,6 +51,9 @@ menu.toggle_sidebar:
 menu.vault:
   en: Password Vault
   zh-CN: 密码库
+menu.trusted_hosts:
+  en: Trusted Hosts
+  zh-CN: 可信主机
 
 # ── 活动栏（窗口最左那一竖条） ───────────────────────────────────────────
 activity.assistant:
@@ -67,6 +70,9 @@ settings_menu.settings:
 settings_menu.vault:
   en: Password Vault
   zh-CN: 密码库
+settings_menu.trusted_hosts:
+  en: Trusted Hosts
+  zh-CN: 可信主机
 
 # ── 命令中心（标题栏中间的搜索框） ───────────────────────────────────────
 command_center.search:
@@ -2889,3 +2895,78 @@ assistant.missing_conversation:
 assistant.untitled:
   en: New chat
   zh-CN: 新对话
+
+# ── 主机信任确认弹窗 ──────────────────────────────────────────────────────────
+host_trust.title:
+  en: Verify Host Identity
+  zh-CN: 确认主机身份
+host_trust.subtitle:
+  en: This host's identity has not been verified before.
+  zh-CN: 这台主机的身份尚未确认过。
+host_trust.label_address:
+  en: 'Address'
+  zh-CN: 地址
+host_trust.label_key_type:
+  en: 'Key type'
+  zh-CN: 密钥算法
+host_trust.label_fingerprint:
+  en: 'Fingerprint'
+  zh-CN: 密钥指纹
+host_trust.safety_note:
+  en: 'Ask the server administrator to confirm this fingerprint matches the server. Accepting an incorrect key may expose your credentials to a man-in-the-middle attack.'
+  zh-CN: 请向服务器管理员确认该指纹与服务器一致。信任错误的密钥可能使你的凭据暴露于中间人攻击。
+host_trust.save_checkbox:
+  en: 'Save to trusted hosts (do not ask again)'
+  zh-CN: 保存到可信主机（下次连接不再提示）
+host_trust.accept:
+  en: 'Trust & Connect'
+  zh-CN: 信任并连接
+host_trust.reject:
+  en: 'Cancel'
+  zh-CN: 取消
+
+# ── 可信主机管理弹窗 ──────────────────────────────────────────────────────────
+trusted_hosts.title:
+  en: Trusted Hosts
+  zh-CN: 可信主机管理
+trusted_hosts.window_title:
+  en: Trusted Hosts
+  zh-CN: 可信主机管理
+trusted_hosts.subtitle:
+  en: Manage saved SSH host key fingerprints.
+  zh-CN: 管理已保存的 SSH 主机密钥指纹。
+trusted_hosts.reload_tooltip:
+  en: Reload the list
+  zh-CN: 重新拉一次列表
+trusted_hosts.added_at:
+  en: 'Added'
+  zh-CN: 建档
+trusted_hosts.last_seen:
+  en: 'Last used'
+  zh-CN: 最近使用
+trusted_hosts.empty_title:
+  en: Nothing trusted yet
+  zh-CN: 还没有信任任何主机
+trusted_hosts.loading:
+  en: Loading…
+  zh-CN: 加载中…
+trusted_hosts.empty:
+  en: No trusted hosts yet. Host keys are saved automatically on first connection.
+  zh-CN: 暂无可信主机记录。首次连接服务器时，密钥会自动保存到此处。
+trusted_hosts.close:
+  en: Close
+  zh-CN: 关闭
+trusted_hosts.delete_tooltip:
+  en: 'Remove this host key'
+  zh-CN: 删除该主机密钥
+trusted_hosts.cancel:
+  en: 'Cancel'
+  zh-CN: 取消
+trusted_hosts.confirm_delete:
+  en: 'Confirm delete'
+  zh-CN: 确认删除
+
+# ── 终端内主机信任相关提示 ────────────────────────────────────────────────────
+terminal.banner_trust_rejected:
+  en: '[WinSSH] Host identity not verified — connection cancelled.'
+  zh-CN: '[WinSSH] 主机身份未确认，连接已取消。'

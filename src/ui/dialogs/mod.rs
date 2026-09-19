@@ -11,6 +11,7 @@
 mod command_history;
 mod command_palette;
 mod credential_form;
+mod host_trust;
 mod key_generator;
 mod password_generator;
 mod port_forward;
@@ -22,6 +23,7 @@ mod snippet_params;
 pub use command_history::{CommandHistoryDialog, HistoryRunHandler, ShellIntegrationHandler};
 pub use command_palette::{CommandPaletteDialog, CommandPaletteEvent};
 pub use credential_form::{CredentialFormDialog, CredentialSavedHandler};
+pub use host_trust::{HostTrustDialog, TrustDecision, TrustDecisionHandler};
 pub use key_generator::KeyGeneratorDialog;
 pub use password_generator::PasswordGeneratorDialog;
 pub use port_forward::{ForwardsHandler, PortForwardDialog};
