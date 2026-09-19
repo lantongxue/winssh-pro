@@ -20,6 +20,8 @@
 //! 另外两处不是组件：[`theme`] 是画法（主题、配色、图标），
 //! [`workspace`] 是把上面这些拼起来的**主**窗口外壳。
 
+#[cfg(target_os = "macos")]
+mod app_menu;
 mod bars;
 mod cards;
 mod dialogs;
@@ -112,4 +114,10 @@ pub fn init(cx: &mut App) {
         // 转义序列给对端。裸 Insert 不受影响，照旧是 `\x1b[2~`。
         KeyBinding::new("shift-insert", PasteClipboard, Some("Terminal")),
     ]);
+
+    // macOS 原生应用菜单栏（含 Cmd+Q 退出）要放在所有绑键之后建：`set_menus`
+    // 即时读 keymap 反查每项的键等价，早于上面这批业务快捷键建菜单，⌘K/⌘, 这些
+    // 就会在菜单上缺字。
+    #[cfg(target_os = "macos")]
+    app_menu::init(cx);
 }

@@ -10,6 +10,48 @@ app.name:
   en: WinSSH Pro
   zh-CN: WinSSH Pro
 
+# ── macOS 原生应用菜单（顶部菜单栏，见 src/ui/app_menu.rs） ───────────────
+# hide / quit 是前缀，运行时拼上 `app.name`（"Hide WinSSH Pro" / "退出 WinSSH Pro"）。
+menu.settings:
+  en: Settings…
+  zh-CN: 设置…
+menu.services:
+  en: Services
+  zh-CN: 服务
+menu.hide:
+  en: Hide
+  zh-CN: 隐藏
+menu.hide_others:
+  en: Hide Others
+  zh-CN: 隐藏其他
+menu.show_all:
+  en: Show All
+  zh-CN: 全部显示
+menu.quit:
+  en: Quit
+  zh-CN: 退出
+menu.file:
+  en: File
+  zh-CN: 文件
+menu.new_local_shell:
+  en: New Local Shell
+  zh-CN: 新建本地终端
+menu.close_panel:
+  en: Close Panel
+  zh-CN: 关闭面板
+menu.go:
+  en: Go
+  zh-CN: 前往
+menu.command_palette:
+  en: Command Palette
+  zh-CN: 命令面板
+menu.toggle_sidebar:
+  en: Toggle Sidebar
+  zh-CN: 切换侧边栏
+menu.vault:
+  en: Password Vault
+  zh-CN: 密码库
+
 # ── 活动栏（窗口最左那一竖条） ───────────────────────────────────────────
 activity.assistant:
   en: AI Assistant
