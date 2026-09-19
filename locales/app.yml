@@ -634,6 +634,33 @@ host_form.title_new:
 host_form.title_edit:
   en: Edit host
   zh-CN: 编辑主机
+host_form.page_connection:
+  en: Connection
+  zh-CN: 连接
+host_form.page_auth:
+  en: Authentication
+  zh-CN: 认证
+host_form.page_advanced:
+  en: Advanced
+  zh-CN: 高级
+host_form.page_tags:
+  en: Tags
+  zh-CN: 标签
+host_form.group_basic:
+  en: Basic info
+  zh-CN: 基本信息
+host_form.group_auth:
+  en: Login & method
+  zh-CN: 登录与认证方式
+host_form.group_jump:
+  en: Jump host
+  zh-CN: 跳板机
+host_form.group_proxy:
+  en: Proxy
+  zh-CN: 代理
+host_form.group_tags:
+  en: Tags
+  zh-CN: 标签
 host_form.subtitle_new:
   en: Set up connection details, authentication, jump host and tags
   zh-CN: 配置连接信息、认证方式、跳板机与标签

@@ -10,7 +10,9 @@
 //! 主窗口的外壳不在这里，它是 [`crate::ui::workspace`]。
 
 mod credential_vault;
+mod host_form;
 mod settings;
 
 pub use credential_vault::CredentialVaultWindow;
+pub use host_form::HostFormWindow;
 pub use settings::{SettingsWindow, show_fps_monitor};

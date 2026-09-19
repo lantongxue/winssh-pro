@@ -44,10 +44,10 @@ use crate::{
     service::{CredentialService, HostService},
     ui::{
         cards::{HOST_CARD_HEIGHT, HostCard},
-        dialogs::HostFormDialog,
         menus::HostAction,
         panels::{SessionEvent, TerminalPanel},
         theme::{AppIcon, palette},
+        windows::HostFormWindow,
     },
 };
 use rust_i18n::t;
@@ -500,7 +500,7 @@ impl HostExplorerView {
     ///
     /// 分组也在这儿取好交进去，不由表单自己去 `host_explorer` 里读：
     /// 这个方法多半是在主机视图自己的回调里调起来的（卡片菜单里的"编辑"
-    /// 就是），那时候它正被租出去 —— 见 [`HostFormDialog::open`]。
+    /// 就是），那时候它正被租出去 —— 见 [`HostFormWindow::open`]。
     fn open_host_form(
         &mut self,
         editing: Option<(Host, SharedString)>,
@@ -511,9 +511,9 @@ impl HostExplorerView {
         let service = self.service.clone();
         cx.spawn_in(window, async move |this, cx| {
             let vault = credentials.load_all().await.unwrap_or_default();
-            _ = this.update_in(cx, |this, window, cx| {
+            _ = this.update_in(cx, |this, _window, cx| {
                 let groups = this.groups.clone();
-                HostFormDialog::open(service, cx.entity(), &groups, editing, &vault, window, cx);
+                HostFormWindow::open(service, cx.entity(), &groups, editing, &vault, cx);
             });
         })
         .detach();

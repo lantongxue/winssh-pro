@@ -1,25 +1,41 @@
-//! 新建/编辑主机对话框：按设计稿采集连接地址、认证方式、跳板机与标签。
+//! 新建/编辑主机窗口：把主机项按「连接 / 认证 / 高级 / 标签」分类铺在一扇独立窗口里。
+//!
+//! 为什么不是对话框：字段越来越多（代理那一段就是后来才加的），再往一个盖在主窗口
+//! 中央、"问一件事就收起"的弹层里堆，高度与分类都撑不住；而未来要扩展不同的服务器
+//! 类型，每种类型都有自己的一套分页配置。所以照 [`super::settings`] 那一扇落成一扇
+//! 独立窗，用 gpui-kit 的 [`Settings`] 组件把字段分类分页，左栏导航、右栏内容。
+//!
+//! 分两层，为了留出可测的表单内核：
+//!
+//! - [`HostForm`]：全部字段状态（`InputState` / `SelectState` / `TextareaState`）、
+//!   校验与落库前的 [`HostDraft`] 组装、以及各段字段的画法是它的事。
+//! - [`HostFormWindow`]：开这一扇窗、把 [`HostForm`] 的字段部件嵌进 Settings 分页、
+//!   底部「取消 / 创建（保存）」与提交收尾。
 //!
 //! 认证那几格是连接层真的会用的：密码、私钥（整份 PEM 文本）与私钥密码都跟着
-//! [`crate::host::HostDraft`] 落库，开会话时由 [`crate::ssh`] 拿去认证。
-//! 跳板机选择与标签还只是界面上的东西 —— 模型里没有它们的位置，
-//! 提交时也就无处可去，等各自的连接层/展示层落地后再接线。
+//! [`HostDraft`] 落库，开会话时由 [`crate::ssh`] 拿去认证。跳板机选择与标签还只是
+//! 界面上的东西 —— 模型里没有它们的位置，提交时也就无处可去，等各自的连接层/展示层
+//! 落地后再接线。
 //!
-//! 提交之后去哪儿由“新建还是编辑”决定，收尾则归 [`HostExplorerView`]：
-//! 新建完跳到目标分组并选中新主机，编辑完刷新列表与右侧的信息面板。
+//! 提交之后去哪儿由"新建还是编辑"决定，收尾则归 [`HostExplorerView`]：新建完跳到目标
+//! 分组并选中新主机，编辑完刷新列表与右侧的信息面板。落库是事务式的 —— 新建时那条
+//! 记录还不存在，改不了即存，所以底部留一个显式的保存按钮。
 
 use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Icon, IndexPath, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
+    group_box::GroupBoxVariant,
     h_flex,
     input::{Input, InputContentType, InputEvent, InputState, Textarea, TextareaState},
     select::{Select, SelectEvent, SelectState},
-    v_flex,
+    setting::{RenderOptions, SelectIndex, SettingGroup, SettingItem, SettingPage, Settings},
+    v_flex, Root, TitleBar,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, WindowBounds,
+    WindowHandle, WindowKind, WindowOptions, div, prelude::FluentBuilder as _, px, size,
 };
 
 use crate::{
@@ -28,8 +44,7 @@ use crate::{
     proxy::{self, HostProxy, ProxyConfig, ProxyMode},
     service::{HostService, LocalFileService, SshService},
     ui::{
-        dialogs::max_form_height,
-        theme::{AppIcon, palette},
+        theme::{AppIcon, appearance, palette},
         views::HostExplorerView,
     },
 };
@@ -63,37 +78,6 @@ const OS_PLATFORMS: [&str; 9] = [
     "macOS",
     "Windows OpenSSH",
 ];
-
-/// 标题行：图标 + 名称 + 副标题，对应设计稿的对话框头部。
-fn render_header(title: SharedString, subtitle: SharedString, cx: &App) -> impl IntoElement {
-    h_flex()
-        .items_center()
-        .gap(px(10.))
-        .child(
-            div()
-                .size(px(32.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(cx.theme().radius)
-                .bg(palette::teal().opacity(0.1))
-                .border_1()
-                .border_color(palette::teal().opacity(0.3))
-                .text_color(palette::teal())
-                .child(Icon::new(AppIcon::Server).with_size(px(16.))),
-        )
-        .child(
-            v_flex()
-                .gap(px(2.))
-                .child(div().text_sm().font_semibold().child(title))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(subtitle),
-                ),
-        )
-}
 
 /// 保险箱里属于某一档的那些凭据。
 fn of_kind(vault: &[Credential], kind: CredentialKind) -> Vec<Credential> {
@@ -154,9 +138,11 @@ fn two_field_row(
 /// 正在编辑的那台主机，连同它现在所属的分组。`None` 就是新建。
 type EditedHost = (Host, SharedString);
 
-/// 新建/编辑主机对话框。这个类型是对话框的正文（所有采集字段的状态），
-/// 外壳（宽度、标题、底部按钮）由 [`HostFormDialog::open`] 现搭。
-pub struct HostFormDialog {
+/// 新建/编辑主机的表单内核：所有采集字段的状态、校验与字段部件。
+///
+/// 它不自己开窗口、也不碰数据库 —— 外壳（窗口、分页版式、底部按钮、提交收尾）
+/// 由 [`HostFormWindow`] 负责，落库经 [`HostService`] 由窗口的 `submit` 驱动。
+pub struct HostForm {
     name: Entity<InputState>,
     group: Entity<InputState>,
     hostname: Entity<InputState>,
@@ -200,196 +186,7 @@ pub struct HostFormDialog {
     vault_key_pick: Entity<SelectState<Vec<SharedString>>>,
 }
 
-impl HostFormDialog {
-    /// 弹出对话框。`editing` 给出正在编辑的主机就进入编辑模式（字段预填、
-    /// 提交改为更新）；否则是新建。表单自己不碰数据库，校验通过后经由
-    /// [`HostService`] 异步落库，再由 [`HostExplorerView`] 收尾。
-    ///
-    /// 跳板机候选要用到分组，但这里不从 `host_explorer` 里读：这个方法多半是在
-    /// 主机视图自己的回调里调起来的（卡片菜单里的“编辑”就是），那时候它正被
-    /// 租出去，再 `read` 一次就是同一个实体被借两次 —— gpui 直接 panic。
-    /// 所以分组由调用方交进来，`host_explorer` 只留着给落库之后的收尾用。
-    pub fn open(
-        service: HostService,
-        host_explorer: Entity<HostExplorerView>,
-        groups: &[HostGroup],
-        editing: Option<EditedHost>,
-        vault: &[Credential],
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let form = cx.new(|cx| Self::new(groups, editing.as_ref(), vault, window, cx));
-
-        window.open_dialog(cx, move |dialog, window, cx| {
-            let editing = editing.clone();
-            let is_editing = editing.is_some();
-            let blue = palette::blue();
-            let submit_variant = ButtonCustomVariant::new(cx)
-                .color(blue)
-                .foreground(palette::on_accent())
-                .hover(blue.lighten(0.08))
-                .active(blue.darken(0.08));
-
-            let submit_form = form.clone();
-            let submit_service = service.clone();
-            let submit_host_explorer = host_explorer.clone();
-
-            dialog
-                .w(px(560.))
-                // 这张表的高度随选项变：认证方式选"密钥"多一个 120 高的粘贴框，
-                // 代理选"配置代理"再多两行。封顶之后超出的部分由对话框自己那层
-                // 滚动条接住，底部的按钮不会被窗口下沿裁掉。见 [`max_form_height`]。
-                .max_h(max_form_height(window))
-                .title(render_header(
-                    match is_editing {
-                        true => t!("host_form.title_edit").into(),
-                        false => t!("host_form.title_new").into(),
-                    },
-                    match is_editing {
-                        true => t!("host_form.subtitle_edit").into(),
-                        false => t!("host_form.subtitle_new").into(),
-                    },
-                    cx,
-                ))
-                .child(form.clone())
-                .footer(
-                    div()
-                        .w_full()
-                        .pt_3()
-                        .border_t_1()
-                        .border_color(cx.theme().border)
-                        .child(
-                            h_flex()
-                                .w_full()
-                                .justify_end()
-                                .gap_2()
-                                .child(
-                                    Button::new("host-form-cancel")
-                                        .ghost()
-                                        .label(t!("host_form.cancel"))
-                                        .on_click(|_, window, cx| window.close_dialog(cx)),
-                                )
-                                .child(
-                                    Button::new("host-form-submit")
-                                        .custom(submit_variant)
-                                        .bg(blue)
-                                        .rounded(cx.theme().radius)
-                                        .label(match is_editing {
-                                            true => t!("host_form.save"),
-                                            false => t!("host_form.create"),
-                                        })
-                                        .on_click(move |_, window, cx| {
-                                            let outcome = submit_form
-                                                .update(cx, |state, cx| state.build_draft(cx));
-                                            let (group, draft) = match outcome {
-                                                Ok((group, draft)) => (group, draft),
-                                                Err(message) => {
-                                                    window.push_notification(message, cx);
-                                                    return;
-                                                }
-                                            };
-
-                                            // 落库是异步的：校验通过就把活儿派出去，
-                                            // 成功关对话框并让主机视图收尾，失败弹通知
-                                            // 留在表单上改。
-                                            let service = submit_service.clone();
-                                            let host_explorer = submit_host_explorer.clone();
-                                            let editing = editing.clone();
-                                            window
-                                                .spawn(cx, async move |cx| {
-                                                    // 私钥先解一次再存：粘成了公钥、
-                                                    // 少复制半截、密码敲错，这三样都在
-                                                    // 这一步说得清楚。存下去再发现的话，
-                                                    // 用户看到的是下一次开会话时的一句
-                                                    // 认证失败。
-                                                    if draft.auth_method == AuthMethod::PublicKey
-                                                        && let Err(error) = SshService::new()
-                                                            .check_private_key(
-                                                                draft.key_content.clone(),
-                                                                draft.key_passphrase.clone(),
-                                                            )
-                                                            .await
-                                                    {
-                                                        cx.update(|window, cx| {
-                                                            window.push_notification(
-                                                                t!(
-                                                                    "host_form.key_invalid",
-                                                                    error => format!("{error:#}"),
-                                                                ),
-                                                                cx,
-                                                            )
-                                                        })
-                                                        .ok();
-                                                        return;
-                                                    }
-
-                                                    let outcome = match &editing {
-                                                        None => service
-                                                            .insert_host(&group, draft)
-                                                            .await
-                                                            .map(|host| (group, host)),
-                                                        Some((host, _)) => {
-                                                            let mut updated_host = host.clone();
-                                                            updated_host.name = draft.name.clone().into();
-                                                            updated_host.user = draft.user.clone().into();
-                                                            updated_host.hostname = draft.hostname.clone().into();
-                                                            updated_host.port = draft.port;
-                                                            updated_host.platform = draft.platform.clone().into();
-                                                            updated_host.auth_method = draft.auth_method;
-                                                            updated_host.password = draft.password.clone().into();
-                                                            updated_host.key_content = draft.key_content.clone().into();
-                                                            updated_host.key_passphrase = draft.key_passphrase.clone().into();
-                                                            updated_host.jump_host_id = draft.jump_host_id.clone().map(|v| v.into());
-                                                            updated_host.tags = draft.tags.clone();
-                                                            updated_host.proxy = draft.proxy.clone();
-                                                            service
-                                                                .update_host(&host.id, &group, draft)
-                                                                .await
-                                                                .map(|_| (group.clone(), updated_host))
-                                                        }
-                                                    };
-
-                                                    let saved = outcome.is_ok();
-                                                    host_explorer
-                                                        .update_in(
-                                                            cx,
-                                                            |explorer, window, cx| match outcome {
-                                                                Ok((group, host)) => match editing
-                                                                {
-                                                                    None => explorer.host_created(
-                                                                        host, group, window, cx,
-                                                                    ),
-                                                                    Some(_) => explorer
-                                                                        .host_updated(
-                                                                            host, window, cx,
-                                                                        ),
-                                                                },
-                                                                Err(error) => window
-                                                                    .push_notification(
-                                                                        t!(
-                                                                            "host_form.save_failed",
-                                                                            error => format!("{error:#}"),
-                                                                        ),
-                                                                        cx,
-                                                                    ),
-                                                            },
-                                                        )
-                                                        .ok();
-                                                    if saved {
-                                                        cx.update(|window, cx| {
-                                                            window.close_dialog(cx)
-                                                        })
-                                                        .ok();
-                                                    }
-                                                })
-                                                .detach();
-                                        }),
-                                ),
-                        ),
-                )
-        });
-    }
-
+impl HostForm {
     fn new(
         groups: &[HostGroup],
         editing: Option<&EditedHost>,
@@ -876,7 +673,11 @@ impl HostFormDialog {
         })
         .detach();
     }
+}
 
+/// 字段部件。[`HostFormWindow`] 把这些一格一格嵌进 Settings 的分页与分组，
+/// 字段本身的排版与联动（认证方式换档要露哪几格、代理换档要露哪几格）留在这里。
+impl HostForm {
     fn render_identity_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         two_field_row(
             field(
@@ -948,8 +749,6 @@ impl HostFormDialog {
                         t!("host_form.field_password").into(),
                         // 尾部那只眼睛来自 `mask_toggle()`：密码默认是打码的
                         // （`InputState::masked(true)`），点一下明文看一眼，再点回去。
-                        // 明文只是这一次的显示状态，对话框每次打开都新建一份
-                        // `InputState`，所以下次进来仍旧是打码的。
                         Input::new(&self.password)
                             .font_family("monospace")
                             .content_type(InputContentType::Password)
@@ -1000,12 +799,6 @@ impl HostFormDialog {
     }
 
     /// 密钥认证要采集的两格：私钥本身，以及解开它的密码。
-    ///
-    /// 私钥那一格是个粘贴框，"从文件导入"只是替用户跑一趟 `~/.ssh/`；
-    /// 存下去的一律是框里这段文本。
-    ///
-    /// 密码是可选的：`ssh-keygen` 生成时不给密码的私钥不需要它，留空就是
-    /// 那种。这句话画在框下面 —— 不写的话，空着的一格看起来像漏填了。
     fn render_key_fields(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_3()
@@ -1047,7 +840,6 @@ impl HostFormDialog {
                     .w_full()
                     .child(field(
                         t!("host_form.field_key_passphrase").into(),
-                        // 和密码那格同一套：默认打码，尾部的眼睛点一下看明文。
                         Input::new(&self.key_passphrase)
                             .font_family("monospace")
                             .content_type(InputContentType::Password)
@@ -1064,28 +856,28 @@ impl HostFormDialog {
             )
     }
 
-    fn render_platform_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        two_field_row(
-            field(
-                t!("host_form.field_platform").into(),
-                Select::new(&self.platform).w_full(),
-                cx,
-            ),
-            1.,
-            field(
-                t!("host_form.field_proxy_jump").into(),
-                Select::new(&self.proxy_jump).w_full(),
-                cx,
-            ),
-            1.,
+    /// 操作系统那一格。进了「连接」页。
+    fn render_platform(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        field(
+            t!("host_form.field_platform").into(),
+            Select::new(&self.platform).w_full(),
+            cx,
+        )
+    }
+
+    /// 跳板机那一格。进了「高级」页 —— 它和代理都是"从哪儿绕过去"的事。
+    fn render_jump(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        field(
+            t!("host_form.field_proxy_jump").into(),
+            Select::new(&self.proxy_jump).w_full(),
+            cx,
         )
     }
 
     /// 代理那一段：一个三档下拉，后面跟着这一档要说的话。
     ///
     /// - **不使用代理**：什么也不必再说。
-    /// - **跟随全局**：把现在的全局代理摆出来。看不见它的话，用户要在两扇
-    ///   窗口之间来回切才知道这台主机实际会走哪儿。
+    /// - **跟随全局**：把现在的全局代理摆出来。
     /// - **配置代理**：露出地址、端口、用户名、密码四格。
     fn render_proxy_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = ProxyMode::from_index(
@@ -1220,20 +1012,419 @@ impl HostFormDialog {
     }
 }
 
-impl Render for HostFormDialog {
+/// 把上面的部件按原来的先后顺序排成一整条。生产版式走 [`HostFormWindow`] 的
+/// Settings 分页，这一份只给测试当渲染外壳（覆盖深 builder 链）。
+impl Render for HostForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_4()
-            // 没有标签时标签行到此为止：留一点底边距，不然聚焦框的下边缘会
-            // 贴着对话框可滚动区域的边界被裁掉一截。
             .pb_1()
             .child(self.render_identity_row(cx))
             .child(self.render_address_row(cx))
             .child(self.render_auth_row(cx))
             .children(self.render_auth_detail(cx))
-            .child(self.render_platform_row(cx))
+            .child(self.render_platform(cx))
+            .child(self.render_jump(cx))
             .child(self.render_proxy_section(cx))
             .child(self.render_tags_row(cx))
+    }
+}
+
+/// 已经开着的那扇主机表单窗。**单例**：一次只开一扇，打开新的一台时先把上一扇关掉
+/// （见 [`HostFormWindow::open`]）。句柄在窗关掉后仍留在全局里，但已失效 —— 拿它去
+/// 操作会失败，那时就重新开一扇。
+struct ActiveHostFormWindow(WindowHandle<Root>);
+
+impl Global for ActiveHostFormWindow {}
+
+/// 主机表单窗口外壳：开一扇独立的原生窗，用 Settings 组件把 [`HostForm`] 的字段
+/// 按「连接 / 认证 / 高级 / 标签」分页摆出来，底部挂「取消 / 创建（保存）」。
+///
+/// 自己管单例与开窗选项，业务字段一律在 [`HostForm`] 里，这一屏只搭版式与提交收尾。
+pub struct HostFormWindow {
+    /// 表单内核。所有字段状态、校验与落库前的组装都在它身上，窗口只嵌它的部件。
+    form: Entity<HostForm>,
+    service: HostService,
+    /// 落库之后的收尾靠它：新建跳到目标分组选中新主机，编辑刷新列表与信息面板。
+    host_explorer: Entity<HostExplorerView>,
+    /// 正在编辑的那台主机；`None` 是新建。决定预填、标题与提交走 insert 还是 update。
+    editing: Option<EditedHost>,
+    /// Settings 元素 id 的稳定后缀。单例开窗，每次都是 0。
+    page_seq: usize,
+    focus_handle: FocusHandle,
+    _appearance: Subscription,
+}
+
+impl HostFormWindow {
+    /// 打开主机表单窗口。`editing` 给出正在编辑的主机就进编辑模式（字段预填、
+    /// 提交改为更新）；否则新建。分组与保险箱快照由调用方读好交进来 ——
+    /// 表单构造那一刻就要用它们铺跳板机候选与取用下拉，弹出来之后再补是补不上的。
+    ///
+    /// 已经开着就先把那一扇关掉再按新目标重开：编辑另一台时预填必须跟着换，
+    /// 半填的旧表单留不住、也不该留住。
+    pub fn open(
+        service: HostService,
+        host_explorer: Entity<HostExplorerView>,
+        groups: &[HostGroup],
+        editing: Option<EditedHost>,
+        vault: &[Credential],
+        cx: &mut App,
+    ) {
+        if let Some(handle) = cx.try_global::<ActiveHostFormWindow>().map(|open| open.0) {
+            _ = cx.update_window(handle.into(), |_, window, _| window.remove_window());
+        }
+
+        // 开窗闭包要 'static，切片先落成 owned。
+        let groups = groups.to_vec();
+        let vault = vault.to_vec();
+        let is_editing = editing.is_some();
+
+        let mut window_size = size(px(760.), px(600.));
+        if let Some(display) = cx.primary_display() {
+            let display_size = display.bounds().size;
+            window_size.width = window_size.width.min(display_size.width * 0.9);
+            window_size.height = window_size.height.min(display_size.height * 0.9);
+        }
+
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                window_size,
+                cx,
+            ))),
+            // 低于这个尺寸，左栏分页导航加右侧一栏字段就摆不下了。
+            window_min_size: Some(size(px(560.), px(440.))),
+            kind: WindowKind::Normal,
+            #[cfg(target_os = "linux")]
+            window_background: gpui_kit::WindowBackgroundAppearance::Transparent,
+            #[cfg(target_os = "linux")]
+            window_decorations: Some(gpui_kit::WindowDecorations::Client),
+            ..TitleBar::window_options()
+        };
+
+        let opened = cx.open_window(options, |window, cx| {
+            let shell = cx.new(|cx| {
+                HostFormWindow::new(
+                    &groups,
+                    service,
+                    host_explorer,
+                    editing,
+                    &vault,
+                    window,
+                    cx,
+                )
+            });
+            // 每个窗口的第一层必须是 Root，它承载对话框、通知与侧板 ——
+            // 这一屏的校验与落库失败通知因此都落在它自己身上，不飘回主窗口。
+            cx.new(|cx| Root::new(shell, window, cx))
+        });
+
+        let handle = match opened {
+            Ok(handle) => handle,
+            Err(error) => {
+                log::error!("打开主机表单窗口失败：{error:#}");
+                return;
+            }
+        };
+        _ = handle.update(cx, |_, window, _| {
+            window.activate_window();
+            window.set_window_title(&match is_editing {
+                true => t!("host_form.title_edit"),
+                false => t!("host_form.title_new"),
+            });
+        });
+        cx.set_global(ActiveHostFormWindow(handle));
+    }
+
+    fn new(
+        groups: &[HostGroup],
+        service: HostService,
+        host_explorer: Entity<HostExplorerView>,
+        editing: Option<EditedHost>,
+        vault: &[Credential],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let _appearance = appearance::observe(window, cx);
+        let form = cx.new(|cx| HostForm::new(groups, editing.as_ref(), vault, window, cx));
+        // 表单里任何一处 notify（换认证档、加删标签、从保险箱取用回填）都要让这一屏
+        // 重画一遍 —— 条件区段露不露、标签 chips 少不少，都是从表单现读出来的。
+        cx.observe(&form, |_, _, cx| cx.notify()).detach();
+
+        Self {
+            form,
+            service,
+            host_explorer,
+            page_seq: 0,
+            focus_handle: cx.focus_handle(),
+            editing,
+            _appearance,
+        }
+    }
+
+    /// 把 [`HostForm`] 的一个字段部件包成一个整块自定义 [`SettingItem`]：
+    /// 渲染时经 `form` 现取现画，部件里那些 `cx.listener` 按钮点下去动的就是表单。
+    /// 闭包跑在渲染期（`&mut App`），不碰窗口的 `&mut self`，无双重借用。
+    /// 部件的 `impl IntoElement` 返回值就地抹成 [`AnyElement`]（'static），
+    /// 才满得了 [`SettingItem::render`] 要 `'static` 的界。
+    fn row<F>(&self, render: F) -> SettingItem
+    where
+        F: Fn(&mut HostForm, &mut Context<HostForm>) -> AnyElement + 'static,
+    {
+        let form = self.form.clone();
+        SettingItem::render(move |_options: &RenderOptions, _window, cx| {
+            form.update(cx, |this, cx| render(this, cx))
+        })
+    }
+
+    /// 标题栏：图标 + 新建/编辑标题（窗口标题栏那一颗系统按钮留给原生）。
+    fn render_title_bar(&self) -> impl IntoElement {
+        TitleBar::new().child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    Icon::new(AppIcon::Server)
+                        .with_size(px(14.))
+                        .flex_shrink_0()
+                        .text_color(palette::teal()),
+                )
+                .child(
+                    div().text_sm().font_medium().child(SharedString::from(
+                        match self.editing.is_some() {
+                            true => t!("host_form.title_edit"),
+                            false => t!("host_form.title_new"),
+                        },
+                    )),
+                ),
+        )
+    }
+
+    /// Settings 核心组件：左栏分类导航，右栏一页一类主机配置。
+    fn render_settings(&self) -> impl IntoElement {
+        Settings::new(("winssh-host-form", self.page_seq))
+            .with_group_variant(GroupBoxVariant::Fill)
+            .sidebar_width(px(210.))
+            .default_selected_index(SelectIndex {
+                page_ix: 0,
+                group_ix: None,
+            })
+            .page(self.connection_page())
+            .page(self.auth_page())
+            .page(self.advanced_page())
+            .page(self.tags_page())
+    }
+
+    fn connection_page(&self) -> SettingPage {
+        SettingPage::new(t!("host_form.page_connection"))
+            .icon(AppIcon::Server)
+            .default_open(true)
+            .resettable(false)
+            .group(
+                SettingGroup::new()
+                    .title(t!("host_form.group_basic"))
+                    .item(self.row(|this, cx| this.render_identity_row(cx).into_any_element()))
+                    .item(self.row(|this, cx| this.render_address_row(cx).into_any_element()))
+                    .item(self.row(|this, cx| this.render_platform(cx).into_any_element())),
+            )
+    }
+
+    fn auth_page(&self) -> SettingPage {
+        SettingPage::new(t!("host_form.page_auth"))
+            .icon(AppIcon::KeyRound)
+            .default_open(true)
+            .resettable(false)
+            .group(
+                SettingGroup::new()
+                    .title(t!("host_form.group_auth"))
+                    .item(self.row(|this, cx| this.render_auth_row(cx).into_any_element()))
+                    .item(self.row(|this, cx| {
+                        this.render_auth_detail(cx)
+                            .unwrap_or_else(|| div().into_any_element())
+                    })),
+            )
+    }
+
+    fn advanced_page(&self) -> SettingPage {
+        SettingPage::new(t!("host_form.page_advanced"))
+            .icon(AppIcon::Zap)
+            .default_open(true)
+            .resettable(false)
+            .group(
+                SettingGroup::new()
+                    .title(t!("host_form.group_jump"))
+                    .item(self.row(|this, cx| this.render_jump(cx).into_any_element())),
+            )
+            .group(
+                SettingGroup::new()
+                    .title(t!("host_form.group_proxy"))
+                    .item(self.row(|this, cx| this.render_proxy_section(cx).into_any_element())),
+            )
+    }
+
+    fn tags_page(&self) -> SettingPage {
+        SettingPage::new(t!("host_form.page_tags"))
+            .icon(AppIcon::Columns2)
+            .default_open(true)
+            .resettable(false)
+            .group(
+                SettingGroup::new()
+                    .title(t!("host_form.group_tags"))
+                    .item(self.row(|this, cx| this.render_tags_row(cx).into_any_element())),
+            )
+    }
+
+    /// 底部那一行：取消与创建/保存。落库是事务式的，不点保存什么都不写。
+    fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_editing = self.editing.is_some();
+        let blue = palette::blue();
+        let submit_variant = ButtonCustomVariant::new(cx)
+            .color(blue)
+            .foreground(palette::on_accent())
+            .hover(blue.lighten(0.08))
+            .active(blue.darken(0.08));
+
+        div()
+            .w_full()
+            .px_4()
+            .py_3()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("host-form-cancel")
+                            .ghost()
+                            .label(t!("host_form.cancel"))
+                            .on_click(cx.listener(|_, _, window, _| window.remove_window())),
+                    )
+                    .child(
+                        Button::new("host-form-submit")
+                            .custom(submit_variant)
+                            .bg(blue)
+                            .rounded(cx.theme().radius)
+                            .label(match is_editing {
+                                true => t!("host_form.save"),
+                                false => t!("host_form.create"),
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.submit(window, cx)
+                            })),
+                    ),
+            )
+    }
+
+    /// 校验并落库。表单不碰数据库，校验通过后经 [`HostService`] 异步落库，
+    /// 再由 [`HostExplorerView`] 收尾；成功关掉这一扇窗，失败弹通知把人留在表单上改。
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (group, draft) = match self.form.read(cx).build_draft(cx) {
+            Ok(pair) => pair,
+            Err(message) => {
+                window.push_notification(message, cx);
+                return;
+            }
+        };
+
+        let editing = self.editing.clone();
+        let service = self.service.clone();
+        let host_explorer = self.host_explorer.clone();
+        window
+            .spawn(cx, async move |cx| {
+                // 私钥先解一次再存：粘成了公钥、少复制半截、密码敲错，这三样都在
+                // 这一步说得清楚。存下去再发现的话，用户看到的是下一次开会话时
+                // 的一句认证失败。
+                if draft.auth_method == AuthMethod::PublicKey
+                    && let Err(error) = SshService::new()
+                        .check_private_key(draft.key_content.clone(), draft.key_passphrase.clone())
+                        .await
+                {
+                    cx.update(|window, cx| {
+                        window.push_notification(
+                            t!("host_form.key_invalid", error => format!("{error:#}")),
+                            cx,
+                        )
+                    })
+                    .ok();
+                    return;
+                }
+
+                let outcome = match &editing {
+                    None => service
+                        .insert_host(&group, draft)
+                        .await
+                        .map(|host| (group, host)),
+                    Some((host, _)) => {
+                        let mut updated_host = host.clone();
+                        updated_host.name = draft.name.clone().into();
+                        updated_host.user = draft.user.clone().into();
+                        updated_host.hostname = draft.hostname.clone().into();
+                        updated_host.port = draft.port;
+                        updated_host.platform = draft.platform.clone().into();
+                        updated_host.auth_method = draft.auth_method;
+                        updated_host.password = draft.password.clone().into();
+                        updated_host.key_content = draft.key_content.clone().into();
+                        updated_host.key_passphrase = draft.key_passphrase.clone().into();
+                        updated_host.jump_host_id =
+                            draft.jump_host_id.clone().map(|value| value.into());
+                        updated_host.tags = draft.tags.clone();
+                        updated_host.proxy = draft.proxy.clone();
+                        service
+                            .update_host(&host.id, &group, draft)
+                            .await
+                            .map(|_| (group.clone(), updated_host))
+                    }
+                };
+
+                let saved = outcome.is_ok();
+                host_explorer
+                    .update_in(cx, |explorer, window, cx| match outcome {
+                        Ok((group, host)) => match editing {
+                            None => explorer.host_created(host, group, window, cx),
+                            Some(_) => explorer.host_updated(host, window, cx),
+                        },
+                        Err(error) => window.push_notification(
+                            t!("host_form.save_failed", error => format!("{error:#}")),
+                            cx,
+                        ),
+                    })
+                    .ok();
+                if saved {
+                    cx.update(|window, _| window.remove_window()).ok();
+                }
+            })
+            .detach();
+    }
+}
+
+impl Focusable for HostFormWindow {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for HostFormWindow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let sheet_layer = Root::render_sheet_layer(window, cx);
+        let dialog_layer = Root::render_dialog_layer(window, cx);
+        let notification_layer = Root::render_notification_layer(window, cx);
+
+        div()
+            .id("host-form-window")
+            .track_focus(&self.focus_handle)
+            .relative()
+            .size_full()
+            .v_flex()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .child(self.render_title_bar())
+            .child(div().flex_1().min_h_0().child(self.render_settings()))
+            .child(self.render_footer(cx))
+            .children(sheet_layer)
+            .children(dialog_layer)
+            .children(notification_layer)
     }
 }
 
@@ -1297,7 +1488,7 @@ mod tests {
     fn draw_form(
         cx: &mut gpui_kit::TestAppContext,
         editing: Option<EditedHost>,
-    ) -> (Entity<HostFormDialog>, &mut gpui_kit::VisualTestContext) {
+    ) -> (Entity<HostForm>, &mut gpui_kit::VisualTestContext) {
         draw_form_with_vault(cx, editing, Vec::new())
     }
 
@@ -1305,10 +1496,10 @@ mod tests {
         cx: &mut gpui_kit::TestAppContext,
         editing: Option<EditedHost>,
         vault: Vec<Credential>,
-    ) -> (Entity<HostFormDialog>, &mut gpui_kit::VisualTestContext) {
+    ) -> (Entity<HostForm>, &mut gpui_kit::VisualTestContext) {
         cx.update(gpui_kit::init);
         let (form, cx) = cx.add_window_view(|window, cx| {
-            HostFormDialog::new(&[], editing.as_ref(), &vault, window, cx)
+            HostForm::new(&[], editing.as_ref(), &vault, window, cx)
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         (form, cx)
