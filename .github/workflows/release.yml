@@ -54,10 +54,47 @@ jobs:
             extension: ""
 
     steps:
+      # workflow_dispatch 传进来的 `tag` 必须是远端已经存在的 tag，否则下一步
+      # actions/checkout 会以 `+refs/heads/v0.1.0*:... +refs/tags/v0.1.0*:...`
+      # 去 fetch，两边都命中不了 → git 直接 exit 1，错误信息还藏在重试里，
+      # 光看日志要绕一圈才知道是 tag 没推。这里先校验一次，把失败原因写在最
+      # 前面。运维侧的正解仍然是先 `git tag v0.1.0 && git push origin v0.1.0`
+      # 再 dispatch；这一步只是让漏推 tag 的那次跑死得干脆点。
+      - name: Validate release tag
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${TAG}" ]]; then
+            echo "workflow_dispatch requires a non-empty 'tag' input"
+            exit 1
+          fi
+
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.~-]+)?$ ]]; then
+            echo "Invalid release tag: ${TAG}"
+            echo "Expected something like v0.1.0"
+            exit 1
+          fi
+
+          if ! git ls-remote --exit-code --tags \
+                "https://github.com/${GITHUB_REPOSITORY}.git" \
+                "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag '${TAG}' does not exist on origin."
+            echo "Create and push it first: git tag ${TAG} && git push origin ${TAG}"
+            exit 1
+          fi
+
+      # 明确写成 `refs/tags/...`：只给短名时 checkout 会同时按 `heads/` 与
+      # `tags/` 去 fetch，两个都空才失败，报错也更绕。tag push 触发时
+      # `github.ref` 本来就是 `refs/tags/v...`，直接沿用。
       - name: Check out source
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          fetch-depth: 1
           submodules: recursive
 
       - name: Install Linux build dependencies
