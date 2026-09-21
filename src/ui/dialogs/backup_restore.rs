@@ -279,7 +279,11 @@ impl BackupRestoreDialog {
                 dialog.restoring = false;
                 match result {
                     Ok(()) => {
-                        // 还原成功：关闭当前对话框并弹窗提醒需要重启生效
+                        // 还原成功：收起这层弹窗，改问重启。
+                        //
+                        // 换库不是现在换的 —— 下载下来的那份还躺在 `.restored` 里，
+                        // 真正顶上去是下个进程第一次开库时干的活（见
+                        // [`crate::db`]）。所以这儿只有"重启"一条路，没法原地生效。
                         window.close_dialog(cx);
                         window.open_alert_dialog(cx, move |alert, _, _| {
                             alert
@@ -287,9 +291,16 @@ impl BackupRestoreDialog {
                                 .description(SharedString::from(t!("backup_restore.success_desc")))
                                 .button_props(
                                     DialogButtonProps::default()
-                                        .ok_text(t!("backup_restore.restart_confirm"))
-                                        .show_cancel(false),
+                                        .ok_text(t!("backup_restore.restart_now"))
+                                        .cancel_text(t!("backup_restore.restart_later"))
+                                        .show_cancel(true),
                                 )
+                                .on_ok(|_, _, cx| {
+                                    // gpui 自己会先支一个等本进程退干净再把自己重新
+                                    // 拉起来的小脚本，然后 quit；不用我们收尾。
+                                    cx.restart();
+                                    true
+                                })
                         });
                     }
                     Err(e) => {

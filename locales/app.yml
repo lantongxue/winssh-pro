@@ -578,11 +578,14 @@ backup_restore.success_title:
   en: Restore Succeeded
   zh-CN: 数据库恢复成功
 backup_restore.success_desc:
-  en: "The database has been restored. Please restart WinSSH Pro for the changes to take effect."
-  zh-CN: "数据库已成功从云端恢复！新数据已就绪，需要重启软件才生效。"
-backup_restore.restart_confirm:
-  en: OK
-  zh-CN: 知道了
+  en: "The database has been restored. The new data takes effect on the next launch — restart now, or later at your convenience."
+  zh-CN: "数据库已成功从云端恢复。新数据要等下次启动才会顶上去 —— 现在重启，或稍后自行重启都可以。"
+backup_restore.restart_now:
+  en: Restart Now
+  zh-CN: 立即重启
+backup_restore.restart_later:
+  en: Restart Later
+  zh-CN: 稍后重启
 backup_restore.failed:
   en: "Restore failed: %{error}"
   zh-CN: "恢复失败：%{error}"
