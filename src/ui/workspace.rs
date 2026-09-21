@@ -59,6 +59,10 @@ actions!(
         OpenTrustedHosts,
         /// 打开设置独立管理窗口。
         OpenSettingsWindow,
+        /// 最小化当前窗口（Cmd+M，仅菜单栏触发）。
+        Minimize,
+        /// 缩放当前窗口（绿色按钮的行为，仅菜单栏触发）。
+        Zoom,
     ]
 );
 
@@ -485,6 +489,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_new_host))
             .on_action(cx.listener(Self::on_open_vault_window))
             .on_action(cx.listener(Self::on_open_trusted_hosts))
+            .on_action(cx.listener(|_, _: &Minimize, window, _cx| {
+                window.minimize_window();
+            }))
+            .on_action(cx.listener(|_, _: &Zoom, window, _cx| {
+                window.zoom_window();
+            }))
             .child(self.render_title_bar(window, cx))
             .child(
                 // 活动栏宽度固定，不参与拖拽，所以它在 resizable 之外；

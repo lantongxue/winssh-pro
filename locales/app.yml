@@ -54,6 +54,42 @@ menu.vault:
 menu.trusted_hosts:
   en: Trusted Hosts
   zh-CN: 可信主机
+menu.edit:
+  en: Edit
+  zh-CN: 编辑
+menu.undo:
+  en: Undo
+  zh-CN: 撤销
+menu.redo:
+  en: Redo
+  zh-CN: 重做
+menu.cut:
+  en: Cut
+  zh-CN: 剪切
+menu.copy:
+  en: Copy
+  zh-CN: 复制
+menu.paste:
+  en: Paste
+  zh-CN: 粘贴
+menu.select_all:
+  en: Select All
+  zh-CN: 全选
+menu.view:
+  en: View
+  zh-CN: 视图
+menu.zoom_panel:
+  en: Zoom Panel
+  zh-CN: 缩放面板
+menu.window:
+  en: Window
+  zh-CN: 窗口
+menu.minimize:
+  en: Minimize
+  zh-CN: 最小化
+menu.zoom:
+  en: Zoom
+  zh-CN: 缩放
 
 # ── 活动栏（窗口最左那一竖条） ───────────────────────────────────────────
 activity.assistant:
