@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=WinSSH Pro
+Comment=Native High-Performance SSH Client
+GenericName=SSH Client
+Exec=winssh-pro %u
+Icon=winssh-pro
+Type=Application
+StartupNotify=true
+StartupWMClass=winssh-pro
+Categories=Network;SSH;Development;System;TerminalEmulator;
+Keywords=ssh;terminal;sftp;shell;remote;

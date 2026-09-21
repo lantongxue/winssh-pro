@@ -1,0 +1,16 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Left Eye: Terminal Prompt Chevron (>) -->
+  <path d="M 122 148 L 226 212 L 122 276"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="32"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+
+  <!-- Right Eye: Oval Pill -->
+  <ellipse cx="368" cy="212" rx="28" ry="58" fill="currentColor"/>
+
+  <!-- Smile Crescent Curve -->
+  <path d="M 96 322 C 168 396 324 396 432 274 C 330 376 186 376 96 322 Z"
+        fill="currentColor"/>
+</svg>

@@ -1,0 +1,92 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Background Gradient: Deep Space Navy -->
+    <radialGradient id="bgGlow" cx="50%" cy="38%" r="65%">
+      <stop offset="0%" stop-color="#0E2856"/>
+      <stop offset="60%" stop-color="#07132B"/>
+      <stop offset="100%" stop-color="#030712"/>
+    </radialGradient>
+
+    <!-- Squircle Border Highlight -->
+    <linearGradient id="squircleBorder" x1="64" y1="24" x2="448" y2="488" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.4"/>
+      <stop offset="50%" stop-color="#818CF8" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.05"/>
+    </linearGradient>
+
+    <!-- Left Eye Neon Chevron Gradient (Electric Cyan -> Royal Purple) -->
+    <linearGradient id="neonChevron" x1="100" y1="130" x2="245" y2="240" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="45%" stop-color="#3B82F6"/>
+      <stop offset="85%" stop-color="#8B5CF6"/>
+      <stop offset="100%" stop-color="#A855F7"/>
+    </linearGradient>
+
+    <!-- Left Eye Inner Core Light -->
+    <linearGradient id="neonCore" x1="100" y1="130" x2="245" y2="240" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#BAE6FD"/>
+      <stop offset="50%" stop-color="#93C5FD"/>
+      <stop offset="100%" stop-color="#DDD6FE"/>
+    </linearGradient>
+
+    <!-- Right Eye & Smile Ceramic Lustre -->
+    <linearGradient id="ceramicGrad" x1="200" y1="140" x2="380" y2="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="60%" stop-color="#F1F5F9"/>
+      <stop offset="100%" stop-color="#CBD5E1"/>
+    </linearGradient>
+
+    <!-- Neon Glow Filter -->
+    <filter id="neonFilter" x="40" y="80" width="260" height="240" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="10" result="blur1"/>
+      <feGaussianBlur stdDeviation="20" result="blur2"/>
+      <feMerge>
+        <feMergeNode in="blur2"/>
+        <feMergeNode in="blur1"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Smile Drop Shadow -->
+    <filter id="smileShadow" x="60" y="270" width="390" height="150" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#020617" flood-opacity="0.6"/>
+    </filter>
+  </defs>
+
+  <!-- Squircle Base -->
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bgGlow)"/>
+  <rect x="16" y="16" width="480" height="480" rx="112" stroke="url(#squircleBorder)" stroke-width="2"/>
+
+  <!-- Left Eye: Terminal Chevron (>) with Neon Glow -->
+  <g filter="url(#neonFilter)">
+    <!-- Outer Neon Tube -->
+    <path d="M 122 148 L 226 212 L 122 276"
+          stroke="url(#neonChevron)"
+          stroke-width="32"
+          stroke-linecap="round"
+          stroke-linejoin="round"/>
+    <!-- Inner Radiant Core -->
+    <path d="M 122 148 L 226 212 L 122 276"
+          stroke="url(#neonCore)"
+          stroke-width="14"
+          stroke-linecap="round"
+          stroke-linejoin="round"/>
+  </g>
+
+  <!-- Right Eye: Open Eye / Cursor Pill -->
+  <g filter="url(#smileShadow)">
+    <ellipse cx="368" cy="212" rx="28" ry="58" fill="url(#ceramicGrad)"/>
+    <!-- Inner Specular Highlight -->
+    <ellipse cx="364" cy="190" rx="14" ry="26" fill="#FFFFFF" opacity="0.75"/>
+  </g>
+
+  <!-- Bottom: Winking Smile Curve -->
+  <g filter="url(#smileShadow)">
+    <path d="M 96 322 C 168 396 324 396 432 274 C 330 376 186 376 96 322 Z"
+          fill="url(#ceramicGrad)"/>
+    <!-- Crescent Top Light Accent -->
+    <path d="M 108 326 C 182 386 314 386 418 288 C 324 366 196 368 108 326 Z"
+          fill="#FFFFFF"
+          opacity="0.65"/>
+  </g>
+</svg>

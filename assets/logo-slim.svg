@@ -1,0 +1,30 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Left Eye Neon Chevron Gradient -->
+    <linearGradient id="slimNeonChevron" x1="100" y1="130" x2="245" y2="240" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="50%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#8B5CF6"/>
+    </linearGradient>
+
+    <!-- Ceramic Gradient -->
+    <linearGradient id="slimCeramic" x1="200" y1="140" x2="380" y2="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#E2E8F0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Left Eye: Terminal Prompt Chevron (>) -->
+  <path d="M 122 148 L 226 212 L 122 276"
+        stroke="url(#slimNeonChevron)"
+        stroke-width="32"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+
+  <!-- Right Eye: Oval / Cursor Pill -->
+  <ellipse cx="368" cy="212" rx="28" ry="58" fill="url(#slimCeramic)"/>
+
+  <!-- Smile Crescent Curve -->
+  <path d="M 96 322 C 168 396 324 396 432 274 C 330 376 186 376 96 322 Z"
+        fill="url(#slimCeramic)"/>
+</svg>

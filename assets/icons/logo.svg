@@ -1,0 +1,19 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Squircle Outline (not solid fill to avoid solid box when used as alpha mask) -->
+  <rect x="28" y="28" width="456" height="456" rx="108" fill="none" stroke="currentColor" stroke-width="24"/>
+
+  <!-- Left Eye: Terminal Prompt Chevron (>) -->
+  <path d="M 140 156 L 244 220 L 140 284"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="32"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+
+  <!-- Right Eye: Oval Pill -->
+  <ellipse cx="360" cy="220" rx="26" ry="52" fill="currentColor"/>
+
+  <!-- Smile Crescent Curve -->
+  <path d="M 120 324 C 180 390 320 390 390 310 C 310 370 190 370 120 324 Z"
+        fill="currentColor"/>
+</svg>
