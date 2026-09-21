@@ -136,6 +136,11 @@ jobs:
               --output "dist/$artifact.deb"
             cargo generate-rpm --target-dir "target/${{ matrix.target }}" \
               --output "dist/$artifact.rpm"
+          elif [[ "${{ matrix.os }}" == "macos" ]]; then
+            # dmg 是给人下载的主产物（拖进 Applications）；tar.gz 留着，
+            # 它是脚本化安装 / Homebrew cask 更好接的那一份。
+            ./scripts/dmg-macos.sh "${{ matrix.target }}"
+            tar -czf "dist/$artifact.tar.gz" -C "target/${{ matrix.target }}/release" "WinSSH Pro.app"
           else
             package_dir="$(mktemp -d)"
             cp "target/${{ matrix.target }}/release/winssh-pro${{ matrix.extension }}" \
