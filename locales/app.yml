@@ -424,6 +424,189 @@ settings.assistant_auto:
 settings.assistant_auto_hint:
   en: Run server commands without asking for approval. Off means every command needs your confirmation.
   zh-CN: 在服务器上执行命令不再逐条送审。关闭时每一条命令都要你确认。
+settings.tab_backup:
+  en: Backup & Sync
+  zh-CN: 备份同步
+settings.backup_group_general:
+  en: Backup Policy
+  zh-CN: 备份策略与频率
+settings.backup_enabled:
+  en: Enable Auto Backup
+  zh-CN: 开启自动备份
+settings.backup_protocol:
+  en: Storage Protocol
+  zh-CN: 存储协议
+settings.backup_interval:
+  en: Frequency (Minutes)
+  zh-CN: 备份频率（分钟）
+settings.backup_interval_placeholder:
+  en: "e.g. 60"
+  zh-CN: "例如 60"
+settings.backup_retention:
+  en: Retained Copies
+  zh-CN: 保留副本数
+settings.backup_retention_placeholder:
+  en: "e.g. 10"
+  zh-CN: "例如 10"
+settings.backup_copies_unit:
+  en: "%{count} copies"
+  zh-CN: "%{count} 份"
+settings.backup_group_security:
+  en: Security & Encryption
+  zh-CN: 安全与加密
+settings.backup_encrypt:
+  en: Encrypt Backup
+  zh-CN: 启用备份加密
+settings.backup_encrypt_desc:
+  en: Without password, backup is unencrypted raw database. With password, encrypted using AES-256-GCM.
+  zh-CN: 不设置密码则直接裸备份，设置密码后使用 AES-256-GCM 进行加密
+settings.backup_password:
+  en: Encryption Password
+  zh-CN: 备份密码
+settings.backup_password_placeholder:
+  en: Enter encryption password (optional, raw backup if empty)
+  zh-CN: 输入备份密码（留空则为裸备份）
+settings.backup_group_storage:
+  en: Storage Server Configuration
+  zh-CN: 存储服务器配置
+settings.backup_s3_preset:
+  en: Provider Preset
+  zh-CN: 服务商预设
+settings.backup_s3_bucket:
+  en: Bucket Name
+  zh-CN: 存储桶 (Bucket)
+settings.backup_s3_endpoint:
+  en: Endpoint URL
+  zh-CN: 终端节点 (Endpoint)
+settings.backup_s3_region:
+  en: Region
+  zh-CN: 存储区域 (Region)
+settings.backup_s3_root:
+  en: Path Prefix
+  zh-CN: 存储路径前缀
+settings.backup_s3_path_style:
+  en: Path-Style Access
+  zh-CN: 路径寻址模式 (Path Style)
+settings.backup_s3_ak:
+  en: Access Key ID
+  zh-CN: Access Key ID
+settings.backup_s3_sk:
+  en: Secret Access Key
+  zh-CN: Secret Access Key
+settings.backup_webdav_endpoint:
+  en: WebDAV URL
+  zh-CN: WebDAV 地址
+settings.backup_webdav_root:
+  en: Remote Directory
+  zh-CN: 备份根目录
+settings.backup_webdav_username:
+  en: Username
+  zh-CN: 用户名
+settings.backup_webdav_password:
+  en: Password / Token
+  zh-CN: 密码 / 授权码
+settings.backup_group_actions:
+  en: Backup & Restore
+  zh-CN: 备份与恢复
+settings.backup_last_time:
+  en: Last Backup Time
+  zh-CN: 上次备份时间
+settings.backup_last_status:
+  en: Last Backup Status
+  zh-CN: 上次备份状态
+settings.backup_none:
+  en: None
+  zh-CN: 暂无
+settings.backup_btn_test:
+  en: Test Connection
+  zh-CN: 测试连接
+settings.backup_btn_backup_now:
+  en: Backup Now
+  zh-CN: 立即备份
+settings.backup_btn_restore:
+  en: Restore from Cloud
+  zh-CN: 从云端恢复
+settings.backup_testing:
+  en: Testing connection...
+  zh-CN: 正在测试连接…
+settings.backup_test_success:
+  en: Storage connection test succeeded!
+  zh-CN: 存储连接测试成功！
+settings.backup_test_failed:
+  en: "Storage connection test failed: %{error}"
+  zh-CN: "存储连接测试失败：%{error}"
+settings.backup_running:
+  en: Backing up database...
+  zh-CN: 正在执行数据库备份…
+settings.backup_success:
+  en: "Backup completed successfully: %{file}"
+  zh-CN: "数据库备份成功：%{file}"
+settings.backup_failed:
+  en: "Backup failed: %{error}"
+  zh-CN: "数据库备份失败：%{error}"
+backup_restore.title:
+  en: Cloud Backup Snapshots
+  zh-CN: 云端副本管理
+backup_restore.subtitle:
+  en: Restore from a remote snapshot, or delete ones you no longer need.
+  zh-CN: 选择远端备份快照进行还原，或删除不再需要的副本。
+backup_restore.loading:
+  en: Loading remote backups...
+  zh-CN: 正在获取远端备份列表…
+backup_restore.empty:
+  en: No backup snapshots found.
+  zh-CN: 远端存储中未找到备份快照文件。
+backup_restore.select_backup:
+  en: Backup Snapshot
+  zh-CN: 备份快照
+backup_restore.password:
+  en: Decryption Password
+  zh-CN: 解密密码
+backup_restore.password_placeholder:
+  en: Enter password if backup was encrypted
+  zh-CN: 若备份已加密，请输入解密密码
+backup_restore.restore_btn:
+  en: Restore & Apply
+  zh-CN: 开始恢复
+backup_restore.cancel_btn:
+  en: Cancel
+  zh-CN: 取消
+backup_restore.restoring:
+  en: Downloading and restoring...
+  zh-CN: 正在下载并恢复数据库…
+backup_restore.success_title:
+  en: Restore Succeeded
+  zh-CN: 数据库恢复成功
+backup_restore.success_desc:
+  en: "The database has been restored. Please restart WinSSH Pro for the changes to take effect."
+  zh-CN: "数据库已成功从云端恢复！新数据已就绪，需要重启软件才生效。"
+backup_restore.restart_confirm:
+  en: OK
+  zh-CN: 知道了
+backup_restore.failed:
+  en: "Restore failed: %{error}"
+  zh-CN: "恢复失败：%{error}"
+backup_restore.summary:
+  en: "%{count} snapshots · %{total} total"
+  zh-CN: "共 %{count} 份 · 合计 %{total}"
+backup_restore.latest:
+  en: Latest
+  zh-CN: 最新
+backup_restore.unknown_time:
+  en: Unknown time
+  zh-CN: 时间未知
+backup_restore.delete_title:
+  en: Delete Backup Snapshot
+  zh-CN: 删除云端副本
+backup_restore.delete_confirm:
+  en: "%{name} will be permanently removed from cloud storage. This cannot be undone."
+  zh-CN: "副本 %{name} 将从云端存储中永久删除，此操作无法撤销。"
+backup_restore.delete_ok:
+  en: Delete
+  zh-CN: 删除
+backup_restore.delete_failed:
+  en: "Delete failed: %{error}"
+  zh-CN: "删除副本失败：%{error}"
 palette.open_settings_window:
   en: Open preferences window
   zh-CN: 打开偏好设置窗口

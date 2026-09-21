@@ -11,11 +11,23 @@ copyright = "2026 WinSSH Pro contributors"
 depends = "$auto, libfontconfig1, libwayland-client0, libx11-xcb1, libxkbcommon0, libxkbcommon-x11-0"
 section = "net"
 priority = "optional"
+assets = [
+	["target/release/winssh-pro", "usr/bin/winssh-pro", "755"],
+	["assets/logo.svg", "usr/share/icons/hicolor/scalable/apps/winssh-pro.svg", "644"],
+	["assets/app-icon.png", "usr/share/pixmaps/winssh-pro.png", "644"],
+	["assets/winssh-pro.desktop", "usr/share/applications/winssh-pro.desktop", "644"],
+]
 
 [package.metadata.generate-rpm]
 assets = [
 	{ source = "target/release/winssh-pro", dest = "/usr/bin/winssh-pro", mode = "755" },
+	{ source = "assets/logo.svg", dest = "/usr/share/icons/hicolor/scalable/apps/winssh-pro.svg", mode = "644" },
+	{ source = "assets/app-icon.png", dest = "/usr/share/pixmaps/winssh-pro.png", mode = "644" },
+	{ source = "assets/winssh-pro.desktop", dest = "/usr/share/applications/winssh-pro.desktop", mode = "644" },
 ]
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
 
 [dependencies]
 anyhow = "1"
@@ -136,6 +148,10 @@ rust-i18n = "4.2"
 # 启动时问一下系统"现在是什么语言"。它本来就在依赖树里（cosmic-text 用它），
 # 变成直接依赖不多编译一份东西；比自己读 LANG / GetUserDefaultLocaleName 稳。
 sys-locale = "0.3"
+opendal = { version = "0.59", features = ["services-s3", "services-webdav"] }
+aes-gcm = "0.11.1"
+pbkdf2 = "0.13.0"
+sha2 = "0.11.0"
 
 # russh 的默认加密后端 aws-lc-rs 会用 C + 汇编编译 aws-lc-sys；在 x86_64 Windows 上
 # 它的汇编要靠 NASM 汇编，本机没有 nasm.exe 时 build 脚本直接 panic。开启

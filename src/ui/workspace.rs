@@ -23,9 +23,9 @@ use gpui_kit::component::{
     resizable_panel,
 };
 use gpui_kit::{
-    Anchor, AnyElement, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    MouseButton, ParentElement as _, Render, Styled as _, Window, actions, div,
-    prelude::FluentBuilder as _, px,
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render,
+    Styled as _, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::service::{AssistantService, CredentialService, HostService, SnippetService, TrustedHostService};
@@ -79,6 +79,13 @@ const SIDEBAR_WIDTH: gpui_kit::Pixels = px(300.);
 
 pub struct Workspace {
     dock_area: Entity<DockArea>,
+    /// 外壳自己的焦点句柄。
+    ///
+    /// 窗口打开后必须把键盘焦点交给一个具体的 `FocusHandle`，否则 macOS 上
+    /// 焦点树为空、`on_action` 注册的快捷键收不到按键。这跟 tty7 在
+    /// `Tty7App::with_session_at` 末尾调 `focus_active` 是同一个道理：
+    /// 开窗那一帧就得把焦点落下来。
+    focus_handle: FocusHandle,
     host_explorer: Entity<HostExplorerView>,
     /// 保险箱视图。和主机视图一样常驻：它持有搜索词、筛选片与那份快照，
     /// 每帧现搭一个的话，切走再切回来这些就全丢了。
@@ -101,6 +108,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
         let (dock_area, skin) = DockSkin::dock_area(DOCK_ID, Some(DOCK_VERSION), window, cx);
         // 一个面板的时候也画标签条。默认的 `Auto` 会把它换成一行标题 ——
         // 那一行上没有标签，也就没有关闭按钮，只开着一条会话时就关不掉了。
@@ -253,6 +261,7 @@ impl Workspace {
 
         Self {
             dock_area,
+            focus_handle,
             host_explorer,
             credential_vault,
             credential_service,
@@ -403,7 +412,11 @@ impl Workspace {
                     .min_w_0()
                     .items_center()
                     .gap_2()
-                    .child(div().flex_shrink_0().text_sm().child("WinSSH Pro")),
+                    .child(
+                        Icon::new(AppIcon::LogoSlim)
+                            .with_size(px(18.))
+                    )
+                    .child(div().flex_shrink_0().text_sm().font_semibold().child("WinSSH Pro")),
             )
             .child(
                 h_flex()
@@ -444,6 +457,12 @@ impl Workspace {
     }
 }
 
+impl Focusable for Workspace {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sheet_layer = Root::render_sheet_layer(window, cx);
@@ -453,6 +472,7 @@ impl Render for Workspace {
 
         div()
             .id("workspace")
+            .track_focus(&self.focus_handle)
             .relative()
             .size_full()
             .v_flex()

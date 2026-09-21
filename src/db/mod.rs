@@ -242,14 +242,57 @@ pub fn app() -> &'static AppDatabase {
     })
 }
 
-/// 用户数据目录下的那个库文件。
-fn open_on_disk() -> Result<DatabaseConnection> {
+/// 用户数据目录（winssh-pro）。
+pub fn db_dir() -> Result<std::path::PathBuf> {
     let dir = dirs::data_dir()
         .with_context(|| t!("host_service.no_data_dir").to_string())?
         .join("winssh-pro");
     std::fs::create_dir_all(&dir)
         .with_context(|| t!("host_service.create_data_dir_failed").to_string())?;
-    connect_blocking(Some(&dir.join("winssh-pro.db")))
+    Ok(dir)
+}
+
+/// 数据库主文件路径（winssh-pro.db）。
+pub fn db_file_path() -> Result<std::path::PathBuf> {
+    Ok(db_dir()?.join("winssh-pro.db"))
+}
+
+/// 待还原的数据库暂存文件路径（winssh-pro.db.restored）。
+pub fn restored_db_file_path() -> Result<std::path::PathBuf> {
+    Ok(db_dir()?.join("winssh-pro.db.restored"))
+}
+
+/// 用户数据目录下的那个库文件。
+fn open_on_disk() -> Result<DatabaseConnection> {
+    let dir = db_dir()?;
+    let target = dir.join("winssh-pro.db");
+    let restored = dir.join("winssh-pro.db.restored");
+
+    // 若存在待还原的备份文件，在建立数据库连接前将其安全置换
+    if restored.exists() {
+        if target.exists() {
+            let backup_prev = dir.join(format!(
+                "winssh-pro.db.pre_restore_{}",
+                chrono::Local::now().format("%Y%m%d_%H%M%S")
+            ));
+            _ = std::fs::rename(&target, &backup_prev);
+        }
+        let wal = dir.join("winssh-pro.db-wal");
+        let shm = dir.join("winssh-pro.db-shm");
+        if wal.exists() {
+            _ = std::fs::remove_file(wal);
+        }
+        if shm.exists() {
+            _ = std::fs::remove_file(shm);
+        }
+        if let Err(e) = std::fs::rename(&restored, &target) {
+            log::error!("应用备份还原文件失败：{e:#}");
+        } else {
+            log::info!("已从备份成功还原数据库并生效");
+        }
+    }
+
+    connect_blocking(Some(&target))
 }
 
 /// 连接 SQLite 并确保表都在。`None` 是内存库：测试与磁盘库打不开时的退路。

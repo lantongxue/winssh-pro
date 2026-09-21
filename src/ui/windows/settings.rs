@@ -15,10 +15,12 @@
 //! 只会把已开着的窗口激活置顶，不会重复开窗。
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Root, Sizable as _, StyledExt as _, ThemeMode, TitleBar,
+    ActiveTheme as _, Colorize as _, Icon, IconName, Root, Sizable as _, StyledExt as _,
+    ThemeMode, TitleBar, WindowExt as _,
+    button::{Button, ButtonCustomVariant, ButtonVariants as _},
     group_box::GroupBoxVariant,
     h_flex,
-    input::{Input, InputContentType, InputEvent, InputState},
+    input::{Input, InputContentType, InputEvent, InputState, NumberInput},
     setting::{
         RenderOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
     },
@@ -27,18 +29,20 @@ use gpui_kit::component::{
 use gpui_kit::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, WindowBounds,
-    WindowHandle, WindowKind, WindowOptions, div, prelude::FluentBuilder as _, px, size,
+    WindowHandle, WindowKind, WindowOptions, div, img, prelude::FluentBuilder as _, px, size,
 };
 
 use crate::assistant::{
     self, AssistantConfig, PRESETS, ProviderProtocol, config as assistant_config,
 };
+use crate::backup::{self, BackupConfig, BackupProtocol, S3Config, S3Preset, WebdavConfig};
 use crate::i18n;
 use crate::proxy::{self, GlobalProxy, ProxyConfig};
-use crate::service::SettingService;
+use crate::service::{BackupService, SettingService};
 use crate::terminal::cursor;
 use crate::terminal::font::{self, TerminalFont};
 use crate::terminal::scheme;
+use crate::ui::dialogs::BackupRestoreDialog;
 use crate::ui::theme::{AppIcon, appearance, palette};
 use rust_i18n::t;
 
@@ -158,10 +162,43 @@ fn persist_cursor_blink(blink: bool, cx: &mut App) {
     .detach();
 }
 
+/// 换掉数据备份同步配置：进程里那份缓存立刻生效，落库派到后台。
+///
+/// 重画所有窗口 —— 备份页的协议切换、厂商下拉当前项、路径寻址开关都是在
+/// render 时按缓存值读出来的，不重画就还停在旧值上。
+fn persist_backup(config: BackupConfig, cx: &mut App) {
+    backup::set_global(config.clone());
+    for handle in cx.windows() {
+        _ = handle.update(cx, |_, window, _| window.refresh());
+    }
+    cx.background_spawn(async move {
+        if let Err(error) = SettingService::open().save_backup_config(config).await {
+            log::error!("备份配置存不下去：{error:#}");
+        }
+    })
+    .detach();
+}
+
 /// 设置窗口单例句柄。
 struct ActiveSettingsWindow(WindowHandle<Root>);
 
 impl Global for ActiveSettingsWindow {}
+
+/// 借设置窗口那份 [`Window`] 做一件事，推到这一轮 effect 收尾时再做。
+///
+/// 往输入框里回填要一个 `Window`，而下拉、开关那些回调只给得到 `&mut App`
+/// —— 那一刻正跑在这扇窗自己的事件派发里，GPUI 已经把 `Window` 从窗口表里
+/// 取走了（`App::update_window_erased` 那一下 `Option::take`），同一扇窗当场
+/// 再 `update` 一次只拿得到 `Err`，回填就是这么悄悄没的。推到 effect 收尾时
+/// 窗口已经放回表里，那时候再借得到 —— [`Window::defer`] 自己就是这么写的。
+fn defer_with_settings_window(cx: &mut App, f: impl FnOnce(&mut Window, &mut App) + 'static) {
+    let Some(handle) = cx.try_global::<ActiveSettingsWindow>().map(|open| open.0) else {
+        return;
+    };
+    cx.defer(move |cx| {
+        _ = handle.update(cx, move |_, window, cx| f(window, cx));
+    });
+}
 
 /// 设置分类。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -176,22 +213,26 @@ pub enum SettingsTab {
     Proxy,
     /// 智能助手：模型供应商与执行模式。
     Assistant,
+    /// 数据备份：WebDAV 与 S3 云端备份同步。
+    Backup,
     /// 关于与数据。
     About,
 }
 
 #[allow(dead_code)]
 impl SettingsTab {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::General,
         Self::Terminal,
         Self::Proxy,
         Self::Assistant,
+        Self::Backup,
         Self::About,
     ];
 }
 
 pub struct SettingsWindow {
+    self_entity: Entity<Self>,
     tab: SettingsTab,
     tab_seq: usize,
     focus_handle: FocusHandle,
@@ -202,6 +243,9 @@ pub struct SettingsWindow {
     /// 智能助手那三格，见 [`AssistantInputs`]。
     assistant: AssistantInputs,
     _assistant_inputs: Vec<Subscription>,
+    /// 数据备份同步那几格，见 [`BackupInputs`]。
+    backup: BackupInputs,
+    _backup_inputs: Vec<Subscription>,
 }
 
 /// 全局代理那四格输入框。
@@ -331,6 +375,214 @@ impl AssistantInputs {
     }
 }
 
+/// 数据备份同步那几格输入框。
+#[derive(Clone)]
+struct BackupInputs {
+    interval_mins: Entity<InputState>,
+    retention_count: Entity<InputState>,
+    webdav_endpoint: Entity<InputState>,
+    webdav_root: Entity<InputState>,
+    webdav_username: Entity<InputState>,
+    webdav_password: Entity<InputState>,
+    s3_endpoint: Entity<InputState>,
+    s3_region: Entity<InputState>,
+    s3_bucket: Entity<InputState>,
+    s3_root: Entity<InputState>,
+    s3_access_key_id: Entity<InputState>,
+    s3_secret_access_key: Entity<InputState>,
+    password: Entity<InputState>,
+}
+
+impl BackupInputs {
+    fn new(config: &BackupConfig, window: &mut Window, cx: &mut App) -> Self {
+        Self {
+            interval_mins: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("settings.backup_interval_placeholder"))
+                    .default_value(match config.interval_mins {
+                        0 => "60".to_string(),
+                        mins => mins.to_string(),
+                    })
+                    .step(1.)
+                    .min(1.)
+                    .max(525600.)
+            }),
+            retention_count: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("settings.backup_retention_placeholder"))
+                    .default_value(match config.retention_count {
+                        0 => "10".to_string(),
+                        count => count.to_string(),
+                    })
+                    .step(1.)
+                    .min(1.)
+                    .max(999.)
+            }),
+            webdav_endpoint: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("https://dav.example.com")
+                    .default_value(config.webdav.endpoint.clone())
+            }),
+            webdav_root: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("/winssh_backups")
+                    .default_value(config.webdav.root.clone())
+            }),
+            webdav_username: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("settings.proxy_optional"))
+                    .default_value(config.webdav.username.clone())
+            }),
+            webdav_password: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("settings.proxy_optional"))
+                    .masked(true)
+                    .default_value(config.webdav.password.clone())
+            }),
+            s3_endpoint: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("https://s3.amazonaws.com")
+                    .default_value(config.s3.endpoint.clone())
+            }),
+            s3_region: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("us-east-1")
+                    .default_value(config.s3.region.clone())
+            }),
+            s3_bucket: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("my-backup-bucket")
+                    .default_value(config.s3.bucket.clone())
+            }),
+            s3_root: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("winssh_backups")
+                    .default_value(config.s3.root.clone())
+            }),
+            s3_access_key_id: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("AKIA...")
+                    .default_value(config.s3.access_key_id.clone())
+            }),
+            s3_secret_access_key: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("wJalrXUtn...")
+                    .masked(true)
+                    .default_value(config.s3.secret_access_key.clone())
+            }),
+            password: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("settings.backup_password_placeholder"))
+                    .masked(true)
+                    .default_value(config.password.clone())
+            }),
+        }
+    }
+
+    fn all(&self) -> [&Entity<InputState>; 13] {
+        [
+            &self.interval_mins,
+            &self.retention_count,
+            &self.webdav_endpoint,
+            &self.webdav_root,
+            &self.webdav_username,
+            &self.webdav_password,
+            &self.s3_endpoint,
+            &self.s3_region,
+            &self.s3_bucket,
+            &self.s3_root,
+            &self.s3_access_key_id,
+            &self.s3_secret_access_key,
+            &self.password,
+        ]
+    }
+
+    fn read(&self, cx: &App) -> BackupConfig {
+        let cached = backup::global();
+        let interval_mins = self
+            .interval_mins
+            .read(cx)
+            .value()
+            .trim()
+            .parse::<u32>()
+            .unwrap_or(cached.interval_mins)
+            .max(1);
+        let retention_count = self
+            .retention_count
+            .read(cx)
+            .value()
+            .trim()
+            .parse::<u32>()
+            .unwrap_or(cached.retention_count)
+            .max(1);
+
+        BackupConfig {
+            enabled: cached.enabled,
+            protocol: cached.protocol,
+            interval_mins,
+            retention_count,
+            encrypt: cached.encrypt,
+            password: self.password.read(cx).value().to_string(),
+            webdav: WebdavConfig {
+                endpoint: self.webdav_endpoint.read(cx).value().trim().to_string(),
+                root: self.webdav_root.read(cx).value().trim().to_string(),
+                username: self.webdav_username.read(cx).value().to_string(),
+                password: self.webdav_password.read(cx).value().to_string(),
+            },
+            s3: S3Config {
+                preset: cached.s3.preset,
+                endpoint: self.s3_endpoint.read(cx).value().trim().to_string(),
+                region: self.s3_region.read(cx).value().trim().to_string(),
+                bucket: self.s3_bucket.read(cx).value().trim().to_string(),
+                root: self.s3_root.read(cx).value().trim().to_string(),
+                access_key_id: self.s3_access_key_id.read(cx).value().trim().to_string(),
+                secret_access_key: self.s3_secret_access_key.read(cx).value().trim().to_string(),
+                path_style: cached.s3.path_style,
+            },
+            last_backup_at: cached.last_backup_at,
+            last_backup_status: cached.last_backup_status,
+        }
+    }
+
+    /// 选中一家预设厂商：那家的默认值先进缓存，再回填 endpoint / region 两格。
+    ///
+    /// 回填是这一步的正事，不是顺带 —— 挑"阿里云 OSS"的人要的就是不用自己
+    /// 去翻那串 `oss-cn-hangzhou.aliyuncs.com`。
+    fn apply_s3_preset(&self, preset: &'static S3Preset, cx: &mut App) {
+        let mut config = self.read(cx);
+        config.s3.preset = preset.id.to_string();
+        config.s3.endpoint = preset.default_endpoint.to_string();
+        config.s3.region = preset.default_region.to_string();
+        config.s3.path_style = preset.path_style;
+        persist_backup(config, cx);
+
+        self.fill_s3_endpoint_and_region(preset.default_endpoint, preset.default_region, cx);
+    }
+
+    /// 把 endpoint / region 两格的值换掉。
+    ///
+    /// 走 [`defer_with_settings_window`] 而不是当场借窗口，理由见那儿。
+    /// [`InputState::set_value`] 不发 [`InputEvent::Change`]，所以这一下不会
+    /// 再触发一轮落库 —— 缓存由调用方自己写。
+    fn fill_s3_endpoint_and_region(
+        &self,
+        endpoint: impl Into<SharedString>,
+        region: impl Into<SharedString>,
+        cx: &mut App,
+    ) {
+        let (endpoint, region) = (endpoint.into(), region.into());
+        let inputs = self.clone();
+        defer_with_settings_window(cx, move |window, cx| {
+            inputs
+                .s3_endpoint
+                .update(cx, |state, cx| state.set_value(endpoint, window, cx));
+            inputs
+                .s3_region
+                .update(cx, |state, cx| state.set_value(region, window, cx));
+        });
+    }
+}
+
 impl SettingsWindow {
     /// 打开设置窗口；已经开着就将其激活置顶。
     pub fn open(cx: &mut App) {
@@ -421,7 +673,22 @@ impl SettingsWindow {
             .into_iter()
             .collect();
 
+        let self_entity = cx.entity().clone();
+        let backup = BackupInputs::new(&backup::global(), window, cx);
+        let _backup_inputs = backup
+            .all()
+            .map(|input| {
+                cx.subscribe(input, |this, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        persist_backup(this.backup.read(cx), cx);
+                    }
+                })
+            })
+            .into_iter()
+            .collect();
+
         Self {
+            self_entity,
             tab: SettingsTab::General,
             tab_seq: 0,
             focus_handle: cx.focus_handle(),
@@ -430,6 +697,8 @@ impl SettingsWindow {
             _proxy_inputs,
             assistant,
             _assistant_inputs,
+            backup,
+            _backup_inputs,
         }
     }
 
@@ -483,8 +752,12 @@ impl SettingsWindow {
                 page_ix: 3,
                 group_ix: None,
             },
-            SettingsTab::About => SelectIndex {
+            SettingsTab::Backup => SelectIndex {
                 page_ix: 4,
+                group_ix: None,
+            },
+            SettingsTab::About => SelectIndex {
+                page_ix: 5,
                 group_ix: None,
             },
         };
@@ -497,6 +770,7 @@ impl SettingsWindow {
             .page(Self::terminal_page(cx))
             .page(self.proxy_page())
             .page(self.assistant_page())
+            .page(self.backup_page(cx))
             .page(Self::about_page())
     }
 
@@ -759,6 +1033,14 @@ impl SettingsWindow {
         })
     }
 
+    /// 数字输入框字段：使用 [`NumberInput`] 限制数字输入并提供增减步进操作。
+    fn number_input(&self, input: &Entity<InputState>) -> SettingField<SharedString> {
+        let input = input.clone();
+        SettingField::render(move |_options: &RenderOptions, _window, _cx| {
+            NumberInput::new(&input).w_64()
+        })
+    }
+
     /// 智能助手页：模型供应商（预设一键填表 + 协议 + 三格）与执行模式。
     ///
     /// 预设下拉只是填表的捷径：选中一家就把协议、Base URL 与默认模型写进
@@ -812,18 +1094,15 @@ impl SettingsWindow {
                             );
                             // 往输入框里回填要一个 `Window`，从这扇窗的单例句柄借。
                             let (base_url, model) = (preset.base_url, preset.model);
-                            let open = cx.try_global::<ActiveSettingsWindow>().map(|open| open.0);
-                            if let Some(open) = open {
-                                let inputs = inputs.clone();
-                                _ = open.update(cx, move |_, window, cx| {
-                                    inputs.base_url.update(cx, |state, cx| {
-                                        state.set_value(base_url, window, cx)
-                                    });
-                                    inputs
-                                        .model
-                                        .update(cx, |state, cx| state.set_value(model, window, cx));
-                                });
-                            }
+                            let inputs = inputs.clone();
+                            defer_with_settings_window(cx, move |window, cx| {
+                                inputs
+                                    .base_url
+                                    .update(cx, |state, cx| state.set_value(base_url, window, cx));
+                                inputs
+                                    .model
+                                    .update(cx, |state, cx| state.set_value(model, window, cx));
+                            });
                         }
                     },
                 ),
@@ -890,6 +1169,331 @@ impl SettingsWindow {
             .group(execution_group)
     }
 
+    /// 数据备份与恢复页：WebDAV 与 S3 兼容协议配置、频率、保留副本数、AES 加密与操作。
+    fn backup_page(&self, _cx: &App) -> SettingPage {
+        let current_backup = backup::global();
+        let protocol = current_backup.protocol;
+        let inputs = self.backup.clone();
+
+        let general_group = SettingGroup::new()
+            .title(t!("settings.backup_group_general"))
+            .item(SettingItem::new(
+                t!("settings.backup_enabled"),
+                SettingField::switch(
+                    |_cx: &App| backup::global().enabled,
+                    {
+                        let inputs = inputs.clone();
+                        move |checked: bool, cx: &mut App| {
+                            let mut config = inputs.read(cx);
+                            config.enabled = checked;
+                            persist_backup(config, cx);
+                        }
+                    },
+                ),
+            ))
+            .item(SettingItem::new(
+                t!("settings.backup_protocol"),
+                SettingField::dropdown(
+                    BackupProtocol::ALL
+                        .into_iter()
+                        .map(|p| (SharedString::from(p.as_str()), SharedString::from(p.label())))
+                        .collect(),
+                    |_cx: &App| SharedString::from(backup::global().protocol.as_str()),
+                    {
+                        let inputs = inputs.clone();
+                        move |proto_str: SharedString, cx: &mut App| {
+                            let new_protocol = BackupProtocol::from_str_or_default(&proto_str);
+                            let mut config = inputs.read(cx);
+                            config.protocol = new_protocol;
+
+                            // 切换到 S3 时，如果当前 preset 存在但 endpoint/region
+                            // 输入框为空（旧配置或从未配过），用 preset 的默认值
+                            // 回填，否则切换过去看到的就是一排空输入框。
+                            if new_protocol == BackupProtocol::S3
+                                && let Some(preset) = backup::find_s3_preset(&config.s3.preset)
+                            {
+                                if config.s3.endpoint.trim().is_empty() {
+                                    config.s3.endpoint = preset.default_endpoint.to_string();
+                                }
+                                if config.s3.region.trim().is_empty() {
+                                    config.s3.region = preset.default_region.to_string();
+                                }
+                            }
+
+                            let (endpoint, region) =
+                                (config.s3.endpoint.clone(), config.s3.region.clone());
+                            persist_backup(config, cx);
+
+                            // persist_backup 已经重画了所有窗口，但如果上面回填了
+                            // endpoint/region，还需要把输入框的值也同步过去。没回填
+                            // 的那一路这两格本来就是这个值，写回去是空操作。
+                            if new_protocol == BackupProtocol::S3 {
+                                inputs.fill_s3_endpoint_and_region(endpoint, region, cx);
+                            }
+                        }
+                    },
+                ),
+            ))
+            .item(SettingItem::new(
+                t!("settings.backup_interval"),
+                self.number_input(&self.backup.interval_mins),
+            ))
+            .item(SettingItem::new(
+                t!("settings.backup_retention"),
+                self.number_input(&self.backup.retention_count),
+            ));
+
+        let mut security_group = SettingGroup::new()
+            .title(t!("settings.backup_group_security"))
+            .item(
+                SettingItem::new(
+                    t!("settings.backup_encrypt"),
+                    SettingField::switch(
+                        |_cx: &App| backup::global().encrypt,
+                        {
+                            let inputs = inputs.clone();
+                            move |checked: bool, cx: &mut App| {
+                                let mut config = inputs.read(cx);
+                                config.encrypt = checked;
+                                persist_backup(config, cx);
+                            }
+                        },
+                    ),
+                )
+                .description(SharedString::from(t!("settings.backup_encrypt_desc"))),
+            );
+
+        if current_backup.encrypt {
+            security_group = security_group.item(SettingItem::new(
+                t!("settings.backup_password"),
+                self.text_input(&self.backup.password, true),
+            ));
+        }
+
+        let mut storage_group = SettingGroup::new().title(t!("settings.backup_group_storage"));
+
+        match protocol {
+            BackupProtocol::Webdav => {
+                storage_group = storage_group
+                    .item(SettingItem::new(
+                        t!("settings.backup_webdav_endpoint"),
+                        self.text_input(&self.backup.webdav_endpoint, false),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.backup_webdav_root"),
+                        self.text_input(&self.backup.webdav_root, false),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.backup_webdav_username"),
+                        self.text_input(&self.backup.webdav_username, false),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.backup_webdav_password"),
+                        self.text_input(&self.backup.webdav_password, true),
+                    ));
+            }
+            BackupProtocol::S3 => {
+                let s3_preset_options: Vec<(SharedString, SharedString)> = backup::S3_PRESETS
+                    .iter()
+                    .map(|p| (SharedString::from(p.id), SharedString::from(p.name)))
+                    .collect();
+
+                storage_group = storage_group
+                    .item(SettingItem::new(
+                        t!("settings.backup_s3_preset"),
+                        SettingField::dropdown(
+                            s3_preset_options,
+                            |_cx: &App| SharedString::from(backup::global().s3.preset),
+                            {
+                                let inputs = inputs.clone();
+                                move |preset_id: SharedString, cx: &mut App| {
+                                    let Some(preset) = backup::find_s3_preset(&preset_id) else {
+                                        return;
+                                    };
+                                    inputs.apply_s3_preset(preset, cx);
+                                }
+                            },
+                        ),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.backup_s3_bucket"),
+                        self.text_input(&self.backup.s3_bucket, false),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.backup_s3_endpoint"),
+                        self.text_input(&self.backup.s3_endpoint, false),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.backup_s3_region"),
+                        self.text_input(&self.backup.s3_region, false),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.backup_s3_root"),
+                        self.text_input(&self.backup.s3_root, false),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.backup_s3_path_style"),
+                        SettingField::switch(
+                            |_cx: &App| backup::global().s3.path_style,
+                            {
+                                let inputs = inputs.clone();
+                                move |checked: bool, cx: &mut App| {
+                                    let mut config = inputs.read(cx);
+                                    config.s3.path_style = checked;
+                                    persist_backup(config, cx);
+                                }
+                            },
+                        ),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.backup_s3_ak"),
+                        self.text_input(&self.backup.s3_access_key_id, false),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.backup_s3_sk"),
+                        self.text_input(&self.backup.s3_secret_access_key, true),
+                    ));
+            }
+        }
+
+        let this_entity = self.self_entity.clone();
+        let actions_group = SettingGroup::new()
+            .title(t!("settings.backup_group_actions"))
+            .item(SettingItem::new(
+                t!("settings.backup_last_time"),
+                SettingField::render(|_opt, _win, cx| {
+                    let time_str = backup::global()
+                        .last_backup_at
+                        .unwrap_or_else(|| t!("settings.backup_none").to_string());
+                    div()
+                        .text_xs()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_color(palette::idle(cx))
+                        .child(time_str)
+                }),
+            ))
+            .item(SettingItem::new(
+                t!("settings.backup_last_status"),
+                SettingField::render(|_opt, _win, cx| {
+                    let status_str = backup::global()
+                        .last_backup_status
+                        .unwrap_or_else(|| t!("settings.backup_none").to_string());
+                    let is_success = status_str.contains("成功");
+                    let is_none = status_str == t!("settings.backup_none");
+                    div()
+                        .text_xs()
+                        .text_color(if is_success {
+                            palette::green()
+                        } else if is_none {
+                            palette::idle(cx)
+                        } else {
+                            cx.theme().danger
+                        })
+                        .child(status_str)
+                }),
+            ))
+            .item(SettingItem::render(move |_opt, _win, cx| {
+                let this = this_entity.clone();
+                let blue = palette::blue();
+                let backup_variant = ButtonCustomVariant::new(cx)
+                    .color(blue)
+                    .foreground(palette::on_accent())
+                    .hover(blue.lighten(0.08))
+                    .active(blue.darken(0.08));
+
+                let this_test = this.clone();
+                let this_backup = this.clone();
+                let this_restore = this.clone();
+
+                h_flex()
+                    .gap_2()
+                    .pt_2()
+                    .child(
+                        Button::new("backup-test-conn")
+                            .outline()
+                            .label(t!("settings.backup_btn_test"))
+                            .on_click(move |_, window, cx| {
+                                this_test.update(cx, |this, cx| {
+                                    this.test_backup_connection(window, cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        Button::new("backup-now-btn")
+                            .custom(backup_variant)
+                            .bg(blue)
+                            .rounded(cx.theme().radius)
+                            .label(t!("settings.backup_btn_backup_now"))
+                            .on_click(move |_, window, cx| {
+                                this_backup.update(cx, |this, cx| {
+                                    this.perform_backup_now(window, cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        Button::new("backup-restore-open-btn")
+                            .outline()
+                            .label(t!("settings.backup_btn_restore"))
+                            .on_click(move |_, window, cx| {
+                                this_restore.update(cx, |this, cx| {
+                                    this.open_restore_dialog(window, cx);
+                                });
+                            }),
+                    )
+            }));
+
+        SettingPage::new(t!("settings.tab_backup"))
+            .icon(AppIcon::FolderSync)
+            .default_open(true)
+            .resettable(false)
+            .group(general_group)
+            .group(security_group)
+            .group(storage_group)
+            .group(actions_group)
+    }
+
+    fn test_backup_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let config = self.backup.read(cx);
+        window.push_notification(t!("settings.backup_testing"), cx);
+        cx.spawn_in(window, async move |_this, cx| {
+            let res = BackupService::open().test_connection(&config).await;
+            _ = cx.update(|window, cx| match res {
+                Ok(()) => window.push_notification(t!("settings.backup_test_success"), cx),
+                Err(e) => window.push_notification(
+                    t!("settings.backup_test_failed", error => format!("{e:#}")),
+                    cx,
+                ),
+            });
+        })
+        .detach();
+    }
+
+    fn perform_backup_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let config = self.backup.read(cx);
+        window.push_notification(t!("settings.backup_running"), cx);
+        cx.spawn_in(window, async move |_this, cx| {
+            let res = BackupService::open().perform_backup(&config).await;
+            _ = cx.update(|window, cx| {
+                match res {
+                    Ok(file) => {
+                        window.push_notification(t!("settings.backup_success", file => file), cx)
+                    }
+                    Err(e) => window.push_notification(
+                        t!("settings.backup_failed", error => format!("{e:#}")),
+                        cx,
+                    ),
+                }
+                window.refresh();
+            });
+        })
+        .detach();
+    }
+
+    fn open_restore_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let config = self.backup.read(cx);
+        BackupRestoreDialog::open(config, window, cx);
+    }
+
     /// 关于页：图标、名字、版本号，就这三样。
     ///
     /// 以前那两段介绍（"跨平台高性能…"、"使用 Rust、GPUI 与 Russh 深度构建…"）
@@ -911,16 +1515,13 @@ impl SettingsWindow {
                                 div()
                                     .size(px(64.))
                                     .rounded_xl()
-                                    .bg(cx.theme().muted)
-                                    .border_1()
-                                    .border_color(cx.theme().border)
+                                    .overflow_hidden()
                                     .flex()
                                     .items_center()
                                     .justify_center()
                                     .child(
-                                        Icon::new(AppIcon::Terminal)
-                                            .with_size(px(32.))
-                                            .text_color(palette::blue()),
+                                        img("app-icon.png")
+                                            .size(px(64.)),
                                     ),
                             )
                             .child(div().text_lg().font_bold().child("WinSSH Pro"))
@@ -949,13 +1550,23 @@ impl Focusable for SettingsWindow {
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 三层都要挂：弹层是 `Root` 存着、由这一层画出来的，窗口只画通知层的话，
+        // `window.open_dialog` 照样把弹窗塞进 `Root`，但谁也画不出来 ——
+        // 看上去就跟按钮没反应一模一样（「从云端恢复」当初就是这么丢的）。
+        let sheet_layer = Root::render_sheet_layer(window, cx);
+        let dialog_layer = Root::render_dialog_layer(window, cx);
+        let notification_layer = Root::render_notification_layer(window, cx);
         v_flex()
+            .relative()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar())
             .child(div().flex_1().min_h_0().child(self.render_settings(cx)))
+            .children(sheet_layer)
+            .children(dialog_layer)
+            .children(notification_layer)
     }
 }
 
@@ -1065,6 +1676,103 @@ mod tests {
                 preset.id
             );
         }
+    }
+
+    /// 挑中一家预设厂商之后，那家的地址要真的落进 endpoint 那一格。
+    ///
+    /// 这一下在真机上是从下拉的弹出菜单里发出来的：那一刻正跑在设置窗口自己
+    /// 的事件派发里，GPUI 已经把 `Window` 从窗口表里取走了，当场再借一次只
+    /// 拿得到 `Err` —— 而那个 `Err` 是被 `_ =` 吞掉的，于是输入框一个字都没
+    /// 填上，界面上什么也看不出来。测试照同一条路走：在 `window.update` 里
+    /// 调，回填得能穿过去（见 [`defer_with_settings_window`]）。
+    ///
+    /// 只走回填这一半，不走 [`BackupInputs::apply_s3_preset`] 的落库那一半：
+    /// 后者派到后台的任务会去开用户真正那座库。
+    #[gpui_kit::test]
+    fn picking_an_s3_preset_fills_the_endpoint_box(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = backup::exclusive_for_test();
+        backup::set_global(BackupConfig {
+            protocol: BackupProtocol::S3,
+            s3: S3Config {
+                endpoint: String::new(),
+                region: String::new(),
+                ..S3Config::default()
+            },
+            ..BackupConfig::default()
+        });
+
+        cx.update(gpui_kit::init);
+
+        // 照着 [`SettingsWindow::open`] 搭：单例句柄拿的是 `Root` 那一层，
+        // 借窗口那条路只有这么搭才走得到。
+        let shell_slot: std::rc::Rc<std::cell::RefCell<Option<Entity<SettingsWindow>>>> =
+            Default::default();
+        let window = cx.add_window({
+            let shell_slot = shell_slot.clone();
+            move |window, cx| {
+                let shell = cx.new(|cx| SettingsWindow::new(window, cx));
+                *shell_slot.borrow_mut() = Some(shell.clone());
+                Root::new(shell, window, cx)
+            }
+        });
+        cx.update(|cx| cx.set_global(ActiveSettingsWindow(window)));
+        let shell = shell_slot.borrow().clone().expect("外壳建起来了");
+
+        let aliyun = backup::find_s3_preset("aliyun").expect("内置预设里有阿里云");
+        window
+            .update(cx, |_, _window, cx| {
+                let inputs = shell.read(cx).backup.clone();
+                assert_eq!(inputs.s3_endpoint.read(cx).value(), "", "起手是空的");
+                inputs.fill_s3_endpoint_and_region(
+                    aliyun.default_endpoint,
+                    aliyun.default_region,
+                    cx,
+                );
+            })
+            .expect("设置窗口还开着");
+
+        window
+            .update(cx, |_, _window, cx| {
+                let inputs = shell.read(cx).backup.clone();
+                assert_eq!(
+                    inputs.s3_endpoint.read(cx).value(),
+                    aliyun.default_endpoint,
+                    "厂商地址没回填"
+                );
+                assert_eq!(inputs.s3_region.read(cx).value(), aliyun.default_region);
+            })
+            .expect("设置窗口还开着");
+    }
+
+    /// 设置窗口得把弹层画出来。
+    ///
+    /// `window.open_dialog` 只把弹窗记到 `Root` 上，真让它上屏的是这扇窗自己
+    /// render 里那句 [`Root::render_dialog_layer`]。漏掉那一句，弹窗照开，
+    /// 只是谁也看不见 —— 「从云端恢复」那颗按钮当初就这么看着像坏了。
+    /// 所以这里断的不是「开没开」，是「画没画出来」。
+    #[gpui_kit::test]
+    fn the_settings_window_draws_the_dialog_layer(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+
+        // 照着 [`SettingsWindow::open`] 搭：弹层归 `Root` 存，得有那一层才验得到。
+        let window = cx.add_window(|window, cx| {
+            let shell = cx.new(|cx| SettingsWindow::new(window, cx));
+            Root::new(shell, window, cx)
+        });
+
+        // 开弹窗走 `VisualTestContext`，不走 `window.update`：后者进的是 `Root`
+        // 自己那层实体更新，`open_dialog` 在里面再 `Root::update` 一次就炸。
+        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        visual.update(|window, cx| {
+            assert!(!window.has_active_dialog(cx), "起手不该有弹窗");
+            window.open_dialog(cx, |dialog, _, _| dialog.title("云端副本管理"));
+            assert!(window.has_active_dialog(cx), "弹窗没记到 Root 上");
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            visual.debug_bounds("dialog-layer").is_some(),
+            "弹层没画出来：弹窗开着也上不了屏，点按钮和按钮坏了长得一样"
+        );
     }
 
     #[gpui_kit::test]

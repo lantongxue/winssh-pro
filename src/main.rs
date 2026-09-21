@@ -2,6 +2,7 @@
 
 mod assets;
 mod assistant;
+mod backup;
 mod command_history;
 mod credential;
 mod db;
@@ -21,7 +22,10 @@ mod trusted_host;
 mod ui;
 
 use gpui_kit::component::{Root, TitleBar};
-use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowKind, WindowOptions, px, size};
+use gpui_kit::{
+    AppContext as _, Bounds, Entity, Focusable as _, WindowBounds, WindowKind, WindowOptions, px,
+    size,
+};
 
 use assets::Assets;
 use ui::Workspace;
@@ -40,6 +44,7 @@ fn main() {
         // 全局代理要在第一条会话建起来之前就位：开窗之后主机面板上点一下就
         // 可能开始拨号，那时候再去读库已经晚了（见 `SettingService::prime`）。
         service::SettingService::open().prime();
+        service::BackupService::start_scheduler();
         cx.activate(true);
 
         let mut window_size = size(px(1440.), px(900.));
@@ -65,13 +70,17 @@ fn main() {
             ..TitleBar::window_options()
         };
 
+        let mut workspace_handle: Option<Entity<Workspace>> = None;
         let window = cx
             .open_window(options, |window, cx| {
                 let workspace = cx.new(|cx| Workspace::new(window, cx));
+                workspace_handle = Some(workspace.clone());
                 // 每个窗口的第一层必须是 Root，它承载对话框、通知与侧板。
                 cx.new(|cx| Root::new(workspace, window, cx))
             })
             .expect("打开主窗口失败");
+
+        let workspace_handle = workspace_handle.expect("窗口已打开但 Workspace 句柄未捕获");
 
         window
             .update(cx, |_, window, cx| {
@@ -82,5 +91,21 @@ fn main() {
                 cx.on_release(|_, cx| cx.quit()).detach();
             })
             .expect("初始化主窗口失败");
+
+        // 把键盘焦点落到 Workspace 上。这一步在 macOS 上尤其关键：
+        // `activate_window` 是 `makeKeyAndOrderFront:`，它让窗口成为键窗口，
+        // 但 GPUI 的焦点树是另一回事 —— 没有哪个 `FocusHandle` 被选中，
+        // `on_action` 注册的快捷键就收不到按键。tty7 在 `Tty7App` 构造的
+        // 最后调 `focus_active` 做的也是同一件事。
+        //
+        // `defer` 是必须的：此刻整棵树还没画过，焦点句柄还没进这一帧的焦点树。
+        let focus_handle = workspace_handle.read(cx).focus_handle(cx).clone();
+        window
+            .update(cx, |_, window, cx| {
+                window.defer(cx, move |window, cx| {
+                    window.focus(&focus_handle, cx);
+                });
+            })
+            .expect("设置初始焦点失败");
     });
 }

@@ -65,6 +65,10 @@ pub enum AppIcon {
     Upload,
     /// 闪电：快速连接这类即时动作。
     Zap,
+    /// 品牌主徽标（带深色圆角底座与发光效果）。
+    Logo,
+    /// 品牌极简透明标（Wink Terminal Face 纯图形）。
+    LogoSlim,
 }
 
 impl IconNamed for AppIcon {
@@ -96,6 +100,8 @@ impl IconNamed for AppIcon {
             Self::Trash => "icons/trash-2.svg",
             Self::Upload => "icons/upload.svg",
             Self::Zap => "icons/zap.svg",
+            Self::Logo => "icons/logo.svg",
+            Self::LogoSlim => "icons/logo-slim.svg",
         }
         .into()
     }
@@ -212,6 +218,8 @@ mod tests {
             AppIcon::Trash.path(),
             AppIcon::Upload.path(),
             AppIcon::Zap.path(),
+            AppIcon::Logo.path(),
+            AppIcon::LogoSlim.path(),
             OsIcon::Alpine.path(),
             OsIcon::Arch.path(),
             OsIcon::CentOs.path(),

@@ -27,8 +27,21 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=assets/app-icon.ico");
 
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         println!("cargo:rustc-link-arg-bins=/STACK:8388608");
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut res = winres::WindowsResource::new();
+        res.set_icon("assets/app-icon.ico");
+        res.set("ProductName", "WinSSH Pro");
+        res.set("FileDescription", "WinSSH Pro - Native High-Performance SSH Client");
+        res.set("LegalCopyright", "Copyright (C) 2026 WinSSH Pro Contributors");
+        if let Err(e) = res.compile() {
+            eprintln!("cargo:warning=Failed to compile Windows resource: {e}");
+        }
     }
 }

@@ -1,7 +1,7 @@
 //! 欢迎面板：窗口首次打开时中心区的内容，说明从哪里开始工作。
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _,
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent},
     h_flex,
@@ -10,7 +10,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    Keystroke, ParentElement as _, Render, SharedString, Styled as _, Window, div, px,
+    Keystroke, ParentElement as _, Render, SharedString, Styled as _, Window, div, img, px,
 };
 use rust_i18n::t;
 
@@ -94,8 +94,12 @@ impl Render for WelcomePanel {
             .child(
                 v_flex()
                     .items_center()
-                    .gap_2()
-                    .child(div().text_2xl().child("WinSSH Pro"))
+                    .gap_3()
+                    .child(
+                        img("app-icon.png")
+                            .size(px(88.))
+                    )
+                    .child(div().text_2xl().font_bold().child("WinSSH Pro"))
                     .child(
                         div()
                             .text_sm()

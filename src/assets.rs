@@ -71,6 +71,14 @@ const OWNED: &[(&str, &[u8])] = &[
         "icons/key-round.svg",
         include_bytes!("../assets/icons/key-round.svg"),
     ),
+    ("icons/logo.svg", include_bytes!("../assets/icons/logo.svg")),
+    (
+        "icons/logo-slim.svg",
+        include_bytes!("../assets/icons/logo-slim.svg"),
+    ),
+    ("logo.svg", include_bytes!("../assets/logo.svg")),
+    ("logo-slim.svg", include_bytes!("../assets/logo-slim.svg")),
+    ("app-icon.png", include_bytes!("../assets/app-icon.png")),
     (
         "icons/laptop.svg",
         include_bytes!("../assets/icons/laptop.svg"),

@@ -15,12 +15,13 @@
 //! 之后每次 `save_*` 两边一起写。少了缓存的话，要么让拨号那条路去查库（多一次
 //! await 与一条失败路径），要么让界面每帧查库 —— 两样都不划算。
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use gpui_kit::SharedString;
 use sea_orm::DatabaseConnection;
 
 use crate::{
     assistant::{AssistantConfig, config as assistant_config},
+    backup::{self, BackupConfig},
     db,
     proxy::{self, GlobalProxy},
     repository::SettingRepository,
@@ -41,6 +42,8 @@ const TERMINAL_SCHEME_KEY: &str = "terminal.scheme";
 const ASSISTANT_CONFIG_KEY: &str = "assistant.config";
 /// 终端光标闪烁在 `settings` 表里的键。存的是 "true" 或 "false"。
 const CURSOR_BLINK_KEY: &str = "terminal.cursor_blink";
+/// 数据备份同步配置在 `settings` 表里的键。存的是一份 JSON。
+const BACKUP_CONFIG_KEY: &str = "backup.config";
 
 /// 应用级偏好的业务入口。廉价克隆：界面各处各拿一份，共享同一条连接。
 #[derive(Clone)]
@@ -85,6 +88,7 @@ impl SettingService {
                 this.load_terminal_scheme().await,
                 this.load_assistant_config().await,
                 this.load_cursor_blink().await,
+                this.load_backup_config().await,
             )
         });
         match loaded.0 {
@@ -106,6 +110,10 @@ impl SettingService {
         match loaded.4 {
             Ok(blink) => cursor::set_global(blink),
             Err(error) => log::warn!("光标闪烁读不出来，这次运行按出厂档处理：{error:#}"),
+        }
+        match loaded.5 {
+            Ok(config) => backup::set_global(config),
+            Err(error) => log::warn!("备份同步配置读不出来，这次运行按出厂档处理：{error:#}"),
         }
     }
 
@@ -243,6 +251,35 @@ impl SettingService {
         })
         .await
     }
+
+    /// 库里那份数据备份同步配置。没写过就是出厂档（未开启）。
+    pub async fn load_backup_config(&self) -> Result<BackupConfig> {
+        let this = self.clone();
+        db::run(async move {
+            let raw = this.repo.get(&this.db, BACKUP_CONFIG_KEY).await?;
+            match raw {
+                Some(json) if !json.trim().is_empty() => {
+                    serde_json::from_str(&json).context("解析备份配置失败")
+                }
+                _ => Ok(BackupConfig::default()),
+            }
+        })
+        .await
+    }
+
+    /// 写回数据备份同步配置，并同时换掉进程里那份缓存。
+    pub async fn save_backup_config(&self, config: BackupConfig) -> Result<()> {
+        backup::set_global(config.clone());
+        let this = self.clone();
+        let encoded = serde_json::to_string(&config)?;
+        db::run(async move {
+            this.repo
+                .set(&this.db, BACKUP_CONFIG_KEY, &encoded)
+                .await
+                .map_err(Into::into)
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -366,6 +403,33 @@ mod tests {
             service.save_cursor_blink(true).await.unwrap();
             assert!(service.load_cursor_blink().await.unwrap());
             assert!(cursor::global(), "缓存也一起换了");
+        });
+    }
+
+    /// 数据备份与同步配置走的是独立的一行，读写与出厂档都要成立，缓存同步更新。
+    #[test]
+    fn the_backup_config_round_trips_into_its_own_row() {
+        db::runtime().block_on(async {
+            let service = SettingService::in_memory().await.unwrap();
+            let default_cfg = BackupConfig::default();
+            assert_eq!(
+                service.load_backup_config().await.unwrap(),
+                default_cfg,
+                "没写过就是默认关闭状态"
+            );
+
+            let mut custom_cfg = default_cfg.clone();
+            custom_cfg.enabled = true;
+            custom_cfg.protocol = crate::backup::BackupProtocol::S3;
+            custom_cfg.interval_mins = 120;
+            custom_cfg.retention_count = 5;
+            custom_cfg.encrypt = true;
+            custom_cfg.password = "secret_pass123".to_string();
+            custom_cfg.s3.bucket = "my-test-bucket".to_string();
+
+            service.save_backup_config(custom_cfg.clone()).await.unwrap();
+            assert_eq!(service.load_backup_config().await.unwrap(), custom_cfg);
+            assert_eq!(backup::global(), custom_cfg, "全局缓存同步更新");
         });
     }
 }
