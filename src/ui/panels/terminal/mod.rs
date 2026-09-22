@@ -246,6 +246,7 @@ impl TerminalPanel {
         let host = Host {
             id: SharedString::from(format!("local-{counter}")),
             name,
+            kind: crate::host::HostKind::Ssh,
             user: SharedString::from(user),
             hostname: SharedString::from("localhost"),
             port: 22,
@@ -259,6 +260,7 @@ impl TerminalPanel {
             forwards: Vec::new(),
             tags: Vec::new(),
             proxy: Default::default(),
+            vnc: Default::default(),
             shell_integration: false,
         };
         Self::build(host, Source::Local, None, dock_area, window, cx)
@@ -278,6 +280,7 @@ impl TerminalPanel {
         let host = Host {
             id: "detached".into(),
             name: "detached".into(),
+            kind: crate::host::HostKind::Ssh,
             user: "tester".into(),
             hostname: "localhost".into(),
             port: 22,
@@ -291,6 +294,7 @@ impl TerminalPanel {
             forwards: Vec::new(),
             tags: Vec::new(),
             proxy: Default::default(),
+            vnc: Default::default(),
             shell_integration: false,
         };
         Self::build(host, Source::Detached, None, dock_area, window, cx)

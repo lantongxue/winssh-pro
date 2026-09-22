@@ -15,7 +15,7 @@ use sea_orm::{
 use crate::{
     db::{self, entities::host, entities::host_group},
     forward::{self, PortForward},
-    host::{AuthMethod, Host, HostDraft, HostGroup, MonitorIntervals},
+    host::{AuthMethod, Host, HostDraft, HostGroup, HostKind, MonitorIntervals},
     repository::HostRepository,
 };
 use rust_i18n::t;
@@ -98,6 +98,7 @@ impl HostService {
                         port: Set(draft.port),
                         platform: Set(draft.platform.clone()),
                         sort_order: Set(sort_order),
+                        kind: Set(draft.kind.as_str().to_owned()),
                         auth_method: Set(draft.auth_method.as_str().to_owned()),
                         password: Set(draft.password.clone()),
                         key_content: Set(draft.key_content.clone()),
@@ -112,6 +113,7 @@ impl HostService {
                         forwards: Set(String::new()),
                         tags: Set(crate::host::encode_tags(&draft.tags)),
                         proxy: Set(crate::proxy::encode(&draft.proxy)),
+                        vnc_settings: Set(crate::vnc::encode(&draft.vnc)),
                         // shell 集成同理不在表单里，新主机一律不装 ——
                         // 往对端打字这件事只能由用户自己在命令历史那扇窗里开
                         // （[`Self::update_shell_integration`]）。
@@ -124,6 +126,7 @@ impl HostService {
             Ok(Host {
                 id: id.clone(),
                 name: draft.name.into(),
+                kind: draft.kind,
                 user: draft.user.into(),
                 hostname: draft.hostname.into(),
                 port: draft.port,
@@ -137,6 +140,7 @@ impl HostService {
                 forwards: Vec::new(),
                 tags: draft.tags,
                 proxy: draft.proxy,
+                vnc: draft.vnc,
                 shell_integration: false,
             })
         })
@@ -164,6 +168,7 @@ impl HostService {
                         port: Set(draft.port),
                         platform: Set(draft.platform.clone()),
                         sort_order: ActiveValue::NotSet,
+                        kind: Set(draft.kind.as_str().to_owned()),
                         auth_method: Set(draft.auth_method.as_str().to_owned()),
                         password: Set(draft.password.clone()),
                         key_content: Set(draft.key_content.clone()),
@@ -178,6 +183,7 @@ impl HostService {
                         shell_integration: ActiveValue::NotSet,
                         tags: Set(crate::host::encode_tags(&draft.tags)),
                         proxy: Set(crate::proxy::encode(&draft.proxy)),
+                        vnc_settings: Set(crate::vnc::encode(&draft.vnc)),
                     },
                 )
                 .await;
@@ -261,6 +267,7 @@ impl HostService {
                         port: Set(source.port),
                         platform: Set(source.platform.clone()),
                         sort_order: Set(source.sort_order + 1),
+                        kind: Set(source.kind.clone()),
                         auth_method: Set(source.auth_method.clone()),
                         password: Set(source.password.clone()),
                         key_content: Set(source.key_content.clone()),
@@ -273,6 +280,7 @@ impl HostService {
                         forwards: Set(source.forwards.clone()),
                         tags: Set(source.tags.clone()),
                         proxy: Set(source.proxy.clone()),
+                        vnc_settings: Set(source.vnc_settings.clone()),
                         shell_integration: Set(source.shell_integration),
                     },
                 )
@@ -282,6 +290,7 @@ impl HostService {
             Ok(Host {
                 id: new_id,
                 name: new_name.into(),
+                kind: HostKind::from_str_or_default(&source.kind),
                 user: source.user.into(),
                 hostname: source.hostname.into(),
                 port: source.port,
@@ -299,6 +308,7 @@ impl HostService {
                 forwards: forward::decode(&source.forwards),
                 tags: crate::host::decode_tags(&source.tags),
                 proxy: crate::proxy::decode(&source.proxy),
+                vnc: crate::vnc::decode(&source.vnc_settings),
                 shell_integration: source.shell_integration,
             })
         })
@@ -437,6 +447,7 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                 .map(|host| Host {
                     id: host.id.into(),
                     name: host.name.into(),
+                    kind: HostKind::from_str_or_default(&host.kind),
                     user: host.user.into(),
                     hostname: host.hostname.into(),
                     port: host.port,
@@ -456,6 +467,7 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                     forwards: forward::decode(&host.forwards),
                     tags: crate::host::decode_tags(&host.tags),
                     proxy: crate::proxy::decode(&host.proxy),
+                    vnc: crate::vnc::decode(&host.vnc_settings),
                     shell_integration: host.shell_integration,
                 })
                 .collect(),
@@ -496,6 +508,7 @@ mod tests {
     fn draft(name: &str) -> HostDraft {
         HostDraft {
             name: name.into(),
+            kind: HostKind::Ssh,
             user: "root".into(),
             hostname: "10.0.0.1".into(),
             port: 22,
@@ -507,6 +520,7 @@ mod tests {
             jump_host_id: None,
             tags: Vec::new(),
             proxy: Default::default(),
+            vnc: Default::default(),
         }
     }
 
@@ -523,6 +537,7 @@ mod tests {
     ) -> HostDraft {
         HostDraft {
             name: name.into(),
+            kind: HostKind::Ssh,
             user: "root".into(),
             hostname: "10.0.0.1".into(),
             port: 22,
@@ -534,6 +549,7 @@ mod tests {
             jump_host_id: None,
             tags: Vec::new(),
             proxy: Default::default(),
+            vnc: Default::default(),
         }
     }
 
@@ -1199,6 +1215,59 @@ mod tests {
 
             let copy = service.duplicate_host(&host.id).await.unwrap();
             assert_eq!(copy.proxy, configured, "副本走同一台代理");
+        });
+    }
+
+    /// 连接类型存得住、读得回，新主机出厂是 SSH —— 老库里每一台都是，
+    /// 这一列补出来时不能改变任何一台主机现在怎么连。
+    #[test]
+    fn host_kind_round_trips() {
+        use crate::host::HostKind;
+
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            assert_eq!(host.kind, HostKind::Ssh, "新主机的出厂档是 SSH");
+
+            let mut edited = draft("web-01");
+            edited.kind = HostKind::Vnc;
+            service.update_host(&host.id, "分组", edited).await.unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].kind, HostKind::Vnc);
+
+            let copy = service.duplicate_host(&host.id).await.unwrap();
+            assert_eq!(copy.kind, HostKind::Vnc, "副本连的是同一种服务");
+        });
+    }
+
+    /// VNC 画质配置存得住、读得回；新主机是出厂档；副本照抄。
+    /// 表单不单独维护这一列 —— 它跟着 `update_host` 整行重写。
+    #[test]
+    fn vnc_settings_round_trip() {
+        use crate::vnc::{VncColorDepth, VncEncodingChoice, VncFrameRate, VncProtocolVersion, VncSettings};
+
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("desk-01")).await.unwrap();
+            assert_eq!(host.vnc, VncSettings::default(), "新主机拿出厂画质");
+
+            let tuned = VncSettings {
+                color_depth: VncColorDepth::High16,
+                encoding: VncEncodingChoice::HighCompression,
+                frame_rate: VncFrameRate::Sixty,
+                protocol_version: VncProtocolVersion::Rfb37,
+                share: false,
+            };
+            let mut edited = draft("desk-01");
+            edited.vnc = tuned;
+            service.update_host(&host.id, "分组", edited).await.unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].vnc, tuned);
+
+            let copy = service.duplicate_host(&host.id).await.unwrap();
+            assert_eq!(copy.vnc, tuned, "副本连画质一并照抄");
         });
     }
 

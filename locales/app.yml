@@ -855,6 +855,83 @@ host_explorer.no_match:
   en: No matching host.
   zh-CN: 没有匹配的主机。
 
+# ── VNC 会话（协议层与中心区那块远端桌面，见 src/vnc/） ──────────────────
+vnc.connecting:
+  en: Connecting to the VNC server…
+  zh-CN: 正在连接 VNC 服务器…
+vnc.waiting_frame:
+  en: Connected, waiting for the first frame…
+  zh-CN: 已连接，等待第一帧画面…
+vnc.disconnected:
+  en: The VNC session ended.
+  zh-CN: VNC 会话已结束。
+vnc.auth_failed:
+  en: "VNC authentication failed: wrong password."
+  zh-CN: VNC 认证失败：密码不对。
+vnc.password_required:
+  en: This server requires a VNC password; the host has none configured.
+  zh-CN: 这台服务器要求 VNC 密码，主机里没有配。
+vnc.handshake_failed:
+  en: "VNC handshake failed: the server offered a security type we don't support (only no-auth and VNC password)."
+  zh-CN: VNC 握手失败：服务器只提供了我们不支持的认证方式（目前只支持无认证与 VNC 密码）。
+vnc.connect_failed:
+  en: "Cannot reach the VNC server %{host}:%{port}."
+  zh-CN: 连不上 VNC 服务器 %{host}:%{port}。
+vnc.connect_failed_detail:
+  en: "VNC connection failed: %{detail}"
+  zh-CN: VNC 连接失败：%{detail}
+vnc.connect_timeout:
+  en: "The VNC server did not answer within %{seconds} s - it may not be running VNC."
+  zh-CN: VNC 服务器在 %{seconds} 秒内没有应答，那边跑的也许不是 VNC。
+vnc.proxy_misconfigured:
+  en: "Host %{host} has an incomplete proxy configuration: %{reason}"
+  zh-CN: 主机 %{host} 的代理配置不完整：%{reason}
+vnc.proxy_connect_failed:
+  en: "Cannot reach the VNC server %{host}:%{port} through proxy %{proxy}."
+  zh-CN: 经代理 %{proxy} 连不上 VNC 服务器 %{host}:%{port}。
+vnc.reconnect:
+  en: Reconnect
+  zh-CN: 重连
+vnc.reconnect_tooltip:
+  en: Close this session and dial the server again.
+  zh-CN: 结束当前会话，重新拨一次这台服务器。
+vnc.close_session:
+  en: Close desktop
+  zh-CN: 关闭桌面
+vnc.depth_true32:
+  en: True colour (32-bit)
+  zh-CN: 真彩（32 位）
+vnc.depth_high16:
+  en: High colour (16-bit)
+  zh-CN: 高彩（16 位）
+vnc.depth_indexed8:
+  en: 256 colours
+  zh-CN: 256 色
+vnc.encoding_adaptive:
+  en: Automatic (Zrle)
+  zh-CN: 自动（Zrle）
+vnc.encoding_tight:
+  en: High compression (Tight)
+  zh-CN: 高压缩（Tight）
+vnc.encoding_raw:
+  en: Compatibility (Raw)
+  zh-CN: 兼容（Raw）
+vnc.fps_15:
+  en: 15 fps
+  zh-CN: 15 fps
+vnc.fps_30:
+  en: 30 fps
+  zh-CN: 30 fps
+vnc.fps_60:
+  en: 60 fps
+  zh-CN: 60 fps
+vnc.share_shared:
+  en: Shared (others may watch)
+  zh-CN: 可共享（允许别人同看）
+vnc.share_exclusive:
+  en: Exclusive (disconnect other viewers)
+  zh-CN: 独占（踢掉其他查看者）
+
 # ── 主机表单（新建 / 编辑主机的对话框） ──────────────────────────────────
 host_form.title_new:
   en: New host
@@ -928,6 +1005,12 @@ host_form.field_hostname:
 host_form.field_port:
   en: Port
   zh-CN: 端口
+host_form.field_kind:
+  en: Connection type
+  zh-CN: 连接类型
+host_form.field_vnc_password:
+  en: VNC password
+  zh-CN: VNC 密码
 host_form.field_username:
   en: Login user *
   zh-CN: 登录用户名 *
@@ -937,6 +1020,27 @@ host_form.field_auth:
 host_form.field_password:
   en: SSH password
   zh-CN: SSH 密码
+host_form.group_vnc:
+  en: VNC picture quality
+  zh-CN: VNC 画质
+host_form.field_vnc_depth:
+  en: Colour depth
+  zh-CN: 颜色深度
+host_form.field_vnc_encoding:
+  en: Encoding
+  zh-CN: 编码策略
+host_form.field_vnc_fps:
+  en: Refresh cap
+  zh-CN: 刷新上限
+host_form.field_vnc_version:
+  en: Protocol cap
+  zh-CN: 协议版本上限
+host_form.field_vnc_share:
+  en: Desktop sharing
+  zh-CN: 桌面共享
+host_form.vnc_hint:
+  en: High compression (Tight) only applies in 32-bit true colour; other depths fall back to Zrle. Exclusive disconnects viewers already on this desktop.
+  zh-CN: 高压缩（Tight）只在真彩 32 位下生效，其余深度自动落回 Zrle；独占会踢掉已在该桌面上的其他查看者。
 host_form.field_key_content:
   en: Private key *
   zh-CN: 私钥 *

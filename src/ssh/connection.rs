@@ -412,6 +412,8 @@ mod tests {
 
     fn unreachable_host() -> Host {
         Host {
+            vnc: Default::default(),
+            kind: crate::host::HostKind::Ssh,
             id: "test-unreachable".into(),
             name: "unreachable".into(),
             user: "root".into(),

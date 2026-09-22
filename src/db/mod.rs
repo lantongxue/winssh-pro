@@ -37,6 +37,7 @@ const SCHEMA: [&str; 10] = [
         port         INTEGER NOT NULL DEFAULT 22,
         platform     TEXT    NOT NULL DEFAULT '',
         sort_order   INTEGER NOT NULL DEFAULT 0,
+        kind         TEXT    NOT NULL DEFAULT 'ssh',
         auth_method  TEXT    NOT NULL DEFAULT 'password',
         password     TEXT    NOT NULL DEFAULT '',
         key_content  TEXT    NOT NULL DEFAULT '',
@@ -47,6 +48,7 @@ const SCHEMA: [&str; 10] = [
         forwards     TEXT    NOT NULL DEFAULT '',
         tags         TEXT    NOT NULL DEFAULT '',
         proxy        TEXT    NOT NULL DEFAULT '',
+        vnc_settings TEXT    NOT NULL DEFAULT '',
         shell_integration INTEGER NOT NULL DEFAULT 0
     )",
     // 保险箱。和 hosts 之间没有外键：主机存的是凭据的内容本身，不是一个指向
@@ -149,7 +151,10 @@ const SCHEMA: [&str; 10] = [
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 11] = [
+const MIGRATIONS: [&str; 13] = [
+    // 连接类型（见 [`crate::host::HostKind`]）。老库补出来的是 `ssh` ——
+    // 这一列出现之前存的每一台主机都是 SSH，出厂值不改变任何人的行为。
+    "ALTER TABLE hosts ADD COLUMN kind TEXT NOT NULL DEFAULT 'ssh'",
     "ALTER TABLE hosts ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'password'",
     "ALTER TABLE hosts ADD COLUMN password TEXT NOT NULL DEFAULT ''",
     // 私钥本身与解开它的密码。老库补出来都是空串，也就是"这台主机还没配私钥"。
@@ -173,6 +178,10 @@ const MIGRATIONS: [&str; 11] = [
     // 出厂档是不使用代理 —— 所以老库补出来的这一列不改变任何一台主机现在的
     // 连法，仍旧是直连。
     "ALTER TABLE hosts ADD COLUMN proxy TEXT NOT NULL DEFAULT ''",
+    // VNC 画质配置（见 [`crate::vnc::VncSettings`]）。空串就是出厂档 ——
+    // 真彩、自动编码、30fps、共享、3.8，这一列出现之前根本没有"画质"可言，
+    // 老库补出来不改变任何一台主机现在的连法。
+    "ALTER TABLE hosts ADD COLUMN vnc_settings TEXT NOT NULL DEFAULT ''",
     // 连上之后要不要往对端 shell 里装 OSC 133 标记（见
     // `crate::terminal::shell_integration`）。老库补出来的是 0，也就是"不装"
     // —— 往用户的服务器上打字这件事只能由他自己开，绝不能因为升级了一版就

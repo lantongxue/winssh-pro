@@ -40,8 +40,9 @@ use gpui_kit::{
 
 use crate::{
     credential::{Credential, CredentialKind},
-    host::{AuthMethod, Host, HostDraft, HostGroup},
+    host::{AuthMethod, Host, HostDraft, HostGroup, HostKind},
     proxy::{self, HostProxy, ProxyConfig, ProxyMode},
+    vnc::{VncColorDepth, VncEncodingChoice, VncFrameRate, VncProtocolVersion, VncSettings},
     service::{HostService, LocalFileService, SshService},
     ui::{
         theme::{AppIcon, appearance, palette},
@@ -49,6 +50,38 @@ use crate::{
     },
 };
 use rust_i18n::t;
+
+/// 连接类型在下拉里的两档，顺序即 [`crate::host::HostKind`] 的编号顺序：
+/// 0 SSH、1 VNC。和认证方式一样按**下标**判断，不比文案。
+fn host_kinds() -> Vec<SharedString> {
+    HostKind::ALL.map(|kind| kind.label()).to_vec()
+}
+
+/// VNC 画质那四档下拉的候选，顺序即各枚举的 `ALL`：深度 / 编码 / 帧率 /
+/// 版本。全按下标折回枚举，和认证方式、代理同一套规矩。
+fn color_depths() -> Vec<SharedString> {
+    VncColorDepth::ALL.map(|depth| depth.label()).to_vec()
+}
+
+fn encoding_choices() -> Vec<SharedString> {
+    VncEncodingChoice::ALL.map(|choice| choice.label()).to_vec()
+}
+
+fn frame_rates() -> Vec<SharedString> {
+    VncFrameRate::ALL.map(|rate| rate.label()).to_vec()
+}
+
+fn protocol_versions() -> Vec<SharedString> {
+    VncProtocolVersion::ALL.map(|version| version.label()).to_vec()
+}
+
+/// 共享档的两个选项：0 可共享（出厂），1 独占。
+fn share_choices() -> Vec<SharedString> {
+    vec![
+        t!("vnc.share_shared").into(),
+        t!("vnc.share_exclusive").into(),
+    ]
+}
 
 /// 认证方式在下拉里的三档，顺序即 [`crate::host::AuthMethod`] 的编号顺序：
 /// 0 密码、1 密钥、2 Agent。选中的是哪一档一律按**下标**判断，不比文案
@@ -145,6 +178,12 @@ type EditedHost = (Host, SharedString);
 pub struct HostForm {
     name: Entity<InputState>,
     group: Entity<InputState>,
+    /// 连接类型：SSH / VNC。它决定这一台主机怎么连、表单认哪几格，
+    /// 以及落库后 [`crate::ui::views::HostExplorerView::open_host`] 开哪种面板。
+    kind: Entity<SelectState<Vec<SharedString>>>,
+    /// 新建还是编辑。换连接类型时只有新建会顺手改端口和标签默认值 ——
+    /// 编辑一台已有主机不该把用户填过的端口抹成惯例端口。
+    is_new: bool,
     hostname: Entity<InputState>,
     port: Entity<InputState>,
     username: Entity<InputState>,
@@ -157,6 +196,13 @@ pub struct HostForm {
     /// 私钥密码。留空就是"这把私钥没加密"，见 [`crate::host::Host::key_passphrase`]。
     key_passphrase: Entity<InputState>,
     platform: Entity<SelectState<Vec<&'static str>>>,
+    /// VNC 画质的四档下拉 + 共享档。只有连接类型是 VNC 才画出来 ——
+    /// 状态常驻是因为换回 SSH 再换回来，用户拧过的档位不该蒸发。
+    vnc_depth: Entity<SelectState<Vec<SharedString>>>,
+    vnc_encoding: Entity<SelectState<Vec<SharedString>>>,
+    vnc_fps: Entity<SelectState<Vec<SharedString>>>,
+    vnc_version: Entity<SelectState<Vec<SharedString>>>,
+    vnc_share: Entity<SelectState<Vec<SharedString>>>,
     proxy_jump: Entity<SelectState<Vec<SharedString>>>,
     /// 走不走 SOCKS5 代理：不使用 / 跟随全局 / 配置代理，见 [`proxy_modes`]。
     ///
@@ -231,9 +277,14 @@ impl HostForm {
             None => (String::new(), String::new()),
         };
 
+        let initial_kind = match editing {
+            Some((host, _)) => host.kind,
+            None => HostKind::default(),
+        };
+
         let initial_tags = match editing {
             Some((host, _)) => host.tags.clone(),
-            None => vec!["Linux".into(), "SSH".into()],
+            None => Self::default_tags(initial_kind),
         };
 
         // 新建的那一份出厂档是"跟随全局"，端口填上 SOCKS5 的惯例端口 ——
@@ -334,6 +385,69 @@ impl HostForm {
             )
         });
 
+        let initial_vnc = match editing {
+            Some((host, _)) => host.vnc,
+            None => VncSettings::default(),
+        };
+        let vnc_depth = cx.new(|cx| {
+            SelectState::new(
+                color_depths(),
+                Some(IndexPath::new(initial_vnc.color_depth.index())),
+                window,
+                cx,
+            )
+        });
+        let vnc_encoding = cx.new(|cx| {
+            SelectState::new(
+                encoding_choices(),
+                Some(IndexPath::new(initial_vnc.encoding.index())),
+                window,
+                cx,
+            )
+        });
+        let vnc_fps = cx.new(|cx| {
+            SelectState::new(
+                frame_rates(),
+                Some(IndexPath::new(initial_vnc.frame_rate.index())),
+                window,
+                cx,
+            )
+        });
+        let vnc_version = cx.new(|cx| {
+            SelectState::new(
+                protocol_versions(),
+                Some(IndexPath::new(initial_vnc.protocol_version.index())),
+                window,
+                cx,
+            )
+        });
+        let vnc_share = cx.new(|cx| {
+            SelectState::new(
+                share_choices(),
+                Some(IndexPath::new(usize::from(!initial_vnc.share))),
+                window,
+                cx,
+            )
+        });
+        let kind = cx.new(|cx| {
+            SelectState::new(
+                host_kinds(),
+                Some(IndexPath::new(initial_kind.index())),
+                window,
+                cx,
+            )
+        });
+
+        cx.subscribe_in(
+            &kind,
+            window,
+            |this, _, _: &SelectEvent<Vec<SharedString>>, window, cx| {
+                this.on_kind_changed(window, cx);
+                cx.notify();
+            },
+        )
+        .detach();
+
         let mut bastions = vec![SharedString::from(t!("host_form.bastion_none"))];
         for group in groups {
             for host in &group.hosts {
@@ -417,6 +531,8 @@ impl HostForm {
         Self {
             name,
             group,
+            kind,
+            is_new: editing.is_none(),
             hostname,
             port,
             username,
@@ -425,6 +541,11 @@ impl HostForm {
             key_content,
             key_passphrase,
             platform,
+            vnc_depth,
+            vnc_encoding,
+            vnc_fps,
+            vnc_version,
+            vnc_share,
             proxy_jump,
             proxy_mode,
             proxy_host,
@@ -489,6 +610,77 @@ impl HostForm {
         Some(credential.name)
     }
 
+    /// 下拉现在选中的是哪一档。按下标折回枚举，不拿那行字反查 —— 见 [`host_kinds`]。
+    fn selected_kind(&self, cx: &App) -> HostKind {
+        HostKind::from_index(
+            self.kind
+                .read(cx)
+                .selected_index(cx)
+                .map(|index| index.row)
+                .unwrap_or_default(),
+        )
+    }
+
+    /// 五档下拉现在选中的折回一份 [`VncSettings`]。按下标判断，不比文案。
+    fn selected_vnc(&self, cx: &App) -> VncSettings {
+        let row = |select: &Entity<SelectState<Vec<SharedString>>>| {
+            select
+                .read(cx)
+                .selected_index(cx)
+                .map(|index| index.row)
+                .unwrap_or_default()
+        };
+        VncSettings {
+            color_depth: VncColorDepth::from_index(row(&self.vnc_depth)),
+            encoding: VncEncodingChoice::from_index(row(&self.vnc_encoding)),
+            frame_rate: VncFrameRate::from_index(row(&self.vnc_fps)),
+            protocol_version: VncProtocolVersion::from_index(row(&self.vnc_version)),
+            // 共享档只有两格，0 就是可共享 —— 独占要人明确选。
+            share: row(&self.vnc_share) == 0,
+        }
+    }
+
+    /// 新建主机在各档连接类型下的出厂标签。
+    fn default_tags(kind: HostKind) -> Vec<SharedString> {
+        match kind {
+            HostKind::Ssh => vec!["Linux".into(), "SSH".into()],
+            HostKind::Vnc => vec!["VNC".into()],
+        }
+    }
+
+    /// 换连接类型之后跟进新建主机的两处出厂值：
+    ///
+    /// - 端口换回这一档的惯例端口（22 / 5900）—— 但**只在它还是惯例端口或空着**
+    ///   的时候改，用户自己敲过的自定义端口不该被换档顺手抹掉。
+    /// - 标签同理：还停在出厂标签上就跟着换档，改过一个字就不动。
+    ///
+    /// 编辑一台已有主机两处都不动：它的端口和标签是用户存下来的事实，
+    /// 换档只是换一种看法。
+    fn on_kind_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_new {
+            return;
+        }
+        let kind = self.selected_kind(cx);
+
+        let port = self.port.read(cx).value().trim().to_string();
+        let conventional = port.is_empty()
+            || HostKind::ALL
+                .iter()
+                .any(|candidate| candidate.default_port().to_string() == port);
+        if conventional {
+            let default = kind.default_port().to_string();
+            self.port
+                .update(cx, |state, cx| state.set_value(default, window, cx));
+        }
+
+        let factory = HostKind::ALL
+            .iter()
+            .any(|candidate| self.tags == Self::default_tags(*candidate));
+        if factory {
+            self.tags = Self::default_tags(kind);
+        }
+    }
+
     fn add_tag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let value = self.tag_input.read(cx).value().trim().to_string();
         if !value.is_empty() {
@@ -514,10 +706,18 @@ impl HostForm {
     /// 这里不碰；跳板机选择目前无处可去——模型里还没有它的位置，
     /// 等连接层的 ProxyJump 落地后再决定怎么接。
     fn build_draft(&self, cx: &App) -> Result<(SharedString, HostDraft), SharedString> {
+        let kind = self.selected_kind(cx);
         let name = self.name.read(cx).value().trim().to_string();
         let hostname = self.hostname.read(cx).value().trim().to_string();
         let username = self.username.read(cx).value().trim().to_string();
-        if name.is_empty() || hostname.is_empty() || username.is_empty() {
+        // VNC 没有"以哪个账号进去"这件事 —— 账号只是展示名，空着就补一个。
+        let username = if kind == HostKind::Vnc && username.is_empty() {
+            "vnc".to_string()
+        } else {
+            username
+        };
+        let requires_user = kind == HostKind::Ssh;
+        if name.is_empty() || hostname.is_empty() || (requires_user && username.is_empty()) {
             return Err(t!("host_form.required_fields").into());
         }
 
@@ -534,7 +734,7 @@ impl HostForm {
             .value()
             .trim()
             .parse::<u16>()
-            .unwrap_or(22);
+            .unwrap_or_else(|_| kind.default_port());
 
         let platform = self
             .platform
@@ -544,13 +744,19 @@ impl HostForm {
             .unwrap_or(OS_PLATFORMS[0]);
 
         // 认证方式按下拉的下标折回枚举，不拿那行字反查 —— 见 [`auth_types`]。
-        let auth_method = AuthMethod::from_index(
-            self.auth_type
-                .read(cx)
-                .selected_index(cx)
-                .map(|index| index.row)
-                .unwrap_or_default(),
-        );
+        // VNC 只有一种认证：服务器那把密码（[`crate::vnc`]），下拉不画，
+        // 落库也固定按密码档存，读回时那一格恰好显示密码框。
+        let auth_method = if kind == HostKind::Vnc {
+            AuthMethod::Password
+        } else {
+            AuthMethod::from_index(
+                self.auth_type
+                    .read(cx)
+                    .selected_index(cx)
+                    .map(|index| index.row)
+                    .unwrap_or_default(),
+            )
+        };
         // 登录密码不 trim，和下面的私钥密码同一个道理：密码里的空格是密码的
         // 一部分，替用户抹掉一个尾随空格就是替他把密码改了，而那时候只会看到
         // 一句"认证失败"。从保险箱取用的那一条尤其 —— 保险箱里存的是什么，
@@ -582,6 +788,7 @@ impl HostForm {
             group.into(),
             HostDraft {
                 name,
+                kind,
                 user: username,
                 hostname,
                 port,
@@ -593,6 +800,7 @@ impl HostForm {
                 jump_host_id,
                 tags: self.tags.clone(),
                 proxy,
+                vnc: self.selected_vnc(cx),
             },
         ))
     }
@@ -695,6 +903,15 @@ impl HostForm {
         )
     }
 
+    /// 连接类型那一格。放在「连接」页最上面：它决定下面每一页认哪些字段。
+    fn render_kind_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        field(
+            t!("host_form.field_kind").into(),
+            Select::new(&self.kind).w_full(),
+            cx,
+        )
+    }
+
     fn render_address_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         two_field_row(
             field(
@@ -712,7 +929,18 @@ impl HostForm {
         )
     }
 
-    fn render_auth_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// 认证那一行的左半。VNC 只认一把服务器密码，没有"以哪个账号进去"和
+    /// 认证方式选档可言 —— 整行收成账号一格。
+    fn render_auth_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.selected_kind(cx) == HostKind::Vnc {
+            return field(
+                t!("host_form.field_username").into(),
+                Input::new(&self.username).font_family("monospace").w_full(),
+                cx,
+            )
+            .into_any_element();
+        }
+
         two_field_row(
             field(
                 t!("host_form.field_username").into(),
@@ -727,10 +955,15 @@ impl HostForm {
             ),
             1.,
         )
+        .into_any_element()
     }
 
     /// 密码认证给密码框，密钥认证给私钥路径与私钥密码，Agent 转发不需要额外字段。
+    /// VNC 只有"服务器那把密码"一档，恒等于密码那一格。
     fn render_auth_detail(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.selected_kind(cx) == HostKind::Vnc {
+            return Some(self.render_password_section(cx, true).into_any_element());
+        }
         // 按下标分派，不比文案 —— 见 [`auth_types`]。
         let selected = self
             .auth_type
@@ -740,27 +973,39 @@ impl HostForm {
             .unwrap_or_default();
 
         match selected {
-            0 => Some(
-                v_flex()
-                    .gap_3()
-                    .w_full()
-                    .children(self.render_vault_picker(CredentialKind::Password, cx))
-                    .child(field(
-                        t!("host_form.field_password").into(),
-                        // 尾部那只眼睛来自 `mask_toggle()`：密码默认是打码的
-                        // （`InputState::masked(true)`），点一下明文看一眼，再点回去。
-                        Input::new(&self.password)
-                            .font_family("monospace")
-                            .content_type(InputContentType::Password)
-                            .mask_toggle()
-                            .w_full(),
-                        cx,
-                    ))
-                    .into_any_element(),
-            ),
+            0 => Some(self.render_password_section(cx, false).into_any_element()),
             1 => Some(self.render_key_fields(cx).into_any_element()),
             _ => None,
         }
+    }
+
+    /// 密码那一段：保险箱取用下拉（有才画）+ 一个打码的密码框。
+    /// SSH 与 VNC 共用一格落库（`hosts.password`），只是标签各说各的话。
+    fn render_password_section(
+        &self,
+        cx: &mut Context<Self>,
+        vnc: bool,
+    ) -> impl IntoElement {
+        v_flex()
+            .gap_3()
+            .w_full()
+            .children(self.render_vault_picker(CredentialKind::Password, cx))
+            .child(field(
+                if vnc {
+                    t!("host_form.field_vnc_password")
+                } else {
+                    t!("host_form.field_password")
+                }
+                .into(),
+                // 尾部那只眼睛来自 `mask_toggle()`：密码默认是打码的
+                // （`InputState::masked(true)`），点一下明文看一眼，再点回去。
+                Input::new(&self.password)
+                    .font_family("monospace")
+                    .content_type(InputContentType::Password)
+                    .mask_toggle()
+                    .w_full(),
+                cx,
+            ))
     }
 
     /// "从保险箱选取"那个下拉。保险箱里这一档一条都没有时整个不画 ——
@@ -952,6 +1197,53 @@ impl HostForm {
             })
     }
 
+    /// VNC 画质那一段：五档下拉，只在连接类型是 VNC 时画
+    /// （画不画由宿主 `advanced_page` 按当下类型决定）。
+    fn render_vnc_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_3()
+            .w_full()
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_vnc_depth").into(),
+                    Select::new(&self.vnc_depth).w_full(),
+                    cx,
+                ),
+                1.,
+                field(
+                    t!("host_form.field_vnc_encoding").into(),
+                    Select::new(&self.vnc_encoding).w_full(),
+                    cx,
+                ),
+                1.,
+            ))
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_vnc_fps").into(),
+                    Select::new(&self.vnc_fps).w_full(),
+                    cx,
+                ),
+                1.,
+                field(
+                    t!("host_form.field_vnc_version").into(),
+                    Select::new(&self.vnc_version).w_full(),
+                    cx,
+                ),
+                1.,
+            ))
+            .child(field(
+                t!("host_form.field_vnc_share").into(),
+                Select::new(&self.vnc_share).w_full(),
+                cx,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(t!("host_form.vnc_hint"))),
+            )
+    }
+
     fn render_tag_chip(
         &self,
         ix: usize,
@@ -1019,6 +1311,7 @@ impl Render for HostForm {
         v_flex()
             .gap_4()
             .pb_1()
+            .child(self.render_kind_row(cx))
             .child(self.render_identity_row(cx))
             .child(self.render_address_row(cx))
             .child(self.render_auth_row(cx))
@@ -1026,6 +1319,7 @@ impl Render for HostForm {
             .child(self.render_platform(cx))
             .child(self.render_jump(cx))
             .child(self.render_proxy_section(cx))
+            .child(self.render_vnc_section(cx))
             .child(self.render_tags_row(cx))
     }
 }
@@ -1201,7 +1495,10 @@ impl HostFormWindow {
     }
 
     /// Settings 核心组件：左栏分类导航，右栏一页一类主机配置。
-    fn render_settings(&self) -> impl IntoElement {
+    fn render_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // 连接类型是 VNC 才有「VNC 画质」这一段 —— 页在每次渲染时现拼，
+        // 类型一换这一段就整个消失/出现，不留空壳。
+        let is_vnc = self.form.read(cx).selected_kind(cx) == HostKind::Vnc;
         Settings::new(("winssh-host-form", self.page_seq))
             .with_group_variant(GroupBoxVariant::Fill)
             .sidebar_width(px(210.))
@@ -1211,7 +1508,7 @@ impl HostFormWindow {
             })
             .page(self.connection_page())
             .page(self.auth_page())
-            .page(self.advanced_page())
+            .page(self.advanced_page(is_vnc))
             .page(self.tags_page())
     }
 
@@ -1223,6 +1520,7 @@ impl HostFormWindow {
             .group(
                 SettingGroup::new()
                     .title(t!("host_form.group_basic"))
+                    .item(self.row(|this, cx| this.render_kind_row(cx).into_any_element()))
                     .item(self.row(|this, cx| this.render_identity_row(cx).into_any_element()))
                     .item(self.row(|this, cx| this.render_address_row(cx).into_any_element()))
                     .item(self.row(|this, cx| this.render_platform(cx).into_any_element())),
@@ -1245,8 +1543,8 @@ impl HostFormWindow {
             )
     }
 
-    fn advanced_page(&self) -> SettingPage {
-        SettingPage::new(t!("host_form.page_advanced"))
+    fn advanced_page(&self, is_vnc: bool) -> SettingPage {
+        let page = SettingPage::new(t!("host_form.page_advanced"))
             .icon(AppIcon::Zap)
             .default_open(true)
             .resettable(false)
@@ -1259,7 +1557,15 @@ impl HostFormWindow {
                 SettingGroup::new()
                     .title(t!("host_form.group_proxy"))
                     .item(self.row(|this, cx| this.render_proxy_section(cx).into_any_element())),
-            )
+            );
+        match is_vnc {
+            true => page.group(
+                SettingGroup::new()
+                    .title(t!("host_form.group_vnc"))
+                    .item(self.row(|this, cx| this.render_vnc_section(cx).into_any_element())),
+            ),
+            false => page,
+        }
     }
 
     fn tags_page(&self) -> SettingPage {
@@ -1359,6 +1665,7 @@ impl HostFormWindow {
                     Some((host, _)) => {
                         let mut updated_host = host.clone();
                         updated_host.name = draft.name.clone().into();
+                        updated_host.kind = draft.kind;
                         updated_host.user = draft.user.clone().into();
                         updated_host.hostname = draft.hostname.clone().into();
                         updated_host.port = draft.port;
@@ -1371,6 +1678,7 @@ impl HostFormWindow {
                             draft.jump_host_id.clone().map(|value| value.into());
                         updated_host.tags = draft.tags.clone();
                         updated_host.proxy = draft.proxy.clone();
+                        updated_host.vnc = draft.vnc;
                         service
                             .update_host(&host.id, &group, draft)
                             .await
@@ -1420,7 +1728,7 @@ impl Render for HostFormWindow {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar())
-            .child(div().flex_1().min_h_0().child(self.render_settings()))
+            .child(div().flex_1().min_h_0().child(self.render_settings(cx)))
             .child(self.render_footer(cx))
             .children(sheet_layer)
             .children(dialog_layer)
@@ -1444,6 +1752,7 @@ mod tests {
             Host {
                 id: "web-01".into(),
                 name: "web-01".into(),
+                kind: HostKind::Ssh,
                 user: "root".into(),
                 hostname: "10.0.0.1".into(),
                 port: 22,
@@ -1457,6 +1766,7 @@ mod tests {
                 forwards: Vec::new(),
                 tags: vec!["生产".into(), "web".into()],
                 proxy: HostProxy::default(),
+                vnc: VncSettings::default(),
                 shell_integration: false,
             },
             "生产环境".into(),

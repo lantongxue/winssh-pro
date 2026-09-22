@@ -1713,6 +1713,8 @@ mod tests {
 
     fn host() -> Host {
         Host {
+            vnc: Default::default(),
+            kind: crate::host::HostKind::Ssh,
             id: "prod-k8s".into(),
             name: "Prod-K8s-Master-01".into(),
             user: "root".into(),

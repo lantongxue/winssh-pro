@@ -32,6 +32,7 @@ use gpui_kit::component::{
     v_flex, v_virtual_list,
 };
 use gpui_kit::{
+    EntityId,
     App, AppContext as _, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, Render,
     SharedString, Size, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
@@ -40,12 +41,12 @@ use gpui_kit::{
 
 use super::{GUTTER, ICON_SIZE, SidebarView, collapse_button, view_header};
 use crate::{
-    host::{Host, HostGroup, HostStatus},
+    host::{Host, HostGroup, HostKind, HostStatus},
     service::{CredentialService, HostService},
     ui::{
         cards::{HOST_CARD_HEIGHT, HostCard},
         menus::HostAction,
-        panels::{SessionEvent, TerminalPanel},
+        panels::{SessionEvent, TerminalPanel, VncPanel},
         theme::{AppIcon, palette},
         windows::HostFormWindow,
     },
@@ -136,7 +137,42 @@ impl Row {
 struct TrackedSession {
     /// 这条会话开在哪台主机上。
     host: SharedString,
-    panel: WeakEntity<TerminalPanel>,
+    /// 那条标签页自己。类型由主机的 [`HostKind`] 决定 —— 名册只问它两件事：
+    /// 还活着吗（`alive`）、是不是这一条（`entity_id`）。
+    panel: TrackedPanel,
+}
+
+/// 名册能数得出来的那两种会话窗。一台主机是什么类型，开出来的就是哪一种
+/// （见 [`HostExplorerView::open_host`]）。
+enum TrackedPanel {
+    Terminal(WeakEntity<TerminalPanel>),
+    Vnc(WeakEntity<VncPanel>),
+}
+
+impl TrackedPanel {
+    /// 这条会话还连着吗。实体已经被回收（标签页整个关掉、没有谁报 [`SessionEvent::Ended`]）
+    /// 时 `upgrade` 给回 `None`，那就是"不活着" —— 不该再点亮卡片上那颗点。
+    fn alive(&self, cx: &gpui_kit::App) -> bool {
+        match self {
+            Self::Terminal(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive(cx)),
+            Self::Vnc(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
+        }
+    }
+
+    /// 还抓得到那个实体吗（被回收了就没有）。`Ended` 之外的一条清理路径。
+    fn exists(&self) -> bool {
+        match self {
+            Self::Terminal(panel) => panel.upgrade().is_some(),
+            Self::Vnc(panel) => panel.upgrade().is_some(),
+        }
+    }
+
+    fn entity_id(&self) -> EntityId {
+        match self {
+            Self::Terminal(panel) => panel.entity_id(),
+            Self::Vnc(panel) => panel.entity_id(),
+        }
+    }
 }
 
 /// 正在被拖着的那台主机。
@@ -400,16 +436,28 @@ impl HostExplorerView {
         self.recent.insert(0, host.id.clone());
         self.recent.truncate(RECENT_LIMIT);
 
-        let panel = TerminalPanel::new(
-            host.clone(),
-            self.service.clone(),
-            self.dock_area.clone(),
-            window,
-            cx,
-        );
-        self.track_session(host.id.clone(), &panel, window, cx);
+        // 主机的类型决定开哪一扇会话窗：SSH 进终端，VNC 进远端桌面。
+        let panel = match host.kind {
+            HostKind::Ssh => {
+                let panel = TerminalPanel::new(
+                    host.clone(),
+                    self.service.clone(),
+                    self.dock_area.clone(),
+                    window,
+                    cx,
+                );
+                self.track_session(host.id.clone(), &panel, window, cx);
+                panel_handle(panel)
+            }
+            HostKind::Vnc => {
+                let panel =
+                    VncPanel::new(host.clone(), self.dock_area.clone(), window, cx);
+                self.track_vnc_session(host.id.clone(), &panel, window, cx);
+                panel_handle(panel)
+            }
+        };
         _ = self.dock_area.update(cx, |area, cx| {
-            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+            area.add_panel_view(panel, DockPlacement::Center, None, window, cx);
         });
 
         self.rebuild_rows(cx);
@@ -434,29 +482,62 @@ impl HostExplorerView {
     ) {
         self.sessions.push(TrackedSession {
             host,
-            panel: panel.downgrade(),
+            panel: TrackedPanel::Terminal(panel.downgrade()),
         });
 
         cx.subscribe_in(
             panel,
             window,
             |this, panel, event: &SessionEvent, window, cx| {
-                match event {
-                    SessionEvent::Ended => {
-                        let closed = panel.entity_id();
-                        this.sessions
-                            .retain(|session| session.panel.entity_id() != closed);
-                    }
-                    SessionEvent::HostChanged => this.reload(window, cx),
-                    SessionEvent::LivenessChanged => {}
-                }
-                // 顺手清掉已经被回收的那几条：窗口整个关掉时没有谁来报 `Ended`。
-                this.sessions
-                    .retain(|session| session.panel.upgrade().is_some());
-                cx.notify();
+                this.on_session_event(panel.entity_id(), event, window, cx)
             },
         )
         .detach();
+    }
+
+    /// 照一台 VNC 主机开出来的那条桌面会话：入名册、盯存亡。和
+    /// [`Self::track_session`] 是同一件事，只是实体换了类型 —— 名册上那颗
+    /// 点不分终端还是桌面。
+    fn track_vnc_session(
+        &mut self,
+        host: SharedString,
+        panel: &Entity<VncPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sessions.push(TrackedSession {
+            host,
+            panel: TrackedPanel::Vnc(panel.downgrade()),
+        });
+
+        cx.subscribe_in(
+            panel,
+            window,
+            |this, panel, event: &SessionEvent, window, cx| {
+                this.on_session_event(panel.entity_id(), event, window, cx)
+            },
+        )
+        .detach();
+    }
+
+    /// 名册上的一条会话报上来的那件事怎么处置。终端与 VNC 两路共用这一份。
+    fn on_session_event(
+        &mut self,
+        closed: gpui_kit::EntityId,
+        event: &SessionEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SessionEvent::Ended => self
+                .sessions
+                .retain(|session| session.panel.entity_id() != closed),
+            SessionEvent::HostChanged => self.reload(window, cx),
+            SessionEvent::LivenessChanged => {}
+        }
+        // 顺手清掉已经被回收的那几条：窗口整个关掉时没有谁来报 `Ended`。
+        self.sessions.retain(|session| session.panel.exists());
+        cx.notify();
     }
 
     /// 卡片菜单里选中的那一项。开会话是这个视图自己的事（它连着 Dock）；
@@ -790,12 +871,7 @@ impl HostExplorerView {
             .sessions
             .iter()
             .filter(|session| &session.host == id)
-            .any(|session| {
-                session
-                    .panel
-                    .upgrade()
-                    .is_some_and(|panel| panel.read(cx).alive(cx))
-            });
+            .any(|session| session.panel.alive(cx));
 
         HostStatus {
             connected,
@@ -1370,12 +1446,14 @@ impl Render for HostExplorerView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::{AuthMethod, MonitorIntervals};
+    use crate::host::{AuthMethod, HostKind, MonitorIntervals};
 
     fn sample_host(name: &str, hostname: &str, tags: Vec<&str>) -> Host {
         Host {
+            vnc: Default::default(),
             id: name.into(),
             name: name.into(),
+            kind: HostKind::Ssh,
             user: "root".into(),
             hostname: hostname.into(),
             port: 22,

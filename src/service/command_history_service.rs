@@ -152,6 +152,8 @@ mod tests {
             .insert_host(
                 "默认分组",
                 HostDraft {
+                    vnc: Default::default(),
+                    kind: crate::host::HostKind::Ssh,
                     name: "测试机".into(),
                     user: "root".into(),
                     hostname: "10.0.0.1".into(),

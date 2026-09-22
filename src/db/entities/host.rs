@@ -14,6 +14,9 @@ pub struct Model {
     pub port: u16,
     pub platform: String,
     pub sort_order: i64,
+    /// 连接类型：`ssh` / `vnc`，默认 `ssh`。见 [`crate::host::HostKind`]。
+    #[sea_orm(default_value = "ssh")]
+    pub kind: String,
     /// 认证方式：`password` / `key` / `agent`，默认 `password`。
     #[sea_orm(default_value = "password")]
     pub auth_method: String,
@@ -52,6 +55,10 @@ pub struct Model {
     /// 空串是出厂档"跟随全局"，见 [`crate::proxy::decode`]。
     #[sea_orm(default_value = "")]
     pub proxy: String,
+    /// VNC 画质配置，JSON 编码的一份 [`crate::vnc::VncSettings`]。
+    /// 空串是出厂档，见 [`crate::vnc::decode`]。SSH 主机原样存着但没人读。
+    #[sea_orm(default_value = "")]
+    pub vnc_settings: String,
     /// 连上之后要不要往对端 shell 里装 OSC 133 标记，出厂是不装。
     /// 装的是什么、为什么要用户点头见 [`crate::terminal::shell_integration`]。
     #[sea_orm(default_value = false)]

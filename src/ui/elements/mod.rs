@@ -6,9 +6,12 @@
 //! 或者**要画的东西多到拼不起**（几千个格子，一个一个 `div` 会压死布局树）。
 //!
 //! [`TerminalGridElement`] 两条都占：终端有几行几列是"这块地方放得下几个
-//! 格子"算出来的，而一屏就是几千个格子。
+//! 格子"算出来的，而一屏就是几千个格子。[`VncFrameElement`] 占第一条：
+//! 一帧远端桌面缩放进容器后落在哪个矩形，也要布局之后才知道。
 
 mod boxdraw;
 mod terminal_grid;
+mod vnc_frame;
 
 pub use terminal_grid::{TerminalGridElement, cell_at, point_at};
+pub use vnc_frame::VncFrameElement;

@@ -13,6 +13,7 @@ mod monitor;
 mod sftp;
 mod sftp_editor;
 mod terminal;
+mod vnc;
 mod welcome;
 
 pub use assistant::{ASSISTANT_DOCK_WIDTH, AssistantPanel};
@@ -28,4 +29,5 @@ pub use terminal::{
     BackTab, CloseSearch, CopySelection, Find, PasteClipboard, SessionEvent, SplitLayout, Tab,
     TerminalPanel, ToggleForwards, ToggleHistory, ToggleMonitor, ToggleSftp,
 };
+pub use vnc::VncPanel;
 pub use welcome::{WelcomeEvent, WelcomePanel};

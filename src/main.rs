@@ -20,6 +20,7 @@ mod ssh;
 mod terminal;
 mod trusted_host;
 mod ui;
+mod vnc;
 
 use gpui_kit::component::{Root, TitleBar};
 use gpui_kit::{

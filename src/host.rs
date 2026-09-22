@@ -7,6 +7,65 @@
 use gpui_kit::SharedString;
 use rust_i18n::t;
 
+/// 连接类型。一台主机要么是一条 SSH，要么是一个 VNC 桌面，落库时存为
+/// 字符串（`ssh` / `vnc`），读回时按小写匹配。
+///
+/// 和 [`AuthMethod`] 一样：界面上的下拉按下标折回枚举，不拿那行字反查。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum HostKind {
+    #[default]
+    Ssh,
+    Vnc,
+}
+
+impl HostKind {
+    pub const ALL: [Self; 2] = [Self::Ssh, Self::Vnc];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ssh => "ssh",
+            Self::Vnc => "vnc",
+        }
+    }
+
+    /// 界面上的名字。协议名不译。
+    pub fn label(&self) -> SharedString {
+        match self {
+            Self::Ssh => "SSH".into(),
+            Self::Vnc => "VNC".into(),
+        }
+    }
+
+    /// 这一档的惯例端口：SSH 22，VNC 5900。[`crate::host::Host::address`]
+    /// 拿它决定要不要省略端口，表单拿它做换档时的默认值。
+    pub fn default_port(&self) -> u16 {
+        match self {
+            Self::Ssh => 22,
+            Self::Vnc => 5900,
+        }
+    }
+
+    pub fn index(&self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|candidate| candidate == self)
+            .unwrap_or_default()
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or_default()
+    }
+
+    /// 从库里那一列读回来。老库补出来的这一列是 `ssh`，坏值也按 SSH 处理 ——
+    /// 出厂档必须是不改变任何人现有行为的那一个。
+    pub fn from_str_or_default(raw: &str) -> Self {
+        match raw.trim().to_lowercase().as_str() {
+            "vnc" => Self::Vnc,
+            _ => Self::Ssh,
+        }
+    }
+}
+
 /// 认证方式。落库时存为字符串，读回时按小写匹配：`password` / `key` / `agent`。
 ///
 /// 界面上的下拉直接铺 [`AuthMethod::ALL`]，选中的是哪一档按下标折回来
@@ -125,6 +184,9 @@ pub struct Host {
     pub id: SharedString,
     /// 显示名，例如 `web-01`。
     pub name: SharedString,
+    /// 连接类型，见 [`HostKind`]。SSH 与 VNC 分派的就是它（见
+    /// [`crate::ui::views::HostExplorerView::open_host`]）。
+    pub kind: HostKind,
     pub user: SharedString,
     /// 主机名或 IP，例如 `10.0.1.11`。
     pub hostname: SharedString,
@@ -169,6 +231,11 @@ pub struct Host {
     /// 进 [`HostDraft`]：代理是"怎么连上去"的一部分，和地址、认证方式一样
     /// 在主机表单里填，不像采集节奏那样是连上之后才调的。
     pub proxy: crate::proxy::HostProxy,
+    /// VNC 的画质配置。见 [`crate::vnc::VncSettings`]。
+    ///
+    /// 同样进 [`HostDraft`]：它只在 [`HostKind::Vnc`] 的连接里有意义，和代理
+    /// 一样是"怎么连"的事；SSH 主机的这一份原样存着但没人读。
+    pub vnc: crate::vnc::VncSettings,
     /// 每次连上这台机器，要不要往对端 shell 里装一份 OSC 133 标记。
     ///
     /// 不进 [`HostDraft`]：和采集节奏、转发规则一样，它是连上之后在命令历史
@@ -179,9 +246,9 @@ pub struct Host {
 }
 
 impl Host {
-    /// `user@hostname:port` 形式的地址，端口为 22 时省略端口。
+    /// `user@hostname:port` 形式的地址，端口为该连接类型的惯例端口时省略端口。
     pub fn address(&self) -> String {
-        if self.port == 22 {
+        if self.port == self.kind.default_port() {
             format!("{}@{}", self.user, self.hostname)
         } else {
             format!("{}@{}:{}", self.user, self.hostname, self.port)
@@ -210,6 +277,8 @@ impl Host {
 pub struct HostDraft {
     /// 显示名，例如 `web-01`。
     pub name: String,
+    /// 连接类型，见 [`Host::kind`]。
+    pub kind: HostKind,
     pub user: String,
     /// 主机名或 IP，例如 `10.0.1.11`。
     pub hostname: String,
@@ -227,6 +296,8 @@ pub struct HostDraft {
     pub tags: Vec<SharedString>,
     /// 代理设置，见 [`Host::proxy`]。
     pub proxy: crate::proxy::HostProxy,
+    /// VNC 画质设置，见 [`Host::vnc`]。
+    pub vnc: crate::vnc::VncSettings,
 }
 
 /// 一台主机的运行时状态。
@@ -273,6 +344,49 @@ pub fn decode_tags(raw: &str) -> Vec<SharedString> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kinds_round_trip_through_storage_and_dropdown() {
+        for kind in HostKind::ALL {
+            assert_eq!(HostKind::from_str_or_default(kind.as_str()), kind);
+            assert_eq!(HostKind::from_index(kind.index()), kind);
+        }
+        assert_eq!(HostKind::from_index(99), HostKind::Ssh);
+        // 老库补出来的是 `ssh`；任何读不懂的值也按 SSH 处理，行为不变。
+        assert_eq!(HostKind::from_str_or_default(""), HostKind::Ssh);
+        assert_eq!(HostKind::from_str_or_default("VNC"), HostKind::Vnc);
+    }
+
+    #[test]
+    fn address_omits_the_default_port_of_each_kind() {
+        let mut host = Host {
+            id: "h".into(),
+            name: "h".into(),
+            kind: HostKind::Ssh,
+            user: "root".into(),
+            hostname: "10.0.0.1".into(),
+            port: 22,
+            platform: "".into(),
+            auth_method: AuthMethod::Password,
+            password: "".into(),
+            key_content: "".into(),
+            key_passphrase: "".into(),
+            jump_host_id: None,
+            monitor_intervals: MonitorIntervals::default(),
+            forwards: Vec::new(),
+            tags: Vec::new(),
+            proxy: crate::proxy::HostProxy::default(),
+            vnc: crate::vnc::VncSettings::default(),
+            shell_integration: false,
+        };
+        assert_eq!(host.address(), "root@10.0.0.1");
+
+        host.kind = HostKind::Vnc;
+        host.port = 5900;
+        assert_eq!(host.address(), "root@10.0.0.1");
+        host.port = 5901;
+        assert_eq!(host.address(), "root@10.0.0.1:5901");
+    }
 
     #[test]
     fn tags_round_trip() {
