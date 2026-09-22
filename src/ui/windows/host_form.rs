@@ -42,7 +42,10 @@ use crate::{
     credential::{Credential, CredentialKind},
     host::{AuthMethod, Host, HostDraft, HostGroup, HostKind},
     proxy::{self, HostProxy, ProxyConfig, ProxyMode},
-    vnc::{VncColorDepth, VncEncodingChoice, VncFrameRate, VncProtocolVersion, VncSettings},
+    vnc::{
+        VncClipboardCharset, VncColorDepth, VncEncodingChoice, VncFrameRate, VncProtocolVersion,
+        VncSettings,
+    },
     service::{HostService, LocalFileService, SshService},
     ui::{
         theme::{AppIcon, appearance, palette},
@@ -57,8 +60,8 @@ fn host_kinds() -> Vec<SharedString> {
     HostKind::ALL.map(|kind| kind.label()).to_vec()
 }
 
-/// VNC 画质那四档下拉的候选，顺序即各枚举的 `ALL`：深度 / 编码 / 帧率 /
-/// 版本。全按下标折回枚举，和认证方式、代理同一套规矩。
+/// VNC 那几档下拉的候选，顺序即各枚举的 `ALL`：深度 / 编码 / 帧率 /
+/// 版本 / 剪贴板字符集。全按下标折回枚举，和认证方式、代理同一套规矩。
 fn color_depths() -> Vec<SharedString> {
     VncColorDepth::ALL.map(|depth| depth.label()).to_vec()
 }
@@ -73,6 +76,12 @@ fn frame_rates() -> Vec<SharedString> {
 
 fn protocol_versions() -> Vec<SharedString> {
     VncProtocolVersion::ALL.map(|version| version.label()).to_vec()
+}
+
+fn clipboard_charsets() -> Vec<SharedString> {
+    VncClipboardCharset::ALL
+        .map(|charset| charset.label())
+        .to_vec()
 }
 
 /// 共享档的两个选项：0 可共享（出厂），1 独占。
@@ -203,6 +212,7 @@ pub struct HostForm {
     vnc_fps: Entity<SelectState<Vec<SharedString>>>,
     vnc_version: Entity<SelectState<Vec<SharedString>>>,
     vnc_share: Entity<SelectState<Vec<SharedString>>>,
+    vnc_charset: Entity<SelectState<Vec<SharedString>>>,
     proxy_jump: Entity<SelectState<Vec<SharedString>>>,
     /// 走不走 SOCKS5 代理：不使用 / 跟随全局 / 配置代理，见 [`proxy_modes`]。
     ///
@@ -429,6 +439,14 @@ impl HostForm {
                 cx,
             )
         });
+        let vnc_charset = cx.new(|cx| {
+            SelectState::new(
+                clipboard_charsets(),
+                Some(IndexPath::new(initial_vnc.clipboard_charset.index())),
+                window,
+                cx,
+            )
+        });
         let kind = cx.new(|cx| {
             SelectState::new(
                 host_kinds(),
@@ -546,6 +564,7 @@ impl HostForm {
             vnc_fps,
             vnc_version,
             vnc_share,
+            vnc_charset,
             proxy_jump,
             proxy_mode,
             proxy_host,
@@ -637,6 +656,7 @@ impl HostForm {
             protocol_version: VncProtocolVersion::from_index(row(&self.vnc_version)),
             // 共享档只有两格，0 就是可共享 —— 独占要人明确选。
             share: row(&self.vnc_share) == 0,
+            clipboard_charset: VncClipboardCharset::from_index(row(&self.vnc_charset)),
         }
     }
 
@@ -1197,7 +1217,7 @@ impl HostForm {
             })
     }
 
-    /// VNC 画质那一段：五档下拉，只在连接类型是 VNC 时画
+    /// VNC 那一段：六档下拉，只在连接类型是 VNC 时画
     /// （画不画由宿主 `advanced_page` 按当下类型决定）。
     fn render_vnc_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
@@ -1231,10 +1251,19 @@ impl HostForm {
                 ),
                 1.,
             ))
-            .child(field(
-                t!("host_form.field_vnc_share").into(),
-                Select::new(&self.vnc_share).w_full(),
-                cx,
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_vnc_share").into(),
+                    Select::new(&self.vnc_share).w_full(),
+                    cx,
+                ),
+                1.,
+                field(
+                    t!("host_form.field_vnc_charset").into(),
+                    Select::new(&self.vnc_charset).w_full(),
+                    cx,
+                ),
+                1.,
             ))
             .child(
                 div()

@@ -15,6 +15,13 @@
 //!
 //! 对端给的矩形一律先夹进画布再动手：矩形越界不是异常，是随时会发生的
 //! 事实（改尺寸的那一批更新里，旧尺寸的增量可能还在路上），画布不能 panic。
+//!
+//! 画布还替会话记一件事：**哪些像素从来没画过**（[`Canvas::fully_painted`]）。
+//! 空画布是全黑的，而 RFB 的增量请求只带回"变过的"—— 一块从没画过的区域
+//! 不会因为下一拍的刷新自己回来，它会**一直黑在那儿**。什么时候会出现
+//! 这种洞：刚连上（对端第一次全量没铺满）、刚改过分辨率（画布清零重来）、
+//! 中间丢过一块矩形（比如一份解不开的 JPEG）。会话按这本账决定下一次是要
+//! 增量还是要全量，见 [`super::session`]。
 
 use std::sync::Arc;
 
@@ -36,6 +43,13 @@ pub struct Canvas {
     /// 线上一个像素占几字节。与 [`VncColorDepth::bytes_per_pixel`] 同一张表，
     /// 从同一份深度生成 —— 展开循环的取字节数不会和表单档位说岔。
     source_bpp: usize,
+    /// 每个像素画过没有，长度恒等于 `width × height`。一像素一个 `bool`
+    /// （1080p 约 2 MB，帧缓冲本身的四分之一）——按 64×64 的格子记会便宜，
+    /// 但矩形不对齐格子时"这格算不算画满"没有答案，而这本账要的恰恰是
+    /// 那个准确的"一个像素都没漏"。
+    painted: Vec<bool>,
+    /// 还没画过的像素个数。[`Self::painted`] 的真值计数，增量维护。
+    unpainted: usize,
 }
 
 /// 线上像素进画布的三种走法，跟 [`VncColorDepth`] 一一对应。
@@ -73,6 +87,8 @@ impl Canvas {
             pixels: Vec::new(),
             wire: depth.into(),
             source_bpp: depth.bytes_per_pixel(),
+            painted: Vec::new(),
+            unpainted: 0,
         }
     }
 
@@ -85,7 +101,9 @@ impl Canvas {
     }
 
     /// 换到对端说的新尺寸。清零而不搬旧像素 —— 尺寸一变，旧画面挪到哪
-    /// 里都是猜；接下来 `Refresh` 会要一份全量更新，那一帧是干净的。
+    /// 里都是猜。清零之后整块画布都算"没画过"，会话下一拍就会去要一份
+    /// **全量**更新（[`Self::fully_painted`]）—— 光靠增量请求，这块新画布
+    /// 只会补上之后变过的那几处，其余一直黑着。
     /// 尺寸没变就是重复的公告，原样保留（有些服务器每批更新前都重发一次）。
     pub fn resize(&mut self, width: u16, height: u16) {
         if self.width == width && self.height == height {
@@ -96,6 +114,39 @@ impl Canvas {
         // 换整块而不是 `Vec::resize`：后者缩小是截断，开头那截旧内容会留着
         // —— 而这里要的恰恰是"旧画面整个作废"。
         self.pixels = vec![0; width as usize * height as usize * BYTES_PER_PIXEL];
+        self.painted = vec![false; width as usize * height as usize];
+        self.unpainted = self.painted.len();
+    }
+
+    /// 画面上每个像素都至少画过一次了吗。尺寸还没定下来（没连上）时是
+    /// `false` —— 那时候"铺满"无从谈起，会话照样该去要全量。
+    pub fn fully_painted(&self) -> bool {
+        self.size().is_some() && self.unpainted == 0
+    }
+
+    /// 还有多少像素从没画过。诊断用：要过几次全量它还不归零，就是对端
+    /// 根本没把那一片发出来。
+    pub fn unpainted(&self) -> usize {
+        self.unpainted
+    }
+
+    /// 把"画过"这本账整个作废（画面不动）。用户按"刷新画面"时用：
+    /// 下一拍会话就会去要一份全量，把花掉的地方重画一遍。
+    pub fn forget_paint(&mut self) {
+        self.painted.fill(false);
+        self.unpainted = self.painted.len();
+    }
+
+    /// 记下"从 `start` 起的 `len` 个像素画过了"。`start` 是像素下标，
+    /// 不是字节下标。
+    fn mark(&mut self, start: usize, len: usize) {
+        let unpainted = &mut self.unpainted;
+        for flag in &mut self.painted[start..start + len] {
+            if !*flag {
+                *flag = true;
+                *unpainted -= 1;
+            }
+        }
     }
 
     /// 一块矩形换成这些字节。`data` 按行铺满 `rect`（行主序），每像素的
@@ -111,9 +162,12 @@ impl Canvas {
         let stride = rect.width as usize * source_bpp;
         for row in 0..rows {
             let source = row * stride;
+            let line = (rect.y as usize + row) * self.width as usize + rect.x as usize;
             for column in 0..columns {
                 let at = source + column * source_bpp;
                 let Some(pixel) = data.get(at..at + source_bpp) else {
+                    // 正文短了一截：这一行剩下的和后面的行都没数据可画，
+                    // 那几个像素就继续记在"没画过"里，会话会去要回来。
                     return;
                 };
                 let bgra = match self.wire {
@@ -121,10 +175,9 @@ impl Canvas {
                     WireFormat::Rgb565 => expand_565(u16::from_be_bytes([pixel[0], pixel[1]])),
                     WireFormat::Rgb332 => expand_332(pixel[0]),
                 };
-                let target =
-                    ((rect.y as usize + row) * self.width as usize + rect.x as usize + column)
-                        * BYTES_PER_PIXEL;
+                let target = (line + column) * BYTES_PER_PIXEL;
                 self.pixels[target..target + BYTES_PER_PIXEL].copy_from_slice(&bgra);
+                self.mark(line + column, 1);
             }
         }
     }
@@ -142,9 +195,10 @@ impl Canvas {
             let Some(bytes) = data.get(source..source + row_bytes) else {
                 break;
             };
-            let target = ((rect.y as usize + row) * self.width as usize + rect.x as usize)
-                * BYTES_PER_PIXEL;
+            let line = (rect.y as usize + row) * self.width as usize + rect.x as usize;
+            let target = line * BYTES_PER_PIXEL;
             self.pixels[target..target + row_bytes].copy_from_slice(bytes);
+            self.mark(line, columns);
         }
     }
 
@@ -171,15 +225,30 @@ impl Canvas {
             Box::new(0..rows)
         };
         for row in order {
-            let from = ((source.y as usize + row) * self.width as usize + source.x as usize)
-                * BYTES_PER_PIXEL;
-            let to =
-                ((destination.y as usize + row) * self.width as usize + destination.x as usize)
-                    * BYTES_PER_PIXEL;
+            let from_line = (source.y as usize + row) * self.width as usize + source.x as usize;
+            let to_line =
+                (destination.y as usize + row) * self.width as usize + destination.x as usize;
+            let from = from_line * BYTES_PER_PIXEL;
+            let to = to_line * BYTES_PER_PIXEL;
             if from + row_bytes > self.pixels.len() || to + row_bytes > self.pixels.len() {
                 continue;
             }
             self.pixels.copy_within(from..from + row_bytes, to);
+            // "画过没有"跟着像素一起搬：从一块**没画过**的地方搬来的是黑的，
+            // 目的地也就该继续算没画过 —— 否则一次 CopyRect 就能把黑块洗成
+            // "已经画好的黑"，再也要不回来了。
+            let before = self.painted[to_line..to_line + columns]
+                .iter()
+                .filter(|painted| **painted)
+                .count();
+            self.painted
+                .copy_within(from_line..from_line + columns, to_line);
+            let after = self.painted[to_line..to_line + columns]
+                .iter()
+                .filter(|painted| **painted)
+                .count();
+            self.unpainted += before;
+            self.unpainted -= after;
         }
     }
 
@@ -366,5 +435,78 @@ mod tests {
     fn no_image_before_the_first_resolution() {
         let canvas = Canvas::new();
         assert!(canvas.to_render_image().is_none());
+    }
+
+    /// "画过没有"这本账：空画布一个像素都没画过，画满了才算铺满，
+    /// 换尺寸清零之后从头再来。会话按它决定要增量还是要全量。
+    #[test]
+    fn a_canvas_knows_which_pixels_have_never_been_painted() {
+        let mut canvas = Canvas::new();
+        assert!(!canvas.fully_painted(), "还没定下尺寸，谈不上铺满");
+
+        canvas.resize(2, 2);
+        assert_eq!(canvas.unpainted(), 4);
+        assert!(!canvas.fully_painted());
+
+        // 画左边一列：还剩右边一列没画过。
+        canvas.apply_raw(&rect(0, 0, 1, 2), &pixel(1, 0, 0).repeat(2));
+        assert_eq!(canvas.unpainted(), 2);
+
+        canvas.apply_raw(&rect(1, 0, 1, 2), &pixel(2, 0, 0).repeat(2));
+        assert!(canvas.fully_painted(), "四格都画过了");
+
+        // 同一块再画一遍不会把账记成负数。
+        canvas.apply_raw(&rect(0, 0, 2, 2), &pixel(3, 0, 0).repeat(4));
+        assert_eq!(canvas.unpainted(), 0);
+
+        // 换尺寸 = 整块作废，全部重新算没画过。
+        canvas.resize(3, 1);
+        assert_eq!(canvas.unpainted(), 3);
+        assert!(!canvas.fully_painted());
+    }
+
+    /// 正文短了一截时，没落地的那几格得继续算"没画过" —— 它们在画布上
+    /// 是黑的，而增量请求永远要不回来（那一片对服务器来说没"变过"）。
+    #[test]
+    fn a_truncated_payload_leaves_the_rest_unpainted() {
+        let mut canvas = Canvas::new();
+        canvas.resize(2, 2);
+        let partial: Vec<u8> = [pixel(1, 0, 0), pixel(2, 0, 0), pixel(3, 0, 0)].concat();
+        canvas.apply_raw(&rect(0, 0, 2, 2), &partial);
+        assert_eq!(canvas.unpainted(), 1, "缺的那一格还欠着");
+    }
+
+    /// CopyRect 把"画过没有"一起搬：从没画过的地方搬来的是一块黑，
+    /// 目的地就该继续算没画过。否则一次滚屏就能把黑块洗成"已经画好的
+    /// 黑"，那块洞再也要不回来。
+    #[test]
+    fn a_copy_carries_the_unpainted_flag_with_the_pixels() {
+        let mut canvas = Canvas::new();
+        canvas.resize(2, 1);
+        // 只画右边一格，左边那格从没画过。
+        canvas.apply_raw(&rect(1, 0, 1, 1), &pixel(7, 0, 0));
+        assert_eq!(canvas.unpainted(), 1);
+
+        // 把左边那格（没画过）搬到右边：右边也回到"没画过"。
+        canvas.apply_copy(&rect(1, 0, 1, 1), &rect(0, 0, 1, 1));
+        assert_eq!(canvas.unpainted(), 2, "搬来一块黑，不算把它画上了");
+
+        // 反过来：画好的一格搬到没画过的那格，账才该减。
+        canvas.apply_raw(&rect(0, 0, 1, 1), &pixel(8, 0, 0));
+        canvas.apply_copy(&rect(1, 0, 1, 1), &rect(0, 0, 1, 1));
+        assert_eq!(canvas.unpainted(), 0);
+    }
+
+    /// 手动"刷新画面"：画面不动，但账整个作废 —— 下一拍会去要全量。
+    #[test]
+    fn forgetting_the_paint_keeps_the_pixels_but_asks_again() {
+        let mut canvas = Canvas::new();
+        canvas.resize(1, 1);
+        canvas.apply_raw(&rect(0, 0, 1, 1), &pixel(5, 6, 7));
+        assert!(canvas.fully_painted());
+
+        canvas.forget_paint();
+        assert!(!canvas.fully_painted());
+        assert_eq!(&canvas.pixels[0..4], &pixel(5, 6, 7), "像素一个都不动");
     }
 }

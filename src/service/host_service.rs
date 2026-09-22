@@ -1245,7 +1245,10 @@ mod tests {
     /// 表单不单独维护这一列 —— 它跟着 `update_host` 整行重写。
     #[test]
     fn vnc_settings_round_trip() {
-        use crate::vnc::{VncColorDepth, VncEncodingChoice, VncFrameRate, VncProtocolVersion, VncSettings};
+        use crate::vnc::{
+            VncClipboardCharset, VncColorDepth, VncEncodingChoice, VncFrameRate,
+            VncProtocolVersion, VncSettings,
+        };
 
         db::runtime().block_on(async {
             let service = service().await;
@@ -1258,6 +1261,7 @@ mod tests {
                 frame_rate: VncFrameRate::Sixty,
                 protocol_version: VncProtocolVersion::Rfb37,
                 share: false,
+                clipboard_charset: VncClipboardCharset::Gbk,
             };
             let mut edited = draft("desk-01");
             edited.vnc = tuned;

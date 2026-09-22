@@ -159,6 +159,12 @@ vnc-rs = "0.6.0"
 # 一帧 `RgbaImage`（见 `src/vnc/canvas.rs`），版本与 gpui 依赖的那份同一条
 # 解析线。解码器一个都不开 —— 我们只把已经解码好的 BGRA 字节塞进去。
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# VNC 经典剪贴板正文的字符集转换（见 `src/vnc/clipboard.rs`）。RFB 那条正文
+# 没有字符集字段，现实里各家服务器塞的是自己那台机器的本地编码 —— Windows
+# 一侧就是系统 ANSI 代码页（简体中文 GBK/936、繁体 Big5/950、日文 932、
+# 韩文 949）。这些编码表自己写一份不现实，`encoding_rs` 是 Firefox 的那一份，
+# 本来就在依赖树里（reqwest 的 charset 一档拉的就是它），不多一行编译。
+encoding_rs = "0.8"
 
 # russh 的默认加密后端 aws-lc-rs 会用 C + 汇编编译 aws-lc-sys；在 x86_64 Windows 上
 # 它的汇编要靠 NASM 汇编，本机没有 nasm.exe 时 build 脚本直接 panic。开启

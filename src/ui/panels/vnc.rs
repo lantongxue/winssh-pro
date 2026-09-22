@@ -565,6 +565,19 @@ impl VncPanel {
                     ),
             )
             .child(
+                Button::new("vnc-panel-redraw")
+                    .ghost()
+                    .xsmall()
+                    .icon(
+                        Icon::new(IconName::Redo2)
+                            .with_size(px(12.))
+                            .text_color(palette::idle(cx)),
+                    )
+                    .label(t!("vnc.redraw"))
+                    .tooltip(t!("vnc.redraw_tooltip"))
+                    .on_click(cx.listener(|this, _, _, _| this.send(VncInput::Redraw))),
+            )
+            .child(
                 Button::new("vnc-panel-reconnect")
                     .ghost()
                     .xsmall()

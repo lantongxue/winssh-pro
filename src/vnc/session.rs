@@ -12,14 +12,20 @@
 //! reactor 和 timer；GPUI 侧只 await 通道的接收端，`tokio::mpsc::Receiver`
 //! 的 `recv` 不依赖 reactor，在哪个 executor 上等都行。
 //!
-//! 画帧的节奏：每 [`REFRESH_MS`] 一拍，脏了就把画布打包发一帧，并且**无论
-//! 脏不脏都发一次 `Refresh`** —— RFB 是"客户端要、服务器才推"的增量协议，
-//! 这一次请求在没有变化时是一个 10 字节的小包，服务器不回东西；它同时
-//! 也是"上一次更新收完了，可以发下一批"的信号。按秒三十来拍的请求频率
-//! 对带宽几乎没有影响，对端画面再快也最多被我们看慢三成。
+//! 画帧的节奏：每一拍（按 [`VncFrameRate`](super::VncFrameRate) 定）脏了就把
+//! 画布打包发一帧，并且**无论脏不脏都发一次更新请求** —— RFB 是"客户端要、
+//! 服务器才推"的增量协议，这一次请求在没有变化时是一个 10 字节的小包，
+//! 服务器不回东西；它同时也是"上一次更新收完了，可以发下一批"的信号。
+//! 按秒三十来拍的请求频率对带宽几乎没有影响，对端画面再快也最多被我们
+//! 看慢三成。
+//!
+//! 请求分两种，由画布上"还有没有从没画过的像素"来选（[`FullPaint`]）：
+//! 平时要**增量**，画面有洞时要**全量**。这件事非分不可 —— 增量请求只带回
+//! 变过的区域，一块从没画过的地方（刚连上、刚改过分辨率、丢过一块矩形）
+//! 在增量里永远不会出现，它会一直黑在那儿。
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use gpui_kit::{RenderImage, SharedString};
@@ -41,6 +47,17 @@ use crate::{db, host::Host};
 /// 要么根本不说话 —— 后者不能把"连接中"挂成永久，界面要按时给一句实话。
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// 画面上还有洞、而且**一直没有进展**多久之后，再要一次全量更新。
+/// 一整屏的更新对端要编一遍、我们要解一遍，比一拍增量贵几个数量级，
+/// 既不能按帧率的节奏要，也不能在上一份还在路上时叠单（慢链路上一份
+/// 4K 全量要走好几秒）—— 所以这个钟是"没画过的像素一个都没少"才走。
+const FULL_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// 连着要几次全量还铺不满，就不再要了。对端要是压根没打算发那一片
+/// （服务器的屏幕采集采不到的那种），再问下去只是每秒一整屏的白费带宽
+/// —— 留一行日志，把判断交给人。
+const FULL_REFRESH_ATTEMPTS: u32 = 8;
+
 /// 前台 → 后台的一条输入。
 #[derive(Debug, Clone)]
 pub enum VncInput {
@@ -51,9 +68,14 @@ pub enum VncInput {
     /// 滚轮：一格一档，正负各方向（x 横向、y 纵向，向下/向右为正，
     /// 和 GPUI 的 `ScrollDelta::Lines` 同一个方向）。
     Wheel { x: i16, y: i16 },
+    /// 重画一遍：整块画布重新算作"没画过"，去要一份全量更新。
+    /// 界面上那颗"刷新画面"按钮发的就是它 —— 画面花了、黑了一块，
+    /// 不必断开重连，跟对端重新要一次就行。
+    Redraw,
     /// 本地剪贴板变了，把新文本推给对端。
-    /// 走经典正文还是扩展剪贴板、经典正文按哪种字符集编码，全在这条会话的
-    /// [`ClipboardSync`] 里按对端的能力定（见 [`super::clipboard`]）。
+    /// 走经典正文还是扩展剪贴板由对端的能力定；经典正文按哪种字符集编码
+    /// 由主机上那格设置（[`VncClipboardCharset`](super::VncClipboardCharset)）
+    /// 定 —— 都在这条会话的 [`ClipboardSync`] 里（见 [`super::clipboard`]）。
     CutText(String),
 }
 
@@ -185,6 +207,85 @@ fn rfb_error(error: VncError) -> anyhow::Error {
     }
 }
 
+/// "画面铺满了没有"这本账 —— 决定每一拍要增量还是要全量。
+///
+/// RFB 的增量请求只带回**变过的**区域。所以画布上一块从没画过的地方
+/// （刚连上时对端的头一份全量没铺满、刚改过分辨率清了画布、中途丢过一块
+/// 解不开的矩形）在增量里永远不会出现：它会一直是空画布的黑色。这本账
+/// 盯着 [`Canvas::fully_painted`]，有洞就隔 [`FULL_REFRESH_INTERVAL`] 要一次
+/// 全量，铺满了就闭嘴；要满 [`FULL_REFRESH_ATTEMPTS`] 次还有洞，那是对端
+/// 的采集侧根本没发，记一行日志之后不再问。
+#[derive(Debug)]
+struct FullPaint {
+    /// 上一次"有进展、或者刚要过一份全量"的时刻。[`FULL_REFRESH_INTERVAL`]
+    /// 那个钟从这里开始走。
+    since: Instant,
+    /// 上一次看到还欠多少像素。变了就说明画面还在往里填 —— 那就别催。
+    unpainted: usize,
+    /// 这一轮要过几次全量了（铺满或用户手动重画时归零）。
+    tries: u32,
+    /// "要不回来"那行日志报过没有。一轮只报一次。
+    reported: bool,
+}
+
+impl FullPaint {
+    /// 刚连上时起一份。钟从这一刻走 —— `vnc-rs` 自己在握手之后就要过一份
+    /// 全量了，头一秒里该做的是等它到，而不是再叠一份。
+    fn new(now: Instant) -> Self {
+        Self {
+            since: now,
+            unpainted: usize::MAX,
+            tries: 0,
+            reported: false,
+        }
+    }
+
+    /// 这一拍该发哪一种更新请求。
+    fn request(&mut self, canvas: &Canvas, now: Instant) -> X11Event {
+        // 欠账变了 = 画面还在往里填（或者刚清过重来）：钟重走，别催。
+        if self.unpainted != canvas.unpainted() {
+            self.unpainted = canvas.unpainted();
+            self.since = now;
+        }
+        if canvas.fully_painted() {
+            if self.tries > 0 {
+                log::debug!("VNC：画面已铺满，回到增量刷新");
+                self.tries = 0;
+                self.reported = false;
+            }
+            return X11Event::Refresh;
+        }
+        if now.duration_since(self.since) < FULL_REFRESH_INTERVAL {
+            return X11Event::Refresh;
+        }
+        if self.tries >= FULL_REFRESH_ATTEMPTS {
+            if !self.reported {
+                self.reported = true;
+                log::warn!(
+                    "VNC：要了 {} 次全量更新，画面上仍有 {} 个像素对端从没发过 —— \
+                     黑块出在服务器那边的屏幕采集上（UltraVNC 可以试着关掉 Capture 页的 \
+                     DDEngine（改完要重启服务）、或者勾上 Poll Full Screen）",
+                    self.tries,
+                    canvas.unpainted(),
+                );
+            }
+            return X11Event::Refresh;
+        }
+        self.since = now;
+        self.tries += 1;
+        X11Event::FullRefresh
+    }
+
+    /// 用户按了"刷新画面"：这本账从头记，并且算作"刚刚已经要过一次全量"
+    /// —— 那一条是调用方当场发出去的，下一拍不必再要一遍。
+    fn restart(&mut self, now: Instant) {
+        self.since = now;
+        self.unpainted = usize::MAX;
+        self.tries = 1;
+        self.reported = false;
+    }
+}
+
 /// 协议循环：等事件、攒画布、按拍发帧；两边通道断了就收工。
 ///
 /// `settings` 在这里只用到两处：画布按点名的深度解像素，节拍按帧率上限走。
@@ -195,7 +296,8 @@ async fn run(
     settings: crate::vnc::VncSettings,
 ) {
     let mut canvas = Canvas::with_depth(settings.color_depth);
-    let mut clipboard = ClipboardSync::default();
+    let mut clipboard = ClipboardSync::new(settings.clipboard_charset);
+    let mut full_paint = FullPaint::new(Instant::now());
     let mut dirty = false;
     let mut reason = t!("vnc.disconnected").to_string();
     let mut refresh = tokio::time::interval(Duration::from_millis(
@@ -225,8 +327,9 @@ async fn run(
                     dirty = true;
                 }
                 // Tight 的照片类矩形会以 JPEG 交过来：解成 BGRA 贴进画布。
-                // 解不动（服务器发了份坏图）就丢这一块矩形 —— 下一拍
-                // 的 Refresh 还会把它要回来，不值得把会话带下水。
+                // 解不动（服务器发了份坏图）就丢这一块矩形，不值得把会话
+                // 带下水 —— 那一片在画布上仍算"没画过"，[`FullPaint`] 会
+                // 用一次全量把它要回来（增量请求要不回来，它没"变过"）。
                 Ok(VncEvent::JpegImage(rectangle, bytes)) => {
                     if let Some(pixels) = decode_jpeg(&bytes) {
                         canvas.apply_bgra(&rectangle, &pixels);
@@ -296,6 +399,12 @@ async fn run(
                         for _ in 0..x.max(0) { let _ = wheel(64).await; let _ = release().await; }
                         for _ in 0..(-x).max(0) { let _ = wheel(32).await; let _ = release().await; }
                     }
+                    VncInput::Redraw => {
+                        // 画布上的账整个作废，当场跟对端要一份全量。
+                        canvas.forget_paint();
+                        full_paint.restart(Instant::now());
+                        let _ = client.input(X11Event::FullRefresh).await;
+                    }
                     VncInput::CutText(text) => {
                         // 超限的整条跳过而不是截断发一半 —— 截断是一份
                         // 悄悄变了样的"你复制的内容"，比不同步更坏。
@@ -315,7 +424,9 @@ async fn run(
                             break;
                         }
                 }
-                let _ = client.input(X11Event::Refresh).await;
+                // 画面有洞就要全量，没洞才要增量 —— 一块从没画过的地方
+                // 不在"变过的区域"里，增量请求要一辈子也要不回来。
+                let _ = client.input(full_paint.request(&canvas, Instant::now())).await;
             }
         }
     }
@@ -885,6 +996,175 @@ mod tests {
         });
     }
 
+    /// 主机上点了字符集，经典正文两个方向就都按那张表走。
+    ///
+    /// 这是"对端是中文 Windows（TightVNC / UltraVNC / RealVNC 的 WinVNC，
+    /// 都没有扩展剪贴板，正文用系统 ANSI 代码页）"那一档：线上落下的字节
+    /// 得是 GBK 的四个字节，而不是 UTF-8 的六个 —— 中文剪贴板在那种对端上
+    /// 乱码，差的就是这一步。
+    #[test]
+    fn a_named_clipboard_charset_is_spoken_in_both_directions() {
+        use crate::vnc::settings::VncClipboardCharset;
+
+        // 远端复制的中文 / 本地复制的中文，都按 GBK 的字节。
+        let remote_gbk: Vec<u8> = vec![
+            0xD4, 0xB6, 0xB6, 0xCB, 0xB8, 0xB4, 0xD6, 0xC6, 0xB5, 0xC4, 0xD6, 0xD0, 0xCE, 0xC4,
+        ];
+        let local_gbk: Vec<u8> = vec![
+            0xB1, 0xBE, 0xB5, 0xD8, 0xB8, 0xB4, 0xD6, 0xC6, 0xB5, 0xC4, 0xD6, 0xD0, 0xCE, 0xC4,
+        ];
+        db::runtime().block_on(async {
+            let log = Arc::new(std::sync::Mutex::new(WireLog::default()));
+            let (addr, _server) = fake_server(vec![0; 64], remote_gbk, log.clone()).await;
+            let mut host = host_at(addr);
+            host.vnc.clipboard_charset = VncClipboardCharset::Gbk;
+            let mut session = VncSession::connect(host).await.unwrap();
+            let mut events = session.take_events().unwrap();
+
+            let mut saw = None;
+            for _ in 0..8 {
+                let Ok(Some(event)) =
+                    tokio::time::timeout(Duration::from_secs(5), events.recv()).await
+                else {
+                    break;
+                };
+                match event {
+                    VncOutput::CutText(text) => {
+                        saw = Some(text);
+                        break;
+                    }
+                    VncOutput::Frame(_) => {}
+                    VncOutput::Disconnected(reason) => panic!("会话断了：{reason}"),
+                }
+            }
+            assert_eq!(
+                saw.as_deref(),
+                Some("远端复制的中文"),
+                "点了 GBK，对端那串 GBK 字节就该解成中文",
+            );
+
+            session
+                .inputs()
+                .send(VncInput::CutText("本地复制的中文".into()))
+                .unwrap();
+            assert!(
+                await_clipboard(&log, |message| {
+                    matches!(message, ClientClipboard::Classic(bytes) if *bytes == local_gbk)
+                })
+                .await,
+                "点了 GBK，本地的中文就该按 GBK 上线（不是 UTF-8），实际 {:?}",
+                log.lock().unwrap().clipboard,
+            );
+        });
+    }
+
+    /// 画面有洞就要全量、铺满就回到增量，而且不会按帧率的节奏猛要。
+    ///
+    /// 这是黑块能不能自己愈合的全部关窍：增量请求只带回"变过的"区域，
+    /// 一块从没画过的地方在增量里永远不出现。
+    #[test]
+    fn a_hole_in_the_picture_asks_for_a_full_update_then_stops() {
+        let mut canvas = Canvas::new();
+        canvas.resize(2, 1);
+        let start = Instant::now();
+        let mut paint = FullPaint::new(start);
+
+        // 头一秒不催：`vnc-rs` 握手之后自己要过一份全量，这会儿它正在路上。
+        assert!(matches!(paint.request(&canvas, start), X11Event::Refresh));
+        assert!(matches!(
+            paint.request(&canvas, start + Duration::from_millis(33)),
+            X11Event::Refresh
+        ));
+        // 一秒过去了，画面还有洞、而且一个像素都没填上：这才去要全量。
+        assert!(matches!(
+            paint.request(&canvas, start + FULL_REFRESH_INTERVAL),
+            X11Event::FullRefresh
+        ));
+
+        // 那一份正在往里填（欠账在减）：钟重走，不叠单 —— 慢链路上一份
+        // 4K 全量要走好几秒，这时候每秒再要一份只会雪上加霜。
+        canvas.apply_raw(
+            &vnc::Rect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            &[1, 2, 3, 255],
+        );
+        assert!(matches!(
+            paint.request(&canvas, start + FULL_REFRESH_INTERVAL * 2),
+            X11Event::Refresh
+        ));
+
+        // 对端把画面铺满了：回到增量，一次全量都不再要。
+        canvas.apply_raw(
+            &vnc::Rect {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 1,
+            },
+            &[1, 2, 3, 255, 4, 5, 6, 255],
+        );
+        for tick in 0..100 {
+            assert!(
+                matches!(
+                    paint.request(&canvas, start + Duration::from_secs(10 + tick)),
+                    X11Event::Refresh
+                ),
+                "铺满之后不该再要全量",
+            );
+        }
+
+        // 又出现一个洞（改了分辨率、丢了一块矩形）：重新开始要。
+        canvas.resize(4, 1);
+        let mut requested = 0;
+        for second in 0..40u64 {
+            if matches!(
+                paint.request(&canvas, start + Duration::from_secs(1000 + second)),
+                X11Event::FullRefresh
+            ) {
+                requested += 1;
+            }
+        }
+        assert_eq!(
+            requested, FULL_REFRESH_ATTEMPTS,
+            "对端始终不发那一片时，要够 {FULL_REFRESH_ATTEMPTS} 次就该收手，不能每秒一整屏地耗下去",
+        );
+    }
+
+    /// 手动"刷新画面"把这本账清回去，重新要满一轮。
+    #[test]
+    fn a_manual_redraw_starts_the_asking_over() {
+        // 连尺寸都还没有的画布：永远算有洞。
+        let canvas = Canvas::new();
+        let start = Instant::now();
+        let mut paint = FullPaint::new(start);
+        for second in 0..30u64 {
+            paint.request(&canvas, start + Duration::from_secs(second));
+        }
+        assert!(
+            matches!(
+                paint.request(&canvas, start + Duration::from_secs(100)),
+                X11Event::Refresh
+            ),
+            "要够了就该收手",
+        );
+
+        // 用户按了按钮：调用方当场发了一条全量，账从头记 —— 下一拍不再
+        // 重复发，但一秒后还有洞就接着要。
+        paint.restart(start + Duration::from_secs(100));
+        assert!(matches!(
+            paint.request(&canvas, start + Duration::from_secs(100)),
+            X11Event::Refresh
+        ));
+        assert!(matches!(
+            paint.request(&canvas, start + Duration::from_secs(102)),
+            X11Event::FullRefresh
+        ));
+    }
+
     /// 等假服务器记下的剪贴板消息里出现一条满足 `check` 的，最多等 5 秒。
     async fn await_clipboard(
         log: &Arc<std::sync::Mutex<WireLog>>,
@@ -909,6 +1189,7 @@ mod tests {
             VncColorDepth, VncEncodingChoice, VncFrameRate, VncProtocolVersion, VncSettings,
         };
 
+
         db::runtime().block_on(async {
             // ── 一：高彩 + 高压缩（应退化）+ 独占 + 版本封顶 3.7 ──
             let log = Arc::new(std::sync::Mutex::new(WireLog::default()));
@@ -922,6 +1203,7 @@ mod tests {
                 frame_rate: VncFrameRate::Fifteen,
                 protocol_version: VncProtocolVersion::Rfb37,
                 share: false,
+                ..VncSettings::default()
             };
             let mut session = VncSession::connect(host)
                 .await

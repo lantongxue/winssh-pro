@@ -898,6 +898,12 @@ vnc.reconnect_tooltip:
 vnc.close_session:
   en: Close desktop
   zh-CN: 关闭桌面
+vnc.redraw:
+  en: Redraw
+  zh-CN: 刷新画面
+vnc.redraw_tooltip:
+  en: Ask the server for the whole screen again. Use it when part of the picture is stuck black or stale - the incremental updates only carry what changed, so a region that was never sent never comes back on its own.
+  zh-CN: 跟服务器重新要一整屏。画面有一块一直黑着或者停在旧内容时按它——增量更新只带回变过的区域，从没发过来的那一片不会自己回来。
 vnc.depth_true32:
   en: True colour (32-bit)
   zh-CN: 真彩（32 位）
@@ -931,6 +937,27 @@ vnc.share_shared:
 vnc.share_exclusive:
   en: Exclusive (disconnect other viewers)
   zh-CN: 独占（踢掉其他查看者）
+vnc.charset_auto:
+  en: Automatic (UTF-8, sniff GBK, else Latin-1)
+  zh-CN: 自动（UTF-8，嗅 GBK，再退 Latin-1）
+vnc.charset_utf8:
+  en: UTF-8 (Linux / macOS servers)
+  zh-CN: UTF-8（Linux / macOS 服务器）
+vnc.charset_gbk:
+  en: GBK (Simplified Chinese Windows)
+  zh-CN: GBK（简体中文 Windows）
+vnc.charset_big5:
+  en: Big5 (Traditional Chinese Windows)
+  zh-CN: Big5（繁体中文 Windows）
+vnc.charset_shift_jis:
+  en: Shift_JIS (Japanese Windows)
+  zh-CN: Shift_JIS（日文 Windows）
+vnc.charset_euc_kr:
+  en: EUC-KR (Korean Windows)
+  zh-CN: EUC-KR（韩文 Windows）
+vnc.charset_latin1:
+  en: Latin-1 (what RFC 6143 says)
+  zh-CN: Latin-1（规范字面那一档）
 
 # ── 主机表单（新建 / 编辑主机的对话框） ──────────────────────────────────
 host_form.title_new:
@@ -1038,9 +1065,12 @@ host_form.field_vnc_version:
 host_form.field_vnc_share:
   en: Desktop sharing
   zh-CN: 桌面共享
+host_form.field_vnc_charset:
+  en: Clipboard charset
+  zh-CN: 剪贴板字符集
 host_form.vnc_hint:
-  en: High compression (Tight) only applies in 32-bit true colour; other depths fall back to Zrle. Exclusive disconnects viewers already on this desktop.
-  zh-CN: 高压缩（Tight）只在真彩 32 位下生效，其余深度自动落回 Zrle；独占会踢掉已在该桌面上的其他查看者。
+  en: "High compression (Tight) only applies in 32-bit true colour; other depths fall back to Zrle. Exclusive disconnects viewers already on this desktop. The clipboard charset only matters for servers without the extended clipboard: RFB's plain cut text carries no charset, so a Windows server uses its own ANSI code page - pick GBK for a Simplified Chinese one if pasted Chinese comes out garbled."
+  zh-CN: "高压缩（Tight）只在真彩 32 位下生效，其余深度自动落回 Zrle；独占会踢掉已在该桌面上的其他查看者。剪贴板字符集只对没有扩展剪贴板的服务器起作用：RFB 的经典正文不带字符集，Windows 上的服务器用的是它自己的 ANSI 代码页 —— 复制中文乱码时，简体中文那台点 GBK。"
 host_form.field_key_content:
   en: Private key *
   zh-CN: 私钥 *

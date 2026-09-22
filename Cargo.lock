@@ -11878,6 +11878,7 @@ dependencies = [
  "aws-lc-rs",
  "chrono",
  "dirs 6.0.0",
+ "encoding_rs",
  "env_logger",
  "flate2",
  "futures",

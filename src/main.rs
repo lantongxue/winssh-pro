@@ -36,6 +36,16 @@ use ui::Workspace;
 rust_i18n::i18n!("locales", fallback = "en");
 
 fn main() {
+    // 装上日志后端。`log::warn!` / `log::info!` 在代码里到处都是，而
+    // `log` 没有后端时它们**一条都不出来** —— 排"中文剪贴板乱码"这类
+    // "对端到底是什么货色"的问题，看的就是这些行（`RUST_LOG=winssh_pro=info`
+    // 能看到 VNC 剪贴板走的是扩展还是经典、按哪种字符集编解）。出厂只放
+    // warn 以上，日常跑起来和以前一样安静。
+    // `try_init` 而不是 `init`：谁（将来的某个库）先装过一个，这里就让位，
+    // 而不是在启动的第一行 panic 掉整个应用。
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .try_init();
+
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         // 语言要在组件库之前定下来：组件库初始化的时候已经在读自己的文案了。
         i18n::init();

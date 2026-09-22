@@ -269,6 +269,102 @@ impl VncProtocolVersion {
     }
 }
 
+/// 经典剪贴板正文的字符集 —— 只管**经典**那条路（`ClientCutText` /
+/// `ServerCutText` 的正文）。对端认扩展剪贴板（伪编码 `0xc0a1e5ce`）时正文
+/// 按规范就是 UTF-8，这一档不参与。
+///
+/// 为什么要有这一档：RFB 那条正文按 RFC 6143 §7.5.6 只是 Latin-1，**没有
+/// 字符集字段**，而现实里各家服务器往里塞的是自己那台机器的本地编码 ——
+/// Linux / macOS 一侧多半已是 UTF-8，Windows 一侧（TightVNC、UltraVNC、
+/// RealVNC 的 WinVNC）是系统 ANSI 代码页：简体中文 GBK(936)、繁体
+/// Big5(950)、日文 Shift_JIS(932)、韩文 EUC-KR(949)。猜错的后果就是中文两个
+/// 方向都乱码，而协议里没有任何一个字段能问出答案，所以做成一格设置。
+///
+/// 选哪一档：先留在[自动](Self::Auto)；确知对端是中文 Windows 上的
+/// TightVNC / UltraVNC / RealVNC 就点 [GBK](Self::Gbk)（繁体点 Big5），
+/// 那一档是确定的，不靠嗅探。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VncClipboardCharset {
+    /// 自动（出厂档）。
+    ///
+    /// - **收**：UTF-8 解得动就 UTF-8；解不动再试一次 GBK（严格解，不许有
+    ///   一个字掉进替换字符，且解出来得真有汉字），还不行才按规范当 Latin-1。
+    ///   只嗅 GBK 一种 —— Big5 / Shift_JIS 的字节在 GBK 里多半也"解得通"，
+    ///   只是解成另一堆字，嗅探分不开它们，那两种得自己点。
+    /// - **发**：Latin-1 装得下就单字节，装不下发 UTF-8；但只要这条会话上
+    ///   嗅出过一次对端的传统编码，之后就按嗅出来的那一种发。所以中文在
+    ///   自动档下是"远端先复制一次，两个方向就都通了"——想第一次就通，
+    ///   把这一格点成对端真正的编码。
+    #[default]
+    Auto,
+    /// UTF-8。Linux / macOS 上的服务器（x11vnc、libvncserver、TigerVNC 的
+    /// Xvnc、macOS 屏幕共享）基本都是这一种。
+    Utf8,
+    /// GBK（代码页 936）。简体中文 Windows 上的 VNC 服务器就是它。
+    Gbk,
+    /// Big5（代码页 950）。繁体中文 Windows。
+    Big5,
+    /// Shift_JIS（代码页 932）。日文 Windows。
+    ShiftJis,
+    /// EUC-KR（代码页 949）。韩文 Windows。
+    EucKr,
+    /// Latin-1。RFC 6143 字面上的那一档：一个字节一个码点，中文无论如何
+    /// 过不去 —— 只在别的档都把重音字母解坏时才点它。
+    Latin1,
+}
+
+impl VncClipboardCharset {
+    pub const ALL: [Self; 7] = [
+        Self::Auto,
+        Self::Utf8,
+        Self::Gbk,
+        Self::Big5,
+        Self::ShiftJis,
+        Self::EucKr,
+        Self::Latin1,
+    ];
+
+    pub fn label(&self) -> SharedString {
+        match self {
+            Self::Auto => t!("vnc.charset_auto"),
+            Self::Utf8 => t!("vnc.charset_utf8"),
+            Self::Gbk => t!("vnc.charset_gbk"),
+            Self::Big5 => t!("vnc.charset_big5"),
+            Self::ShiftJis => t!("vnc.charset_shift_jis"),
+            Self::EucKr => t!("vnc.charset_euc_kr"),
+            Self::Latin1 => t!("vnc.charset_latin1"),
+        }
+        .into()
+    }
+
+    pub fn index(&self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|candidate| candidate == self)
+            .unwrap_or_default()
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or_default()
+    }
+
+    /// 这一档对应 `encoding_rs` 的哪张表。`Auto` 没有固定的一张（按嗅探
+    /// 走），`Latin1` 也没有 —— WHATWG 把 `iso-8859-1` 这个名字映到
+    /// windows-1252，两者在 0x80–0x9F 那一段并不一样，而 RFC 6143 要的是
+    /// 真正的 Latin-1，所以那一档自己按字节展开（见 [`super::clipboard`]）。
+    pub fn table(&self) -> Option<&'static encoding_rs::Encoding> {
+        match self {
+            Self::Auto | Self::Latin1 => None,
+            Self::Utf8 => Some(encoding_rs::UTF_8),
+            Self::Gbk => Some(encoding_rs::GBK),
+            Self::Big5 => Some(encoding_rs::BIG5),
+            Self::ShiftJis => Some(encoding_rs::SHIFT_JIS),
+            Self::EucKr => Some(encoding_rs::EUC_KR),
+        }
+    }
+}
+
 /// 一台主机的 VNC 画质配置。进 [`crate::host::HostDraft`]：它是"怎么连"
 /// 的一部分，和代理一样在主机表单里填。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -281,6 +377,9 @@ pub struct VncSettings {
     /// 允许别的查看者同看一个桌面（ClientInit 的 shared-flag）。
     /// 关掉的语义是"把别人踢下去"，所以和别的客户端抢同一台桌面时才关。
     pub share: bool,
+    /// 经典剪贴板正文按哪种字符集收发。对端认扩展剪贴板时这一档不参与
+    /// （那条路按规范就是 UTF-8）。
+    pub clipboard_charset: VncClipboardCharset,
 }
 
 impl VncSettings {
@@ -299,7 +398,7 @@ impl VncSettings {
     }
 }
 
-/// 出厂档：真彩、自动编码、30fps、3.8、**共享**。
+/// 出厂档：真彩、自动编码、30fps、3.8、**共享**、剪贴板字符集自动。
 ///
 /// `share` 手写在这里而不是拿 `bool` 的零值 —— "独占"的语义是把别人从桌面
 /// 上踢下去，那种事绝不能是谁没配置就默认发生的。
@@ -311,6 +410,7 @@ impl Default for VncSettings {
             frame_rate: VncFrameRate::default(),
             protocol_version: VncProtocolVersion::default(),
             share: true,
+            clipboard_charset: VncClipboardCharset::default(),
         }
     }
 }
@@ -359,6 +459,9 @@ mod tests {
         for version in VncProtocolVersion::ALL {
             assert_eq!(VncProtocolVersion::from_index(version.index()), version);
         }
+        for charset in VncClipboardCharset::ALL {
+            assert_eq!(VncClipboardCharset::from_index(charset.index()), charset);
+        }
         // 越界一律按出厂档，不 panic —— 下拉给不出越界下标，给出来了也不卡表单。
         assert_eq!(VncColorDepth::from_index(9), VncColorDepth::True32);
         assert_eq!(VncFrameRate::from_index(9), VncFrameRate::Thirty);
@@ -385,6 +488,7 @@ mod tests {
         assert_eq!(default.frame_rate, VncFrameRate::Thirty);
         assert_eq!(default.protocol_version, VncProtocolVersion::Rfb38);
         assert!(default.share);
+        assert_eq!(default.clipboard_charset, VncClipboardCharset::Auto);
     }
 
     #[test]
@@ -395,7 +499,20 @@ mod tests {
             frame_rate: VncFrameRate::Sixty,
             protocol_version: VncProtocolVersion::Rfb33,
             share: false,
+            clipboard_charset: VncClipboardCharset::Gbk,
         };
         assert_eq!(decode(&encode(&settings)), settings);
+    }
+
+    /// 字符集这一格是后补的：库里存着的旧 JSON 没有这个键，读回来得是
+    /// 自动档，而不是整行退回出厂画质。
+    #[test]
+    fn an_older_row_without_the_charset_key_still_reads() {
+        let older = r#"{"color_depth":"high16","encoding":"highcompression","frame_rate":"sixty","protocol_version":"rfb33","share":false}"#;
+        let settings = decode(older);
+        assert_eq!(settings.color_depth, VncColorDepth::High16);
+        assert_eq!(settings.frame_rate, VncFrameRate::Sixty);
+        assert!(!settings.share);
+        assert_eq!(settings.clipboard_charset, VncClipboardCharset::Auto);
     }
 }
