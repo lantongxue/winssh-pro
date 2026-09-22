@@ -152,6 +152,8 @@ opendal = { version = "0.59", features = ["services-s3", "services-webdav"] }
 aes-gcm = "0.11.1"
 pbkdf2 = "0.13.0"
 sha2 = "0.11.0"
+# 注意：这一份在文件末尾被 `[patch.crates-io]` 换成了打过补丁的本地副本
+# （`vendor/vnc-rs`）—— 剪贴板那两处上游绕不开的事都落在那里，见那条注释。
 vnc-rs = "0.6.0"
 # VNC 画布打包给 GPUI 用的像素容器：`gpui::RenderImage` 吃的就是 `image` 的
 # 一帧 `RgbaImage`（见 `src/vnc/canvas.rs`），版本与 gpui 依赖的那份同一条
@@ -172,6 +174,25 @@ aws-lc-rs = { version = "1.16.2", features = ["prebuilt-nasm"] }
 # 套自己，编译期看不出来，跑起来是栈溢出。门面 crate 的 `test-support` 转开的就是
 # `gpui/test-support`，`#[gpui_kit::test]` 与 `TestAppContext` 由它带出来。
 gpui-kit = { path = "refs/gpui-kit/crates/kit", features = ["test-support"] }
+
+# 假服务器要自己解一遍客户端 Provide 出去的 zlib 流（扩展剪贴板的正文），
+# 才验得出"中文真从这条路上走过去了"。和 `vnc-rs` 用的同一份实现，
+# 本来就在依赖树里，多不了多少编译量。
+flate2 = "1"
+
+# 剪贴板要的东西 `vnc-rs` 自己不做：扩展剪贴板（RealVNC / TigerVNC / noVNC 的
+# 共同扩展，伪编码 0xc0a1e5ce，UTF-8 + zlib）的消息编解码，以及经典正文按字节
+# 交给上层。上游两条都绕不开：`Text(String)` 用有损 UTF-8 解正文（一份按规范发
+# 来的 Latin-1 `é` 会被吃成 U+FFFD），而扩展消息里最高位置位的长度，上游会当成
+# 天文数字的经典正文，直接报错把会话带下水。0.6.0 已是 crates.io 上的最新版，
+# 没有"升级即修"的路，于是在一份本地副本上打补丁：`vendor/vnc-rs` 逐字来自
+# crates.io 的 0.6.0（含 LICENSE 与上游 git 信息），改动清单见
+# `vendor/vnc-rs/PATCHES.md`，只有剪贴板这一处。
+#
+# 想挪成 `refs/` 那种子模块 fork 也容易：把那份目录推成一个仓库，这里改指
+# `{ git = "…" }` 就行 —— 布局是照着那条路留的。
+[patch.crates-io]
+vnc-rs = { path = "vendor/vnc-rs" }
 
 # 依赖全部按发布级优化编译。gpui 与 alacritty_terminal 是每一帧真正在跑的代码，
 # dev 默认的 opt-level=0 会让它们慢出一个数量级 —— 界面卡、CPU 占用高，多半就是

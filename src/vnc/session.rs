@@ -30,17 +30,16 @@ use vnc::{
     X11Event,
 };
 
-use super::{Canvas, transport};
+use super::{
+    Canvas,
+    clipboard::{ClipboardSync, MAX_CUT_TEXT},
+    transport,
+};
 use crate::{db, host::Host};
 
 /// 握手上限。连到不是 VNC 的端口（SSH、HTTP）时，对面要么马上关连接、
 /// 要么根本不说话 —— 后者不能把"连接中"挂成永久，界面要按时给一句实话。
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// 剪贴板文本的字节上限，与 `vnc-rs` 自己 `limits::MAX_TEXT` 的数对齐。
-/// 超了它 `vnc-rs` 会在读侧直接掐断连接 —— 一屏复制误抄进一整本日志时，
-/// 宁可这条剪贴板同步被跳过，也不能把会话带下水。
-const MAX_CUT_TEXT: usize = 1024 * 1024;
 
 /// 前台 → 后台的一条输入。
 #[derive(Debug, Clone)]
@@ -52,9 +51,9 @@ pub enum VncInput {
     /// 滚轮：一格一档，正负各方向（x 横向、y 纵向，向下/向右为正，
     /// 和 GPUI 的 `ScrollDelta::Lines` 同一个方向）。
     Wheel { x: i16, y: i16 },
-    /// 本地剪贴板变了，把新文本推给对端（ClientCutText）。
-    /// 文本按 UTF-8 上线：ASCII 到哪儿都对，非 ASCII 取决于服务器的口味
-    /// （RFC 6143 只承诺 Latin-1，见 [`crate::vnc`] 模块文档那条）。
+    /// 本地剪贴板变了，把新文本推给对端。
+    /// 走经典正文还是扩展剪贴板、经典正文按哪种字符集编码，全在这条会话的
+    /// [`ClipboardSync`] 里按对端的能力定（见 [`super::clipboard`]）。
     CutText(String),
 }
 
@@ -111,7 +110,12 @@ impl VncSession {
                 .set_pixel_format(settings.color_depth.pixel_format())
                 // 编码表按画质档排，表头就是我们对压缩的偏好。
                 .add_encoding(VncEncoding::DesktopSizePseudo)
-                .add_encoding(VncEncoding::LastRectPseudo);
+                .add_encoding(VncEncoding::LastRectPseudo)
+                // 声明我们认扩展剪贴板。对端认它就会递一份 Caps 过来 ——
+                // 那之后中文才有路走（经典正文按规范只是 Latin-1）；不认的
+                // 服务器对这一条一无所知，照旧走经典。它是能力声明，不是
+                // 压缩档，所以排在伪编码这一段里。
+                .add_encoding(VncEncoding::ExtendedClipboardPseudo);
             for encoding in chosen.encoding_order() {
                 connector = connector.add_encoding(*encoding);
             }
@@ -191,6 +195,7 @@ async fn run(
     settings: crate::vnc::VncSettings,
 ) {
     let mut canvas = Canvas::with_depth(settings.color_depth);
+    let mut clipboard = ClipboardSync::default();
     let mut dirty = false;
     let mut reason = t!("vnc.disconnected").to_string();
     let mut refresh = tokio::time::interval(Duration::from_millis(
@@ -234,12 +239,27 @@ async fn run(
                 Ok(VncEvent::SetCursor(..)) => {
                     log::debug!("VNC: 收到未协商的光标矩形，忽略");
                 }
-                // 对端复制了东西。原样转给前台去写系统剪贴板 —— 回环怎么防
-                // 是前台的事（它知道两边此刻同步的是哪一份）。
-                Ok(VncEvent::Text(text)) => {
+                // 对端复制了东西，走经典正文。正文是字节：解成 UTF-8 还是 Latin-1
+                // 归 `clipboard` 那本账（见 [`super::clipboard`]）。原样转给前台
+                // 去写系统剪贴板 —— 回环怎么防是前台的事（它知道两边此刻同步的
+                // 是哪一份）。
+                Ok(VncEvent::Text(bytes)) => {
+                    let text = clipboard.on_classic(&bytes);
                     if events_tx.send(VncOutput::CutText(text)).is_err() {
                         break;
                     }
+                }
+                // 扩展剪贴板那一串：Caps 握手、Notify / Request 要数据、
+                // Provide 给数据。回什么、要不要写本地剪贴板都由 `clipboard` 定。
+                Ok(VncEvent::Clipboard(message)) => {
+                    let reaction = clipboard.on_extended(message);
+                    if let Some(reply) = reaction.reply {
+                        let _ = client.input(reply).await;
+                    }
+                    if let Some(text) = reaction.clipboard
+                        && events_tx.send(VncOutput::CutText(text)).is_err() {
+                            break;
+                        }
                 }
                 Ok(VncEvent::Bell) | Ok(VncEvent::SetPixelFormat(_)) => {}
                 Ok(VncEvent::Error(message)) => {
@@ -281,8 +301,8 @@ async fn run(
                         // 悄悄变了样的"你复制的内容"，比不同步更坏。
                         if text.len() > MAX_CUT_TEXT {
                             log::warn!("VNC 剪贴板文本超过 {MAX_CUT_TEXT} 字节，这条不同步");
-                        } else {
-                            let _ = client.input(X11Event::CopyText(text)).await;
+                        } else if let Some(event) = clipboard.local_text(text) {
+                            let _ = client.input(event).await;
                         }
                     }
                 }
@@ -322,7 +342,139 @@ mod tests {
         shared_flag: Option<u8>,
         pixel_format: Option<Vec<u8>>,
         encodings: Vec<u32>,
-        cut_texts: Vec<String>,
+        /// 客户端发来的剪贴板消息，按顺序抄下来。
+        clipboard: Vec<ClientClipboard>,
+    }
+
+    /// 假服务器把客户端那条 ClientCutText 读成的样子。两档正文按规范的字节
+    /// 布局各自解一遍（经典是 Latin-1，扩展是长度取负 + flags + 数据块），
+    /// 客户端说得对不对，看这里，不看它自己的内部状态。
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ClientClipboard {
+        /// 经典正文，原样的字节。
+        Classic(Vec<u8>),
+        /// 扩展剪贴板：`(动作位, 格式位, 各格式的数据)`。
+        Caps(u32, u32, Vec<(u32, u32)>),
+        Extended(u32, u32, Vec<(u32, Vec<u8>)>),
+    }
+
+    // 规范里的那几个数：动作占 flags 的高 8 位，格式占低 16 位。
+    const ACTION_CAPS: u32 = 1 << 24;
+    const ACTION_REQUEST: u32 = 1 << 25;
+    const ACTION_NOTIFY: u32 = 1 << 27;
+    const ACTION_PROVIDE: u32 = 1 << 28;
+    const FORMAT_TEXT: u32 = 1 << 0;
+
+    /// 客户端发来的扩展正文 → 抄成 [`ClientClipboard`]：flags 分出动作，
+    /// 各动作自己的正文各自解。
+    fn read_extended(body: &[u8]) -> ClientClipboard {
+        let flags = u32::from_be_bytes(body[..4].try_into().unwrap());
+        let formats = flags & 0x0000_ffff;
+        let actions = flags & 0xff00_0000;
+        let rest = &body[4..];
+
+        // Caps：每个列出来的格式跟着一个 U32，说它愿意收多大。
+        if actions & ACTION_CAPS != 0 {
+            let mut limits = Vec::new();
+            let mut rest = rest;
+            for bit in 0..16 {
+                let format = 1u32 << bit;
+                if formats & format == 0 {
+                    continue;
+                }
+                limits.push((format, u32::from_be_bytes(rest[..4].try_into().unwrap())));
+                rest = &rest[4..];
+            }
+            return ClientClipboard::Caps(actions, formats, limits);
+        }
+
+        // Provide：正文是 zlib，解出来按格式位的顺序一块块读（长度在前）。
+        if actions & ACTION_PROVIDE != 0 {
+            let plain = inflate(rest);
+            let mut items = Vec::new();
+            let mut plain = &plain[..];
+            for bit in 0..16 {
+                let format = 1u32 << bit;
+                if formats & format == 0 {
+                    continue;
+                }
+                let size = u32::from_be_bytes(plain[..4].try_into().unwrap()) as usize;
+                items.push((format, plain[4..4 + size].to_vec()));
+                plain = &plain[4 + size..];
+            }
+            return ClientClipboard::Extended(actions, formats, items);
+        }
+
+        ClientClipboard::Extended(actions, formats, Vec::new())
+    }
+
+    /// 服务器发出去的扩展剪贴板消息：类型 [3]、padding、负数长度、flags、正文。
+    fn extended_message(actions: u32, formats: u32, body: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![3, 0, 0, 0];
+        bytes.extend_from_slice(&(-((4 + body.len()) as i32)).to_be_bytes());
+        bytes.extend_from_slice(&(actions | formats).to_be_bytes());
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    /// Provide 的正文：zlib 压缩 [每块 U32 长度 + 数据]。
+    fn provide_body(items: &[(u32, Vec<u8>)]) -> Vec<u8> {
+        let mut plain = Vec::new();
+        for (_, data) in items {
+            plain.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            plain.extend_from_slice(data);
+        }
+        deflate(&plain)
+    }
+
+    fn deflate(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(bytes).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn inflate(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Read as _;
+        let mut out = Vec::new();
+        flate2::read::ZlibDecoder::new(bytes)
+            .read_to_end(&mut out)
+            .unwrap();
+        out
+    }
+
+    /// 3.8 + 无认证的一轮握手，现场抄进 `log`。回来的是"对面也报 3.8 吗"。
+    async fn handshake(stream: &mut TcpStream, log: &Arc<std::sync::Mutex<WireLog>>) -> bool {
+        stream.write_all(b"RFB 003.008\n").await.unwrap();
+        let mut version = [0; 12];
+        stream.read_exact(&mut version).await.unwrap();
+        let negotiated_38 = &version == b"RFB 003.008\n";
+        log.lock().unwrap().client_version = version.to_vec();
+        // 只递 None 认证这一档。
+        stream.write_all(&[1, 1]).await.unwrap();
+        let mut selected = [0; 1];
+        stream.read_exact(&mut selected).await.unwrap();
+        // 3.7 没有 SecurityResult 这一步，多写四个字节会把 ServerInit 顶歪。
+        if negotiated_38 {
+            stream.write_all(&0u32.to_be_bytes()).await.unwrap();
+        }
+        // ServerInit：4×4，出厂 BGRA 像素格式（shift 16/8/0），名字 `fake`。
+        let mut init: Vec<u8> = Vec::new();
+        init.extend_from_slice(&4u16.to_be_bytes());
+        init.extend_from_slice(&4u16.to_be_bytes());
+        init.extend_from_slice(&[32, 24, 0, 1]);
+        init.extend_from_slice(&255u16.to_be_bytes());
+        init.extend_from_slice(&255u16.to_be_bytes());
+        init.extend_from_slice(&255u16.to_be_bytes());
+        init.extend_from_slice(&[16, 8, 0, 0, 0, 0]);
+        init.extend_from_slice(&4u32.to_be_bytes());
+        init.extend_from_slice(b"fake");
+        stream.write_all(&init).await.unwrap();
+        let mut shared = [0; 1];
+        stream.read_exact(&mut shared).await.unwrap();
+        log.lock().unwrap().shared_flag = Some(shared[0]);
+        negotiated_38
     }
 
     /// 假 RFB 服务器：3.8 + 无认证 + 一块 4×4 的 BGRA 帧，外加两样剪贴板道具 ——
@@ -337,34 +489,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let task = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            stream.write_all(b"RFB 003.008\n").await.unwrap();
-            let mut version = [0; 12];
-            stream.read_exact(&mut version).await.unwrap();
-            let negotiated_38 = &version == b"RFB 003.008\n";
-            log.lock().unwrap().client_version = version.to_vec();
-            // 只递 None 认证这一档。
-            stream.write_all(&[1, 1]).await.unwrap();
-            let mut selected = [0; 1];
-            stream.read_exact(&mut selected).await.unwrap();
-            // 3.7 没有 SecurityResult 这一步，多写四个字节会把 ServerInit 顶歪。
-            if negotiated_38 {
-                stream.write_all(&0u32.to_be_bytes()).await.unwrap();
-            }
-            // ServerInit：4×4，出厂 BGRA 像素格式（shift 16/8/0），名字 `fake`。
-            let mut init: Vec<u8> = Vec::new();
-            init.extend_from_slice(&4u16.to_be_bytes());
-            init.extend_from_slice(&4u16.to_be_bytes());
-            init.extend_from_slice(&[32, 24, 0, 1]);
-            init.extend_from_slice(&255u16.to_be_bytes());
-            init.extend_from_slice(&255u16.to_be_bytes());
-            init.extend_from_slice(&255u16.to_be_bytes());
-            init.extend_from_slice(&[16, 8, 0, 0, 0, 0]);
-            init.extend_from_slice(&4u32.to_be_bytes());
-            init.extend_from_slice(b"fake");
-            stream.write_all(&init).await.unwrap();
-            let mut shared = [0; 1];
-            stream.read_exact(&mut shared).await.unwrap();
-            log.lock().unwrap().shared_flag = Some(shared[0]);
+            let _ = handshake(&mut stream, &log).await;
 
             // 消息泵：吞下 SetEncodings(2) 与客户端的键鼠事件；
             // FramebufferUpdateRequest(3) 第一次回那一张完整的帧（外加一条
@@ -426,23 +551,241 @@ mod tests {
                         stream.read_exact(&mut pointer).await.unwrap();
                     }
                     // ServerCutText 的反方向：[3] 的类型字节对客户端是
-                    // ClientCutText，[6, pad×3, u32 len, bytes]。
+                    // ClientCutText，[6, pad×3, u32 len, bytes]。长度最高位置位
+                    // 就是扩展剪贴板的正文（长度是负数）——两种都按规范手写一遍。
                     6 => {
                         let mut padding = [0; 3];
                         stream.read_exact(&mut padding).await.unwrap();
-                        let length = stream.read_u32().await.unwrap() as usize;
-                        let mut bytes = vec![0; length];
-                        stream.read_exact(&mut bytes).await.unwrap();
-                        log.lock()
-                            .unwrap()
-                            .cut_texts
-                            .push(String::from_utf8_lossy(&bytes).into_owned());
+                        let length = stream.read_u32().await.unwrap();
+                        let message = if length & 0x8000_0000 == 0 {
+                            let mut bytes = vec![0; length as usize];
+                            stream.read_exact(&mut bytes).await.unwrap();
+                            ClientClipboard::Classic(bytes)
+                        } else {
+                            let mut body = vec![0; (length as i32).unsigned_abs() as usize];
+                            stream.read_exact(&mut body).await.unwrap();
+                            read_extended(&body)
+                        };
+                        log.lock().unwrap().clipboard.push(message);
                     }
                     _ => return,
                 }
             }
         });
         (addr, task)
+    }
+
+    /// 假 RFB 服务器，认得扩展剪贴板那一套：读到 `SetEncodings` 就递一份自己的
+    /// Caps；收到客户端的 Caps 之后拿一条自己的 `Notify` 试探（"我这边复制了东西"
+    /// ——客户端该来 Request，我们再 Provide）；收到客户端的 `Notify` 就回 `Request`
+    /// （客户端该 Provide 回来）。每一步都按规范的字节布局手写，验的是"中文真从
+    /// 这条路上过去了"，而不是我们自己的状态自洽。
+    async fn fake_extended_server(
+        remote_text: &'static str,
+        log: Arc<std::sync::Mutex<WireLog>>,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = handshake(&mut stream, &log).await;
+
+            // 自己的 Notify 只发一次（等客户端回过 Caps 再发）。
+            let mut notified = false;
+            while let Ok(message_type) = stream.read_u8().await {
+                match message_type {
+                    0 => {
+                        let mut payload = [0; 19];
+                        stream.read_exact(&mut payload).await.unwrap();
+                    }
+                    2 => {
+                        let mut padding = [0; 1];
+                        let mut count = [0; 2];
+                        stream.read_exact(&mut padding).await.unwrap();
+                        stream.read_exact(&mut count).await.unwrap();
+                        let mut skip = vec![0; u16::from_be_bytes(count) as usize * 4];
+                        stream.read_exact(&mut skip).await.unwrap();
+                        log.lock().unwrap().encodings = skip
+                            .as_chunks::<4>()
+                            .0
+                            .iter()
+                            .map(|four| u32::from_be_bytes(*four))
+                            .collect();
+                        // 客户端报了扩展剪贴板，服务器就递一份 Caps：文本格式，
+                        // 四个动作，认到 1 MiB。
+                        stream
+                            .write_all(&extended_message(
+                                ACTION_CAPS | ACTION_REQUEST | ACTION_NOTIFY | ACTION_PROVIDE,
+                                FORMAT_TEXT,
+                                &(1u32 << 20).to_be_bytes(),
+                            ))
+                            .await
+                            .unwrap();
+                    }
+                    3 => {
+                        let mut request = [0; 9];
+                        stream.read_exact(&mut request).await.unwrap();
+                        stream.write_all(&[0, 0, 0, 0]).await.unwrap();
+                    }
+                    4 => {
+                        let mut key = [0; 6];
+                        stream.read_exact(&mut key).await.unwrap();
+                    }
+                    5 => {
+                        let mut pointer = [0; 5];
+                        stream.read_exact(&mut pointer).await.unwrap();
+                    }
+                    6 => {
+                        let mut padding = [0; 3];
+                        stream.read_exact(&mut padding).await.unwrap();
+                        let length = stream.read_u32().await.unwrap();
+                        // 对端递过 Caps 之后，客户端只该走扩展正文。
+                        assert_ne!(length & 0x8000_0000, 0, "报了 Caps 之后不该再走经典正文");
+                        let mut body = vec![0; (length as i32).unsigned_abs() as usize];
+                        stream.read_exact(&mut body).await.unwrap();
+                        let message = read_extended(&body);
+                        log.lock().unwrap().clipboard.push(message.clone());
+
+                        match message {
+                            // 客户端回过 Caps 了：递一条自己的 Notify。
+                            ClientClipboard::Caps(..) if !notified => {
+                                notified = true;
+                                stream
+                                    .write_all(&extended_message(ACTION_NOTIFY, FORMAT_TEXT, &[]))
+                                    .await
+                                    .unwrap();
+                            }
+                            // 客户端来要文本：Provide 一份中文过去。
+                            ClientClipboard::Extended(actions, ..)
+                                if actions & ACTION_REQUEST != 0 =>
+                            {
+                                stream
+                                    .write_all(&extended_message(
+                                        ACTION_PROVIDE,
+                                        FORMAT_TEXT,
+                                        &provide_body(&[(
+                                            FORMAT_TEXT,
+                                            remote_text.as_bytes().to_vec(),
+                                        )]),
+                                    ))
+                                    .await
+                                    .unwrap();
+                            }
+                            // 客户端说它有新文本：去要。
+                            ClientClipboard::Extended(actions, ..)
+                                if actions & ACTION_NOTIFY != 0 =>
+                            {
+                                stream
+                                    .write_all(&extended_message(
+                                        ACTION_REQUEST,
+                                        FORMAT_TEXT,
+                                        &[],
+                                    ))
+                                    .await
+                                    .unwrap();
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => return,
+                }
+            }
+        });
+        (addr, task)
+    }
+
+    /// 扩展剪贴板：对端认这一套时，中文两个方向都从这条路上走。
+    ///
+    /// 假服务器把 Caps / Notify / Request / Provide 四种正文按规范手写一遍，
+    /// 客户端发出去的那几条也按规范解回来 —— 这条路上任何一头写错字节，断言
+    /// 都落在"对面收到的是什么"上，而不是我们自己以为发了什么。经典路径上
+    /// 中文只能按 UTF-8 碰运气，这里才是它该走的路。
+    #[test]
+    fn extended_clipboard_carries_chinese_both_ways() {
+        let remote_text = "远端复制的中文";
+        let local_text = "本地复制的中文";
+        let log = Arc::new(std::sync::Mutex::new(WireLog::default()));
+        db::runtime().block_on(async {
+            let (addr, _server) = fake_extended_server(remote_text, log.clone()).await;
+            let mut session = VncSession::connect(host_at(addr)).await.unwrap();
+            let mut events = session.take_events().unwrap();
+
+            // 握手：对端先递 Caps，客户端该回敬一份 —— 只报文本一个格式，
+            // 动作报全套，并声明自己能收多大。
+            assert!(
+                await_clipboard(&log, |message| matches!(
+                    message,
+                    ClientClipboard::Caps(actions, formats, limits)
+                        if actions & (ACTION_REQUEST | ACTION_NOTIFY | ACTION_PROVIDE)
+                            == ACTION_REQUEST | ACTION_NOTIFY | ACTION_PROVIDE
+                        && formats & FORMAT_TEXT != 0
+                        && *limits == vec![(FORMAT_TEXT, MAX_CUT_TEXT as u32)]
+                ))
+                .await,
+                "客户端该回一份自己的 Caps，实际 {:?}",
+                log.lock().unwrap().clipboard,
+            );
+
+            // 远端 → 本地：服务器 Notify → 我们去 Request → 它 Provide，
+            // 前台从 `VncOutput::CutText` 里收到中文。
+            let mut saw = None;
+            for _ in 0..8 {
+                let Ok(Some(event)) =
+                    tokio::time::timeout(Duration::from_secs(5), events.recv()).await
+                else {
+                    break;
+                };
+                match event {
+                    VncOutput::CutText(text) => {
+                        saw = Some(text);
+                        break;
+                    }
+                    VncOutput::Frame(_) => {}
+                    VncOutput::Disconnected(reason) => panic!("会话断了：{reason}"),
+                }
+            }
+            assert_eq!(saw.as_deref(), Some(remote_text));
+            assert!(
+                await_clipboard(&log, |message| matches!(
+                    message,
+                    ClientClipboard::Extended(actions, ..) if actions & ACTION_REQUEST != 0
+                ))
+                .await,
+                "收到 Notify 该去 Request，实际 {:?}",
+                log.lock().unwrap().clipboard,
+            );
+
+            // 本地 → 远端：本地复制只报一声（正文不出门），对端来 Request 之后
+            // 才 Provide —— 落在对端的字节得是 UTF-8 的中文，而不是经典的 Latin-1。
+            session
+                .inputs()
+                .send(VncInput::CutText(local_text.to_string()))
+                .unwrap();
+            assert!(
+                await_clipboard(&log, |message| matches!(
+                    message,
+                    ClientClipboard::Extended(actions, formats, items)
+                        if actions & ACTION_NOTIFY != 0
+                            && *formats & FORMAT_TEXT != 0
+                            && items.is_empty()
+                ))
+                .await,
+                "扩展路径下本地复制只该发一条空的 Notify，实际 {:?}",
+                log.lock().unwrap().clipboard,
+            );
+            assert!(
+                await_clipboard(&log, |message| matches!(
+                    message,
+                    ClientClipboard::Extended(actions, formats, items)
+                        if actions & ACTION_PROVIDE != 0
+                            && *formats & FORMAT_TEXT != 0
+                            && items == &vec![(FORMAT_TEXT, format!("{local_text}\0").into_bytes())]
+                ))
+                .await,
+                "对端来要之后该 Provide 一份 UTF-8 正文，实际 {:?}",
+                log.lock().unwrap().clipboard,
+            );
+        });
     }
 
     fn host_at(addr: SocketAddr) -> Host {
@@ -473,60 +816,87 @@ mod tests {
         }
     }
 
-    /// 剪贴板文本两头都在真线路上走。远端 → 本地：假服务器在首帧后补一条
-    /// ServerCutText，前台从 `VncOutput::CutText` 里把它收到；本地 → 远端：
-    /// 发一条 `VncInput::CutText`，假服务器存档的 payload 得原样是那份文本
-    /// （连 UTF-8 一起）。写回系统剪贴板与防回声的镜像归 [`VncPanel`](crate::ui::panels::VncPanel)，
-    /// 那一层没有真剪贴板可断言，这里钉的是协议层交出去的这两只手。
+    /// 经典剪贴板（对端不认扩展）两头都在真线路上走，字符集按现实里的两种对端
+    /// 各解一次。远端 → 本地：假服务器先后补一条 UTF-8 的中文与一条 Latin-1 的
+    /// 重音字母，前台从 `VncOutput::CutText` 里收到的得是那两句话；本地 → 远端：
+    /// 发一条 `VncInput::CutText`，假服务器按规范读出来的字节得是我们算的那一份
+    /// （中文 UTF-8、`café` 单字节 Latin-1、CRLF 折成 LF）。写回系统剪贴板与
+    /// 防回声的镜像归 [`VncPanel`](crate::ui::panels::VncPanel)，那一层没有真
+    /// 剪贴板可断言，这里钉的是协议层交出去的这两只手。
     #[test]
-    fn clipboard_text_travels_both_ways() {
-        let from_remote = b"remote says copy";
-        let received = Arc::new(std::sync::Mutex::new(WireLog::default()));
+    fn classic_cut_text_speaks_utf8_and_latin1() {
         db::runtime().block_on(async {
-            let (addr, _server) = fake_server(
-                vec![0; 64],
-                from_remote.to_vec(),
-                received.clone(),
-            )
-            .await;
-            let mut session = VncSession::connect(host_at(addr)).await.unwrap();
-            let mut events = session.take_events().unwrap();
+            // ── 远端 → 本地：两种字符集的正文各来一条 ──
+            // 中文按 UTF-8 发（现代实现多半如此），é 按规范的单字节 Latin-1 发。
+            // 后者在旧代码里会被 `from_utf8_lossy` 吃成一串 U+FFFD。
+            for (wire, expected) in [
+                ("远端复制的中文".as_bytes().to_vec(), "远端复制的中文"),
+                (vec![0x63, 0x61, 0x66, 0xE9], "café"),
+            ] {
+                let log = Arc::new(std::sync::Mutex::new(WireLog::default()));
+                let (addr, _server) = fake_server(vec![0; 64], wire, log.clone()).await;
+                let mut session = VncSession::connect(host_at(addr)).await.unwrap();
+                let mut events = session.take_events().unwrap();
 
-            // 远端 → 本地：文本可能排在首帧前，也可能排在后，收到为止。
-            let mut saw_remote_text = None;
-            for _ in 0..8 {
-                let Ok(Some(event)) =
-                    tokio::time::timeout(Duration::from_secs(5), events.recv()).await
-                else {
-                    break;
-                };
-                match event {
-                    VncOutput::CutText(text) => {
-                        saw_remote_text = Some(text);
+                // 文本可能排在首帧前，也可能排在后，收到为止。
+                let mut saw = None;
+                for _ in 0..8 {
+                    let Ok(Some(event)) =
+                        tokio::time::timeout(Duration::from_secs(5), events.recv()).await
+                    else {
                         break;
+                    };
+                    match event {
+                        VncOutput::CutText(text) => {
+                            saw = Some(text);
+                            break;
+                        }
+                        VncOutput::Frame(_) => {}
+                        VncOutput::Disconnected(reason) => panic!("会话断了：{reason}"),
                     }
-                    VncOutput::Frame(_) => {}
-                    VncOutput::Disconnected(reason) => panic!("会话断了：{reason}"),
                 }
+                assert_eq!(saw.as_deref(), Some(expected));
             }
-            assert_eq!(saw_remote_text.as_deref(), Some("remote says copy"));
 
-            // 本地 → 远端：发出去一条带着中文的一条，对面数出来的字节得是同一句。
-            let wanted = "请粘贴 git status".to_string();
-            session
-                .inputs()
-                .send(VncInput::CutText(wanted.clone()))
-                .unwrap();
-            let mut arrived = false;
-            for _ in 0..50 {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                if received.lock().unwrap().cut_texts.contains(&wanted) {
-                    arrived = true;
-                    break;
-                }
+            // ── 本地 → 远端：同一份策略的另一半 ──
+            // 对端没报 Caps（这份假服务器就不认扩展），所以正文照经典走：
+            // Latin-1 装得下的按单字节，装不下的按 UTF-8，行尾折成 LF。
+            let log = Arc::new(std::sync::Mutex::new(WireLog::default()));
+            let (addr, _server) = fake_server(vec![0; 64], Vec::new(), log.clone()).await;
+            let session = VncSession::connect(host_at(addr)).await.unwrap();
+            for (text, expected_wire) in [
+                ("请粘贴 git status", "请粘贴 git status".as_bytes().to_vec()),
+                ("café", vec![0x63, 0x61, 0x66, 0xE9]),
+                ("a\r\nb", b"a\nb".to_vec()),
+            ] {
+                session
+                    .inputs()
+                    .send(VncInput::CutText(text.to_string()))
+                    .unwrap();
+                assert!(
+                    await_clipboard(&log, |message| {
+                        matches!(message, ClientClipboard::Classic(bytes) if *bytes == expected_wire)
+                    })
+                    .await,
+                    "{text:?} 该按 {expected_wire:?} 上线，实际 {:?}",
+                    log.lock().unwrap().clipboard,
+                );
             }
-            assert!(arrived, "对端应记下我们发去的这条文本，实际 {:?}", received.lock().unwrap());
         });
+    }
+
+    /// 等假服务器记下的剪贴板消息里出现一条满足 `check` 的，最多等 5 秒。
+    async fn await_clipboard(
+        log: &Arc<std::sync::Mutex<WireLog>>,
+        check: impl Fn(&ClientClipboard) -> bool,
+    ) -> bool {
+        for _ in 0..50 {
+            if log.lock().unwrap().clipboard.iter().any(|message| check(message)) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        false
     }
 
     /// 画质设置不是只存进库就完事 —— 共享位、`SetPixelFormat`、编码表、
@@ -604,11 +974,12 @@ mod tests {
             assert_eq!(observed.shared_flag, Some(1), "出厂是可共享");
             let format = observed.pixel_format.as_ref().unwrap();
             assert_eq!(format[0], 32, "真彩一档 32 位");
-            // 表头：桌面尺寸(0xFF...21)、LastRect(0xFF...20)、Tight、Zrle……
+            // 表头：桌面尺寸(0xFF…21)、LastRect(0xFF…20)、扩展剪贴板(0xc0a1e5ce)
+            // ——三个伪编码之后才是压缩档：Tight、Zrle……
             assert_eq!(
-                observed.encodings.get(2..4),
-                Some(&[7u32, 16u32][..]),
-                "Tight 必须排第二压缩位（伪编码之后），Zrle 跟着"
+                observed.encodings.get(2..5),
+                Some(&[0xc0a1e5ceu32, 7u32, 16u32][..]),
+                "扩展剪贴板是能力声明，和另两个伪编码排在一起；Tight 必须排第二压缩位，Zrle 跟着"
             );
             }
         });

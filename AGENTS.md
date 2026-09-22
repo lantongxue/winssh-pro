@@ -138,3 +138,13 @@ SeaORM 的异步操作跑在 `db::run` 桥接的应用级 tokio runtime 上，
 缺失时无法编译。gpui 本体不单独列 —— 它从 crates.io 的 `gpui-pre-*` 快照来
 （gpui-kit 发的，和它的 component/base 钉在同一个 zed commit 上），
 由 `gpui-kit` 一并带进来，自己再列一份就是两份不同的 gpui 类型，编不过。
+
+## 依赖补丁
+
+`vendor/vnc-rs/` 是 **vnc-rs 0.6.0 的本地补丁副本**，由 `Cargo.toml` 末尾的
+`[patch.crates-io]` 顶替 crates.io 上那一份，**不是** `refs/` 下的参考代码，
+"禁止修改 `refs/` 下的代码"那条规矩管不到它。补丁只有剪贴板一处：扩展剪贴板
+（`0xc0a1e5ce`，UTF-8 + zlib）的消息编解码，外加经典正文按字节交给上层 ——
+理由与逐文件改动见 `vendor/vnc-rs/PATCHES.md`，应用侧的字符集策略见
+`src/vnc/clipboard.rs`。要加第二处补丁前先想清楚：能不改依赖就不改，
+改了的每一处都要在那个文件里留下理由。

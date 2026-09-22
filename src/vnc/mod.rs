@@ -15,22 +15,34 @@
 //!   GPUI 给的是 `Keystroke`，中间要过一张表。
 //! - **画质配置**（[`settings`]）：颜色深度、编码策略、刷新上限、共享档、
 //!   版本上限这五只 `vnc-rs` 放得开的旋钮，摆在主机表单里由用户自己拧。
+//! - **剪贴板**（[`clipboard`]）：经典正文的字符集判断（UTF-8 / Latin-1）、
+//!   扩展剪贴板那几步握手，以及"对端认不认、认到哪一档"这本账。
 //!
 //! 现在支持的安全类型是 RFB 的两档：`None`（无认证）与 VNC 密码认证
 //! （主机表单里那格"VNC 密码"，见 [`crate::ui::windows::HostFormWindow`]）。
-//! 编码协商 Zrle / CopyRect / Raw 加两个伪编码（桌面尺寸 / LastRect）——
-//! 不含 Tight，所以不接 JPEG 解码。服务器光标画在它发来的画面里，
-//! 本地指针照常显示。
+//! 编码协商 Zrle / CopyRect / Raw 加三个伪编码（桌面尺寸 / LastRect /
+//! 扩展剪贴板）—— 不含 Tight，所以不接 JPEG 解码。服务器光标画在它发来的
+//! 画面里，本地指针照常显示。
 //!
 //! 剪贴板是双向同步的（[`crate::ui::panels::VncPanel`] 盯着本地变化，
-//! 对端的 `ServerCutText` 写回系统剪贴板）。要留意 RFB 的老规矩：
-//! 规范只承诺 Latin-1，而 `vnc-rs` 收发都按 UTF-8 的线上字节走 ——
-//! ASCII 到哪儿都对；中文、重音字母要对面是认 UTF-8 的现代服务器
-//! （TigerVNC、新版 RealVNC）才不失真。
+//! 对端的文本写回系统剪贴板）。RFB 的这条消息有两条走法：经典正文按规范
+//! （RFC 6143 §7.5.6）只是 Latin-1，中文装不进去；能装的是 RealVNC / TigerVNC /
+//! noVNC 共同支持的**扩展剪贴板**（伪编码 `0xc0a1e5ce`，UTF-8 加 zlib），
+//! 用之前要先换一轮 Caps。规矩都在 [`clipboard`] 里，这里只说一句结论：
+//! **对端报 Caps 就走扩展（中文没问题），不报就退回经典**——TigerVNC 与
+//! RealVNC 的服务器在经典正文上按 Latin-1 读、也按 Latin-1 写，中文在那条
+//! 路上不是"看对端口味"，是根本没有位置放。
+//!
+//! 这条修正落在 `vnc-rs` 身上，所以它有一份**打过补丁的本地副本**：见
+//! `vendor/vnc-rs`（`Cargo.toml` 里 `[patch.crates-io]` 指着它），改动只有
+//! 剪贴板这一处 —— 扩展剪贴板的消息编解码，以及经典正文改为按字节交给上层。
+//! 上游的 `Text(String)` / `CopyText(String)` 用的是有损 UTF-8，且会把扩展
+//! 消息当成超长的经典正文直接报错断连，两条都绕不开。
 //!
 //! 界面上的那扇窗是 [`crate::ui::panels::VncPanel`]，这里只到"会话"为止。
 
 mod canvas;
+mod clipboard;
 pub(crate) mod keysym;
 mod session;
 mod settings;
