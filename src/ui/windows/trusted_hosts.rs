@@ -661,11 +661,7 @@ impl Focusable for TrustedHostsWindow {
 }
 
 impl Render for TrustedHostsWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sheet_layer = Root::render_sheet_layer(window, cx);
-        let dialog_layer = Root::render_dialog_layer(window, cx);
-        let notification_layer = Root::render_notification_layer(window, cx);
-
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("trusted-hosts-window")
             .track_focus(&self.focus_handle)
@@ -677,8 +673,5 @@ impl Render for TrustedHostsWindow {
             .child(self.render_title_bar())
             .child(self.render_header(cx))
             .child(self.render_body(cx))
-            .children(sheet_layer)
-            .children(dialog_layer)
-            .children(notification_layer)
-    }
+                }
 }

@@ -1550,13 +1550,7 @@ impl Focusable for SettingsWindow {
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 三层都要挂：弹层是 `Root` 存着、由这一层画出来的，窗口只画通知层的话，
-        // `window.open_dialog` 照样把弹窗塞进 `Root`，但谁也画不出来 ——
-        // 看上去就跟按钮没反应一模一样（「从云端恢复」当初就是这么丢的）。
-        let sheet_layer = Root::render_sheet_layer(window, cx);
-        let dialog_layer = Root::render_dialog_layer(window, cx);
-        let notification_layer = Root::render_notification_layer(window, cx);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .relative()
             .size_full()
@@ -1564,10 +1558,7 @@ impl Render for SettingsWindow {
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar())
             .child(div().flex_1().min_h_0().child(self.render_settings(cx)))
-            .children(sheet_layer)
-            .children(dialog_layer)
-            .children(notification_layer)
-    }
+                }
 }
 
 #[cfg(test)]
@@ -1746,8 +1737,9 @@ mod tests {
 
     /// 设置窗口得把弹层画出来。
     ///
-    /// `window.open_dialog` 只把弹窗记到 `Root` 上，真让它上屏的是这扇窗自己
-    /// render 里那句 [`Root::render_dialog_layer`]。漏掉那一句，弹窗照开，
+    /// `window.open_dialog` 只把弹窗记到 `Root` 上，真让它上屏的是窗口第一层
+    /// 那个 `Root` 自己（0.6.5 起弹层统一由 `Root` 挂，各扇窗的 render 里不再
+    /// 需要那三句 `Root::render_*_layer`）。漏掉 `Root` 这一层，弹窗照开，
     /// 只是谁也看不见 —— 「从云端恢复」那颗按钮当初就这么看着像坏了。
     /// 所以这里断的不是「开没开」，是「画没画出来」。
     #[gpui_kit::test]

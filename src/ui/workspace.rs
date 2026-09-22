@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use gpui_fps::fps_monitor;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, ResizableState, Root, Sizable as _, StyledExt as _, TitleBar,
+    ActiveTheme as _, Icon, ResizableState, Sizable as _, StyledExt as _, TitleBar,
     WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{DockArea, DockLayout, DockPlacement, DockSkin, PanelStyle, panel_handle},
@@ -469,9 +469,6 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sheet_layer = Root::render_sheet_layer(window, cx);
-        let dialog_layer = Root::render_dialog_layer(window, cx);
-        let notification_layer = Root::render_notification_layer(window, cx);
         let show_fps = show_fps_monitor(cx);
 
         div()
@@ -553,8 +550,5 @@ impl Render for Workspace {
             .when(show_fps, |this| {
                 this.child(fps_monitor(window, cx).anchor(Anchor::BottomRight))
             })
-            .children(sheet_layer)
-            .children(dialog_layer)
-            .children(notification_layer)
-    }
+                }
 }

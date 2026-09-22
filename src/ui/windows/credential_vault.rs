@@ -824,10 +824,6 @@ impl Focusable for CredentialVaultWindow {
 
 impl Render for CredentialVaultWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sheet_layer = Root::render_sheet_layer(window, cx);
-        let dialog_layer = Root::render_dialog_layer(window, cx);
-        let notification_layer = Root::render_notification_layer(window, cx);
-
         div()
             .id("credential-vault-window")
             .track_focus(&self.focus_handle)
@@ -846,10 +842,7 @@ impl Render for CredentialVaultWindow {
                     .child(self.render_rail(cx))
                     .child(self.render_main(window, cx)),
             )
-            .children(sheet_layer)
-            .children(dialog_layer)
-            .children(notification_layer)
-    }
+                }
 }
 
 #[cfg(test)]

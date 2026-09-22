@@ -1714,11 +1714,7 @@ impl Focusable for HostFormWindow {
 }
 
 impl Render for HostFormWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sheet_layer = Root::render_sheet_layer(window, cx);
-        let dialog_layer = Root::render_dialog_layer(window, cx);
-        let notification_layer = Root::render_notification_layer(window, cx);
-
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("host-form-window")
             .track_focus(&self.focus_handle)
@@ -1730,10 +1726,7 @@ impl Render for HostFormWindow {
             .child(self.render_title_bar())
             .child(div().flex_1().min_h_0().child(self.render_settings(cx)))
             .child(self.render_footer(cx))
-            .children(sheet_layer)
-            .children(dialog_layer)
-            .children(notification_layer)
-    }
+                }
 }
 
 #[cfg(test)]
