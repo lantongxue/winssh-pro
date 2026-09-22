@@ -13,6 +13,9 @@
 //!   字节原样搬，不做换序。
 //! - **按键翻译**（[`keysym`]）：RFB 的键盘事件带的是 X11 keysym，
 //!   GPUI 给的是 `Keystroke`，中间要过一张表。
+//! - **键盘状态**（[`keyboard`]）：RFB 的键盘是一台状态机（只有"这颗按下了 /
+//!   抬起了"），GPUI 的修饰键只报状态、⌘ 组合键的抬起还压根不来 —— 中间那本
+//!   "此刻哪几颗按着"的账记在这里。
 //! - **画质配置**（[`settings`]）：颜色深度、编码策略、刷新上限、共享档、
 //!   版本上限这五只 `vnc-rs` 放得开的旋钮，外加剪贴板字符集一格，
 //!   摆在主机表单里由用户自己拧。
@@ -49,12 +52,14 @@
 
 mod canvas;
 mod clipboard;
+mod keyboard;
 pub(crate) mod keysym;
 mod session;
 mod settings;
 mod transport;
 
 pub use canvas::Canvas;
+pub use keyboard::VncKeyboard;
 pub use session::{VncInput, VncOutput, VncSession};
 pub use settings::{
     VncClipboardCharset, VncColorDepth, VncEncodingChoice, VncFrameRate, VncProtocolVersion,

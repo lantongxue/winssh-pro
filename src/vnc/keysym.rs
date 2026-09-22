@@ -6,16 +6,29 @@
 //! （小写），`key_char` 是这个组合真正打出来的字符。翻译按这个顺序：
 //!
 //! 1. 具名键查表（方向键、回车、功能键、编辑键 —— 这些没有"打出来的字符"）；
-//! 2. 有 `key_char` 就按字符走 Unicode 规则：Latin-1 段 keysym 就是码点，
-//!    其余加 `0x01000000` 前缀。`é`、`中`、`€` 都到得了对端。
-//! 3. 表里没有、又没有可打字符的组合键（比如只按下一个不认识的东西），
-//!    返回 `None`，让上层干脆不发 —— 猜一个键发过去比不发更容易坏事。
+//! 2. **在打字**（没按住 ctrl / alt / cmd / fn）就按 `key_char` 走 Unicode
+//!    规则：Latin-1 段 keysym 就是码点，其余加 `0x01000000` 前缀。`é`、`中`、
+//!    `€` 都到得了对端；
+//! 3. **在按组合键**就按键帽 `key` 走（shift 按着的字母取大写）。
+//!
+//! 第 2 步和第 3 步分开是这个模块的要害。`key_char` 的定义是"这个组合真正
+//! 打出来的字符"，而组合键根本不打字：macOS 在 ctrl / cmd / fn 按着时一律
+//! 不给 `key_char`（`gpui` 的 `parse_keystroke` 里那句
+//! `if !control && !command && !function`），只按它发就是 ⌃C、⌘S 这些一个
+//! 都发不出去；alt 那档更绕 —— ⌥S 在美式键盘上打出来的是 `ß`，照着发过去
+//! 对端收到的是 Alt+ß，而人按的是 Alt+S。组合键要的是键帽，不是键帽在本地
+//! 键盘布局下打出来的那个字符。
+//!
+//! 例外是 Windows 的 AltGr：它在事件里报成 ctrl+alt，但按的人是在打字
+//! （AltGr+E 打 `€`）。这一下由 GPUI 的
+//! [`KeyDownEvent::prefer_character_input`](gpui_kit::KeyDownEvent) 点名，
+//! 顺着参数传进 [`keysym`]，照第 2 步走。
 //!
 //! 修饰键要单独说一句：RFB 没有"按下时 shift 已生效"这种概念，修饰键本身
 //! 也是 keysym（`Shift_L`、`Control_L`……），要像普通键一样按下抬起各发一条。
 //! GPUI 却只在 `Keystroke.modifiers` 里给状态不给过程，所以 [`modifier_keysyms`]
-//! 把状态摊成"此刻哪些修饰键该按着"，由界面层对着上一次的集合发差值
-//! （见 [`crate::ui::panels::VncPanel`]）。
+//! 把状态摊成"此刻哪些修饰键该按着"，由 [`super::keyboard`] 对着上一次的集合
+//! 发差值。
 
 use gpui_kit::{Keystroke, Modifiers};
 
@@ -97,22 +110,57 @@ fn named_function_key(key: &str) -> Option<u32> {
 }
 
 /// 这次击键该报给对端的 keysym。见模块文档的三步顺序。
-pub fn keysym(keystroke: &Keystroke) -> Option<u32> {
+///
+/// `typing` 是"这一下该按它打出来的字符算"：平时就是"没按住 ctrl / alt /
+/// cmd / fn"，Windows 的 AltGr（事件里报成 ctrl+alt，人却是在打字）由调用方
+/// 按 `KeyDownEvent::prefer_character_input` 额外点名。
+pub fn keysym(keystroke: &Keystroke, typing: bool) -> Option<u32> {
     if let Some(keysym) = named_keysym(&keystroke.key) {
         return Some(keysym);
     }
     // key_char 是"这个组合真正打出来的字符"：shift-a 给 `A`（keysym 0x41），
-    // shift-2 在美式键盘给 `@`。它是 Option<String> 而不止一个字符是合理的 ——
-    // 取第一个码点就是我们要的。
-    let character = keystroke.key_char.as_deref()?.chars().next()?;
+    // shift-2 在美式键盘给 `@`。它是 Option<String> 而不止一个字符是合理的
+    //（IME 一次落一串）—— 取第一个码点就是我们要的。
+    let typed = keystroke
+        .key_char
+        .as_deref()
+        .and_then(|text| text.chars().next());
+    if (typing || !is_chord(&keystroke.modifiers))
+        && let Some(character) = typed
+    {
+        return Some(character_keysym(character));
+    }
+    // 组合键（以及 macOS 上压根没给 key_char 的那些）按键帽走。键帽只有一个
+    // 字符才认：`f99`、`numpadclear` 这种表里没有的多字名字宁可不发 ——
+    // 猜一个键发过去比不发更容易坏事。
+    let mut characters = keystroke.key.chars();
+    let character = characters.next()?;
+    if characters.next().is_some() {
+        return None;
+    }
+    // shift 按着时键帽上的字母该报大写：对端收到的是 `Ctrl+Shift+A`，
+    // 而不是"按着 shift 的小写 a"。
+    Some(character_keysym(match keystroke.modifiers.shift {
+        true => character.to_ascii_uppercase(),
+        false => character,
+    }))
+}
+
+/// 一个字符的 keysym。Latin-1 及以下：keysym 就是码点。以上：
+/// `0x01000000 | 码点`，X11 规定的 Unicode 段（RFC 6143 §7.5.4 直接引用它）。
+fn character_keysym(character: char) -> u32 {
     let codepoint = u32::from(character);
-    // Latin-1 及以下：keysym 就是码点。以上：`0x01000000 | 码点`，
-    // X11 规定的 Unicode 段（RFC 6143 §7.5.4 直接引用它）。
-    Some(if codepoint < 0x100 {
+    if codepoint < 0x100 {
         codepoint
     } else {
         0x0100_0000 | codepoint
-    })
+    }
+}
+
+/// 这一下是组合键而不是在打字吗。shift 不算 —— 它本来就是打字的一部分
+///（`shift-a` 打的是 `A`）。
+fn is_chord(modifiers: &Modifiers) -> bool {
+    modifiers.control || modifiers.alt || modifiers.platform || modifiers.function
 }
 
 #[cfg(test)]
@@ -127,23 +175,66 @@ mod tests {
         }
     }
 
+    /// 按着修饰键的一下。`key_char` 按 macOS 的规矩给 `None` —— ctrl / cmd / fn
+    /// 按着时那边就是不给。
+    fn chord(modifiers: Modifiers, key: &str) -> Keystroke {
+        Keystroke {
+            modifiers,
+            key: key.into(),
+            key_char: None,
+        }
+    }
+
     #[test]
     fn named_keys_beat_what_they_would_type() {
-        assert_eq!(keysym(&stroke("return", None)), Some(0xff0d));
-        assert_eq!(keysym(&stroke("up", None)), Some(0xff52));
-        assert_eq!(keysym(&stroke("f1", None)), Some(0xffbe));
-        assert_eq!(keysym(&stroke("f12", None)), Some(0xffc9));
-        assert_eq!(keysym(&stroke("space", Some(" "))), Some(0x20));
-        // 超出 f24 的 `f99` 不算具名键：落到"没有可打字符"，不发。
-        assert_eq!(keysym(&stroke("f99", None)), None);
+        assert_eq!(keysym(&stroke("return", None), true), Some(0xff0d));
+        assert_eq!(keysym(&stroke("up", None), true), Some(0xff52));
+        assert_eq!(keysym(&stroke("f1", None), true), Some(0xffbe));
+        assert_eq!(keysym(&stroke("f12", None), true), Some(0xffc9));
+        assert_eq!(keysym(&stroke("space", Some(" ")), true), Some(0x20));
+        // 超出 f24 的 `f99` 不算具名键，键帽又不是一个字符：不发。
+        assert_eq!(keysym(&stroke("f99", None), true), None);
     }
 
     #[test]
     fn typed_characters_follow_the_unicode_rule() {
-        assert_eq!(keysym(&stroke("a", Some("a"))), Some(0x61));
-        assert_eq!(keysym(&stroke("1", Some("!"))), Some(0x21));
-        assert_eq!(keysym(&stroke("e", Some("é"))), Some(0xe9));
-        assert_eq!(keysym(&stroke("k", Some("中"))), Some(0x0100_4e2d));
+        assert_eq!(keysym(&stroke("a", Some("a")), true), Some(0x61));
+        assert_eq!(keysym(&stroke("1", Some("!")), true), Some(0x21));
+        assert_eq!(keysym(&stroke("e", Some("é")), true), Some(0xe9));
+        assert_eq!(keysym(&stroke("k", Some("中")), true), Some(0x0100_4e2d));
+    }
+
+    /// 组合键按键帽走。macOS 在 ctrl / cmd 按着时不给 `key_char`，只认它的话
+    /// ⌃C、⌘S 一条 `KeyEvent` 都发不出去 —— 组合键"完全没法用"就是这么来的。
+    #[test]
+    fn chords_report_the_key_cap_even_without_a_typed_character() {
+        assert_eq!(keysym(&chord(Modifiers::control(), "c"), false), Some(0x63));
+        assert_eq!(keysym(&chord(Modifiers::command(), "s"), false), Some(0x73));
+        // Ctrl+Alt+Del：具名键那一档照旧，修饰键由 `modifier_keysyms` 另发。
+        let mut both = Modifiers::control();
+        both.alt = true;
+        assert_eq!(keysym(&chord(both, "delete"), false), Some(0xffff));
+    }
+
+    /// 组合键不看"打出来的字符"：⌥S 在美式键盘上打出来的是 `ß`，
+    /// 人按的却是 Alt+S，对端要的也是 S。
+    #[test]
+    fn a_chord_ignores_what_the_local_layout_would_have_typed() {
+        let mut keystroke = stroke("s", Some("ß"));
+        keystroke.modifiers = Modifiers::alt();
+        assert_eq!(keysym(&keystroke, false), Some(0x73));
+        // 同一下若被点名成"在打字"（Windows 的 AltGr 那档），才按字符算。
+        assert_eq!(keysym(&keystroke, true), Some(0xdf));
+    }
+
+    /// shift 按着的字母报大写，对端收到的是 Ctrl+Shift+A。
+    #[test]
+    fn shift_upgrades_the_key_cap_to_its_capital() {
+        assert_eq!(
+            keysym(&chord(Modifiers::control_shift(), "a"), false),
+            Some(0x41)
+        );
+        assert_eq!(keysym(&chord(Modifiers::shift(), "a"), false), Some(0x41));
     }
 
     #[test]

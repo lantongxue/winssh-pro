@@ -17,6 +17,19 @@
 //! 每一段指针移动都原样（翻成 keysym 和按钮掩码之后）送给对端。所以焦点
 //! 格外要紧：只有一直聚焦才收键盘，第一次点击先抢焦点再送鼠标按下。
 //!
+//! 键盘这一路有三件事是这块面板独有的，各自对应一个坑：
+//!
+//! 1. **一次击键要发哪几条 keysym** 归 [`VncKeyboard`]：修饰键的按下抬起、
+//!    抬起时该抬哪一颗、⌘ 组合键等不来的那半条，全在那本账里。这一层只把
+//!    事件递进去、把算出来的一串发走，以及在失焦、切窗时叫它整个松手
+//!    （[`VncPanel::release_all`]）—— 手是在我们看不见的地方松的。
+//! 2. **修饰键的抬起只有 `ModifiersChangedEvent` 报**，所以那个事件也得接，
+//!    不能只在击键时对状态差值。
+//! 3. **本地快捷键要让开**。GPUI 先派按键绑定、再走 `on_key_down`，Tab 会被
+//!    `Root` 的焦点切换吃掉、Ctrl+W 之类会被本仓库自己的全局键吃掉，
+//!    让开的办法是在 `VncPanel` 上下文里把它们绑成 `NoAction`，
+//!    名单与取舍见 [`crate::ui::init`]。
+//!
 //! **剪贴板双向同步**：本地每复制一次，半秒内推给对端；对端复制的文本
 //! 写回系统剪贴板。两边靠一份"此刻同步的是哪份文本"的镜像收住回声
 //! （[`VncPanel::sync_local_clipboard`] / [`VncPanel::accept_remote_cut_text`]），
@@ -42,11 +55,12 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    ClipboardItem, InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, MouseButton,
+    ClipboardItem, InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, Modifiers,
+    ModifiersChangedEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
     RenderImage,
-    ScrollDelta, ScrollWheelEvent, SharedString, Styled as _, WeakEntity, Window, black, div,
-    px,
+    ScrollDelta, ScrollWheelEvent, SharedString, Styled as _, Subscription, WeakEntity, Window,
+    black, div, px,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -57,7 +71,7 @@ use crate::{
         panels::SessionEvent,
         theme::{AppIcon, palette},
     },
-    vnc::{VncInput, VncOutput, VncSession, keysym},
+    vnc::{VncInput, VncKeyboard, VncOutput, VncSession},
 };
 use rust_i18n::t;
 
@@ -80,6 +94,13 @@ const CLIPBOARD_POLL_MS: u64 = 500;
 const BUTTON_LEFT: u8 = 1 << 0;
 const BUTTON_MIDDLE: u8 = 1 << 1;
 const BUTTON_RIGHT: u8 = 1 << 2;
+
+/// 这个平台会不会把"按着 Control 点左键"当成点右键。
+///
+/// macOS 会，而且是系统那一层就换掉的：事件到应用手里已经是右键，`modifiers`
+/// 里那颗 Control 是唯一还能看出原委的线索。其余平台按的是哪颗就是哪颗，
+/// Ctrl+右键是货真价实的 Ctrl+右键。
+const CONTROL_CLICK_IS_RIGHT_CLICK: bool = cfg!(target_os = "macos");
 
 /// 这条会话此刻走到哪一步了。
 #[derive(Clone, Debug)]
@@ -107,9 +128,13 @@ pub struct VncPanel {
     /// 此刻按着的 RFB 按钮掩码。松手事件丢了（拖出窗外）时会被下一次
     /// 按下前的一次移动校正。
     buttons: u8,
-    /// 上一次击键时按着的修饰键。RFB 没有"此刻 shift 生效"的概念，
-    /// 只认每颗键的按下抬起，所以要对着新旧两份差值补发（见 [`keysym`]）。
-    held_modifiers: Vec<u32>,
+    /// 此刻按着的那颗右键其实是"按着 Control 的左键"（macOS 的系统规矩，
+    /// 见 [`is_control_click`]）。按下时记一笔，抬起与拖动照这笔还原，
+    /// 不重算 —— 见 [`remote_button`]。
+    control_click: bool,
+    /// 键盘此刻在对端那边按成什么样。每一次击键该发哪几条 keysym 的按下抬起
+    /// 由它算（见 [`VncKeyboard`]），这一层只负责把事件递进去、把结果发走。
+    keyboard: VncKeyboard,
     /// 两边此刻同步的是哪一份文本。它同时钉住两个方向：本地轮询只在
     /// 现值和它不同才推给对端，对端来的文本在写回本地后也把它更新 ——
     /// 回声因此止于一拍，不会本地→远端→本地地荡出去（见
@@ -121,6 +146,10 @@ pub struct VncPanel {
     /// 弱引用 —— 面板不该反过来扣住整个工作区。
     dock_area: WeakEntity<DockArea>,
     focus_handle: FocusHandle,
+    /// 失焦与切窗的订阅。松手是在我们看不见的地方发生的（⌘Tab 切走时
+    /// 那颗 ⌘ 的抬起根本不进这扇窗），所以这两处一到就整个松手，
+    /// 见 [`Self::release_all`]。
+    _leaving: Vec<Subscription>,
 }
 
 impl EventEmitter<SessionEvent> for VncPanel {}
@@ -143,12 +172,30 @@ impl VncPanel {
                 resolution: None,
                 display: Rc::new(Cell::new(None)),
                 buttons: 0,
-                held_modifiers: Vec::new(),
+                control_click: false,
+                keyboard: VncKeyboard::new(),
                 clipboard: None,
                 alive: false,
                 dock_area,
                 focus_handle: cx.focus_handle(),
+                _leaving: Vec::new(),
             };
+            let focus_handle = this.focus_handle.clone();
+            this._leaving = vec![
+                // 焦点走了（点到别的面板、别的输入框）：这块画布往后收不到抬起，
+                // 手里按着的就得当场还给对端。
+                cx.on_focus_out(&focus_handle, window, |this: &mut Self, _, _, _| {
+                    this.release_all()
+                }),
+                // 整扇窗不活跃了（⌘Tab、点到别的应用）同理，而且更要紧：
+                // 切走那一下 ⌘ 正按着，它的抬起进的是新的那扇窗，我们永远收不到
+                // —— 不松手的话对端的 Super 就一直按着。
+                cx.observe_window_activation(window, |this, window, _| {
+                    if !window.is_window_active() {
+                        this.release_all();
+                    }
+                }),
+            ];
             this.connect(window, cx);
             this.watch_clipboard(cx);
             this
@@ -165,7 +212,8 @@ impl VncPanel {
         self.resolution = None;
         self.display.set(None);
         self.buttons = 0;
-        self.held_modifiers.clear();
+        self.control_click = false;
+        self.keyboard.forget();
         // 换一条会话就是换一个对端：上一台机器同步到哪份文本不作数了。
         self.clipboard = None;
         self.set_alive(false, cx);
@@ -291,6 +339,14 @@ impl VncPanel {
         }
     }
 
+    /// 送一串。键盘那边一次事件能算出好几条（松开旧修饰键、按下新的、
+    /// 再按那颗键），顺序就是发出去的顺序。
+    fn send_all(&self, inputs: impl IntoIterator<Item = VncInput>) {
+        for input in inputs {
+            self.send(input);
+        }
+    }
+
     fn set_frame(&mut self, frame: Arc<RenderImage>, cx: &mut Context<Self>) {
         if !matches!(self.phase, VncPhase::Live) {
             return;
@@ -362,54 +418,46 @@ impl VncPanel {
 
     // ─── 输入事件 ────────────────────────────────────────────────────────────
 
+    /// 修饰键按下或抬起。这是修饰键唯一完整的事件源 —— 按下还能从击键事件里
+    /// 顺带看出来，**抬起**只有它报。
+    fn on_modifiers_changed(
+        &mut self,
+        event: &ModifiersChangedEvent,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+        if !self.live() {
+            return;
+        }
+        let inputs = self.keyboard.modifiers(&event.modifiers);
+        self.send_all(inputs);
+    }
+
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, _: &mut Context<Self>) {
         if !self.live() {
             return;
         }
-        let keystroke = &event.keystroke;
-
-        // 修饰键差值先行：RFB 只认"哪些键按着"，不认组合态，
-        // 所以要先把松开的全松开、再按新的，让对端看到的状态恰好等于
-        // 这次击键按出来的那个组合。
-        let now = keysym::modifier_keysyms(&keystroke.modifiers);
-        for left in self.held_modifiers.iter().filter(|held| !now.contains(held)) {
-            self.send(VncInput::Key {
-                keysym: *left,
-                down: false,
-            });
-        }
-        for entered in now.iter().filter(|held| !self.held_modifiers.contains(held)) {
-            self.send(VncInput::Key {
-                keysym: *entered,
-                down: true,
-            });
-        }
-        self.held_modifiers = now;
-
-        // 键帽自己到场的修饰键（单独按下 shift 不带任何字母）已经由差值报过，
-        // 不再重复一条 —— 重复的 down 没事，配对的 up 丢了才要命。
-        if let Some(symbol) = keysym::keysym(keystroke)
-            && !keysym::is_modifier(symbol)
-        {
-            self.send(VncInput::Key {
-                keysym: symbol,
-                down: true,
-            });
-        }
+        // `prefer_character_input` 是 GPUI 点名的"这一下是在打字"（Windows 的
+        // AltGr 报成 ctrl+alt，人却是在打 `€`），顺着传给 keysym 那张表。
+        let inputs = self
+            .keyboard
+            .down(&event.keystroke, event.prefer_character_input);
+        self.send_all(inputs);
     }
 
     fn on_key_up(&mut self, event: &KeyUpEvent, _: &mut Window, _: &mut Context<Self>) {
         if !self.live() {
             return;
         }
-        if let Some(symbol) = keysym::keysym(&event.keystroke)
-            && !keysym::is_modifier(symbol)
-        {
-            self.send(VncInput::Key {
-                keysym: symbol,
-                down: false,
-            });
-        }
+        let inputs = self.keyboard.up(&event.keystroke.key);
+        self.send_all(inputs);
+    }
+
+    /// 键盘整个松手。失焦、切窗时用 —— 手是在我们看不见的地方松的，
+    /// 对端只能靠这一下把键盘状态归零。
+    fn release_all(&mut self) {
+        let inputs = self.keyboard.release();
+        self.send_all(inputs);
     }
 
     fn on_mouse_down(
@@ -427,7 +475,23 @@ impl VncPanel {
         let Some((x, y)) = self.remote_point(event.position) else {
             return;
         };
-        self.buttons |= button_mask(event.button);
+        // 修饰键顺手补一遍（只补不松，见 [`VncKeyboard::hold`]）：焦点刚被这
+        // 一下抢过来的话，之前按下 Control 的那条 `ModifiersChangedEvent` 进的
+        // 是别的元素，对端并不知道 Control 按着 —— 而 Ctrl+左键多选恰恰要它
+        // 按着。
+        let inputs = self.keyboard.hold(&event.modifiers);
+        self.send_all(inputs);
+
+        self.control_click =
+            is_control_click(event.button, &event.modifiers, self.keyboard.holds_control());
+        let button = remote_button(event.button, self.control_click);
+        log::debug!(
+            "VNC：鼠标 {:?} 按下（修饰键 {:?}，对端 Control={}）→ 送出 {button:?}",
+            event.button,
+            event.modifiers,
+            self.keyboard.holds_control(),
+        );
+        self.buttons |= button_mask(button);
         self.send(VncInput::Pointer {
             x,
             y,
@@ -442,7 +506,8 @@ impl VncPanel {
         let Some((x, y)) = self.remote_point(event.position) else {
             return;
         };
-        self.buttons &= !button_mask(event.button);
+        self.buttons &= !button_mask(remote_button(event.button, self.control_click));
+        self.control_click = false;
         self.send(VncInput::Pointer {
             x,
             y,
@@ -460,7 +525,7 @@ impl VncPanel {
         // 悬停也照报：对端的界面光标、按钮高亮、菜单跟随都靠它。
         // 掩码按 gpui 给的按下键校正 —— 拖出窗外松的手，我们这里收不到抬起。
         self.buttons = match event.pressed_button {
-            Some(button) => self.buttons | button_mask(button),
+            Some(button) => self.buttons | button_mask(remote_button(button, self.control_click)),
             None => 0,
         };
         self.send(VncInput::Pointer {
@@ -504,6 +569,41 @@ fn button_mask(button: MouseButton) -> u8 {
         MouseButton::Middle => BUTTON_MIDDLE,
         MouseButton::Right => BUTTON_RIGHT,
         _ => 0,
+    }
+}
+
+/// 这一下右键其实是"按着 Control 的左键"吗。
+///
+/// macOS 在系统那一层就把 Control+左键换成了右键，事件到这儿已经是 `Right`。
+/// 但这块画布后面是**别人的桌面**：Windows 上 Ctrl+左键是"多选"，当右键送过去，
+/// 用户看到的是弹出来的右键菜单而不是选中的第二个文件。所以这一下还原回左键
+/// —— mac 上真要右键，触控板两指点、鼠标右键都直通，不差这一条路；
+/// Ctrl+左键多选却没有别的表达方式。
+///
+/// "人是不是正按着 Control"要听两个说法，有一个点头就算：
+///
+/// - `modifiers` 是这条鼠标事件自己带的那份。**它会丢** —— 系统换出来的那条
+///   右键事件里 Control 还在不在，各代 macOS、各家鼠标驱动（改键工具尤其）
+///   都不一样；
+/// - `control_held` 是键盘那本账（[`VncKeyboard::holds_control`]），来源是
+///   `ModifiersChangedEvent`，那条不会丢。
+///
+/// 代价是 mac 上按着 Control 点真正的右键也会被当成左键。那是 Ctrl+右键，
+/// 桌面上几乎没有东西认它，拿它换 Ctrl+多选划算。
+fn is_control_click(button: MouseButton, modifiers: &Modifiers, control_held: bool) -> bool {
+    CONTROL_CLICK_IS_RIGHT_CLICK
+        && button == MouseButton::Right
+        && (modifiers.control || control_held)
+}
+
+/// 这一下在对端那边是哪颗键。`control_click` 是**按下**那一下记的账
+/// （[`VncPanel::control_click`]）：抬起与拖动都只认它，不照当下的修饰键
+/// 重算 —— Control 完全可以在松开鼠标之前先松，重算就会去松一颗根本没按下的
+/// 右键，左键则永远按在对端那边。
+fn remote_button(button: MouseButton, control_click: bool) -> MouseButton {
+    match control_click && button == MouseButton::Right {
+        true => MouseButton::Left,
+        false => button,
     }
 }
 
@@ -637,6 +737,7 @@ impl VncPanel {
                 .key_context("VncPanel")
                 .on_key_down(cx.listener(Self::on_key_down))
                 .on_key_up(cx.listener(Self::on_key_up))
+                .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
                 .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
                 .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
@@ -719,5 +820,92 @@ impl Render for VncPanel {
             .bg(cx.theme().background)
             .child(self.render_bar(cx))
             .child(self.render_canvas(cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn control() -> Modifiers {
+        Modifiers::control()
+    }
+
+    /// macOS 上按着 Control 点左键，到应用手里已经是右键了 —— 还原回左键，
+    /// 对端（Windows 资源管理器那种）才收得到"多选"而不是弹右键菜单。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_control_click_reaches_the_far_side_as_a_left_click() {
+        assert!(is_control_click(MouseButton::Right, &control(), false));
+        assert_eq!(remote_button(MouseButton::Right, true), MouseButton::Left);
+    }
+
+    /// 系统换出来的那条右键事件里 Control 丢了也照样认得出来：键盘那本账
+    /// （`ModifiersChangedEvent` 来的）还按着 Control，这一下就仍然是
+    /// Ctrl+左键。只信鼠标事件自己那份修饰键，就会在丢了的那些机器上
+    /// 继续弹右键菜单。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_control_click_is_recognised_even_when_the_event_drops_the_flag() {
+        assert!(is_control_click(
+            MouseButton::Right,
+            &Modifiers::none(),
+            true
+        ));
+    }
+
+    /// 还原过的那一下，抬起与拖动照按下时记的账走：`control_click` 为真就一直
+    /// 是左键，跟当下还按不按着 Control 无关 —— 先松 Control 再松鼠标是常事，
+    /// 照当下重算就会去松一颗根本没按下的右键，左键则永远按在对端那边。
+    #[test]
+    fn the_translation_outlives_the_control_key() {
+        assert_eq!(remote_button(MouseButton::Right, true), MouseButton::Left);
+        assert_eq!(
+            button_mask(remote_button(MouseButton::Right, true)),
+            BUTTON_LEFT,
+            "抬起时松的是按下时按的那一位"
+        );
+    }
+
+    /// 其余平台按的是哪颗就是哪颗：那边没有"Control+左键算右键"这条规矩，
+    /// Ctrl+右键是货真价实的 Ctrl+右键。
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn elsewhere_a_control_right_click_stays_a_right_click() {
+        assert!(!is_control_click(MouseButton::Right, &control(), true));
+        assert_eq!(remote_button(MouseButton::Right, false), MouseButton::Right);
+    }
+
+    /// 没按 Control 的右键照旧是右键，左键和中键任何时候都不受这条影响。
+    #[test]
+    fn every_other_click_goes_through_untouched() {
+        assert!(!is_control_click(
+            MouseButton::Right,
+            &Modifiers::none(),
+            false
+        ));
+        assert!(!is_control_click(MouseButton::Left, &control(), true));
+        assert!(!is_control_click(MouseButton::Middle, &control(), true));
+
+        assert_eq!(remote_button(MouseButton::Right, false), MouseButton::Right);
+        assert_eq!(remote_button(MouseButton::Left, true), MouseButton::Left);
+        assert_eq!(
+            remote_button(MouseButton::Middle, true),
+            MouseButton::Middle
+        );
+    }
+
+    /// 按钮掩码就是 RFB 那三位，侧键没有对应位。
+    #[test]
+    fn the_button_mask_covers_the_three_rfb_buttons() {
+        assert_eq!(button_mask(MouseButton::Left), BUTTON_LEFT);
+        assert_eq!(button_mask(MouseButton::Middle), BUTTON_MIDDLE);
+        assert_eq!(button_mask(MouseButton::Right), BUTTON_RIGHT);
+        assert_eq!(
+            button_mask(MouseButton::Navigate(
+                gpui_kit::NavigationDirection::Back
+            )),
+            0
+        );
     }
 }
