@@ -1,4 +1,5 @@
-//! 新建/编辑主机窗口：把主机项按「连接 / 认证 / 高级 / 标签」分类铺在一扇独立窗口里。
+//! 新建/编辑主机窗口：把主机项按「连接 / 认证 / 高级 / 标签」分类铺在一扇独立窗口里，
+//! 协议专属配置（VNC / RDP）按当下连接类型单独成一级类目，插在「高级」与「标签」之间。
 //!
 //! 为什么不是对话框：字段越来越多（代理那一段就是后来才加的），再往一个盖在主窗口
 //! 中央、"问一件事就收起"的弹层里堆，高度与分类都撑不住；而未来要扩展不同的服务器
@@ -749,11 +750,14 @@ impl HostForm {
     }
 
     /// 新建主机在各档连接类型下的出厂标签。
+    ///
+    /// 只放操作系统这类分类标签；协议（SSH / VNC / RDP）不再当标签存 ——
+    /// 卡片直接从 `kind` 画成一枚徽标，跟着换型走，不会因为复制、改档而对不上。
     fn default_tags(kind: HostKind) -> Vec<SharedString> {
         match kind {
-            HostKind::Ssh => vec!["Linux".into(), "SSH".into()],
-            HostKind::Vnc => vec!["VNC".into()],
-            HostKind::Rdp => vec!["Windows".into(), "RDP".into()],
+            HostKind::Ssh => vec!["Linux".into()],
+            HostKind::Vnc => vec![],
+            HostKind::Rdp => vec!["Windows".into()],
         }
     }
 
@@ -879,7 +883,7 @@ impl HostForm {
         // VNC 只有一种认证：服务器那把密码（[`crate::vnc`]），下拉不画，
         // 落库也固定按密码档存，读回时那一格恰好显示密码框。RDP 同理：
         // CredSSP/NLA 吃的是账号密码，没有密钥/Agent 那两档。
-        let auth_method = if matches!(kind, HostKind::Vnc | HostKind::Rdp) {
+        let auth_method = if kind.is_remote_desktop() {
             AuthMethod::Password
         } else {
             AuthMethod::from_index(
@@ -1064,9 +1068,9 @@ impl HostForm {
     }
 
     /// 认证那一行的左半。VNC 只认一把服务器密码，RDP 的账号密码也不分档 ——
-/// 两种都收成账号一格。
+    /// 两种都收成账号一格。
     fn render_auth_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        if matches!(self.selected_kind(cx), HostKind::Vnc | HostKind::Rdp) {
+        if self.selected_kind(cx).is_remote_desktop() {
             return field(
                 t!("host_form.field_username").into(),
                 Input::new(&self.username).font_family("monospace").w_full(),
@@ -1097,7 +1101,7 @@ impl HostForm {
     fn render_auth_detail(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let kind = self.selected_kind(cx);
         if kind == HostKind::Vnc {
-            return Some(self.render_password_section(cx, true).into_any_element());
+            return Some(self.render_password_section(cx).into_any_element());
         }
         if kind == HostKind::Rdp {
             return Some(
@@ -1109,7 +1113,7 @@ impl HostForm {
                         Input::new(&self.rdp_domain).font_family("monospace").w_full(),
                         cx,
                     ))
-                    .child(self.render_password_section(cx, false))
+                    .child(self.render_password_section(cx))
                     .into_any_element(),
             );
         }
@@ -1122,30 +1126,22 @@ impl HostForm {
             .unwrap_or_default();
 
         match selected {
-            0 => Some(self.render_password_section(cx, false).into_any_element()),
+            0 => Some(self.render_password_section(cx).into_any_element()),
             1 => Some(self.render_key_fields(cx).into_any_element()),
             _ => None,
         }
     }
 
-    /// 密码那一段：保险箱取用下拉（有才画）+ 一个打码的密码框。
-    /// SSH 与 VNC 共用一格落库（`hosts.password`），只是标签各说各的话。
-    fn render_password_section(
-        &self,
-        cx: &mut Context<Self>,
-        vnc: bool,
-    ) -> impl IntoElement {
+    /// 密码那一段：保险箱取用下拉（有才画）＋一个打码的密码框。
+    /// 三种协议共用一格落库（`hosts.password`），标签也共用一个“密码”——
+    /// 这一格收的是“登这台机器的那把密码”，与协议无关。
+    fn render_password_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_3()
             .w_full()
             .children(self.render_vault_picker(CredentialKind::Password, cx))
             .child(field(
-                if vnc {
-                    t!("host_form.field_vnc_password")
-                } else {
-                    t!("host_form.field_password")
-                }
-                .into(),
+                t!("host_form.field_password").into(),
                 // 尾部那只眼睛来自 `mask_toggle()`：密码默认是打码的
                 // （`InputState::masked(true)`），点一下明文看一眼，再点回去。
                 Input::new(&self.password)
@@ -1347,7 +1343,7 @@ impl HostForm {
     }
 
     /// VNC 那一段：六档下拉，只在连接类型是 VNC 时画
-    /// （画不画由宿主 `advanced_page` 按当下类型决定）。
+    /// （画不画由宿主 `vnc_page` 挂不挂整页决定）。
     fn render_vnc_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_3()
@@ -1403,7 +1399,7 @@ impl HostForm {
     }
 
     /// RDP 那一段：五档下拉，只在连接类型是 RDP 时画
-    /// （画不画由宿主 `advanced_page` 按当下类型决定）。域那一格在认证页，
+    /// （画不画由宿主 `rdp_page` 挂不挂整页决定）。域那一格在认证页，
     /// 因为它属于身份，不属于画质。
     fn render_rdp_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
@@ -1544,7 +1540,8 @@ struct ActiveHostFormWindow(WindowHandle<Root>);
 impl Global for ActiveHostFormWindow {}
 
 /// 主机表单窗口外壳：开一扇独立的原生窗，用 Settings 组件把 [`HostForm`] 的字段
-/// 按「连接 / 认证 / 高级 / 标签」分页摆出来，底部挂「取消 / 创建（保存）」。
+/// 按「连接 / 认证 / 高级 / 标签」分页摆出来（协议专属配置按连接类型单独成页），
+/// 底部挂「取消 / 创建（保存）」。
 ///
 /// 自己管单例与开窗选项，业务字段一律在 [`HostForm`] 里，这一屏只搭版式与提交收尾。
 pub struct HostFormWindow {
@@ -1708,10 +1705,10 @@ impl HostFormWindow {
 
     /// Settings 核心组件：左栏分类导航，右栏一页一类主机配置。
     fn render_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // 连接类型决定「高级」页里挂哪一段协议专属设置 —— 页在每次渲染时
-        // 现拼，类型一换就整个消失/出现，不留空壳。
+        // 连接类型决定协议专属那一页挂不挂 —— 页在每次渲染时现拼，
+        // 类型一换就整个消失/出现，不留空壳。
         let kind = self.form.read(cx).selected_kind(cx);
-        Settings::new(("winssh-host-form", self.page_seq))
+        let settings = Settings::new(("winssh-host-form", self.page_seq))
             .with_group_variant(GroupBoxVariant::Fill)
             .sidebar_width(px(210.))
             .default_selected_index(SelectIndex {
@@ -1720,8 +1717,15 @@ impl HostFormWindow {
             })
             .page(self.connection_page())
             .page(self.auth_page())
-            .page(self.advanced_page(kind))
-            .page(self.tags_page())
+            .page(self.advanced_page());
+        // 协议专属配置是一级类目，插在「高级」与「标签」之间：
+        // 一台主机同一时刻只有一种连接类型，对应那一页跟着类型出现。
+        let settings = match kind {
+            HostKind::Vnc => settings.page(self.vnc_page()),
+            HostKind::Rdp => settings.page(self.rdp_page()),
+            HostKind::Ssh => settings,
+        };
+        settings.page(self.tags_page())
     }
 
     fn connection_page(&self) -> SettingPage {
@@ -1755,8 +1759,8 @@ impl HostFormWindow {
             )
     }
 
-    fn advanced_page(&self, kind: HostKind) -> SettingPage {
-        let page = SettingPage::new(t!("host_form.page_advanced"))
+    fn advanced_page(&self) -> SettingPage {
+        SettingPage::new(t!("host_form.page_advanced"))
             .icon(AppIcon::Zap)
             .default_open(true)
             .resettable(false)
@@ -1769,21 +1773,32 @@ impl HostFormWindow {
                 SettingGroup::new()
                     .title(t!("host_form.group_proxy"))
                     .item(self.row(|this, cx| this.render_proxy_section(cx).into_any_element())),
-            );
-        // 协议专属那一段：一台主机同一时刻只有一种连接类型。
-        match kind {
-            HostKind::Vnc => page.group(
+            )
+    }
+
+    /// VNC 专属配置页：一级类目，页名即类目名。单组且不带头衔 ——
+    /// 一页只有一组时侧栏不铺二级条目，内容区也由页头自己报名字。
+    fn vnc_page(&self) -> SettingPage {
+        SettingPage::new(t!("host_form.page_vnc"))
+            .icon(AppIcon::Monitor)
+            .default_open(true)
+            .resettable(false)
+            .group(
                 SettingGroup::new()
-                    .title(t!("host_form.group_vnc"))
                     .item(self.row(|this, cx| this.render_vnc_section(cx).into_any_element())),
-            ),
-            HostKind::Rdp => page.group(
+            )
+    }
+
+    /// RDP 专属配置页：同 [`Self::vnc_page`]，一级类目、单组无头衔。
+    fn rdp_page(&self) -> SettingPage {
+        SettingPage::new(t!("host_form.page_rdp"))
+            .icon(AppIcon::Monitor)
+            .default_open(true)
+            .resettable(false)
+            .group(
                 SettingGroup::new()
-                    .title(t!("host_form.group_rdp"))
                     .item(self.row(|this, cx| this.render_rdp_section(cx).into_any_element())),
-            ),
-            HostKind::Ssh => page,
-        }
+            )
     }
 
     fn tags_page(&self) -> SettingPage {

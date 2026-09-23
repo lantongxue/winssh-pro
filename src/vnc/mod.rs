@@ -24,7 +24,8 @@
 //!   以及"对端认不认、认到哪一档"这本账。
 //!
 //! 现在支持的安全类型是 RFB 的两档：`None`（无认证）与 VNC 密码认证
-//! （主机表单里那格"VNC 密码"，见 [`crate::ui::windows::HostFormWindow`]）。
+//! （就是主机表单里那格"密码" —— 三种协议共用同一格，不叫"VNC 密码"，
+//! 见 [`crate::ui::windows::HostFormWindow`]）。
 //! 编码协商 Zrle / CopyRect / Raw 加三个伪编码（桌面尺寸 / LastRect /
 //! 扩展剪贴板）—— 不含 Tight，所以不接 JPEG 解码。服务器光标画在它发来的
 //! 画面里，本地指针照常显示。

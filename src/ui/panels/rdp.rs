@@ -30,7 +30,6 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::assets::IconName as CatalogIcon;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
@@ -39,10 +38,10 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, ModifiersChangedEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point,
-    Render, RenderImage, ScrollDelta, ScrollWheelEvent, SharedString, Styled as _, Subscription,
-    WeakEntity, Window, black, div, px,
+    InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, Modifiers,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollWheelEvent,
+    SharedString, Styled as _, Subscription, WeakEntity, Window, black, div, px,
 };
 use ironrdp::input::{MouseButton as RdpMouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use tokio::sync::mpsc::UnboundedSender;
@@ -81,6 +80,9 @@ const CLIPBOARD_POLL_MS: u64 = 500;
 const DESKTOP_MIN: (u16, u16) = (640, 480);
 const DESKTOP_MAX: (u16, u16) = (8192, 8192);
 
+/// macOS 会在应用收到事件前把 Control+左键改报成右键。
+const CONTROL_CLICK_IS_RIGHT_CLICK: bool = cfg!(target_os = "macos");
+
 /// 这条会话此刻走到哪一步了。
 #[derive(Clone, Debug)]
 enum RdpPhase {
@@ -117,6 +119,8 @@ pub struct RdpPanel {
     pointer_visible: bool,
     /// 键盘此刻在对端那边按成什么样（[`RdpKeyboard`]）。
     keyboard: RdpKeyboard,
+    /// 按下时这颗右键是否由 macOS 的 Control+左键转换而来；抬起沿用同一映射。
+    control_click: bool,
     /// 两边此刻同步的是哪一份文本，防回声的镜子（和 VNC 同一套）。
     clipboard: Option<String>,
     /// 上次报出去的存活状态。
@@ -151,6 +155,7 @@ impl RdpPanel {
                 pointer_position: (0, 0),
                 pointer_visible: false,
                 keyboard: RdpKeyboard::new(),
+                control_click: false,
                 clipboard: None,
                 alive: false,
                 dock_area,
@@ -192,6 +197,7 @@ impl RdpPanel {
         self.pointer_position = (0, 0);
         self.display.set(None);
         self.keyboard.forget();
+        self.control_click = false;
         self.clipboard = None;
         self.set_alive(false, cx);
         cx.notify();
@@ -487,6 +493,7 @@ impl RdpPanel {
         // 它松不干净。GPUI 侧的账随后清零，免得回头补发没人认领的抬起。
         self.send(RdpInput::ReleaseAll);
         self.keyboard.forget();
+        self.control_click = false;
     }
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -495,10 +502,15 @@ impl RdpPanel {
             return;
         }
         let mut operations = self.keyboard.hold(&event.modifiers);
+        self.control_click = is_control_click(
+            event.button,
+            &event.modifiers,
+            self.keyboard.holds_control(),
+        );
         if let Some((x, y)) = self.remote_point(event.position) {
             operations.push(Operation::MouseMove(MousePosition { x, y }));
         }
-        if let Some(button) = remote_button(event.button) {
+        if let Some(button) = remote_button(event.button, self.control_click) {
             operations.push(Operation::MouseButtonPressed(button));
         }
         self.send_operations(operations);
@@ -512,9 +524,10 @@ impl RdpPanel {
         if let Some((x, y)) = self.remote_point(event.position) {
             operations.push(Operation::MouseMove(MousePosition { x, y }));
         }
-        if let Some(button) = remote_button(event.button) {
+        if let Some(button) = remote_button(event.button, self.control_click) {
             operations.push(Operation::MouseButtonReleased(button));
         }
+        self.control_click = false;
         self.send_operations(operations);
     }
 
@@ -557,12 +570,22 @@ fn desired_desktop(window: &Window) -> (u16, u16) {
     (width, height)
 }
 
+/// macOS 把 Control+左键改报为右键。鼠标事件里的 Control 可能缺失，
+/// 所以同时参考键盘账；其他平台始终保留原始按钮。
+fn is_control_click(button: MouseButton, modifiers: &Modifiers, control_held: bool) -> bool {
+    CONTROL_CLICK_IS_RIGHT_CLICK
+        && button == MouseButton::Right
+        && (modifiers.control || control_held)
+}
+
 /// gpui 的鼠标键 → RDP 的鼠标键。侧键（浏览器前进/后退）在 RDP 里有位置
 /// （X1/X2），照搬过去；认不出的返回 `None`。
-fn remote_button(button: MouseButton) -> Option<RdpMouseButton> {
+/// `control_click` 固定为按下时的结果，避免先松 Control 后松鼠标时抬错按钮。
+fn remote_button(button: MouseButton, control_click: bool) -> Option<RdpMouseButton> {
     match button {
         MouseButton::Left => Some(RdpMouseButton::Left),
         MouseButton::Middle => Some(RdpMouseButton::Middle),
+        MouseButton::Right if control_click => Some(RdpMouseButton::Left),
         MouseButton::Right => Some(RdpMouseButton::Right),
         MouseButton::Navigate(gpui_kit::NavigationDirection::Back) => Some(RdpMouseButton::X1),
         MouseButton::Navigate(gpui_kit::NavigationDirection::Forward) => Some(RdpMouseButton::X2),
@@ -686,7 +709,7 @@ impl RdpPanel {
                     .ghost()
                     .xsmall()
                     .icon(
-                        Icon::new(CatalogIcon::Keyboard)
+                        Icon::new(AppIcon::Keyboard)
                             .with_size(px(12.))
                             .text_color(palette::idle(cx)),
                     )
@@ -926,21 +949,74 @@ mod tests {
         );
     }
 
-    /// 侧键有对应（X1/X2），主键三颗照搬。
+    /// 侧键有对应（X1/X2），普通鼠标键按原样发送。
     #[test]
     fn the_buttons_map_straight_across() {
-        assert_eq!(remote_button(MouseButton::Left), Some(RdpMouseButton::Left));
         assert_eq!(
-            remote_button(MouseButton::Right),
+            remote_button(MouseButton::Left, false),
+            Some(RdpMouseButton::Left)
+        );
+        assert_eq!(
+            remote_button(MouseButton::Right, false),
             Some(RdpMouseButton::Right)
         );
         assert_eq!(
-            remote_button(MouseButton::Navigate(gpui_kit::NavigationDirection::Back)),
+            remote_button(
+                MouseButton::Navigate(gpui_kit::NavigationDirection::Back),
+                false
+            ),
             Some(RdpMouseButton::X1)
         );
         assert_eq!(
-            remote_button(MouseButton::Navigate(gpui_kit::NavigationDirection::Forward)),
+            remote_button(
+                MouseButton::Navigate(gpui_kit::NavigationDirection::Forward),
+                false
+            ),
             Some(RdpMouseButton::X2)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn control_click_uses_left_button_even_if_mouse_event_loses_control() {
+        assert!(is_control_click(
+            MouseButton::Right,
+            &Modifiers::control(),
+            false
+        ));
+        let mut keyboard = RdpKeyboard::new();
+        keyboard.hold(&Modifiers::control());
+        let control_click = is_control_click(
+            MouseButton::Right,
+            &Modifiers::none(),
+            keyboard.holds_control(),
+        );
+        assert!(control_click);
+        // 抬起时沿用按下的判断，即使 Control 已经松开。
+        keyboard.modifiers(&Modifiers::none());
+        assert!(!keyboard.holds_control());
+        assert_eq!(
+            remote_button(MouseButton::Right, control_click),
+            Some(RdpMouseButton::Left)
+        );
+        assert!(!is_control_click(
+            MouseButton::Right,
+            &Modifiers::none(),
+            false
+        ));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn other_platforms_keep_control_right_click_as_right_button() {
+        assert!(!is_control_click(
+            MouseButton::Right,
+            &Modifiers::control(),
+            true
+        ));
+        assert_eq!(
+            remote_button(MouseButton::Right, false),
+            Some(RdpMouseButton::Right)
         );
     }
 }

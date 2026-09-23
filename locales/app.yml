@@ -1079,6 +1079,12 @@ host_form.page_advanced:
 host_form.page_tags:
   en: Tags
   zh-CN: 标签
+host_form.page_vnc:
+  en: VNC connection
+  zh-CN: VNC 连接
+host_form.page_rdp:
+  en: RDP connection
+  zh-CN: RDP 连接
 host_form.group_basic:
   en: Basic info
   zh-CN: 基本信息
@@ -1136,9 +1142,6 @@ host_form.field_port:
 host_form.field_kind:
   en: Connection type
   zh-CN: 连接类型
-host_form.field_vnc_password:
-  en: VNC password
-  zh-CN: VNC 密码
 host_form.field_username:
   en: Login user *
   zh-CN: 登录用户名 *
@@ -1146,11 +1149,8 @@ host_form.field_auth:
   en: Authentication
   zh-CN: 认证方式
 host_form.field_password:
-  en: SSH password
-  zh-CN: SSH 密码
-host_form.group_vnc:
-  en: VNC picture quality
-  zh-CN: VNC 画质
+  en: Password
+  zh-CN: 密码
 host_form.field_vnc_depth:
   en: Colour depth
   zh-CN: 颜色深度
@@ -1172,9 +1172,6 @@ host_form.field_vnc_charset:
 host_form.vnc_hint:
   en: "High compression (Tight) only applies in 32-bit true colour; other depths fall back to Zrle. Exclusive disconnects viewers already on this desktop. The clipboard charset only matters for servers without the extended clipboard: RFB's plain cut text carries no charset, so a Windows server uses its own ANSI code page - pick GBK for a Simplified Chinese one if pasted Chinese comes out garbled."
   zh-CN: "高压缩（Tight）只在真彩 32 位下生效，其余深度自动落回 Zrle；独占会踢掉已在该桌面上的其他查看者。剪贴板字符集只对没有扩展剪贴板的服务器起作用：RFB 的经典正文不带字符集，Windows 上的服务器用的是它自己的 ANSI 代码页 —— 复制中文乱码时，简体中文那台点 GBK。"
-host_form.group_rdp:
-  en: RDP connection
-  zh-CN: RDP 连接
 host_form.field_rdp_security:
   en: Security
   zh-CN: 安全档

@@ -3,7 +3,8 @@
 `vendor/ironrdp-connector` 逐字来自 crates.io 的 **ironrdp-connector 0.10.0**
 （<https://github.com/Devolutions/IronRDP>，MIT OR Apache-2.0，两份 LICENSE 与
 `.cargo_vcs_info.json` 都原样留着），`Cargo.toml` 里的 `[patch.crates-io]`
-指着它。改动只有一处，一行：**把 `picky` 的 default features 关掉**。
+指着它。改动两处：`Cargo.toml` 里**把 `picky` 的 default features 关掉**，
+`src/connection.rs` 里**删掉一条已经失效的 `#[expect(single_use_lifetimes)]`**。
 
 ## 为什么要动它
 
@@ -35,14 +36,36 @@ russh 的 SSH 私钥解密 —— 走的是
 也就是说这份补丁只是把 ironrdp-connector 对齐到 sspi 的用法，并没有引入任何
 新的 picky 构建组合。
 
+## 第二处：`src/connection.rs` 的那条 `#[expect]`
+
+`create_gcc_blocks<'a>` 的唯一一处 `&'a` 写在 `impl Iterator<Item = &'a …>` 里面。
+`impl Trait` 里的匿名生命周期至今不稳定（`&'_` 与不写都是 E0658），所以那个
+`<'a>` 是删不掉的；但 rustc 已经不再对"生命周期只出现在 `impl Trait` 约束里"这一
+种写法报 `single_use_lifetimes`（1.98.0 实测，见下方复现），上游钉在原地的
+`#[expect(single_use_lifetimes)]` 就反过来变成了 `unfulfilled_lint_expectations`
+警告 —— 编译这个 crate 每次刷一行。
+
+于是删掉那条 expect，只在原地留一段注释，说明这里为什么必须有名生命周期。没换成
+`#[allow(single_use_lifetimes)]`：allow 是把话头按到底（哪天 rustc 又改回去报这条
+lint，这里是静默的），而本 crate 自己 `[lints.clippy]` 里的 `allow_attributes = "warn"`
+又不鼓励 `#[allow]` 这种写法。
+
+复现（不需要整个依赖树）：
+
+```sh
+rustc --edition 2024 -W single_use_lifetimes --crate-type lib probe.rs
+# probe.rs 里只留 `fn f<'a>(_i: impl Iterator<Item = &'a str>) {}` —— 无任何警告
+```
+
 ## 逐文件改动
 
 | 文件 | 改了什么 |
 | --- | --- |
 | `Cargo.toml` | `[dependencies.picky]` 下加一行 `default-features = false`（外加一段说明注释）。`Cargo.toml.orig` 是上游原文，保持不动以便对照。 |
+| `src/connection.rs` | 删掉 `create_gcc_blocks` 上面那条 `#[expect(single_use_lifetimes)]`，换成一段说明注释。函数签名与函数体一字未动。 |
 
-其余文件（`src/` 全部、LICENSE、CHANGELOG、README）与 crates.io 上的 0.10.0
-逐字节相同。
+其余文件（`src/` 的其余部分、LICENSE、CHANGELOG、README）与 crates.io 上的
+0.10.0 逐字节相同。
 
 ## 想改成 `refs/` 那样的子模块
 
@@ -58,5 +81,7 @@ russh 的 SSH 私钥解密 —— 走的是
 
 ## 改回上游
 
-上游把这个依赖写成 `default-features = false` 之后，删掉本目录与
-`Cargo.toml` 里对应的 `[patch.crates-io]` 一行即可，应用侧零改动。
+上游把 `picky` 写成 `default-features = false`、并把 `create_gcc_blocks` 上那条
+`#[expect(single_use_lifetimes)]` 删掉（或者上游把 rust-toolchain 提到不再报这条
+expect 的版本）之后，删掉本目录与 `Cargo.toml` 里对应的 `[patch.crates-io]`
+一行即可，应用侧零改动。

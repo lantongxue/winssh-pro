@@ -42,8 +42,14 @@ pub enum AppIcon {
     Key,
     /// 圆头钥匙：账号密码那一档凭据。
     KeyRound,
+    /// 键盘：RDP 面板"发一次 Ctrl+Alt+Del"那颗按钮。组件库默认图标集没带这一枚
+    /// （`Keyboard` 只在全量目录里，默认不内嵌，取不到字节），所以自带一份。
+    Keyboard,
     /// 开盖的笔记本：本地那一栏。
     Laptop,
+    /// 一台显示器：VNC / RDP 这类远程桌面协议的专属配置页。组件库默认图标集
+    /// 没带这一枚（`Monitor` 只在全量目录里，默认不内嵌，取不到字节），所以自带一份。
+    Monitor,
     /// 铅笔：编辑已有的东西。
     Pencil,
     /// 首尾相接的两个箭头：重新列一次。组件库的 `Reload` 不存在，`LoaderCircle` 是转圈。
@@ -89,7 +95,9 @@ impl IconNamed for AppIcon {
             Self::Home => "icons/home.svg",
             Self::Key => "icons/key.svg",
             Self::KeyRound => "icons/key-round.svg",
+            Self::Keyboard => "icons/keyboard.svg",
             Self::Laptop => "icons/laptop.svg",
+            Self::Monitor => "icons/monitor.svg",
             Self::Pencil => "icons/pencil.svg",
             Self::RefreshCw => "icons/refresh-cw.svg",
             Self::Server => "icons/server.svg",
@@ -207,6 +215,7 @@ mod tests {
             AppIcon::Home.path(),
             AppIcon::Key.path(),
             AppIcon::KeyRound.path(),
+            AppIcon::Keyboard.path(),
             AppIcon::Laptop.path(),
             AppIcon::Pencil.path(),
             AppIcon::RefreshCw.path(),

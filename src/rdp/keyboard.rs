@@ -92,6 +92,12 @@ impl RdpKeyboard {
         operations
     }
 
+    /// 对端此刻是否按着 Control。macOS 的 Control+左键可能被系统改报为
+    /// 右键，鼠标事件里的修饰键也可能丢失；面板用这份键盘状态还原左键。
+    pub fn holds_control(&self) -> bool {
+        self.modifiers.contains(&CONTROL)
+    }
+
     /// 一次击键。`typing` 是"这一下按它打出来的字符算"（见模块文档第 2 步）。
     pub fn down(&mut self, keystroke: &Keystroke, typing: bool) -> Vec<Operation> {
         let mut operations = self.modifiers(&keystroke.modifiers);
@@ -454,13 +460,16 @@ mod tests {
             keys(keyboard.hold(&Modifiers::control())),
             vec![("ctrl", true)]
         );
+        assert!(keyboard.holds_control());
         assert!(keyboard.hold(&Modifiers::control()).is_empty());
         assert!(keyboard.hold(&Modifiers::none()).is_empty());
+        assert!(keyboard.holds_control());
 
         assert_eq!(
             keys(keyboard.modifiers(&Modifiers::none())),
             vec![("ctrl", false)]
         );
+        assert!(!keyboard.holds_control());
     }
 
     /// 失焦 / 换会话都只是清账：真正的松手由会话那头的 `Database`（`RdpInput::ReleaseAll`）
@@ -507,10 +516,13 @@ mod tests {
     #[test]
     fn a_command_chord_releases_itself_because_no_key_up_is_coming() {
         let mut keyboard = RdpKeyboard::new();
-        keyboard.modifiers(&Modifiers::command());
+        assert_eq!(
+            keys(keyboard.modifiers(&Modifiers::command())),
+            vec![("super", true)]
+        );
         assert_eq!(
             keys(keyboard.down(&stroke(Modifiers::command(), "s", None), false)),
-            vec![("super", true), ("0x1F", true), ("0x1F", false)]
+            vec![("0x1F", true), ("0x1F", false)]
         );
         assert!(keyboard.keys.is_empty(), "补过抬起就不该再欠着");
     }

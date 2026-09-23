@@ -28,12 +28,21 @@ use gpui_kit::{
 };
 
 use crate::{
-    host::{Host, HostStatus},
+    host::{Host, HostKind, HostStatus},
     ui::{
         menus::{HostAction, HostActionHandler, HostMenu},
         theme::{OsIcon, palette},
     },
 };
+
+/// 这一条标签是不是某个连接类型的名字（`SSH` / `VNC` / `RDP`）。
+///
+/// 协议现在由卡片直接从 [`Host::kind`] 画成一枚徽标，不再依赖标签。老数据里
+/// 可能还留着当年出厂标签塞进去的那一个协议名，预览时滤掉，免得和徽标重复、
+/// 或在换型后留下对不上的旧协议。
+fn is_protocol_tag(tag: &SharedString) -> bool {
+    HostKind::ALL.iter().any(|kind| &kind.label() == tag)
+}
 
 /// 卡片高度。三行内容的高度是定死的，不随内容伸缩 —— 列表要靠它做虚拟滚动，
 /// 也只有等高才能让一列卡片扫读起来是整齐的。
@@ -209,14 +218,40 @@ impl HostCard {
                             .child(self.host.platform_tag()),
                     ),
             )
+            // 协议徽标：直接从 kind 画，不靠标签。换型、复制都立刻跟着走，
+            // SSH / VNC / RDP 三档一视同仁。
+            .child(
+                h_flex()
+                    .flex_shrink_0()
+                    .h_full()
+                    .items_center()
+                    .px_1p5()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(cx.theme().sidebar_border)
+                    .child(
+                        div()
+                            .font_family("monospace")
+                            .text_xs()
+                            .text_color(palette::idle(cx))
+                            .child(self.host.kind.label()),
+                    ),
+            )
             .children(self.render_latency(cx))
             .children(self.render_tags_preview(cx))
     }
 
     /// 标签预览：在卡片第三行展示前 1~2 个标签，超出以 +N 表示。
-    /// 仅作为视觉摘要，超出单行自动裁剪，不破坏 88px 卡片等高。
+    /// 协议名已由 [`render_meta`] 的徽标单独画，这里滤掉标签里的协议名，
+    /// 只留用户自己打的分类标签。仅作为视觉摘要，超出单行自动裁剪，不破坏 88px 卡片等高。
     fn render_tags_preview(&self, cx: &App) -> Option<impl IntoElement> {
-        if self.host.tags.is_empty() {
+        let tags: Vec<&SharedString> = self
+            .host
+            .tags
+            .iter()
+            .filter(|tag| !is_protocol_tag(tag))
+            .collect();
+        if tags.is_empty() {
             return None;
         }
 
@@ -228,7 +263,7 @@ impl HostCard {
                 .items_center()
                 .gap_1()
                 .overflow_hidden()
-                .children(self.host.tags.iter().take(2).map(|tag| {
+                .children(tags.iter().take(2).map(|tag| {
                     div()
                         .flex_shrink_0()
                         .max_w(px(60.))
@@ -238,15 +273,15 @@ impl HostCard {
                         .bg(cx.theme().muted.opacity(0.6))
                         .text_color(palette::idle(cx))
                         .text_xs()
-                        .child(tag.clone())
+                        .child((*tag).clone())
                 }))
-                .when(self.host.tags.len() > 2, |this| {
+                .when(tags.len() > 2, |this| {
                     this.child(
                         div()
                             .flex_shrink_0()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(SharedString::from(format!("+{}", self.host.tags.len() - 2))),
+                            .child(SharedString::from(format!("+{}", tags.len() - 2))),
                     )
                 }),
         )

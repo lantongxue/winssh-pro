@@ -772,7 +772,10 @@ fn respond_to_connect_time_autodetect(
     }
 }
 
-#[expect(single_use_lifetimes)] // anonymous lifetimes in `impl Trait` are unstable
+// 本地补丁（见 PATCHES.md）：删掉了上游这里的 `#[expect(single_use_lifetimes)]`。
+// 生命周期只出现在 `impl Trait` 的约束里时，rustc 已经不再报 single_use_lifetimes
+// （`impl Trait` 里的匿名生命周期仍然不稳定，`<'a>` 必须留着），那条 expect 于是
+// 反过来成了 unfulfilled_lint_expectations 警告。
 fn create_gcc_blocks<'a>(
     config: &Config,
     selected_protocol: nego::SecurityProtocol,
