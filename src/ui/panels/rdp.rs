@@ -8,11 +8,11 @@
 //! 独有的事：
 //!
 //! 1. **远端桌面尺寸由我们向对端要**。RDP 的桌面是服务器给的，客户端能做的
-//!    是"要一个多大的"。这里拿窗口视口的**物理像素**（逻辑尺寸乘缩放系数）
-//!    去要，于是 HiDPI 屏上远端也是同样多的物理像素，不会被拉糊；窗口改了
-//!    大小就通过 DisplayControl 动态通道要一次新尺寸（拖窗口时服务器不来
-//!    新的连接，画面就地改）。切到实际 1:1 后不再追着窗口改远端尺寸；
-//!    已收到的帧按物理像素原样绘制，装不下的部分从滚动条查看。
+//!    是"要一个多大的"。拿布局后画布可用区域的**物理像素**（逻辑尺寸乘
+//!    屏幕缩放系数）去要，不包含侧边栏、Dock 标签栏和面板信息栏。首次
+//!    布局拿到尺寸才拨号；后续画布变大变小，通过 DisplayControl 动态调整。
+//!    两档都按物理像素 1:1 绘制：自适应改变远端分辨率，实际 1:1 冻结
+//!    远端分辨率。对端尚未改好或不支持动态调整时，溢出部分从滚动条查看。
 //! 2. **光标是单独一层**。RDP 用"加速档"把光标位图与位置分开送
 //!    （见 [`crate::rdp::session`] 的模块文档），所以桌面纹理不会因为鼠标
 //!    动一下就整张重传；两者都挂到 [`FrameElement`] 上画。本地系统光标
@@ -32,7 +32,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
+    ActiveTheme as _, ElementExt as _, Icon, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, DockArea, Panel, PanelEvent, TabGroup},
     h_flex,
@@ -42,8 +42,10 @@ use gpui_kit::{
     InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, Modifiers,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Styled as _, Subscription, WeakEntity, Window, black, div, px,
+    ScrollWheelEvent, SharedString, Size, Styled as _, Subscription, WeakEntity, Window, black,
+    div, px,
 };
+use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp::input::{
     MouseButton as RdpMouseButton, MousePosition, Operation, Scancode, WheelRotations,
 };
@@ -82,12 +84,6 @@ const WHEEL_UNITS_PER_CLICK: i16 = 120;
 /// 本地剪贴板的查看节奏，毫秒。和 VNC 面板同一条理由：没有回调可等。
 const CLIPBOARD_POLL_MS: u64 = 500;
 
-/// 向对端请求的桌面尺寸的上下界。下界取 VGA，上界是 DisplayControl
-/// 约定的 8192（[`MonitorLayoutEntry::adjust_display_size`] 自己会再夹一道，
-/// 这里夹一道是为了让"要不要发这次改尺寸"这件事先有个稳定答案）。
-const DESKTOP_MIN: (u16, u16) = (640, 480);
-const DESKTOP_MAX: (u16, u16) = (8192, 8192);
-
 /// macOS 会在应用收到事件前把 Control+左键改报成右键。
 const CONTROL_CLICK_IS_RIGHT_CLICK: bool = cfg!(target_os = "macos");
 
@@ -111,8 +107,9 @@ pub struct RdpPanel {
     image: Option<Arc<RenderImage>>,
     /// 桌面分辨率，从最近一帧的图像尺寸读出。
     resolution: Option<(u16, u16)>,
-    /// 向对端要过的尺寸。窗口每动一下都算一次，和它相同就不再发 ——
-    /// 拖窗口时 `observe_window_bounds` 会连着来几十条。
+    /// 最近一次布局测得的画布物理尺寸。与远端图像尺寸分开，避免反馈循环。
+    viewport: Rc<Cell<Option<(u16, u16)>>>,
+    /// 向对端要过的尺寸；初始为 None，首次画布布局后才发起连接。
     requested: Option<(u16, u16)>,
     /// 画面这一帧真正落在窗口里的矩形，由 [`FrameElement`] 回报。
     display: Rc<Cell<Option<gpui_kit::Bounds<Pixels>>>>,
@@ -146,7 +143,7 @@ impl EventEmitter<SessionEvent> for RdpPanel {}
 impl EventEmitter<PanelEvent> for RdpPanel {}
 
 impl RdpPanel {
-    /// 开一条 RDP 会话：建面板的同时就开始拨号，界面先摆"连接中"。
+    /// 开一条 RDP 会话：先摆"连接中"，首次布局拿到画布尺寸后拨号。
     pub fn new(
         host: Host,
         dock_area: WeakEntity<DockArea>,
@@ -160,6 +157,7 @@ impl RdpPanel {
                 inputs: None,
                 image: None,
                 resolution: None,
+                viewport: Rc::new(Cell::new(None)),
                 requested: None,
                 display: Rc::new(Cell::new(None)),
                 scroll: ScrollHandle::new(),
@@ -188,12 +186,7 @@ impl RdpPanel {
                         this.release_all();
                     }
                 }),
-                // 窗口改尺寸 → 向对端要一块同样大的桌面（见模块文档）。
-                cx.observe_window_bounds(window, |this, window, cx| {
-                    this.sync_window_size(window, cx);
-                }),
             ];
-            this.connect(window, cx);
             this.watch_clipboard(cx);
             this
         })
@@ -202,6 +195,9 @@ impl RdpPanel {
     /// 拨一条新连接。和 VNC 面板同构：`Connecting` → 成功挂事件泵，
     /// 失败 `Failed`；重连按钮走同一条路。
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(desktop) = self.viewport.get() else {
+            return;
+        };
         self.phase = RdpPhase::Connecting;
         self.inputs = None;
         self.image = None;
@@ -216,13 +212,12 @@ impl RdpPanel {
         self.set_alive(false, cx);
         cx.notify();
 
-        let desktop = desired_desktop(window);
         self.requested = Some(desktop);
 
         let host = self.host.clone();
         cx.spawn_in(window, async move |this, cx| {
             let outcome = RdpSession::connect(host, desktop).await;
-            _ = this.update_in(cx, |this, _, cx| match outcome {
+            _ = this.update_in(cx, |this, window, cx| match outcome {
                 Ok(mut session) => {
                     let inputs = session.inputs();
                     this.inputs = Some(inputs);
@@ -310,6 +305,8 @@ impl RdpPanel {
                         })
                         .detach();
                     }
+                    // 握手期间画布也可能变大变小；把最新尺寸补给刚连上的会话。
+                    this.sync_viewport_size(window, cx);
                     cx.notify();
                 }
                 Err(error) => this.fail(SharedString::from(format!("{error:#}")), cx),
@@ -435,7 +432,7 @@ impl RdpPanel {
         self.scale = scale;
         self.display.set(None);
         if scale == DesktopScale::Adaptive {
-            self.sync_window_size(window, cx);
+            self.sync_viewport_size(window, cx);
         }
         cx.focus_self(window);
         cx.notify();
@@ -455,13 +452,18 @@ impl RdpPanel {
         });
     }
 
-    /// 窗口尺寸变了：向对端要一块同样大的桌面。只有算出来的尺寸确实变了
-    /// 才发 —— 拖窗口时这个回调会连着来几十条。
-    fn sync_window_size(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
+    /// 布局已完成：按画布尺寸建立连接，或调整已连接的远端分辨率。
+    fn sync_viewport_size(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.phase, RdpPhase::Connecting) && self.requested.is_none() {
+            self.connect(window, cx);
+            return;
+        }
         if !self.live() || self.scale == DesktopScale::Actual {
             return;
         }
-        let desired = desired_desktop(window);
+        let Some(desired) = self.viewport.get() else {
+            return;
+        };
         if self.requested == Some(desired) {
             return;
         }
@@ -590,18 +592,23 @@ impl RdpPanel {
     }
 }
 
-/// 窗口视口要换成多大的远端桌面：逻辑尺寸乘缩放系数，夹进上下界。
-/// 见模块文档第 1 条。
-fn desired_desktop(window: &Window) -> (u16, u16) {
-    let viewport = window.viewport_size();
-    let scale = window.scale_factor();
-    let width = (f32::from(viewport.width) * scale)
-        .round()
-        .clamp(DESKTOP_MIN.0 as f32, DESKTOP_MAX.0 as f32) as u16;
-    let height = (f32::from(viewport.height) * scale)
-        .round()
-        .clamp(DESKTOP_MIN.1 as f32, DESKTOP_MAX.1 as f32) as u16;
-    (width, height)
+/// 画布逻辑尺寸换成物理像素，再统一应用协议限制（200..8192，宽度为偶数）。
+/// 折叠或尚未布局的零尺寸不能拿去连一块最小桌面。
+fn desired_desktop(viewport: Size<Pixels>, scale: f32) -> Option<(u16, u16)> {
+    let width = f32::from(viewport.width) * scale;
+    let height = f32::from(viewport.height) * scale;
+    if !scale.is_finite()
+        || scale <= 0.
+        || !width.is_finite()
+        || !height.is_finite()
+        || width <= 0.
+        || height <= 0.
+    {
+        return None;
+    }
+    let (width, height) =
+        MonitorLayoutEntry::adjust_display_size(width.round() as u32, height.round() as u32);
+    Some((width as u16, height as u16))
 }
 
 /// macOS 把 Control+左键改报为右键。鼠标事件里的 Control 可能缺失，
@@ -772,7 +779,7 @@ impl RdpPanel {
 
 impl RdpPanel {
     /// 中间那块画布：有一帧画一帧，没有就摆一句实话。
-    fn render_canvas(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_canvas(&self, window: &Window, cx: &mut Context<Self>) -> gpui_kit::Div {
         let viewport = div().flex_1().min_h_0().w_full().bg(black());
 
         let Some(image) = self.image.clone() else {
@@ -782,24 +789,22 @@ impl RdpPanel {
                 RdpPhase::Failed(reason) => reason.to_string(),
             };
             let failed = matches!(&self.phase, RdpPhase::Failed(_));
-            return viewport
-                .child(
-                    div()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(match failed {
-                                    true => palette::coral(),
-                                    false => palette::idle(cx),
-                                })
-                                .child(SharedString::from(message)),
-                        ),
-                )
-                .into_any_element();
+            return viewport.child(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(match failed {
+                                true => palette::coral(),
+                                false => palette::idle(cx),
+                            })
+                            .child(SharedString::from(message)),
+                    ),
+            );
         };
 
         let pointer = match (&self.pointer_image, self.pointer_visible) {
@@ -828,21 +833,14 @@ impl RdpPanel {
             .on_scroll_wheel(cx.listener(Self::on_scroll))
             .child(FrameElement::new(image, self.display.clone()).with_pointer(pointer));
 
-        match self.scale {
-            DesktopScale::Adaptive => viewport.child(frame.size_full()).into_any_element(),
-            DesktopScale::Actual => {
-                let native =
-                    native_frame_size(self.resolution.unwrap_or_default(), window.scale_factor());
-                scrollable_frame(
-                    viewport,
-                    frame.w(native.width).h(native.height).flex_shrink_0(),
-                    &self.scroll,
-                    "rdp-frame-scroll",
-                    "rdp-frame-scrollbar",
-                )
-                .into_any_element()
-            }
-        }
+        let native = native_frame_size(self.resolution.unwrap_or_default(), window.scale_factor());
+        scrollable_frame(
+            viewport,
+            frame.w(native.width).h(native.height).flex_shrink_0(),
+            &self.scroll,
+            "rdp-frame-scroll",
+            "rdp-frame-scrollbar",
+        )
     }
 }
 
@@ -915,6 +913,8 @@ impl Panel for RdpPanel {
 
 impl Render for RdpPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewport = self.viewport.clone();
+        let panel = cx.entity().downgrade();
         div()
             .id("rdp-panel")
             .size_full()
@@ -922,7 +922,19 @@ impl Render for RdpPanel {
             .flex_col()
             .bg(cx.theme().background)
             .child(self.render_bar(window, cx))
-            .child(self.render_canvas(window, cx))
+            .child(
+                self.render_canvas(window, cx)
+                    .on_prepaint(move |bounds, window, cx| {
+                        let desired = desired_desktop(bounds.size, window.scale_factor());
+                        if viewport.replace(desired) == desired || desired.is_none() {
+                            return;
+                        }
+                        // 沿用组件库的布局测量钩子，不添 flex 容器；绘制结束后才改面板状态。
+                        window.defer(cx, move |window, cx| {
+                            _ = panel.update(cx, |this, cx| this.sync_viewport_size(window, cx));
+                        });
+                    }),
+            )
     }
 }
 
@@ -930,6 +942,158 @@ impl Render for RdpPanel {
 mod tests {
     use super::*;
     use ironrdp::input::Operation;
+
+    #[test]
+    fn viewport_pixels_follow_dpi_and_display_control_limits() {
+        let viewport = gpui_kit::size(px(900.), px(624.));
+        assert_eq!(desired_desktop(viewport, 1.), Some((900, 624)));
+        assert_eq!(desired_desktop(viewport, 2.), Some((1800, 1248)));
+        assert_eq!(desired_desktop(viewport, 1.25), Some((1124, 780)));
+        assert_eq!(
+            desired_desktop(gpui_kit::size(px(350.), px(250.)), 1.),
+            Some((350, 250))
+        );
+        assert_eq!(
+            desired_desktop(gpui_kit::size(px(100.), px(9000.)), 1.),
+            Some((200, 8192))
+        );
+        assert_eq!(desired_desktop(gpui_kit::size(px(0.), px(600.)), 1.), None);
+        assert_eq!(desired_desktop(viewport, f32::NAN), None);
+    }
+
+    struct ViewportHarness {
+        panel: Entity<RdpPanel>,
+        width: Pixels,
+    }
+
+    impl Render for ViewportHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w(self.width).h(px(650.)).child(self.panel.clone())
+        }
+    }
+
+    #[gpui_kit::test]
+    fn resolution_tracks_the_canvas_and_frames_remain_unscaled(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::component::dock::DockSkin;
+        use image::{Frame, RgbaImage};
+
+        cx.update(gpui_kit::init);
+        let (inputs, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (harness, cx) = cx.add_window_view(|window, cx| {
+            let (dock, _skin) = DockSkin::dock_area("rdp-test-dock", Some(1), window, cx);
+            let host = Host {
+                id: "test".into(),
+                name: "test".into(),
+                kind: crate::host::HostKind::Rdp,
+                user: "test".into(),
+                hostname: "localhost".into(),
+                port: 3389,
+                platform: "".into(),
+                auth_method: crate::host::AuthMethod::Password,
+                password: "".into(),
+                key_content: "".into(),
+                key_passphrase: "".into(),
+                jump_host_id: None,
+                monitor_intervals: Default::default(),
+                forwards: Vec::new(),
+                tags: Vec::new(),
+                proxy: Default::default(),
+                vnc: Default::default(),
+                rdp: crate::rdp::RdpSettings {
+                    clipboard: false,
+                    ..Default::default()
+                },
+                shell_integration: false,
+            };
+            let panel = RdpPanel::new(host, dock.downgrade(), window, cx);
+            panel.update(cx, |panel, _| {
+                // 构造阶段没有拿整扇窗口的尺寸拨号。测试改接假输入通道，不连接网络。
+                assert!(panel.requested.is_none());
+                assert!(panel.viewport.get().is_none());
+                panel.phase = RdpPhase::Live;
+                panel.inputs = Some(inputs);
+                panel.requested = Some((640, 480));
+            });
+            ViewportHarness {
+                panel,
+                width: px(900.),
+            }
+        });
+        let panel = harness.read_with(cx, |harness, _| harness.panel.clone());
+        let draw = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        };
+        let resizes = |input_rx: &mut tokio::sync::mpsc::UnboundedReceiver<RdpInput>| {
+            let mut sizes = Vec::new();
+            while let Ok(input) = input_rx.try_recv() {
+                if let RdpInput::Resize { width, height } = input {
+                    sizes.push((width, height));
+                }
+            }
+            sizes
+        };
+        draw(cx);
+        let scale = cx.update(|window, _| window.scale_factor());
+        // 没有首帧也能测量；650 高度须扣去 26 像素的信息栏。
+        let expected = desired_desktop(gpui_kit::size(px(900.), px(624.)), scale).unwrap();
+        assert_eq!(resizes(&mut input_rx), [expected]);
+
+        panel.update(cx, |panel, cx| {
+            panel.set_frame(
+                Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(
+                    1280, 720,
+                ))])),
+                cx,
+            )
+        });
+        draw(cx);
+        assert!(
+            resizes(&mut input_rx).is_empty(),
+            "新帧不能反过来改变请求尺寸"
+        );
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(
+                panel.display.get().unwrap().size,
+                native_frame_size((1280, 720), scale)
+            );
+        });
+
+        // 不改变原生窗口，只缩窄面板，模拟侧边栏/分屏拖动。
+        harness.update(cx, |harness, cx| {
+            harness.width = px(700.);
+            cx.notify();
+        });
+        draw(cx);
+        assert_eq!(
+            resizes(&mut input_rx),
+            [desired_desktop(gpui_kit::size(px(700.), px(624.)), scale).unwrap()]
+        );
+
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_scale(DesktopScale::Actual, window, cx)
+            })
+        });
+        harness.update(cx, |harness, cx| {
+            harness.width = px(800.);
+            cx.notify();
+        });
+        draw(cx);
+        assert!(
+            resizes(&mut input_rx).is_empty(),
+            "实际 1:1 档冻结远端分辨率"
+        );
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_scale(DesktopScale::Adaptive, window, cx)
+            })
+        });
+        assert_eq!(
+            resizes(&mut input_rx),
+            [desired_desktop(gpui_kit::size(px(800.), px(624.)), scale).unwrap()]
+        );
+    }
 
     fn rotations(operations: &[Operation]) -> Vec<(bool, i16)> {
         operations

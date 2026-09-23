@@ -499,6 +499,9 @@ async fn session_loop(
     let clipboard_open = AtomicBool::new(true);
     let mut activation: Option<ConnectionActivationSequence> = None;
     let mut activation_buf = WriteBuf::new();
+    // 连接成功不代表 DisplayControl 已完成能力交换。保留最新画布尺寸，
+    // 通道就绪后再发，避免握手期间拖动窗口的那次调整被静默丢掉。
+    let mut pending_resize = None;
 
     let reason = 'outer: loop {
         // 重激活仍走同一条读包循环。read_by_hint 会丢弃夹在握手里的 FastPath，
@@ -530,6 +533,19 @@ async fn session_loop(
                     .await
                     .map_err(|error| anyhow!("{}", t!("rdp.write_failed", detail => error)))?;
             }
+        }
+        if activation.is_none()
+            && let Some((width, height)) = pending_resize
+            && display_control_ready(&mut active_stage)
+            && let Some(frame) = active_stage.encode_resize(width, height, None, None)
+        {
+            let frame =
+                frame.map_err(|error| anyhow!("{}", t!("rdp.resize_failed", detail => error)))?;
+            writer
+                .write_all(&frame)
+                .await
+                .map_err(|error| anyhow!("{}", t!("rdp.write_failed", detail => error)))?;
+            pending_resize = None;
         }
         let outputs = tokio::select! {
             frame = reader.read_pdu() => {
@@ -615,16 +631,10 @@ async fn session_loop(
                         }
                     }
                     RdpInput::Resize { width, height } => {
-                        // 不能超过 8192（DisplayControl 的规定），超了按比例缩。
-                        let (width, height) =
-                            MonitorLayoutEntry::adjust_display_size(u32::from(width), u32::from(height));
-                        match active_stage.encode_resize(width, height, None, None) {
-                            Some(frame) => vec![ActiveStageOutput::ResponseFrame(
-                                frame.map_err(|error| anyhow!("{}", t!("rdp.resize_failed", detail => error)))?,
-                            )],
-                            // 对端没协商出 DisplayControl：拖窗口只能等比缩放画面。
-                            None => Vec::new(),
-                        }
+                        pending_resize = Some(MonitorLayoutEntry::adjust_display_size(
+                            u32::from(width), u32::from(height),
+                        ));
+                        Vec::new()
                     }
                     RdpInput::Close => active_stage.graceful_shutdown()
                         .map_err(|error| anyhow!("{}", t!("rdp.session_failed", detail => error)))?,
@@ -733,6 +743,17 @@ async fn session_loop(
     };
 
     Ok(reason)
+}
+
+fn display_control_ready(active_stage: &mut ActiveStage) -> bool {
+    active_stage
+        .get_dvc::<DisplayControlClient>()
+        .is_some_and(|channel| {
+            channel.is_open()
+                && channel
+                    .channel_processor_downcast_ref::<DisplayControlClient>()
+                    .is_some_and(DisplayControlClient::ready)
+        })
 }
 
 /// 只把当前阶段的握手消息交给激活序列；图形、光标、剪贴板以及断开通知
