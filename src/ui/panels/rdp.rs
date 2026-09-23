@@ -11,7 +11,8 @@
 //!    是"要一个多大的"。这里拿窗口视口的**物理像素**（逻辑尺寸乘缩放系数）
 //!    去要，于是 HiDPI 屏上远端也是同样多的物理像素，不会被拉糊；窗口改了
 //!    大小就通过 DisplayControl 动态通道要一次新尺寸（拖窗口时服务器不来
-//!    新的连接，画面就地改）。要不到的尺寸变化只会等比缩放画面，不会断线。
+//!    新的连接，画面就地改）。切到实际 1:1 后不再追着窗口改远端尺寸；
+//!    已收到的帧按物理像素原样绘制，装不下的部分从滚动条查看。
 //! 2. **光标是单独一层**。RDP 用"加速档"把光标位图与位置分开送
 //!    （见 [`crate::rdp::session`] 的模块文档），所以桌面纹理不会因为鼠标
 //!    动一下就整张重传；两者都挂到 [`FrameElement`] 上画。本地系统光标
@@ -40,17 +41,23 @@ use gpui_kit::{
     App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, Modifiers,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollWheelEvent,
-    SharedString, Styled as _, Subscription, WeakEntity, Window, black, div, px,
+    ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, SharedString, Styled as _, Subscription, WeakEntity, Window, black, div, px,
 };
-use ironrdp::input::{MouseButton as RdpMouseButton, MousePosition, Operation, Scancode, WheelRotations};
+use ironrdp::input::{
+    MouseButton as RdpMouseButton, MousePosition, Operation, Scancode, WheelRotations,
+};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     host::Host,
     rdp::{RdpInput, RdpKeyboard, RdpOutput, RdpSession, pointer_to_render_image},
     ui::{
-        elements::{FrameElement, PointerOverlay},
+        elements::{
+            DesktopScale, FrameElement, PointerOverlay, native_frame_size, remote_frame_point,
+            scrollable_frame,
+        },
+        menus::{DesktopSessionAction, DesktopSessionKind, DesktopSessionMenu},
         panels::SessionEvent,
         theme::{AppIcon, palette},
     },
@@ -108,6 +115,10 @@ pub struct RdpPanel {
     requested: Option<(u16, u16)>,
     /// 画面这一帧真正落在窗口里的矩形，由 [`FrameElement`] 回报。
     display: Rc<Cell<Option<gpui_kit::Bounds<Pixels>>>>,
+    /// 实际 1:1 画面的本地视口位置，横纵滚动条共用。
+    scroll: ScrollHandle,
+    /// 当前画面缩放选择；实际 1:1 时冻结已协商的远端桌面尺寸。
+    scale: DesktopScale,
     /// 远端光标位图（BGRA）。随形状变化更新，不随位置。
     pointer_image: Option<Arc<RenderImage>>,
     /// 光标热点，见 [`PointerOverlay::hotspot`]。
@@ -150,6 +161,8 @@ impl RdpPanel {
                 resolution: None,
                 requested: None,
                 display: Rc::new(Cell::new(None)),
+                scroll: ScrollHandle::new(),
+                scale: DesktopScale::Adaptive,
                 pointer_image: None,
                 pointer_hotspot: (0, 0),
                 pointer_position: (0, 0),
@@ -229,7 +242,9 @@ impl RdpPanel {
                                     }
                                     Some(RdpOutput::PointerBitmap(pointer)) => {
                                         if this
-                                            .update(cx, |this, cx| this.set_pointer_bitmap(&pointer, cx))
+                                            .update(cx, |this, cx| {
+                                                this.set_pointer_bitmap(&pointer, cx)
+                                            })
                                             .is_err()
                                         {
                                             break;
@@ -271,7 +286,9 @@ impl RdpPanel {
                                     }
                                     Some(RdpOutput::Clipboard(text)) => {
                                         if this
-                                            .update(cx, |this, cx| this.accept_remote_clipboard(text, cx))
+                                            .update(cx, |this, cx| {
+                                                this.accept_remote_clipboard(text, cx)
+                                            })
                                             .is_err()
                                         {
                                             break;
@@ -365,10 +382,7 @@ impl RdpPanel {
             return;
         }
         let image = frame.size(0);
-        self.resolution = Some((
-            image.width.0.max(0) as u16,
-            image.height.0.max(0) as u16,
-        ));
+        self.resolution = Some((image.width.0.max(0) as u16, image.height.0.max(0) as u16));
         self.image = Some(frame);
         self.set_alive(true, cx);
         cx.notify();
@@ -376,7 +390,11 @@ impl RdpPanel {
 
     /// 光标形状变了。位图为空（不可见光标）时清掉这一层，
     /// 让本地系统光标顶上。
-    fn set_pointer_bitmap(&mut self, pointer: &ironrdp::graphics::pointer::DecodedPointer, cx: &mut Context<Self>) {
+    fn set_pointer_bitmap(
+        &mut self,
+        pointer: &ironrdp::graphics::pointer::DecodedPointer,
+        cx: &mut Context<Self>,
+    ) {
         self.pointer_hotspot = (pointer.hotspot_x, pointer.hotspot_y);
         match pointer_to_render_image(pointer) {
             Some(image) => {
@@ -409,6 +427,19 @@ impl RdpPanel {
         matches!(self.phase, RdpPhase::Live)
     }
 
+    fn set_scale(&mut self, scale: DesktopScale, window: &mut Window, cx: &mut Context<Self>) {
+        if self.scale == scale {
+            return;
+        }
+        self.scale = scale;
+        self.display.set(None);
+        if scale == DesktopScale::Adaptive {
+            self.sync_window_size(window, cx);
+        }
+        cx.focus_self(window);
+        cx.notify();
+    }
+
     pub(crate) fn alive(&self) -> bool {
         self.alive
     }
@@ -426,7 +457,7 @@ impl RdpPanel {
     /// 窗口尺寸变了：向对端要一块同样大的桌面。只有算出来的尺寸确实变了
     /// 才发 —— 拖窗口时这个回调会连着来几十条。
     fn sync_window_size(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
-        if !self.live() {
+        if !self.live() || self.scale == DesktopScale::Actual {
             return;
         }
         let desired = desired_desktop(window);
@@ -442,25 +473,17 @@ impl RdpPanel {
 
     /// 窗口坐标的指针落在远端桌面的哪个像素。
     fn remote_point(&self, position: Point<Pixels>) -> Option<(u16, u16)> {
-        let display = self.display.get()?;
-        let (width, height) = self.resolution?;
-        if display.size.width <= px(0.) || display.size.height <= px(0.) {
-            return None;
-        }
-        let scale_x = width as f32 / f32::from(display.size.width);
-        let scale_y = height as f32 / f32::from(display.size.height);
-        let x = (f32::from(position.x - display.origin.x) * scale_x)
-            .clamp(0., width as f32 - 1.)
-            .round() as u16;
-        let y = (f32::from(position.y - display.origin.y) * scale_y)
-            .clamp(0., height as f32 - 1.)
-            .round() as u16;
-        Some((x, y))
+        remote_frame_point(self.display.get()?, self.resolution?, position)
     }
 
     // ─── 输入事件 ────────────────────────────────────────────────────────────
 
-    fn on_modifiers_changed(&mut self, event: &ModifiersChangedEvent, _: &mut Window, _: &mut Context<Self>) {
+    fn on_modifiers_changed(
+        &mut self,
+        event: &ModifiersChangedEvent,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) {
         if !self.live() {
             return;
         }
@@ -496,7 +519,12 @@ impl RdpPanel {
         self.control_click = false;
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         cx.focus_self(window);
         if !self.live() {
             return;
@@ -541,12 +569,17 @@ impl RdpPanel {
         self.send_operations(vec![Operation::MouseMove(MousePosition { x, y })]);
     }
 
-    fn on_scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, _: &mut Context<Self>) {
+    fn on_scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+        // 画面上的滚轮属于远端；本地视口由可见滚动条移动。
+        cx.stop_propagation();
         if !self.live() {
             return;
         }
-        let row_height = f32::from(self.display.get().map_or(px(1.), |bounds| bounds.size.height))
-            / self.resolution.map_or(1., |(_, height)| height as f32);
+        let row_height = f32::from(
+            self.display
+                .get()
+                .map_or(px(1.), |bounds| bounds.size.height),
+        ) / self.resolution.map_or(1., |(_, height)| height as f32);
         self.send_operations(wheel_operations(event.delta, row_height));
     }
 
@@ -653,6 +686,7 @@ fn secure_attention_operations() -> Vec<Operation> {
 impl RdpPanel {
     fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let alive = self.alive;
+        let panel = cx.entity().downgrade();
         let status = match &self.phase {
             RdpPhase::Connecting => t!("rdp.connecting").to_string(),
             RdpPhase::Live => match self.resolution {
@@ -667,7 +701,6 @@ impl RdpPanel {
             .h(BAR_HEIGHT)
             .w_full()
             .items_center()
-            .justify_between()
             .gap_2()
             .px_2()
             .text_xs()
@@ -680,14 +713,12 @@ impl RdpPanel {
                     .min_w_0()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div().flex_shrink_0().size(TAB_DOT_SIZE).rounded_full().bg(
-                            match alive {
-                                true => palette::green(),
-                                false => palette::idle(cx),
-                            },
-                        ),
-                    )
+                    .child(div().flex_shrink_0().size(TAB_DOT_SIZE).rounded_full().bg(
+                        match alive {
+                            true => palette::green(),
+                            false => palette::idle(cx),
+                        },
+                    ))
                     .child(
                         div()
                             .flex_shrink_0()
@@ -704,19 +735,18 @@ impl RdpPanel {
                             .child(SharedString::from(status)),
                     ),
             )
-            .child(
-                Button::new("rdp-panel-secure-attention")
-                    .ghost()
-                    .xsmall()
-                    .icon(
-                        Icon::new(AppIcon::Keyboard)
-                            .with_size(px(12.))
-                            .text_color(palette::idle(cx)),
-                    )
-                    .label(t!("rdp.send_ctrl_alt_del"))
-                    .tooltip(t!("rdp.send_ctrl_alt_del_tooltip"))
-                    .on_click(cx.listener(|this, _, _, _| this.send_secure_attention())),
-            )
+            .child(DesktopSessionMenu::new(
+                "rdp-panel-menu",
+                DesktopSessionKind::Rdp,
+                self.scale,
+                move |action, window, cx| {
+                    let _ = panel.update(cx, |this, cx| match action {
+                        DesktopSessionAction::Scale(scale) => this.set_scale(scale, window, cx),
+                        DesktopSessionAction::SecureAttention => this.send_secure_attention(),
+                        DesktopSessionAction::Redraw => {}
+                    });
+                },
+            ))
             .child(
                 Button::new("rdp-panel-reconnect")
                     .ghost()
@@ -735,12 +765,8 @@ impl RdpPanel {
 
 impl RdpPanel {
     /// 中间那块画布：有一帧画一帧，没有就摆一句实话。
-    fn render_canvas(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let viewport = div()
-            .flex_1()
-            .min_h_0()
-            .w_full()
-            .bg(black());
+    fn render_canvas(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewport = div().flex_1().min_h_0().w_full().bg(black());
 
         let Some(image) = self.image.clone() else {
             let message = match &self.phase {
@@ -749,22 +775,24 @@ impl RdpPanel {
                 RdpPhase::Failed(reason) => reason.to_string(),
             };
             let failed = matches!(&self.phase, RdpPhase::Failed(_));
-            return viewport.child(
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(match failed {
-                                true => palette::coral(),
-                                false => palette::idle(cx),
-                            })
-                            .child(SharedString::from(message)),
-                    ),
-            );
+            return viewport
+                .child(
+                    div()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(match failed {
+                                    true => palette::coral(),
+                                    false => palette::idle(cx),
+                                })
+                                .child(SharedString::from(message)),
+                        ),
+                )
+                .into_any_element();
         };
 
         let pointer = match (&self.pointer_image, self.pointer_visible) {
@@ -776,27 +804,38 @@ impl RdpPanel {
             _ => None,
         };
 
-        viewport.child(
-            div()
-                .size_full()
-                .id("rdp-frame")
-                .track_focus(&self.focus_handle)
-                .key_context("RdpPanel")
-                .on_key_down(cx.listener(Self::on_key_down))
-                .on_key_up(cx.listener(Self::on_key_up))
-                .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
-                .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-                .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
-                .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
-                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
-                .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
-                .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
-                .on_mouse_move(cx.listener(Self::on_mouse_move))
-                .on_scroll_wheel(cx.listener(Self::on_scroll))
-                .child(
-                    FrameElement::new(image, self.display.clone()).with_pointer(pointer),
-                ),
-        )
+        let frame = div()
+            .id("rdp-frame")
+            .track_focus(&self.focus_handle)
+            .key_context("RdpPanel")
+            .on_key_down(cx.listener(Self::on_key_down))
+            .on_key_up(cx.listener(Self::on_key_up))
+            .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
+            .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_scroll_wheel(cx.listener(Self::on_scroll))
+            .child(FrameElement::new(image, self.display.clone()).with_pointer(pointer));
+
+        match self.scale {
+            DesktopScale::Adaptive => viewport.child(frame.size_full()).into_any_element(),
+            DesktopScale::Actual => {
+                let native =
+                    native_frame_size(self.resolution.unwrap_or_default(), window.scale_factor());
+                scrollable_frame(
+                    viewport,
+                    frame.w(native.width).h(native.height).flex_shrink_0(),
+                    &self.scroll,
+                    "rdp-frame-scroll",
+                    "rdp-frame-scrollbar",
+                )
+                .into_any_element()
+            }
+        }
     }
 }
 
@@ -811,7 +850,12 @@ impl BasePanel for RdpPanel {
         "RdpPanel"
     }
 
-    fn on_added_to(&mut self, _: WeakEntity<TabGroup>, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_added_to(
+        &mut self,
+        _: WeakEntity<TabGroup>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         cx.focus_self(window);
         cx.notify();
     }
@@ -833,12 +877,14 @@ impl Panel for RdpPanel {
             .items_center()
             .gap_1p5()
             .child(
-                div().flex_shrink_0().size(TAB_DOT_SIZE).rounded_full().bg(
-                    match alive {
+                div()
+                    .flex_shrink_0()
+                    .size(TAB_DOT_SIZE)
+                    .rounded_full()
+                    .bg(match alive {
                         true => palette::magenta(),
                         false => palette::idle(cx),
-                    },
-                ),
+                    }),
             )
             .child(div().min_w_0().truncate().child(self.host.name.clone()))
             .child(
@@ -861,7 +907,7 @@ impl Panel for RdpPanel {
 }
 
 impl Render for RdpPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("rdp-panel")
             .size_full()
@@ -869,7 +915,7 @@ impl Render for RdpPanel {
             .flex_col()
             .bg(cx.theme().background)
             .child(self.render_bar(cx))
-            .child(self.render_canvas(cx))
+            .child(self.render_canvas(window, cx))
     }
 }
 
@@ -907,7 +953,8 @@ mod tests {
     /// 触控板的像素增量按行高折算成格，再乘 120。
     #[test]
     fn pixel_deltas_are_converted_through_the_row_height() {
-        let operations = wheel_operations(ScrollDelta::Pixels(gpui_kit::point(px(0.), px(60.))), 20.);
+        let operations =
+            wheel_operations(ScrollDelta::Pixels(gpui_kit::point(px(0.), px(60.))), 20.);
         assert_eq!(rotations(&operations), vec![(true, -360)]);
     }
 

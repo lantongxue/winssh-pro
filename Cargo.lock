@@ -12720,6 +12720,7 @@ dependencies = [
  "gpui-kit",
  "image",
  "ironrdp",
+ "ironrdp-bulk",
  "ironrdp-tls",
  "ironrdp-tokio",
  "log",

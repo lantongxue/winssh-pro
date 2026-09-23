@@ -66,6 +66,7 @@ use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabi
 use ironrdp::pdu::rdp::client_info::{CompressionType, TimezoneInfo};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
+use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
 use ironrdp_tls::upgrade as tls_upgrade;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{
@@ -451,6 +452,7 @@ async fn session_loop(
     let desktop = connection_result.desktop_size;
     let mut image = DecodedImage::new(PixelFormat::BgrX32, desktop.width, desktop.height);
     let activation_factory = connection_result.activation_factory;
+    let compression_type = connection_result.compression_type;
 
     let mut active_stage = ActiveStageBuilder {
         static_channels: connection_result.static_channels,
@@ -458,7 +460,7 @@ async fn session_loop(
         io_channel_id: connection_result.io_channel_id,
         message_channel_id: connection_result.message_channel_id,
         share_id: connection_result.share_id,
-        compression_type: connection_result.compression_type,
+        compression_type,
         enable_server_pointer: connection_result.enable_server_pointer,
         pointer_software_rendering: connection_result.pointer_software_rendering,
     }
@@ -658,7 +660,9 @@ async fn session_loop(
                                     share_id,
                                     enable_server_pointer,
                                     pointer_software_rendering,
-                                    bulk_decompressor: None,
+                                    bulk_decompressor: reactivation_decompressor(
+                                        compression_type,
+                                    )?,
                                 }
                                 .build(),
                             );
@@ -677,6 +681,25 @@ async fn session_loop(
     };
 
     Ok(reason)
+}
+
+/// 首次激活由 `ActiveStageBuilder` 建解压器；桌面重新激活会换掉整个
+/// FastPath 处理器，也必须照原先协商的类型给新处理器一份新解压状态。
+fn reactivation_decompressor(
+    compression_type: Option<CompressionType>,
+) -> Result<Option<BulkCompressor>> {
+    compression_type
+        .map(|compression_type| {
+            let level = match compression_type {
+                CompressionType::K8 => BulkCompressionType::Rdp4,
+                CompressionType::K64 => BulkCompressionType::Rdp5,
+                CompressionType::Rdp6 => BulkCompressionType::Rdp6,
+                CompressionType::Rdp61 => BulkCompressionType::Rdp61,
+            };
+            BulkCompressor::new(level)
+                .map_err(|error| anyhow!("{}", t!("rdp.session_failed", detail => error)))
+        })
+        .transpose()
 }
 
 /// 剪贴板回程消息的下一次投递。
@@ -728,6 +751,22 @@ pub fn pointer_to_render_image(pointer: &DecodedPointer) -> Option<Arc<RenderIma
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reactivation_recreates_the_negotiated_bulk_decompressor() {
+        assert!(reactivation_decompressor(None).unwrap().is_none());
+        for (negotiated, expected) in [
+            (CompressionType::K8, BulkCompressionType::Rdp4),
+            (CompressionType::K64, BulkCompressionType::Rdp5),
+            (CompressionType::Rdp6, BulkCompressionType::Rdp6),
+            (CompressionType::Rdp61, BulkCompressionType::Rdp61),
+        ] {
+            let decompressor = reactivation_decompressor(Some(negotiated))
+                .unwrap()
+                .expect("compression was negotiated");
+            assert_eq!(decompressor.compression_level(), expected);
+        }
+    }
 
     #[test]
     fn pointer_bitmaps_swap_red_and_blue() {

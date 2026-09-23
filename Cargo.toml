@@ -192,6 +192,8 @@ encoding_rs = "0.8"
 # 不开任何 feature 时门面连 pdu/core 都没有，所以 core 与 pdu 要点名带上；
 # `displaycontrol` 是动态改分辨率那条 DVC（窗口拖大拖小用）。
 ironrdp = { version = "0.17", default-features = false, features = ["core", "pdu", "connector", "session", "input", "cliprdr", "graphics", "dvc", "svc", "displaycontrol"] }
+# 反激活后要重建 FastPath 的 MPPC 解压器；首次激活由 ironrdp-session 建。
+ironrdp-bulk = "0.1.1"
 # `reqwest` 这一档给 CredSSP 里的 KDC 请求（Kerberos 那条路）备一个
 # `NetworkClient` 实现；NTLM 走不到它，但错误必须在编译期就有个答案。
 # reqwest 本来就在依赖树里（rig 的 HTTP 后端），这里只多开它一个 feature。

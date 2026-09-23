@@ -898,6 +898,21 @@ vnc.reconnect_tooltip:
 vnc.close_session:
   en: Close desktop
   zh-CN: 关闭桌面
+desktop_scale.settings:
+  en: Display settings
+  zh-CN: 画面设置
+desktop_scale.adaptive:
+  en: Fit window
+  zh-CN: 自适应
+desktop_scale.adaptive_tooltip:
+  en: Fill the desktop panel and follow its size.
+  zh-CN: 画面铺满当前面板，并随面板大小变化。
+desktop_scale.actual:
+  en: Actual 1:1
+  zh-CN: 实际 1:1
+desktop_scale.actual_tooltip:
+  en: Show one remote pixel per display pixel. Use the scrollbars when the desktop is larger than the panel.
+  zh-CN: 一个远端像素对应一个显示像素；画面大于面板时可用滚动条查看。
 vnc.redraw:
   en: Redraw
   zh-CN: 刷新画面

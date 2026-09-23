@@ -23,6 +23,14 @@
 //! 平时要**增量**，画面有洞时要**全量**。这件事非分不可 —— 增量请求只带回
 //! 变过的区域，一块从没画过的地方（刚连上、刚改过分辨率、丢过一块矩形）
 //! 在增量里永远不会出现，它会一直黑在那儿。
+//!
+//! **光标**：`SetEncodings` 里报 `CursorPseudo`（`-239`），服务端从此**不再**
+//! 把远程光标绘进 framebuffer，改为把形状单独发一条 `SetCursor`。我们不叠加
+//! 那份位图（gpui 的 `CursorStyle` 没有 `Hidden` 一档，本地系统光标藏不掉；
+//! 再叠一层远程形状就是"两枚光标"），画面里因此只剩本地那一枚 —— 形状变化
+//! 看不到，换来的是无鬼影、零延迟。这是刻意的取舍，与
+//! [`crate::ui::panels::RdpPanel`] 那边"RDP 协议天生分离指针 → 必须自己叠加"
+//! 正好相反。
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -137,7 +145,13 @@ impl VncSession {
                 // 那之后中文才有路走（经典正文按规范只是 Latin-1）；不认的
                 // 服务器对这一条一无所知，照旧走经典。它是能力声明，不是
                 // 压缩档，所以排在伪编码这一段里。
-                .add_encoding(VncEncoding::ExtendedClipboardPseudo);
+                .add_encoding(VncEncoding::ExtendedClipboardPseudo)
+                // 光标形状从 framebuffer 里分出来送：报了它，服务端就**不再**
+                // 把远程光标绘进画面（否则用户会看到"远端鬼影 + 本地箭头"
+                // 两枚光标）。位图与热点走 `VncEvent::SetCursor` 单独来，我们
+                // 这一侧刻意不叠加，取舍见模块文档；`vnc-rs` 内置的
+                // `codec::cursor::Decoder` 负责解码，无需自己写。
+                .add_encoding(VncEncoding::CursorPseudo);
             for encoding in chosen.encoding_order() {
                 connector = connector.add_encoding(*encoding);
             }
@@ -338,9 +352,18 @@ async fn run(
                         log::warn!("VNC: 一块 JPEG 矩形解不出来，丢给下一拍");
                     }
                 }
-                // 光标形状编码不协商，收到只记一行。
-                Ok(VncEvent::SetCursor(..)) => {
-                    log::debug!("VNC: 收到未协商的光标矩形，忽略");
+                // 光标形状：我们已经在 `SetEncodings` 里报了 `CursorPseudo`，
+                // 服务端从此把光标位图从 framebuffer 里摘出来单独送 —— 画面里
+                // 不再有那枚远程光标。这边刻意不叠加，理由见模块文档；只记一行
+                // 日志，方便对着远程桌面形状变化调试时知道协议层收到的节奏。
+                Ok(VncEvent::SetCursor(rect, _)) => {
+                    log::debug!(
+                        "VNC: 收到光标形状 {}×{}（热点 {},{}），按本地光标渲染策略忽略",
+                        rect.width,
+                        rect.height,
+                        rect.x,
+                        rect.y,
+                    );
                 }
                 // 对端复制了东西，走经典正文。正文是字节：解成 UTF-8 还是 Latin-1
                 // 归 `clipboard` 那本账（见 [`super::clipboard`]）。原样转给前台
@@ -1257,12 +1280,12 @@ mod tests {
             assert_eq!(observed.shared_flag, Some(1), "出厂是可共享");
             let format = observed.pixel_format.as_ref().unwrap();
             assert_eq!(format[0], 32, "真彩一档 32 位");
-            // 表头：桌面尺寸(0xFF…21)、LastRect(0xFF…20)、扩展剪贴板(0xc0a1e5ce)
-            // ——三个伪编码之后才是压缩档：Tight、Zrle……
+            // 表头：桌面尺寸(0xFF…21)、LastRect(0xFF…20)、扩展剪贴板(0xc0a1e5ce)、
+            // 光标形状(0xFF…11 = -239) ——四个伪编码之后才是压缩档：Tight、Zrle……
             assert_eq!(
-                observed.encodings.get(2..5),
-                Some(&[0xc0a1e5ceu32, 7u32, 16u32][..]),
-                "扩展剪贴板是能力声明，和另两个伪编码排在一起；Tight 必须排第二压缩位，Zrle 跟着"
+                observed.encodings.get(2..6),
+                Some(&[0xc0a1e5ceu32, 0xffff_ff11, 7u32, 16u32][..]),
+                "扩展剪贴板与光标形状是能力声明，和另两个伪编码排在一起；Tight 必须排第二压缩位，Zrle 跟着"
             );
             }
         });

@@ -10,8 +10,15 @@
 //! - 对主机列表只报 [`SessionEvent`]：活没活着、关没关掉，卡片上那颗点跟它走。
 //!
 //! 区别也全在中间那一块：终端是"给我一块地方我按格子铺"，VNC 是"对端给了
-//! 一张位图，我把它等比缩进这块地方" —— 尺寸换算与焦点归本面板，画面本身归
-//! [`FrameElement`](crate::ui::elements::FrameElement)。
+//! 一张位图，我按选中的方式把它摆进画布" —— 尺寸换算与焦点归本面板，画面本身归
+//! [`FrameElement`](crate::ui::elements::FrameElement)。自适应铺满画布，实际
+//! 1:1 按远端像素占据相应的显示像素，装不下时用滚动条移动视口。
+//!
+//! **光标只画本地那一枚**：会话层在 `SetEncodings` 里报了 `CursorPseudo`，
+//! 服务端从此不再把远程光标绘进 framebuffer；`SetCursor` 送过来的位图这边
+//! 也不叠到 [`FrameElement`] 上（gpui 的 `CursorStyle` 没有 `Hidden` 一档，
+//! 本地系统光标藏不掉，叠上去就是"两枚光标"）。代价是远程的形状变化（
+//! I-beam、resize、沙漏）看不到；取舍与上下文见 [`crate::vnc::session`] 模块文档。
 //!
 //! **输入没有本地语义**：这里不存在选区、搜索、滚动回卷 —— 每一次击键、
 //! 每一段指针移动都原样（翻成 keysym 和按钮掩码之后）送给对端。所以焦点
@@ -54,20 +61,21 @@ use gpui_kit::component::{
     h_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    ClipboardItem, InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, Modifiers,
-    ModifiersChangedEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
-    RenderImage,
-    ScrollDelta, ScrollWheelEvent, SharedString, Styled as _, Subscription, WeakEntity, Window,
-    black, div, px,
+    App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, Modifiers,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, SharedString, Styled as _, Subscription, WeakEntity, Window, black, div, px,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     host::Host,
     ui::{
-        elements::FrameElement,
+        elements::{
+            DesktopScale, FrameElement, native_frame_size, remote_frame_point, scrollable_frame,
+        },
+        menus::{DesktopSessionAction, DesktopSessionKind, DesktopSessionMenu},
         panels::SessionEvent,
         theme::{AppIcon, palette},
     },
@@ -122,9 +130,13 @@ pub struct VncPanel {
     image: Option<Arc<RenderImage>>,
     /// 桌面分辨率，从最近一帧的图像尺寸读出。信息栏那一格用它。
     resolution: Option<(u16, u16)>,
+    /// 当前画面缩放选择。重连不改用户在此标签页上的选择。
+    scale: DesktopScale,
     /// 画面这一帧真正落在窗口里的矩形，由 [`FrameElement`] 回报；
     /// 指针换算是它和图像尺寸之间的一次除法（见 [`Self::remote_point`]）。
     display: Rc<Cell<Option<gpui_kit::Bounds<Pixels>>>>,
+    /// 实际 1:1 画面的本地视口位置，横纵滚动条共用。
+    scroll: ScrollHandle,
     /// 此刻按着的 RFB 按钮掩码。松手事件丢了（拖出窗外）时会被下一次
     /// 按下前的一次移动校正。
     buttons: u8,
@@ -170,7 +182,9 @@ impl VncPanel {
                 inputs: None,
                 image: None,
                 resolution: None,
+                scale: DesktopScale::Adaptive,
                 display: Rc::new(Cell::new(None)),
+                scroll: ScrollHandle::new(),
                 buttons: 0,
                 control_click: false,
                 keyboard: VncKeyboard::new(),
@@ -237,9 +251,7 @@ impl VncPanel {
                                 match events.recv().await {
                                     Some(VncOutput::Frame(frame)) => {
                                         if this
-                                            .update(cx, |this, cx| {
-                                                this.set_frame(frame, cx)
-                                            })
+                                            .update(cx, |this, cx| this.set_frame(frame, cx))
                                             .is_err()
                                         {
                                             break;
@@ -352,10 +364,7 @@ impl VncPanel {
             return;
         }
         let image = frame.size(0);
-        self.resolution = Some((
-            image.width.0.max(0) as u16,
-            image.height.0.max(0) as u16,
-        ));
+        self.resolution = Some((image.width.0.max(0) as u16, image.height.0.max(0) as u16));
         self.image = Some(frame);
         self.set_alive(true, cx);
         cx.notify();
@@ -379,6 +388,16 @@ impl VncPanel {
         matches!(self.phase, VncPhase::Live)
     }
 
+    fn set_scale(&mut self, scale: DesktopScale, window: &mut Window, cx: &mut Context<Self>) {
+        if self.scale == scale {
+            return;
+        }
+        self.scale = scale;
+        self.display.set(None);
+        cx.focus_self(window);
+        cx.notify();
+    }
+
     /// 主机列表要的那句"还连着吗"（卡片上那颗点）。协议活着才算活着。
     pub(crate) fn alive(&self) -> bool {
         self.alive
@@ -397,23 +416,10 @@ impl VncPanel {
         });
     }
 
-    /// 窗口坐标的指针落在远端桌面的哪个像素。画面还没画出来过、或者
-    /// 点在了等比缩放留下的黑边上，都返回 `None` 不上报。
+    /// 窗口坐标的指针落在远端桌面的哪个像素。画面还没画出来过时
+    /// 返回 `None`；实际 1:1 的余下空白由画框外的视口接事件。
     fn remote_point(&self, position: Point<Pixels>) -> Option<(u16, u16)> {
-        let display = self.display.get()?;
-        let (width, height) = self.resolution?;
-        if display.size.width <= px(0.) || display.size.height <= px(0.) {
-            return None;
-        }
-        let scale_x = width as f32 / f32::from(display.size.width);
-        let scale_y = height as f32 / f32::from(display.size.height);
-        let x = (f32::from(position.x - display.origin.x) * scale_x)
-            .clamp(0., width as f32 - 1.)
-            .round() as u16;
-        let y = (f32::from(position.y - display.origin.y) * scale_y)
-            .clamp(0., height as f32 - 1.)
-            .round() as u16;
-        Some((x, y))
+        remote_frame_point(self.display.get()?, self.resolution?, position)
     }
 
     // ─── 输入事件 ────────────────────────────────────────────────────────────
@@ -482,8 +488,11 @@ impl VncPanel {
         let inputs = self.keyboard.hold(&event.modifiers);
         self.send_all(inputs);
 
-        self.control_click =
-            is_control_click(event.button, &event.modifiers, self.keyboard.holds_control());
+        self.control_click = is_control_click(
+            event.button,
+            &event.modifiers,
+            self.keyboard.holds_control(),
+        );
         let button = remote_button(event.button, self.control_click);
         log::debug!(
             "VNC：鼠标 {:?} 按下（修饰键 {:?}，对端 Control={}）→ 送出 {button:?}",
@@ -535,7 +544,9 @@ impl VncPanel {
         });
     }
 
-    fn on_scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, _: &mut Context<Self>) {
+    fn on_scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+        // 画面上的滚轮属于远端；本地视口由可见滚动条移动。
+        cx.stop_propagation();
         if !self.live() {
             return;
         }
@@ -545,15 +556,10 @@ impl VncPanel {
             ScrollDelta::Pixels(delta) => {
                 let height = f32::from(self.display.get().map_or(px(1.), |b| b.size.height))
                     / self.resolution.map_or(1., |(_, h)| h as f32);
-                (
-                    f32::from(delta.x) / height,
-                    f32::from(delta.y) / height,
-                )
+                (f32::from(delta.x) / height, f32::from(delta.y) / height)
             }
         };
-        let clicks = |lines: f32| {
-            (lines.round() as i16).clamp(-MAX_WHEEL_CLICKS, MAX_WHEEL_CLICKS)
-        };
+        let clicks = |lines: f32| (lines.round() as i16).clamp(-MAX_WHEEL_CLICKS, MAX_WHEEL_CLICKS);
         let (x, y) = (clicks(lines_x), clicks(lines_y));
         if x == 0 && y == 0 {
             return;
@@ -613,6 +619,7 @@ fn remote_button(button: MouseButton, control_click: bool) -> MouseButton {
 impl VncPanel {
     fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let alive = self.alive;
+        let panel = cx.entity().downgrade();
         let status = match &self.phase {
             VncPhase::Connecting => t!("vnc.connecting").to_string(),
             VncPhase::Live => match self.resolution {
@@ -627,7 +634,6 @@ impl VncPanel {
             .h(BAR_HEIGHT)
             .w_full()
             .items_center()
-            .justify_between()
             .gap_2()
             .px_2()
             .text_xs()
@@ -640,14 +646,12 @@ impl VncPanel {
                     .min_w_0()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div().flex_shrink_0().size(TAB_DOT_SIZE).rounded_full().bg(
-                            match alive {
-                                true => palette::green(),
-                                false => palette::idle(cx),
-                            },
-                        ),
-                    )
+                    .child(div().flex_shrink_0().size(TAB_DOT_SIZE).rounded_full().bg(
+                        match alive {
+                            true => palette::green(),
+                            false => palette::idle(cx),
+                        },
+                    ))
                     .child(
                         div()
                             .flex_shrink_0()
@@ -664,19 +668,18 @@ impl VncPanel {
                             .child(SharedString::from(status)),
                     ),
             )
-            .child(
-                Button::new("vnc-panel-redraw")
-                    .ghost()
-                    .xsmall()
-                    .icon(
-                        Icon::new(IconName::Redo2)
-                            .with_size(px(12.))
-                            .text_color(palette::idle(cx)),
-                    )
-                    .label(t!("vnc.redraw"))
-                    .tooltip(t!("vnc.redraw_tooltip"))
-                    .on_click(cx.listener(|this, _, _, _| this.send(VncInput::Redraw))),
-            )
+            .child(DesktopSessionMenu::new(
+                "vnc-panel-menu",
+                DesktopSessionKind::Vnc,
+                self.scale,
+                move |action, window, cx| {
+                    let _ = panel.update(cx, |this, cx| match action {
+                        DesktopSessionAction::Scale(scale) => this.set_scale(scale, window, cx),
+                        DesktopSessionAction::Redraw => this.send(VncInput::Redraw),
+                        DesktopSessionAction::SecureAttention => {}
+                    });
+                },
+            ))
             .child(
                 Button::new("vnc-panel-reconnect")
                     .ghost()
@@ -695,13 +698,13 @@ impl VncPanel {
 
 impl VncPanel {
     /// 中间那块画布：有一帧画一帧，没有就摆一句实话。
-    fn render_canvas(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_canvas(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let viewport = div()
             .flex_1()
             .min_h_0()
             .w_full()
-            // 远端桌面的底色按经典 VNC 的"还没画面就是黑的"来，
-            // 等比缩放留下的边也是这块黑。
+            // 远端桌面的底色按经典 VNC 的"还没画面就是黑的"来；
+            // 实际 1:1 下小于视口的余下区域也是黑的。
             .bg(black());
 
         let Some(image) = self.image.clone() else {
@@ -711,43 +714,58 @@ impl VncPanel {
                 VncPhase::Failed(reason) => reason.to_string(),
             };
             let failed = matches!(&self.phase, VncPhase::Failed(_));
-            return viewport.child(
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(match failed {
-                                true => palette::coral(),
-                                false => palette::idle(cx),
-                            })
-                            .child(SharedString::from(message)),
-                    ),
-            );
+            return viewport
+                .child(
+                    div()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(match failed {
+                                    true => palette::coral(),
+                                    false => palette::idle(cx),
+                                })
+                                .child(SharedString::from(message)),
+                        ),
+                )
+                .into_any_element();
         };
 
-        viewport.child(
-            div()
-                .size_full()
-                .id("vnc-frame")
-                .track_focus(&self.focus_handle)
-                .key_context("VncPanel")
-                .on_key_down(cx.listener(Self::on_key_down))
-                .on_key_up(cx.listener(Self::on_key_up))
-                .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
-                .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-                .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
-                .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
-                .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
-                .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
-                .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
-                .on_mouse_move(cx.listener(Self::on_mouse_move))
-                .on_scroll_wheel(cx.listener(Self::on_scroll))
-                .child(FrameElement::new(image, self.display.clone())),
-        )
+        let frame = div()
+            .id("vnc-frame")
+            .track_focus(&self.focus_handle)
+            .key_context("VncPanel")
+            .on_key_down(cx.listener(Self::on_key_down))
+            .on_key_up(cx.listener(Self::on_key_up))
+            .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_mouse_down))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
+            .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_scroll_wheel(cx.listener(Self::on_scroll))
+            .child(FrameElement::new(image, self.display.clone()));
+
+        match self.scale {
+            DesktopScale::Adaptive => viewport.child(frame.size_full()).into_any_element(),
+            DesktopScale::Actual => {
+                let native =
+                    native_frame_size(self.resolution.unwrap_or_default(), window.scale_factor());
+                scrollable_frame(
+                    viewport,
+                    frame.w(native.width).h(native.height).flex_shrink_0(),
+                    &self.scroll,
+                    "vnc-frame-scroll",
+                    "vnc-frame-scrollbar",
+                )
+                .into_any_element()
+            }
+        }
     }
 }
 
@@ -762,7 +780,12 @@ impl BasePanel for VncPanel {
         "VncPanel"
     }
 
-    fn on_added_to(&mut self, _: WeakEntity<TabGroup>, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_added_to(
+        &mut self,
+        _: WeakEntity<TabGroup>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         cx.focus_self(window);
         cx.notify();
     }
@@ -783,12 +806,14 @@ impl Panel for VncPanel {
             .items_center()
             .gap_1p5()
             .child(
-                div().flex_shrink_0().size(TAB_DOT_SIZE).rounded_full().bg(
-                    match alive {
+                div()
+                    .flex_shrink_0()
+                    .size(TAB_DOT_SIZE)
+                    .rounded_full()
+                    .bg(match alive {
                         true => palette::magenta(),
                         false => palette::idle(cx),
-                    },
-                ),
+                    }),
             )
             .child(div().min_w_0().truncate().child(self.host.name.clone()))
             .child(
@@ -811,7 +836,7 @@ impl Panel for VncPanel {
 }
 
 impl Render for VncPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("vnc-panel")
             .size_full()
@@ -819,7 +844,7 @@ impl Render for VncPanel {
             .flex_col()
             .bg(cx.theme().background)
             .child(self.render_bar(cx))
-            .child(self.render_canvas(cx))
+            .child(self.render_canvas(window, cx))
     }
 }
 
@@ -902,9 +927,7 @@ mod tests {
         assert_eq!(button_mask(MouseButton::Middle), BUTTON_MIDDLE);
         assert_eq!(button_mask(MouseButton::Right), BUTTON_RIGHT);
         assert_eq!(
-            button_mask(MouseButton::Navigate(
-                gpui_kit::NavigationDirection::Back
-            )),
+            button_mask(MouseButton::Navigate(gpui_kit::NavigationDirection::Back)),
             0
         );
     }

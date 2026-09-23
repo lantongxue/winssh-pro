@@ -7,12 +7,15 @@
 //!
 //! [`TerminalGridElement`] 两条都占：终端有几行几列是"这块地方放得下几个
 //! 格子"算出来的，而一屏就是几千个格子。[`FrameElement`] 占第一条：
-//! 一帧远端桌面缩放进容器后落在哪个矩形，也要布局之后才知道 —— VNC 与
-//! RDP 两扇远程桌面窗共用它（RDP 的光标位图挂在同一个元素上）。
+//! 一帧远端桌面最终落在哪个矩形，也要布局之后才知道 —— VNC 与 RDP
+//! 两扇远程桌面窗共用它（RDP 的光标位图挂在同一个元素上）。
 
 mod boxdraw;
 mod frame;
 mod terminal_grid;
 
-pub use frame::{FrameElement, PointerOverlay};
+pub use frame::{
+    DesktopScale, FrameElement, PointerOverlay, native_frame_size, remote_frame_point,
+    scrollable_frame,
+};
 pub use terminal_grid::{TerminalGridElement, cell_at, point_at};

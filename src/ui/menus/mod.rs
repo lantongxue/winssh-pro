@@ -4,12 +4,14 @@
 //! 真正干活的是收到回调的那一层。弹层本身（定位、键盘选择、点外面关掉）
 //! 全部交给 [`gpui_kit::component::menu`]。
 
+mod desktop_session_menu;
 mod host_menu;
 mod local_entry_menu;
 mod settings_menu;
 mod sftp_entry_menu;
 mod terminal_menu;
 
+pub use desktop_session_menu::{DesktopSessionAction, DesktopSessionKind, DesktopSessionMenu};
 pub use host_menu::{HostAction, HostActionHandler, HostMenu};
 pub use local_entry_menu::{LocalEntryAction, LocalEntryActionHandler, LocalEntryMenu};
 pub use settings_menu::{SettingsMenu, SettingsMenuAction};
