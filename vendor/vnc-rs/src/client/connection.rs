@@ -98,6 +98,7 @@ impl VncInner {
         shared: bool,
         mut pixel_format: Option<PixelFormat>,
         encodings: Vec<VncEncoding>,
+        frame_events: bool,
     ) -> Result<Self, VncError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -149,6 +150,9 @@ impl VncInner {
             };
 
             let output_func = |e| async {
+                if !frame_events && matches!(e, VncEvent::BeginFrame | VncEvent::EndFrame) {
+                    return Ok(());
+                }
                 output_ch_tx.send(e).await?;
                 Ok(())
             };
@@ -303,11 +307,12 @@ impl VncClient {
         shared: bool,
         pixel_format: Option<PixelFormat>,
         encodings: Vec<VncEncoding>,
+        frame_events: bool,
     ) -> Result<Self, VncError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let inner = VncInner::new(stream, shared, pixel_format, encodings).await?;
+        let inner = VncInner::new(stream, shared, pixel_format, encodings, frame_events).await?;
         Ok(Self {
             desktop: Arc::clone(&inner.desktop),
             input_ch: inner.input_ch.clone(),
@@ -498,6 +503,7 @@ where
         trace!("Server message got: {:?}", server_msg);
         match server_msg {
             ServerMsg::FramebufferUpdate(rect_num) => {
+                output_func(VncEvent::BeginFrame).await?;
                 let mut updates = crate::desktop::UpdateBatch::default();
                 let mut framebuffer_changed = false;
                 for _ in 0..rect_num {
@@ -598,6 +604,7 @@ where
                     desktop.observe(&update);
                     output_func(VncEvent::DesktopUpdate(update)).await?;
                 }
+                output_func(VncEvent::EndFrame).await?;
             }
             // SetColorMapEntries,
             ServerMsg::Bell => {

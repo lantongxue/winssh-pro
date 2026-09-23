@@ -13,6 +13,8 @@
 //! 一张位图，我按选中的方式把它摆进画布" —— 尺寸换算与焦点归本面板，画面本身归
 //! [`FrameElement`](crate::ui::elements::FrameElement)。自适应铺满画布，实际
 //! 1:1 按远端像素占据相应的显示像素，装不下时用滚动条移动视口。
+//! “跟随窗口调整远端分辨率”是单独一档：按画布物理尺寸请求服务器调整，
+//! 始终 1:1 绘制。未协商、被拒绝或超时时保留滚动查看，不改成本地缩放。
 //!
 //! **光标只画本地那一枚**：会话层在 `SetEncodings` 里报了 `CursorPseudo`，
 //! 服务端从此不再把远程光标绘进 framebuffer；`SetCursor` 送过来的位图这边
@@ -55,7 +57,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _,
+    ActiveTheme as _, ElementExt as _, Icon, IconName, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, DockArea, Panel, PanelEvent, TabGroup},
     h_flex,
@@ -65,7 +67,8 @@ use gpui_kit::{
     InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, Modifiers,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Styled as _, Subscription, WeakEntity, Window, black, div, px,
+    ScrollWheelEvent, SharedString, Size, Styled as _, Subscription, WeakEntity, Window, black,
+    div, prelude::FluentBuilder as _, px,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -74,7 +77,8 @@ use crate::{
     ui::{
         Workspace,
         elements::{
-            DesktopScale, FrameElement, native_frame_size, remote_frame_point, scrollable_frame,
+            DesktopScale, FrameElement, native_frame_size, remote_frame_point, replace_image,
+            scrollable_frame,
         },
         menus::{DesktopSessionAction, DesktopSessionKind, DesktopSessionMenu},
         panels::SessionEvent,
@@ -133,6 +137,10 @@ pub struct VncPanel {
     resolution: Option<(u16, u16)>,
     /// 当前画面缩放选择。重连不改用户在此标签页上的选择。
     scale: DesktopScale,
+    /// 实际画布的物理尺寸；不能用远端图像尺寸反过来决定请求。
+    viewport: Rc<Cell<Option<(u16, u16)>>>,
+    resize_supported: bool,
+    resize_error: Option<SharedString>,
     /// 画面这一帧真正落在窗口里的矩形，由 [`FrameElement`] 回报；
     /// 指针换算是它和图像尺寸之间的一次除法（见 [`Self::remote_point`]）。
     display: Rc<Cell<Option<gpui_kit::Bounds<Pixels>>>>,
@@ -184,6 +192,9 @@ impl VncPanel {
                 image: None,
                 resolution: None,
                 scale: DesktopScale::Adaptive,
+                viewport: Rc::new(Cell::new(None)),
+                resize_supported: false,
+                resize_error: None,
                 display: Rc::new(Cell::new(None)),
                 scroll: ScrollHandle::new(),
                 buttons: 0,
@@ -212,6 +223,10 @@ impl VncPanel {
                 }),
             ];
             this.connect(window, cx);
+            cx.on_release(|this, cx| {
+                replace_image(&mut this.image, None, cx);
+            })
+            .detach();
             this.watch_clipboard(cx);
             this
         })
@@ -223,8 +238,10 @@ impl VncPanel {
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.phase = VncPhase::Connecting;
         self.inputs = None;
-        self.image = None;
+        replace_image(&mut self.image, None, cx);
         self.resolution = None;
+        self.resize_supported = false;
+        self.resize_error = None;
         self.display.set(None);
         self.buttons = 0;
         self.control_click = false;
@@ -268,6 +285,28 @@ impl VncPanel {
                                             break;
                                         }
                                     }
+                                    Some(VncOutput::ResizeSupported(supported)) => {
+                                        if this
+                                            .update(cx, |this, cx| {
+                                                this.resize_supported = supported;
+                                                cx.notify();
+                                            })
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    Some(VncOutput::ResizeResult(result)) => {
+                                        if this
+                                            .update(cx, |this, cx| {
+                                                this.resize_error = result.err();
+                                                cx.notify();
+                                            })
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
                                     Some(VncOutput::Disconnected(reason)) => {
                                         let _ = this.update(cx, |this, cx| this.fail(reason, cx));
                                         break;
@@ -285,6 +324,7 @@ impl VncPanel {
                         })
                         .detach();
                     }
+                    this.sync_viewport_size();
                     cx.notify();
                 }
                 Err(error) => this.fail(SharedString::from(format!("{error:#}")), cx),
@@ -366,7 +406,7 @@ impl VncPanel {
         }
         let image = frame.size(0);
         self.resolution = Some((image.width.0.max(0) as u16, image.height.0.max(0) as u16));
-        self.image = Some(frame);
+        replace_image(&mut self.image, Some(frame), cx);
         self.set_alive(true, cx);
         cx.notify();
     }
@@ -395,8 +435,28 @@ impl VncPanel {
         }
         self.scale = scale;
         self.display.set(None);
+        if scale == DesktopScale::FollowViewport {
+            self.sync_viewport_size();
+        } else {
+            self.send(VncInput::Resize(None));
+        }
         cx.focus_self(window);
         cx.notify();
+    }
+
+    fn sync_viewport_size(&self) {
+        if self.live() && self.scale == DesktopScale::FollowViewport {
+            self.send(VncInput::Resize(self.viewport.get()));
+        }
+    }
+
+    fn resize_notice(&self) -> Option<SharedString> {
+        if !self.live() || self.scale != DesktopScale::FollowViewport {
+            return None;
+        }
+        self.resize_error
+            .clone()
+            .or_else(|| (!self.resize_supported).then(|| t!("vnc.resize_not_supported").into()))
     }
 
     /// 主机列表要的那句"还连着吗"（卡片上那颗点）。协议活着才算活着。
@@ -669,6 +729,16 @@ impl VncPanel {
                             .child(SharedString::from(status)),
                     ),
             )
+            .when_some(self.resize_notice(), |bar, notice| {
+                bar.child(
+                    Button::new("vnc-panel-resize-status")
+                        .ghost()
+                        .xsmall()
+                        .tab_stop(false)
+                        .label(t!("vnc.resize_unavailable"))
+                        .tooltip(notice),
+                )
+            })
             .child(DesktopSessionMenu::new(
                 "vnc-panel-menu",
                 DesktopSessionKind::Vnc,
@@ -705,7 +775,7 @@ impl VncPanel {
 
 impl VncPanel {
     /// 中间那块画布：有一帧画一帧，没有就摆一句实话。
-    fn render_canvas(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_canvas(&self, window: &Window, cx: &mut Context<Self>) -> gpui_kit::Div {
         let viewport = div()
             .flex_1()
             .min_h_0()
@@ -721,24 +791,22 @@ impl VncPanel {
                 VncPhase::Failed(reason) => reason.to_string(),
             };
             let failed = matches!(&self.phase, VncPhase::Failed(_));
-            return viewport
-                .child(
-                    div()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(match failed {
-                                    true => palette::coral(),
-                                    false => palette::idle(cx),
-                                })
-                                .child(SharedString::from(message)),
-                        ),
-                )
-                .into_any_element();
+            return viewport.child(
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(match failed {
+                                true => palette::coral(),
+                                false => palette::idle(cx),
+                            })
+                            .child(SharedString::from(message)),
+                    ),
+            );
         };
 
         let frame = div()
@@ -759,8 +827,8 @@ impl VncPanel {
             .child(FrameElement::new(image, self.display.clone()));
 
         match self.scale {
-            DesktopScale::Adaptive => viewport.child(frame.size_full()).into_any_element(),
-            DesktopScale::Actual => {
+            DesktopScale::Adaptive => viewport.child(frame.size_full()),
+            DesktopScale::Actual | DesktopScale::FollowViewport => {
                 let native =
                     native_frame_size(self.resolution.unwrap_or_default(), window.scale_factor());
                 scrollable_frame(
@@ -770,7 +838,6 @@ impl VncPanel {
                     "vnc-frame-scroll",
                     "vnc-frame-scrollbar",
                 )
-                .into_any_element()
             }
         }
     }
@@ -844,6 +911,8 @@ impl Panel for VncPanel {
 
 impl Render for VncPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewport = self.viewport.clone();
+        let panel = cx.entity().downgrade();
         div()
             .id("vnc-panel")
             .size_full()
@@ -851,13 +920,205 @@ impl Render for VncPanel {
             .flex_col()
             .bg(cx.theme().background)
             .child(self.render_bar(window, cx))
-            .child(self.render_canvas(window, cx))
+            .child(
+                self.render_canvas(window, cx)
+                    .on_prepaint(move |bounds, window, cx| {
+                        let desired = desired_desktop(bounds.size, window.scale_factor());
+                        if viewport.replace(desired) == desired {
+                            return;
+                        }
+                        window.defer(cx, move |_, cx| {
+                            _ = panel.update(cx, |this, _| this.sync_viewport_size());
+                        });
+                    }),
+            )
     }
+}
+
+/// 只换算物理像素；VNC 不要求偶数宽度，也不套用 RDP 的 200 像素下界。
+/// 超过解码器的单边/总像素限制时，由 resize_desktop 明确拒绝并保留原画面。
+fn desired_desktop(viewport: Size<Pixels>, scale: f32) -> Option<(u16, u16)> {
+    let width = f32::from(viewport.width) * scale;
+    let height = f32::from(viewport.height) * scale;
+    if !scale.is_finite()
+        || scale <= 0.
+        || !width.is_finite()
+        || !height.is_finite()
+        || width <= 0.
+        || height <= 0.
+    {
+        return None;
+    }
+    Some((width.round().max(1.) as u16, height.round().max(1.) as u16))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn viewport_sizes_use_physical_pixels_without_rdp_rounding() {
+        let viewport = gpui_kit::size(px(900.), px(624.));
+        assert_eq!(desired_desktop(viewport, 1.), Some((900, 624)));
+        assert_eq!(desired_desktop(viewport, 2.), Some((1800, 1248)));
+        assert_eq!(desired_desktop(viewport, 1.25), Some((1125, 780)));
+        assert_eq!(
+            desired_desktop(gpui_kit::size(px(101.), px(99.)), 1.),
+            Some((101, 99))
+        );
+        assert_eq!(desired_desktop(gpui_kit::size(px(0.), px(600.)), 1.), None);
+        assert_eq!(desired_desktop(viewport, f32::NAN), None);
+    }
+
+    struct ViewportHarness {
+        panel: Entity<VncPanel>,
+        width: Pixels,
+    }
+
+    impl Render for ViewportHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w(self.width).h(px(650.)).child(self.panel.clone())
+        }
+    }
+
+    #[gpui_kit::test]
+    fn following_the_canvas_preserves_native_pixels_even_when_resize_is_unavailable(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::component::dock::DockSkin;
+        use image::{Frame, RgbaImage};
+
+        cx.update(gpui_kit::init);
+        let (inputs, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (harness, cx) = cx.add_window_view(|window, cx| {
+            let (dock, _skin) = DockSkin::dock_area("vnc-test-dock", Some(1), window, cx);
+            let panel = cx.new(|cx| VncPanel {
+                host: Host {
+                    id: "test".into(),
+                    name: "test".into(),
+                    kind: crate::host::HostKind::Vnc,
+                    user: "".into(),
+                    hostname: "localhost".into(),
+                    port: 5900,
+                    platform: "".into(),
+                    auth_method: crate::host::AuthMethod::Password,
+                    password: "".into(),
+                    key_content: "".into(),
+                    key_passphrase: "".into(),
+                    jump_host_id: None,
+                    monitor_intervals: Default::default(),
+                    forwards: Vec::new(),
+                    tags: Vec::new(),
+                    proxy: Default::default(),
+                    vnc: Default::default(),
+                    rdp: Default::default(),
+                    shell_integration: false,
+                },
+                phase: VncPhase::Live,
+                inputs: Some(inputs),
+                image: None,
+                resolution: None,
+                scale: DesktopScale::Adaptive,
+                viewport: Rc::new(Cell::new(None)),
+                resize_supported: false,
+                resize_error: None,
+                display: Rc::new(Cell::new(None)),
+                scroll: ScrollHandle::new(),
+                buttons: 0,
+                control_click: false,
+                keyboard: VncKeyboard::new(),
+                clipboard: None,
+                alive: true,
+                dock_area: dock.downgrade(),
+                focus_handle: cx.focus_handle(),
+                _leaving: Vec::new(),
+            });
+            ViewportHarness {
+                panel,
+                width: px(900.),
+            }
+        });
+        let panel = harness.read_with(cx, |harness, _| harness.panel.clone());
+        let draw = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        };
+        let resizes = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<VncInput>| {
+            let mut targets = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                if let VncInput::Resize(target) = event {
+                    targets.push(target);
+                }
+            }
+            targets
+        };
+        draw(cx);
+        assert!(resizes(&mut input_rx).is_empty(), "普通缩放档不改远端桌面");
+        let scale = cx.update(|window, _| window.scale_factor());
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_scale(DesktopScale::FollowViewport, window, cx);
+            })
+        });
+        assert_eq!(
+            resizes(&mut input_rx),
+            [desired_desktop(gpui_kit::size(px(900.), px(624.)), scale)]
+        );
+        panel.update(cx, |panel, cx| {
+            panel.set_frame(
+                Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(
+                    1280, 720,
+                ))])),
+                cx,
+            );
+        });
+        draw(cx);
+        assert!(
+            resizes(&mut input_rx).is_empty(),
+            "帧大小不能形成调整反馈循环"
+        );
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(
+                panel.display.get().unwrap().size,
+                native_frame_size((1280, 720), scale)
+            );
+            assert!(panel.resize_notice().is_some());
+        });
+        harness.update(cx, |harness, cx| {
+            harness.width = px(700.);
+            cx.notify();
+        });
+        draw(cx);
+        assert_eq!(
+            resizes(&mut input_rx),
+            [desired_desktop(gpui_kit::size(px(700.), px(624.)), scale)]
+        );
+        panel.update(cx, |panel, cx| {
+            panel.resize_supported = true;
+            panel.resize_error = Some(t!("vnc.resize_denied").into());
+            cx.notify();
+        });
+        draw(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.resize_notice().is_some());
+            assert_eq!(
+                panel.display.get().unwrap().size,
+                native_frame_size((1280, 720), scale)
+            );
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_scale(DesktopScale::Actual, window, cx);
+            })
+        });
+        assert_eq!(resizes(&mut input_rx), [None]);
+        harness.update(cx, |harness, cx| {
+            harness.width = px(800.);
+            cx.notify();
+        });
+        draw(cx);
+        assert!(resizes(&mut input_rx).is_empty());
+    }
 
     fn control() -> Modifiers {
         Modifiers::control()

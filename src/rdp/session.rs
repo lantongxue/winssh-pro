@@ -20,8 +20,10 @@
 //!   剪贴板回程都在这里。
 //!
 //! 画面：`DecodedImage` 按 **`PixelFormat::BgrX32`** 建 —— 字节序恰好是 GPUI
-//! 纹理要的 BGRA，每次图形更新直接 `to_vec()` 成 `RenderImage`，不做换序。
-//! 有更新的区域才产帧（`ActiveStageOutput::GraphicsUpdate`），不是每帧都重打。
+//! 纹理要的 BGRA，不做换序，但填充字节 X 必须转成不透明 alpha。
+//! GraphicsUpdate 只记损伤；有帧标记时在 End 提交，无标记更新等待短暂
+//! 接收间隙并检查未完成的协议包。完整快照最多挂一张，
+//! 慢窗口不阻塞解码，也不积压旧画面。
 //!
 //! 指针：走**加速档**（`pointer_software_rendering: false`）—— 服务器把光标
 //! 位图（含形状序列号）单独发来，桌面帧里不掺光标。位置与位图分别更新，
@@ -42,9 +44,10 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
+use futures::FutureExt as _;
 use gpui_kit::{RenderImage, SharedString};
 use image::{Frame, RgbaImage};
 use ironrdp::cliprdr::backend::ClipboardMessage;
@@ -57,17 +60,21 @@ use ironrdp::connector::{
     ClientConnector, ConnectionResult, ConnectorError, ConnectorErrorKind, Credentials,
     DesktopSize, Sequence as _, ServerName,
 };
-use ironrdp::core::{ReadCursor, WriteBuf, decode, decode_cursor};
+use ironrdp::core::{ReadCursor, WriteBuf, decode, decode_cursor, encode_vec};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::graphics::pointer::DecodedPointer;
 use ironrdp::input::{Database, Operation};
+use ironrdp::pdu::fast_path::{
+    EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode,
+};
 use ironrdp::pdu::gcc::KeyboardType;
 use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabilities};
 use ironrdp::pdu::rdp::client_info::{CompressionType, TimezoneInfo};
 use ironrdp::pdu::rdp::headers::{ShareControlHeader, ShareControlPdu, ShareDataPdu};
+use ironrdp::pdu::surface_commands::FrameAction;
 use ironrdp::pdu::{Action, mcs, x224::X224};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{
@@ -83,8 +90,10 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
 use super::clipboard::{GpuiClipboard, LocalClipboard};
+use super::graphics::FastPathFrames;
 use super::settings::RdpSettings;
 use super::transport;
+use crate::desktop::{FrameReceiver, FrameSender, frame_channel};
 use crate::host::Host;
 
 /// 连接序列（含 TLS 与 CredSSP）最多等多久。
@@ -130,7 +139,7 @@ pub enum RdpOutput {
 /// 一条活着的 RDP 会话的把手。
 pub struct RdpSession {
     input_tx: mpsc::UnboundedSender<RdpInput>,
-    events_rx: Option<mpsc::UnboundedReceiver<RdpOutput>>,
+    events_rx: Option<FrameReceiver<RdpOutput>>,
 }
 
 impl RdpSession {
@@ -143,7 +152,7 @@ impl RdpSession {
     /// 那笔账）；这里只把"连上了没有"用 oneshot 取回来，通道本身跨 executor。
     pub async fn connect(host: Host, desktop: (u16, u16)) -> Result<Self> {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
-        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let (events_tx, events_rx) = frame_channel(|event| matches!(event, RdpOutput::Frame(_)));
 
         let settings = host.rdp.clone();
         let clipboard = settings.clipboard;
@@ -185,7 +194,7 @@ impl RdpSession {
     }
 
     /// 把事件流取走（只能取一次）。之后由面板的任务循环收。
-    pub fn take_events(&mut self) -> Option<mpsc::UnboundedReceiver<RdpOutput>> {
+    pub fn take_events(&mut self) -> Option<FrameReceiver<RdpOutput>> {
         self.events_rx.take()
     }
 }
@@ -202,7 +211,7 @@ struct SessionParts {
     clip_tx: mpsc::UnboundedSender<ClipboardMessage>,
     clipboard_rx: Option<mpsc::UnboundedReceiver<ClipboardMessage>>,
     input_rx: mpsc::UnboundedReceiver<RdpInput>,
-    events_tx: mpsc::UnboundedSender<RdpOutput>,
+    events_tx: FrameSender<RdpOutput>,
     local: LocalClipboard,
     result_tx: tokio::sync::oneshot::Sender<Result<()>>,
 }
@@ -282,7 +291,7 @@ async fn open(
     desktop: (u16, u16),
     settings: RdpSettings,
     clip_tx: mpsc::UnboundedSender<ClipboardMessage>,
-    events_tx: mpsc::UnboundedSender<RdpOutput>,
+    events_tx: FrameSender<RdpOutput>,
     local: LocalClipboard,
 ) -> Result<(UpgradedFramed, ConnectionResult)> {
     let stream = transport::dial(&host).await?;
@@ -438,7 +447,7 @@ async fn run(
     connection_result: ConnectionResult,
     mut input_rx: mpsc::UnboundedReceiver<RdpInput>,
     mut clipboard_rx: Option<mpsc::UnboundedReceiver<ClipboardMessage>>,
-    events_tx: mpsc::UnboundedSender<RdpOutput>,
+    events_tx: FrameSender<RdpOutput>,
     local: LocalClipboard,
 ) {
     let reason = match session_loop(
@@ -466,7 +475,7 @@ async fn session_loop(
     connection_result: ConnectionResult,
     input_rx: &mut mpsc::UnboundedReceiver<RdpInput>,
     clipboard_rx: &mut Option<mpsc::UnboundedReceiver<ClipboardMessage>>,
-    events_tx: &mpsc::UnboundedSender<RdpOutput>,
+    events_tx: &FrameSender<RdpOutput>,
     local: LocalClipboard,
 ) -> Result<SharedString> {
     let (mut reader, mut writer) = split_tokio_framed(framed);
@@ -475,9 +484,14 @@ async fn session_loop(
     let mut image = DecodedImage::new(PixelFormat::BgrX32, desktop.width, desktop.height);
     let activation_factory = connection_result.activation_factory;
     let compression_type = connection_result.compression_type;
+    let mut fastpath = FastPathFrames::new(compression_type)?;
+    let mut presentation = Presentation::default();
+    // 定时到点前先取走已就绪的下一包，不能从可读的网络更新批次中间截帧。
+    let mut pending_frame = None;
     let fastpath_share_id = connection_result.share_id;
     let mut share_id = fastpath_share_id;
     let enable_server_pointer = connection_result.enable_server_pointer;
+    let io_channel_id = connection_result.io_channel_id;
 
     let mut active_stage = ActiveStageBuilder {
         static_channels: connection_result.static_channels,
@@ -485,7 +499,8 @@ async fn session_loop(
         io_channel_id: connection_result.io_channel_id,
         message_channel_id: connection_result.message_channel_id,
         share_id: connection_result.share_id,
-        compression_type,
+        // 包络适配已解压并保留帧边界，ActiveStage 只收到未压缩的更新。
+        compression_type: None,
         enable_server_pointer: connection_result.enable_server_pointer,
         pointer_software_rendering: connection_result.pointer_software_rendering,
     }
@@ -548,7 +563,12 @@ async fn session_loop(
             pending_resize = None;
         }
         let outputs = tokio::select! {
-            frame = reader.read_pdu() => {
+            frame = async {
+                match pending_frame.take() {
+                    Some(frame) => frame,
+                    None => reader.read_pdu().await,
+                }
+            } => {
                 let (action, payload) = frame
                     .map_err(|error| anyhow!("{}", t!("rdp.read_failed", detail => error)))?;
                 if let Some(sequence) = activation.as_mut()
@@ -572,6 +592,7 @@ async fn session_loop(
                             new_share_id, enable_server_pointer,
                         );
                         share_id = new_share_id;
+                        presentation = Presentation::default();
                     }
                     if written.size().is_some() {
                         vec![ActiveStageOutput::ResponseFrame(activation_buf.filled().to_vec())]
@@ -579,11 +600,28 @@ async fn session_loop(
                         Vec::new()
                     }
                 } else {
-                    process_server_frame(
-                        &mut active_stage, &mut image, action, &payload,
-                        fastpath_share_id, share_id,
+                    process_graphics_frame(
+                        &mut active_stage, &mut image, &mut fastpath, &mut presentation,
+                        (action, &payload), events_tx, (fastpath_share_id, share_id, io_channel_id),
                     )?
                 }
+            }
+            _ = wait_for_presentation(presentation.deadline()), if pending_frame.is_none() => {
+                // select 的随机分支顺序可能让定时器抢在已就绪的 PDU 前面。
+                // read_pdu 是取消安全的；未读完的数据仍留在 Framed 的缓冲里。
+                if let Some(frame) = reader.read_pdu().now_or_never() {
+                    pending_frame = Some(frame);
+                    // 优先收完短批次，但持续满速发送的未标记流也不能让显示饿死。
+                    // 新取到的完整包留到下一轮，决不覆盖、丢弃协议增量。
+                    if !presentation.batch_expired(Instant::now()) || fastpath.has_pending_update() {
+                        continue;
+                    }
+                } else if !reader.peek().is_empty() || fastpath.has_pending_update() {
+                    presentation.postpone(Instant::now());
+                    continue;
+                }
+                presentation.publish_due(Instant::now(), &image, events_tx);
+                Vec::new()
             }
             input = input_rx.recv(), if activation.is_none() => {
                 let Some(input) = input else {
@@ -711,9 +749,7 @@ async fn session_loop(
                     .await
                     .map_err(|error| anyhow!("{}", t!("rdp.write_failed", detail => error)))?,
                 ActiveStageOutput::GraphicsUpdate(_) => {
-                    if let Some(frame) = render_image(&image) {
-                        let _ = events_tx.send(RdpOutput::Frame(frame));
-                    }
+                    presentation.damage(Instant::now());
                 }
                 ActiveStageOutput::PointerBitmap(pointer) => {
                     let _ = events_tx.send(RdpOutput::PointerBitmap(pointer));
@@ -728,6 +764,7 @@ async fn session_loop(
                     let _ = events_tx.send(RdpOutput::PointerDefault);
                 }
                 ActiveStageOutput::DeactivateAll => {
+                    presentation = Presentation::default();
                     log::debug!("RDP 桌面开始重新激活");
                     activation = Some(activation_factory.create());
                 }
@@ -742,7 +779,187 @@ async fn session_loop(
         }
     };
 
+    presentation.publish(&image, events_tx);
     Ok(reason)
+}
+
+#[derive(Default)]
+struct Presentation {
+    open: bool,
+    dirty: bool,
+    end_only_surfaces: bool,
+    first_damage: Option<Instant>,
+    last_damage: Option<Instant>,
+    retry_after: Option<Instant>,
+}
+
+impl Presentation {
+    // 没有协议帧边界时等一小段无像素更新的间隙，避免固定时钟切开同批数据。
+    const QUIET: Duration = Duration::from_millis(4);
+    // 持续不断的未标记更新不能无限等待；不在半个 PDU/逻辑分片中截帧。
+    const MAX_BATCH: Duration = Duration::from_millis(16);
+
+    fn damage(&mut self, now: Instant) {
+        self.dirty = true;
+        self.first_damage.get_or_insert(now);
+        self.last_damage = Some(now);
+        self.retry_after = None;
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        if !self.dirty || self.open {
+            return None;
+        }
+        let deadline = (self.last_damage? + Self::QUIET).min(self.first_damage? + Self::MAX_BATCH);
+        Some(
+            self.retry_after
+                .map_or(deadline, |retry| retry.max(deadline)),
+        )
+    }
+
+    fn postpone(&mut self, now: Instant) {
+        self.retry_after = Some(now + Self::QUIET);
+    }
+
+    fn batch_expired(&self, now: Instant) -> bool {
+        self.first_damage
+            .is_some_and(|first| now.saturating_duration_since(first) >= Self::MAX_BATCH)
+    }
+
+    fn publish_due(&mut self, now: Instant, image: &DecodedImage, events: &FrameSender<RdpOutput>) {
+        if self.deadline().is_some_and(|deadline| now >= deadline) {
+            self.publish(image, events);
+        }
+    }
+
+    fn publish(&mut self, image: &DecodedImage, events: &FrameSender<RdpOutput>) {
+        if self.dirty && !self.open {
+            self.dirty = false;
+            self.first_damage = None;
+            self.last_damage = None;
+            self.retry_after = None;
+            if let Some(frame) = render_image(image) {
+                let _ = events.send(RdpOutput::Frame(frame));
+            }
+        }
+    }
+}
+
+async fn wait_for_presentation(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+        None => std::future::pending().await,
+    }
+}
+
+fn process_graphics_frame(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    fastpath: &mut FastPathFrames,
+    presentation: &mut Presentation,
+    packet: (Action, &[u8]),
+    events_tx: &FrameSender<RdpOutput>,
+    share_ids: (u32, u32, u16),
+) -> Result<Vec<ActiveStageOutput>> {
+    let mut outputs = Vec::new();
+    let mut emit = |code: UpdateCode, data: &[u8], boundary: Option<FrameAction>| -> Result<()> {
+        if boundary == Some(FrameAction::Begin) {
+            // 切入有标记的帧前提交已经完成的旧式更新。
+            presentation.publish(image, events_tx);
+            presentation.end_only_surfaces = false;
+            presentation.open = true;
+        }
+        if code == UpdateCode::SurfaceCommands
+            && boundary.is_none()
+            && presentation.end_only_surfaces
+        {
+            // 已确认只用 End 的 Surface 流继续由 End 提交，不能因这帧省了 Begin
+            // 就退回定时截帧。Bitmap/SlowPath 更新不受 Surface 帧模式限制。
+            presentation.open = true;
+        }
+        for output in
+            process_complete_update(active_stage, image, code, data, share_ids.0, share_ids.1)?
+        {
+            match output {
+                ActiveStageOutput::GraphicsUpdate(_) => {
+                    // IronRDP 对纯帧标记也返回空损伤，不能因此复制整屏。
+                    if boundary.is_none() {
+                        presentation.damage(Instant::now());
+                    }
+                }
+                output => outputs.push(output),
+            }
+        }
+        if boundary == Some(FrameAction::End) {
+            if !presentation.open && !presentation.end_only_surfaces {
+                log::debug!("RDP: Surface frames use End without Begin");
+                presentation.end_only_surfaces = true;
+            }
+            presentation.open = false;
+            presentation.publish(image, events_tx);
+        }
+        Ok(())
+    };
+    match packet.0 {
+        Action::FastPath => fastpath.process(packet.1, &mut emit)?,
+        Action::X224 => {
+            if !fastpath.process_slow_path(packet.1, share_ids.2, &mut emit)? {
+                return process_server_frame(
+                    active_stage,
+                    image,
+                    packet.0,
+                    packet.1,
+                    share_ids.0,
+                    share_ids.1,
+                );
+            }
+        }
+    }
+    Ok(outputs)
+}
+
+/// 用公开 API 把完整更新交回 IronRDP。包长度字段有上限，大位图重新分片；
+/// 不把两帧的命令放在同一次 process 中，End 时的 image 才确实属于那帧。
+fn process_complete_update(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    code: UpdateCode,
+    data: &[u8],
+    fastpath_share_id: u32,
+    share_id: u32,
+) -> Result<Vec<ActiveStageOutput>> {
+    const CHUNK: usize = 16 * 1024;
+    let count = data.len().div_ceil(CHUNK).max(1);
+    let mut outputs = Vec::new();
+    for index in 0..count {
+        let fragmentation = if count == 1 {
+            Fragmentation::Single
+        } else if index == 0 {
+            Fragmentation::First
+        } else if index + 1 == count {
+            Fragmentation::Last
+        } else {
+            Fragmentation::Next
+        };
+        let update = encode_vec(&FastPathUpdatePdu {
+            fragmentation,
+            update_code: code,
+            compression_flags: None,
+            compression_type: None,
+            data: &data[index * CHUNK..data.len().min((index + 1) * CHUNK)],
+        })?;
+        let mut packet = encode_vec(&FastPathHeader::new(EncryptionFlags::empty(), update.len()))?;
+        packet.extend_from_slice(&update);
+        outputs.extend(process_server_frame(
+            active_stage,
+            image,
+            Action::FastPath,
+            &packet,
+            fastpath_share_id,
+            share_id,
+        )?);
+    }
+    Ok(outputs)
 }
 
 fn display_control_ready(active_stage: &mut ActiveStage) -> bool {
@@ -860,13 +1077,12 @@ async fn clipboard_message(
 
 /// 把一帧 `DecodedImage`（BgrX32）打包成 GPUI 的图像。
 ///
-/// `BgrX32` 的内存序就是 BGRA（第 4 字节是 `0xFF`），所以这里只有一次
-/// 整块拷贝，没有逐像素换序。尺寸为 0 的中间态给 `None`。
+/// B、G、R 不换序；第 4 字节是填充值（Raw 路径可能为 0），快照时补上
+/// 不透明 alpha，不能把桌面当透明位图上传。尺寸为 0 的中间态给 `None`。
 fn render_image(image: &DecodedImage) -> Option<Arc<RenderImage>> {
     let width = u32::from(image.width());
     let height = u32::from(image.height());
-    let buffer = RgbaImage::from_raw(width, height, image.data().to_vec())?;
-    Some(Arc::new(RenderImage::new(vec![Frame::new(buffer)])))
+    crate::desktop::opaque_frame(width, height, image.data())
 }
 
 /// 服务器主动断开时，把原因翻成人话。
@@ -895,6 +1111,7 @@ pub fn pointer_to_render_image(pointer: &DecodedPointer) -> Option<Arc<RenderIma
 
 #[cfg(test)]
 mod tests {
+    mod presentation;
     use super::*;
     use ironrdp::core::encode_vec;
     use ironrdp::pdu::fast_path::{
@@ -1120,11 +1337,51 @@ mod tests {
         );
     }
 
+    fn test_connection(desktop: (u16, u16)) -> ConnectionResult {
+        use ironrdp::connector::connection_activation::ConnectionActivationFactory;
+        let host = Host {
+            id: "test".into(),
+            name: "test".into(),
+            kind: crate::host::HostKind::Rdp,
+            user: "test".into(),
+            hostname: "localhost".into(),
+            port: 3389,
+            platform: "".into(),
+            auth_method: crate::host::AuthMethod::Password,
+            password: "".into(),
+            key_content: "".into(),
+            key_passphrase: "".into(),
+            jump_host_id: None,
+            monitor_intervals: Default::default(),
+            forwards: Vec::new(),
+            tags: Vec::new(),
+            proxy: Default::default(),
+            vnc: Default::default(),
+            rdp: Default::default(),
+            shell_integration: false,
+        };
+        let config = connector_config(&host, desktop, &host.rdp);
+        ConnectionResult {
+            io_channel_id: 1003,
+            user_channel_id: 1001,
+            message_channel_id: None,
+            share_id: INITIAL_SHARE_ID,
+            static_channels: Default::default(),
+            desktop_size: DesktopSize {
+                width: desktop.0,
+                height: desktop.1,
+            },
+            enable_server_pointer: true,
+            pointer_software_rendering: false,
+            activation_factory: ConnectionActivationFactory::new(config, 1003, 1001),
+            compression_type: Some(CompressionType::K64),
+        }
+    }
+
     /// 真正驱动会话循环：重新激活前、握手中、握手后的压缩包共用一本历史。
     /// 在 FontMap 之前发新桌面的帧，确认既不丢包，也不会在完成握手时清掉画面。
     #[tokio::test]
     async fn reactivation_keeps_processing_interleaved_updates() {
-        use ironrdp::connector::connection_activation::ConnectionActivationFactory;
         use ironrdp::pdu::rdp::capability_sets::{
             Bitmap, BitmapDrawingFlags, CapabilitySet, DemandActive, ServerDemandActive,
         };
@@ -1164,48 +1421,13 @@ mod tests {
             .unwrap()
         }
 
-        let host = Host {
-            id: "test".into(),
-            name: "test".into(),
-            kind: crate::host::HostKind::Rdp,
-            user: "test".into(),
-            hostname: "localhost".into(),
-            port: 3389,
-            platform: "".into(),
-            auth_method: crate::host::AuthMethod::Password,
-            password: "".into(),
-            key_content: "".into(),
-            key_passphrase: "".into(),
-            jump_host_id: None,
-            monitor_intervals: Default::default(),
-            forwards: Vec::new(),
-            tags: Vec::new(),
-            proxy: Default::default(),
-            vnc: Default::default(),
-            rdp: Default::default(),
-            shell_integration: false,
-        };
-        let config = connector_config(&host, (640, 480), &host.rdp);
-        let connection = ConnectionResult {
-            io_channel_id: 1003,
-            user_channel_id: 1001,
-            message_channel_id: None,
-            share_id: INITIAL_SHARE_ID,
-            static_channels: Default::default(),
-            desktop_size: DesktopSize {
-                width: 640,
-                height: 480,
-            },
-            enable_server_pointer: true,
-            pointer_software_rendering: false,
-            activation_factory: ConnectionActivationFactory::new(config, 1003, 1001),
-            compression_type: Some(CompressionType::K64),
-        };
+        let connection = test_connection((640, 480));
         let (client, server) = tokio::io::duplex(64 * 1024);
         let client: Box<dyn AsyncReadWrite + Unpin + Send + Sync> = Box::new(client);
         let mut server = TokioFramed::new(server);
         let (_inputs, mut input_rx) = mpsc::unbounded_channel();
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) =
+            frame_channel(|event| matches!(event, RdpOutput::Frame(_)));
         let mut clipboard_rx = None;
         let local = Arc::new(Mutex::new(String::new()));
         let session = session_loop(
@@ -1267,6 +1489,7 @@ mod tests {
                 frame_id: Some(9),
             }))
             .unwrap();
+            let marker = [presentation::row(0, 42), marker].concat();
             server
                 .write_all(&uncompressed_frame(UpdateCode::SurfaceCommands, &marker))
                 .await

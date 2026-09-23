@@ -27,7 +27,7 @@ use crate::proxy::{self, ProxyConfig};
 /// 一条 VNC 会话底下的字节流：直连的 TCP，或代理打通的 TCP。
 pub enum VncStream {
     Direct(TcpStream),
-    Socks5(Socks5Stream<TcpStream>),
+    Socks5(TcpStream),
 }
 
 impl AsyncRead for VncStream {
@@ -55,20 +55,14 @@ impl AsyncWrite for VncStream {
         }
     }
 
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match &mut *self {
             Self::Direct(stream) => Pin::new(stream).poll_flush(cx),
             Self::Socks5(stream) => Pin::new(stream).poll_flush(cx),
         }
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match &mut *self {
             Self::Direct(stream) => Pin::new(stream).poll_shutdown(cx),
             Self::Socks5(stream) => Pin::new(stream).poll_shutdown(cx),
@@ -85,7 +79,8 @@ pub async fn dial(host: &Host) -> Result<VncStream> {
             "{}",
             t!("vnc.proxy_misconfigured", host => host.name, reason => reason)
         )
-    })? else {
+    })?
+    else {
         let socket = TcpStream::connect(target).await.with_context(|| {
             t!(
                 "vnc.connect_failed",
@@ -94,6 +89,8 @@ pub async fn dial(host: &Host) -> Result<VncStream> {
             )
             .to_string()
         })?;
+        // 更新请求和输入都是小包，避免 Nagle 与延迟 ACK 叠加。
+        socket.set_nodelay(true)?;
         return Ok(VncStream::Direct(socket));
     };
 
@@ -106,7 +103,9 @@ pub async fn dial(host: &Host) -> Result<VncStream> {
         )
         .to_string()
     })?;
-    Ok(VncStream::Socks5(stream))
+    let socket = stream.into_inner();
+    socket.set_nodelay(true)?;
+    Ok(VncStream::Socks5(socket))
 }
 
 /// 经代理连到目标。用户名为空就是"这个代理不要认证"，见 [`ProxyConfig`]。

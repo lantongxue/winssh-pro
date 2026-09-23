@@ -35,6 +35,11 @@ type DstRect = Rect;
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum VncEvent {
+    /// 开始一条 FramebufferUpdate。矩形、解码 tile 与桌面尺寸事件位于两边界之间。
+    BeginFrame,
+    /// 整条 FramebufferUpdate 已完整解码（包括零矩形与 LastRect 提前结束）。
+    /// 解码失败或连接在正文中断时绝不发送，调用方此时才能发布画布快照。
+    EndFrame,
     /// Tell the client how to display the images
     ///
     /// ```no_compile

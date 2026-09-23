@@ -29,8 +29,9 @@ use std::sync::{Arc, Mutex};
 
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackend};
 use ironrdp::cliprdr::pdu::{
-    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse,
-    FormatDataRequest, FormatDataResponse, LockDataId, OwnedFormatDataResponse,
+    ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest,
+    FileContentsResponse, FormatDataRequest, FormatDataResponse, LockDataId,
+    OwnedFormatDataResponse,
 };
 
 use super::session::RdpOutput;
@@ -68,7 +69,7 @@ pub struct GpuiClipboard {
     /// 后端 → 会话循环（回程消息：提交正文数据等）。
     proxy: tokio::sync::mpsc::UnboundedSender<ClipboardMessage>,
     /// 后端 → 面板（对端复制的正文）。
-    events: tokio::sync::mpsc::UnboundedSender<RdpOutput>,
+    events: crate::desktop::FrameSender<RdpOutput>,
     /// 本地方此刻的文本，见 [`LocalClipboard`]。
     local: LocalClipboard,
     /// 对端最近一次报来的格式表。留着是为了"要不要去要正文"判断。
@@ -80,7 +81,7 @@ pub struct GpuiClipboard {
 impl GpuiClipboard {
     pub fn new(
         proxy: tokio::sync::mpsc::UnboundedSender<ClipboardMessage>,
-        events: tokio::sync::mpsc::UnboundedSender<RdpOutput>,
+        events: crate::desktop::FrameSender<RdpOutput>,
         local: LocalClipboard,
     ) -> Self {
         Self {
@@ -94,7 +95,10 @@ impl GpuiClipboard {
 
     /// 本地剪贴板现在的文本。锁的是极短的一小段，不会与别的锁互相等。
     fn local_text(&self) -> String {
-        self.local.lock().map(|text| text.clone()).unwrap_or_default()
+        self.local
+            .lock()
+            .map(|text| text.clone())
+            .unwrap_or_default()
     }
 
     /// 对端的格式表里有没有 Unicode 文本。
@@ -110,7 +114,9 @@ impl GpuiClipboard {
             return;
         }
         let formats = [ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)];
-        let _ = self.proxy.send(ClipboardMessage::SendInitiateCopy(formats.to_vec()));
+        let _ = self
+            .proxy
+            .send(ClipboardMessage::SendInitiateCopy(formats.to_vec()));
     }
 }
 
@@ -142,20 +148,24 @@ impl CliprdrBackend for GpuiClipboard {
         if self.remote_has_text() {
             // 自动把对端的文本拉到本地方，和 VNC 面板一样：
             // 远端一复制，本地就能粘贴。
-            let _ = self
-                .proxy
-                .send(ClipboardMessage::SendInitiatePaste(ClipboardFormatId::CF_UNICODETEXT));
+            let _ = self.proxy.send(ClipboardMessage::SendInitiatePaste(
+                ClipboardFormatId::CF_UNICODETEXT,
+            ));
         }
     }
 
     fn on_format_data_request(&mut self, request: FormatDataRequest) {
         if request.format != ClipboardFormatId::CF_UNICODETEXT {
-            let _ = self.proxy.send(ClipboardMessage::SendFormatData(OwnedFormatDataResponse::new_error()));
+            let _ = self.proxy.send(ClipboardMessage::SendFormatData(
+                OwnedFormatDataResponse::new_error(),
+            ));
             return;
         }
         let text = self.local_text();
         if text.is_empty() {
-            let _ = self.proxy.send(ClipboardMessage::SendFormatData(OwnedFormatDataResponse::new_error()));
+            let _ = self.proxy.send(ClipboardMessage::SendFormatData(
+                OwnedFormatDataResponse::new_error(),
+            ));
         } else {
             let response = OwnedFormatDataResponse::new_unicode_string(&text);
             let _ = self.proxy.send(ClipboardMessage::SendFormatData(response));
@@ -225,7 +235,8 @@ mod tests {
     #[test]
     fn the_backend_forwards_remote_text_to_the_panel() {
         let (proxy_tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) =
+            crate::desktop::frame_channel(|event| matches!(event, RdpOutput::Frame(_)));
         let local: LocalClipboard = Arc::new(Mutex::new(String::new()));
         let mut backend = GpuiClipboard::new(proxy_tx, events_tx, Arc::clone(&local));
 
@@ -233,7 +244,9 @@ mod tests {
         backend.on_remote_copy(&[ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)]);
         assert!(matches!(
             proxy_rx.try_recv(),
-            Ok(ClipboardMessage::SendInitiatePaste(ClipboardFormatId::CF_UNICODETEXT))
+            Ok(ClipboardMessage::SendInitiatePaste(
+                ClipboardFormatId::CF_UNICODETEXT
+            ))
         ));
 
         // 对端回正文：写进 events 通道。
@@ -250,7 +263,10 @@ mod tests {
         });
         match proxy_rx.try_recv() {
             Ok(ClipboardMessage::SendFormatData(response)) => {
-                assert_eq!(text_from_utf16le(response.data()), Some("本地要发出去的".into()));
+                assert_eq!(
+                    text_from_utf16le(response.data()),
+                    Some("本地要发出去的".into())
+                );
             }
             other => panic!("期望正文数据，收到 {other:?}"),
         }
@@ -261,8 +277,10 @@ mod tests {
     #[test]
     fn an_empty_local_clipboard_answers_with_an_error() {
         let (proxy_tx, mut proxy_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (events_tx, _) = tokio::sync::mpsc::unbounded_channel();
-        let mut backend = GpuiClipboard::new(proxy_tx, events_tx, Arc::new(Mutex::new(String::new())));
+        let (events_tx, _) =
+            crate::desktop::frame_channel(|event| matches!(event, RdpOutput::Frame(_)));
+        let mut backend =
+            GpuiClipboard::new(proxy_tx, events_tx, Arc::new(Mutex::new(String::new())));
 
         backend.on_format_data_request(FormatDataRequest {
             format: ClipboardFormatId::CF_UNICODETEXT,

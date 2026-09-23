@@ -2,8 +2,8 @@
 
 `vendor/vnc-rs` 逐字来自 crates.io 的 **vnc-rs 0.6.0**（<https://github.com/HsuJv/vnc-rs>，
 MIT OR Apache-2.0，两份 LICENSE 与 `.cargo_vcs_info.json` 都原样留着），
-`Cargo.toml` 里的 `[patch.crates-io]` 指着它。改动只有剪贴板这一处 ——
-**扩展剪贴板**的消息编解码，加上经典正文改为按字节交给上层。
+`Cargo.toml` 里的 `[patch.crates-io]` 指着它。最初的补丁是**扩展剪贴板**的消息编解码，加上经典正文改为按字节交给上层；
+后续帧边界补丁见文末。
 
 为什么要动它：RFB 的 `ClientCutText` / `ServerCutText` 正文按 RFC 6143 §7.5.6 /
 §7.6.4 只是 Latin-1，中文装不进去；能装的是 RealVNC / TigerVNC / noVNC 共同的
@@ -55,3 +55,21 @@ MIT OR Apache-2.0，两份 LICENSE 与 `.cargo_vcs_info.json` 都原样留着）
 删掉 `Cargo.toml` 里的 `[patch.crates-io]` 段、`rm -rf vendor`，再把应用侧
 `src/vnc/clipboard.rs` 换回 `String` 版的两个事件即可 —— 那时中文剪贴板退回
 "经典路径上按 UTF-8 碰运气"，重音字母会退化成 U+FFFD。
+
+## 完整帧边界
+
+应用过去按定时器截取画布，但一个 RFB FramebufferUpdate 内可含多个矩形，
+ZRLE/Tight 还会拆成多个事件。网络停在矩形之间时，定时器会把新旧像素混合
+成一张画面。仅看事件队列暂时为空无法判断消息已经收完，应用侧没有可靠
+的替代办法，所以在现有本地补丁上只补充协议已经知道的边界：
+
+- `src/event.rs`：新增 `BeginFrame` / `EndFrame` 元数据事件。
+- `src/client/connector.rs`：新增 `with_frame_events()`，只为显式订阅的消费者
+  发送边界，不改变既有消费者的事件序列和容量为 2 的背压队列。
+- `src/client/connection.rs`：在整条 FramebufferUpdate 前后发送边界；零矩形
+  及 LastRect 正常闭合，坏矩形、截断正文不发送结束边界。
+- `src/client/connection/tests.rs`：覆盖 LastRect、空更新与中断；原有尺寸
+  测试加入边界后的事件位置相应调整。`queue_tests.rs` 传入默认不订阅参数。
+  应用侧 TCP 集成测试另覆盖两矩形之间停顿 120 ms 不发布半帧。
+
+不更改任何编解码器。应用在 EndFrame 才发布快照，刷新节拍只负责请求。

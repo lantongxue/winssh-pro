@@ -146,10 +146,10 @@ async fn raw_is_implicit_and_resize_changes_decoder_bounds() {
     assert!(matches!(result, Err(VncError::IoError(_))));
     let output = output.into_inner().unwrap();
     assert!(
-        matches!(&output[0], VncEvent::SetResolution(size) if (size.width, size.height) == (128, 96))
+        matches!(&output[1], VncEvent::SetResolution(size) if (size.width, size.height) == (128, 96))
     );
     assert!(
-        matches!(&output[1], VncEvent::RawImage(rect, bytes) if (rect.x, rect.y) == (127, 95) && bytes == &[1, 2, 3, 255])
+        matches!(&output[4], VncEvent::RawImage(rect, bytes) if (rect.x, rect.y) == (127, 95) && bytes == &[1, 2, 3, 255])
     );
 }
 
@@ -312,4 +312,50 @@ async fn full_input_queue_does_not_hold_the_client_lock_during_close() {
     input.recv().await.unwrap();
     assert!(matches!(pending.await, Err(VncError::ClientNotRunning)));
     assert_eq!(input.len(), INPUT_CHANNEL_SIZE - 1);
+}
+
+#[tokio::test]
+async fn frame_boundaries_cover_all_rectangles_lastrect_empty_and_truncation() {
+    let pixel = Rect {
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+    };
+    let mut complete = vec![0, 0, 0, 2];
+    complete.extend(&rect_header(pixel, 0)[4..]);
+    complete.extend([1, 2, 3, 255]);
+    complete.extend(&rect_header(pixel, 0)[4..]);
+    complete.extend([4, 5, 6, 255]);
+    let mut last_rect = vec![0, 0, 255, 255];
+    last_rect.extend(&rect_header(pixel, VncEncoding::LastRectPseudo.into())[4..]);
+    let mut truncated = complete.clone();
+    truncated.truncate(truncated.len() - 1);
+    for (bytes, expected) in [
+        (complete, vec!["begin", "pixels", "pixels", "end"]),
+        (last_rect, vec!["begin", "end"]),
+        (vec![0, 0, 0, 0], vec!["begin", "end"]),
+        (truncated, vec!["begin", "pixels"]),
+    ] {
+        let events = std::sync::Mutex::new(Vec::new());
+        let result = read_vnc_messages(
+            &mut bytes.as_slice(),
+            &PixelFormat::bgra(),
+            &|event| {
+                events.lock().unwrap().push(match event {
+                    VncEvent::BeginFrame => "begin",
+                    VncEvent::EndFrame => "end",
+                    VncEvent::RawImage(..) => "pixels",
+                    _ => panic!("unexpected event"),
+                });
+                async { Ok(()) }
+            },
+            &[VncEncoding::Raw, VncEncoding::LastRectPseudo],
+            &AtomicU32::new(pack_screen((1, 1))),
+            &DesktopState::default(),
+        )
+        .await;
+        assert!(matches!(result, Err(VncError::IoError(_))));
+        assert_eq!(*events.lock().unwrap(), expected);
+    }
 }

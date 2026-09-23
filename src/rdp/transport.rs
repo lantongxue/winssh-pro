@@ -28,7 +28,7 @@ use crate::proxy::{self, ProxyConfig};
 /// 一条 RDP 会话底下的字节流：直连的 TCP，或代理打通的 TCP。
 pub enum RdpStream {
     Direct(TcpStream),
-    Socks5(Socks5Stream<TcpStream>),
+    Socks5(TcpStream),
 }
 
 impl RdpStream {
@@ -66,20 +66,14 @@ impl AsyncWrite for RdpStream {
         }
     }
 
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match &mut *self {
             Self::Direct(stream) => Pin::new(stream).poll_flush(cx),
             Self::Socks5(stream) => Pin::new(stream).poll_flush(cx),
         }
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match &mut *self {
             Self::Direct(stream) => Pin::new(stream).poll_shutdown(cx),
             Self::Socks5(stream) => Pin::new(stream).poll_shutdown(cx),
@@ -96,7 +90,8 @@ pub async fn dial(host: &Host) -> Result<RdpStream> {
             "{}",
             t!("rdp.proxy_misconfigured", host => host.name, reason => reason)
         )
-    })? else {
+    })?
+    else {
         let socket = TcpStream::connect((host.hostname.as_ref(), host.port))
             .await
             .with_context(|| {
@@ -121,7 +116,9 @@ pub async fn dial(host: &Host) -> Result<RdpStream> {
         )
         .to_string()
     })?;
-    Ok(RdpStream::Socks5(stream))
+    let socket = stream.into_inner();
+    socket.set_nodelay(true)?;
+    Ok(RdpStream::Socks5(socket))
 }
 
 /// 经代理连到目标。用户名为空就是"这个代理不要认证"，见 [`ProxyConfig`]。

@@ -22,11 +22,13 @@
 //! - **剪贴板**（[`clipboard`]）：经典正文的字符集（UTF-8 / GBK / Big5 /
 //!   Shift_JIS / EUC-KR / Latin-1，自动档会嗅）、扩展剪贴板那几步握手，
 //!   以及"对端认不认、认到哪一档"这本账。
+//! - **动态分辨率**（[`resize`]）：等待 ExtendedDesktopSize 能力公告，合并画布
+//!   尺寸变化并串行等待确认；失败只停止自动调整，画面与输入继续工作。
 //!
 //! 现在支持的安全类型是 RFB 的两档：`None`（无认证）与 VNC 密码认证
 //! （就是主机表单里那格"密码" —— 三种协议共用同一格，不叫"VNC 密码"，
 //! 见 [`crate::ui::windows::HostFormWindow`]）。
-//! 编码协商 Zrle / CopyRect / Raw 加四个伪编码（桌面尺寸 / LastRect /
+//! 编码协商 Zrle / CopyRect / Raw 加五个伪编码（桌面尺寸 / 扩展桌面 / LastRect /
 //! 扩展剪贴板 / 光标形状）。报了光标形状之后，服务端不再把远程光标绘进
 //! 画面；`SetCursor` 送来的位图这边也不叠加（本地系统光标藏不掉，叠上去
 //! 就是两枚光标），用户看到的就是本地那一枚 —— 取舍见 [`session`] 模块文档。
@@ -45,10 +47,11 @@
 //!    [`VncClipboardCharset`] 做成了每台主机一格设置，自动档嗅 GBK。
 //!
 //! 这条修正落在 `vnc-rs` 身上，所以它有一份**打过补丁的本地副本**：见
-//! `vendor/vnc-rs`（`Cargo.toml` 里 `[patch.crates-io]` 指着它），改动只有
-//! 剪贴板这一处 —— 扩展剪贴板的消息编解码，以及经典正文改为按字节交给上层。
+//! `vendor/vnc-rs`（`Cargo.toml` 里 `[patch.crates-io]` 指着它），包含
+//! 扩展剪贴板消息编解码，以及经典正文按字节交给上层。
 //! 上游的 `Text(String)` / `CopyText(String)` 用的是有损 UTF-8，且会把扩展
 //! 消息当成超长的经典正文直接报错断连，两条都绕不开。
+//! 动态分辨率复用该副本现有的 `desktop_layout` / `resize_desktop` 接口。
 //!
 //! 界面上的那扇窗是 [`crate::ui::panels::VncPanel`]，这里只到"会话"为止。
 
@@ -56,6 +59,7 @@ mod canvas;
 mod clipboard;
 mod keyboard;
 pub(crate) mod keysym;
+mod resize;
 mod session;
 mod settings;
 mod transport;

@@ -16,6 +16,6 @@ mod terminal_grid;
 
 pub use frame::{
     DesktopScale, FrameElement, PointerOverlay, native_frame_size, remote_frame_point,
-    scrollable_frame,
+    replace_image, scrollable_frame,
 };
 pub use terminal_grid::{TerminalGridElement, cell_at, point_at};

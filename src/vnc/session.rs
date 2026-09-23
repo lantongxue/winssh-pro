@@ -12,12 +12,9 @@
 //! reactor 和 timer；GPUI 侧只 await 通道的接收端，`tokio::mpsc::Receiver`
 //! 的 `recv` 不依赖 reactor，在哪个 executor 上等都行。
 //!
-//! 画帧的节奏：每一拍（按 [`VncFrameRate`](super::VncFrameRate) 定）脏了就把
-//! 画布打包发一帧，并且**无论脏不脏都发一次更新请求** —— RFB 是"客户端要、
-//! 服务器才推"的增量协议，这一次请求在没有变化时是一个 10 字节的小包，
-//! 服务器不回东西；它同时也是"上一次更新收完了，可以发下一批"的信号。
-//! 按秒三十来拍的请求频率对带宽几乎没有影响，对端画面再快也最多被我们
-//! 看慢三成。
+//! 只在 RFB `FramebufferUpdate` 的结束边界发布完整快照。定时器仅控制请求
+//! 频率，不能拿它截取仍在解码的半张画布。普通增量请求最多挂一份，避免
+//! 慢链路攒请求；界面来不及显示时只保留最新完整快照，不丢协议增量。
 //!
 //! 请求分两种，由画布上"还有没有从没画过的像素"来选（[`FullPaint`]）：
 //! 平时要**增量**，画面有洞时要**全量**。这件事非分不可 —— 增量请求只带回
@@ -47,8 +44,10 @@ use vnc::{
 use super::{
     Canvas,
     clipboard::{ClipboardSync, MAX_CUT_TEXT},
+    resize::{DesktopResize, supports_resize},
     transport,
 };
+use crate::desktop::{FrameReceiver, FrameSender, frame_channel};
 use crate::{db, host::Host};
 
 /// 握手上限。连到不是 VNC 的端口（SSH、HTTP）时，对面要么马上关连接、
@@ -80,6 +79,8 @@ pub enum VncInput {
     /// 界面上那颗"刷新画面"按钮发的就是它 —— 画面花了、黑了一块，
     /// 不必断开重连，跟对端重新要一次就行。
     Redraw,
+    /// 跟随画布的目标物理尺寸；None 停止跟随，不撤销已发出的请求。
+    Resize(Option<(u16, u16)>),
     /// 本地剪贴板变了，把新文本推给对端。
     /// 走经典正文还是扩展剪贴板由对端的能力定；经典正文按哪种字符集编码
     /// 由主机上那格设置（[`VncClipboardCharset`](super::VncClipboardCharset)）
@@ -94,6 +95,10 @@ pub enum VncOutput {
     /// 对端复制了东西（ServerCutText）。前台该把它写回系统剪贴板，
     /// 并记下"两边此刻同步的是这一份"（见 [`crate::ui::panels::VncPanel`]）。
     CutText(String),
+    /// 服务端是否已提供可调整的单屏布局。
+    ResizeSupported(bool),
+    /// 调整结果独立于连接状态；失败不能断开桌面会话。
+    ResizeResult(std::result::Result<(), SharedString>),
     /// 会话结束了：对端断的、错的、或这边关掉时那边报的。原因这一句话
     /// 会原样摆到界面上。
     Disconnected(SharedString),
@@ -104,7 +109,7 @@ pub enum VncOutput {
 /// 连接就关 —— 和 [`crate::ssh::bridge::SshBridge`] 同一条收工路径。
 pub struct VncSession {
     input_tx: UnboundedSender<VncInput>,
-    events_rx: Option<UnboundedReceiver<VncOutput>>,
+    events_rx: Option<FrameReceiver<VncOutput>>,
 }
 
 impl VncSession {
@@ -115,7 +120,7 @@ impl VncSession {
     /// 界面线程不挡。
     pub async fn connect(host: Host) -> Result<Self> {
         let (input_tx, input_rx) = unbounded_channel::<VncInput>();
-        let (events_tx, events_rx) = unbounded_channel::<VncOutput>();
+        let (events_tx, events_rx) = frame_channel(|event| matches!(event, VncOutput::Frame(_)));
         let password = host.password.to_string();
         let settings = host.vnc;
 
@@ -130,6 +135,7 @@ impl VncSession {
                 );
             }
             let mut connector = VncConnector::new(stream)
+                .with_frame_events()
                 // 共享档照设置的来：关掉它等于要求服务器把别的查看者踢下线，
                 // 这件事由用户自己在表单里点，出厂是可共享。
                 .allow_shared(settings.share)
@@ -140,6 +146,7 @@ impl VncSession {
                 .set_pixel_format(settings.color_depth.pixel_format())
                 // 编码表按画质档排，表头就是我们对压缩的偏好。
                 .add_encoding(VncEncoding::DesktopSizePseudo)
+                .add_encoding(VncEncoding::ExtendedDesktopSizePseudo)
                 .add_encoding(VncEncoding::LastRectPseudo)
                 // 声明我们认扩展剪贴板。对端认它就会递一份 Caps 过来 ——
                 // 那之后中文才有路走（经典正文按规范只是 Latin-1）；不认的
@@ -189,7 +196,7 @@ impl VncSession {
     }
 
     /// 取走事件接收端。只取得了一次 —— 它归那条消费它的 GPUI 任务所有。
-    pub fn take_events(&mut self) -> Option<UnboundedReceiver<VncOutput>> {
+    pub fn take_events(&mut self) -> Option<FrameReceiver<VncOutput>> {
         self.events_rx.take()
     }
 }
@@ -199,7 +206,9 @@ impl VncSession {
 /// 永远对得上画布的 4 字节展开宽度。
 fn decode_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
     let decoded = image::load_from_memory(bytes).ok()?.to_rgba8();
-    let mut pixels = Vec::with_capacity(u64::from(decoded.width()) as usize * u64::from(decoded.height()) as usize * 4);
+    let mut pixels = Vec::with_capacity(
+        u64::from(decoded.width()) as usize * u64::from(decoded.height()) as usize * 4,
+    );
     for rgba in decoded.pixels() {
         let [red, green, blue, alpha] = rgba.0;
         pixels.extend_from_slice(&[blue, green, red, alpha]);
@@ -306,30 +315,58 @@ impl FullPaint {
 async fn run(
     client: VncClient,
     mut input_rx: UnboundedReceiver<VncInput>,
-    events_tx: UnboundedSender<VncOutput>,
+    events_tx: FrameSender<VncOutput>,
     settings: crate::vnc::VncSettings,
 ) {
     let mut canvas = Canvas::with_depth(settings.color_depth);
     let mut clipboard = ClipboardSync::new(settings.clipboard_charset);
     let mut full_paint = FullPaint::new(Instant::now());
     let mut dirty = false;
+    let mut updating = false;
+    // vnc-rs 在握手完成后已发送第一份全量请求。
+    let mut requested = true;
     let mut reason = t!("vnc.disconnected").to_string();
-    let mut refresh = tokio::time::interval(Duration::from_millis(
-        settings.frame_rate.interval_ms(),
-    ));
+    let mut resize = DesktopResize::default();
+    let mut resize_supported = false;
+    let mut refresh =
+        tokio::time::interval(Duration::from_millis(settings.frame_rate.interval_ms()));
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
             event = client.recv_event() => match event {
+                Ok(VncEvent::BeginFrame) => {
+                    updating = true;
+                    // 请求已开始被满足，允许下一拍预取一份增量，与当前解码重叠。
+                    requested = false;
+                }
+                Ok(VncEvent::EndFrame) => {
+                    updating = false;
+                    if dirty {
+                        dirty = false;
+                        if let Some(frame) = canvas.to_render_image()
+                            && events_tx.send(VncOutput::Frame(frame)).is_err() {
+                                break;
+                            }
+                    }
+                }
                 // 改尺寸只换画布、不发帧：刚清空的画布全是黑的，
                 // 而紧接着（或就在这一批里）总有像素到，dirty 会由它们置上。
                 Ok(VncEvent::SetResolution(screen)) => {
                     canvas.resize(screen.width, screen.height);
+                    if resize_supported {
+                        resize_supported = false;
+                        let _ = events_tx.send(VncOutput::ResizeSupported(false));
+                    }
                 }
                 Ok(VncEvent::DesktopUpdate(update)) => {
                     if let Some(layout) = update.layout {
                         canvas.resize(layout.width, layout.height);
+                        let supported = supports_resize(&layout);
+                        if resize_supported != supported {
+                            resize_supported = supported;
+                            let _ = events_tx.send(VncOutput::ResizeSupported(supported));
+                        }
                     }
                 }
                 Ok(VncEvent::RawImage(rectangle, pixels)) => {
@@ -428,6 +465,7 @@ async fn run(
                         full_paint.restart(Instant::now());
                         let _ = client.input(X11Event::FullRefresh).await;
                     }
+                    VncInput::Resize(target) => resize.set_target(target),
                     VncInput::CutText(text) => {
                         // 超限的整条跳过而不是截断发一半 —— 截断是一份
                         // 悄悄变了样的"你复制的内容"，比不同步更坏。
@@ -439,17 +477,25 @@ async fn run(
                     }
                 }
             }
+            result = resize.next(&client) => {
+                let result = result.map_err(|error| {
+                    log::warn!("VNC 调整远端分辨率失败：{error}");
+                    resize_error_message(&error)
+                });
+                let _ = events_tx.send(VncOutput::ResizeResult(result));
+            }
             _ = refresh.tick() => {
-                if dirty {
-                    dirty = false;
-                    if let Some(frame) = canvas.to_render_image()
-                        && events_tx.send(VncOutput::Frame(frame)).is_err() {
-                            break;
-                        }
-                }
                 // 画面有洞就要全量，没洞才要增量 —— 一块从没画过的地方
                 // 不在"变过的区域"里，增量请求要一辈子也要不回来。
-                let _ = client.input(full_paint.request(&canvas, Instant::now())).await;
+                let request = if updating {
+                    X11Event::Refresh
+                } else {
+                    full_paint.request(&canvas, Instant::now())
+                };
+                if !requested || matches!(request, X11Event::FullRefresh) {
+                    let _ = client.input(request).await;
+                    requested = true;
+                }
             }
         }
     }
@@ -458,8 +504,24 @@ async fn run(
     let _ = events_tx.send(VncOutput::Disconnected(SharedString::from(reason)));
 }
 
+fn resize_error_message(error: &vnc::ResizeError) -> SharedString {
+    match error {
+        vnc::ResizeError::InvalidDimensions => t!("vnc.resize_too_large"),
+        vnc::ResizeError::Unsupported | vnc::ResizeError::UnsupportedLayout => {
+            t!("vnc.resize_not_supported")
+        }
+        vnc::ResizeError::Denied(_) => t!("vnc.resize_denied"),
+        vnc::ResizeError::Timeout | vnc::ResizeError::Uncertain => t!("vnc.resize_uncertain"),
+        _ => t!("vnc.resize_failed"),
+    }
+    .into()
+}
+
 #[cfg(test)]
 mod tests {
+    mod presentation;
+    mod resize_tests;
+
     use super::*;
     use crate::db;
     use crate::host::{AuthMethod, Host, HostKind, MonitorIntervals};
@@ -810,11 +872,7 @@ mod tests {
                                 if actions & ACTION_NOTIFY != 0 =>
                             {
                                 stream
-                                    .write_all(&extended_message(
-                                        ACTION_REQUEST,
-                                        FORMAT_TEXT,
-                                        &[],
-                                    ))
+                                    .write_all(&extended_message(ACTION_REQUEST, FORMAT_TEXT, &[]))
                                     .await
                                     .unwrap();
                             }
@@ -874,7 +932,9 @@ mod tests {
                         saw = Some(text);
                         break;
                     }
-                    VncOutput::Frame(_) => {}
+                    VncOutput::Frame(_)
+                    | VncOutput::ResizeSupported(_)
+                    | VncOutput::ResizeResult(_) => {}
                     VncOutput::Disconnected(reason) => panic!("会话断了：{reason}"),
                 }
             }
@@ -986,7 +1046,7 @@ mod tests {
                             saw = Some(text);
                             break;
                         }
-                        VncOutput::Frame(_) => {}
+                        VncOutput::Frame(_) | VncOutput::ResizeSupported(_) | VncOutput::ResizeResult(_) => {}
                         VncOutput::Disconnected(reason) => panic!("会话断了：{reason}"),
                     }
                 }
@@ -1057,7 +1117,9 @@ mod tests {
                         saw = Some(text);
                         break;
                     }
-                    VncOutput::Frame(_) => {}
+                    VncOutput::Frame(_)
+                    | VncOutput::ResizeSupported(_)
+                    | VncOutput::ResizeResult(_) => {}
                     VncOutput::Disconnected(reason) => panic!("会话断了：{reason}"),
                 }
             }
@@ -1195,7 +1257,13 @@ mod tests {
         check: impl Fn(&ClientClipboard) -> bool,
     ) -> bool {
         for _ in 0..50 {
-            if log.lock().unwrap().clipboard.iter().any(|message| check(message)) {
+            if log
+                .lock()
+                .unwrap()
+                .clipboard
+                .iter()
+                .any(|message| check(message))
+            {
                 return true;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1213,13 +1281,11 @@ mod tests {
             VncColorDepth, VncEncodingChoice, VncFrameRate, VncProtocolVersion, VncSettings,
         };
 
-
         db::runtime().block_on(async {
             // ── 一：高彩 + 高压缩（应退化）+ 独占 + 版本封顶 3.7 ──
             let log = Arc::new(std::sync::Mutex::new(WireLog::default()));
             // 16 位下一格两字节，4×4 的 Raw 载荷就是 32 字节。
-            let (addr, _server) =
-                fake_server(vec![0; 32], Vec::new(), log.clone()).await;
+            let (addr, _server) = fake_server(vec![0; 32], Vec::new(), log.clone()).await;
             let mut host = host_at(addr);
             host.vnc = VncSettings {
                 color_depth: VncColorDepth::High16,
@@ -1241,20 +1307,30 @@ mod tests {
 
             {
                 let observed = log.lock().unwrap();
-            assert_eq!(observed.client_version, *b"RFB 003.007\n", "版本上限就是我们报出去的版本");
-            assert_eq!(observed.shared_flag, Some(0), "独占就是 ClientInit 的共享位写 0");
-            let format = observed.pixel_format.as_ref().expect("SetPixelFormat 该先发");
-            assert_eq!(format[0], 16, "每像素 16 位");
-            assert_eq!(format[1], 15, "深度 15 位（RGB565）");
-            assert_eq!(format[2], 1, "大端旗：线上恒为高位字节在前");
-            assert_eq!((format[4], format[5]), (0, 31), "红 5 位满量程 31");
-            assert_eq!((format[6], format[7]), (0, 63), "绿 6 位满量程 63");
-            assert_eq!(format[10], 11, "红从第 11 位起");
-            assert_eq!(format[11], 5, "绿从第 5 位起");
-            // 编码表：伪编码在前（桌面尺寸 -223、LastRect -224），压缩表里不许有 Tight。
-            assert!(!observed.encodings.contains(&7), "16 位下不得递 Tight");
-            assert!(observed.encodings.contains(&16), "退化后要落在 Zrle");
-            assert!(observed.encodings.contains(&0), "Raw 永远在表尾兜底");
+                assert_eq!(
+                    observed.client_version, *b"RFB 003.007\n",
+                    "版本上限就是我们报出去的版本"
+                );
+                assert_eq!(
+                    observed.shared_flag,
+                    Some(0),
+                    "独占就是 ClientInit 的共享位写 0"
+                );
+                let format = observed
+                    .pixel_format
+                    .as_ref()
+                    .expect("SetPixelFormat 该先发");
+                assert_eq!(format[0], 16, "每像素 16 位");
+                assert_eq!(format[1], 15, "深度 15 位（RGB565）");
+                assert_eq!(format[2], 1, "大端旗：线上恒为高位字节在前");
+                assert_eq!((format[4], format[5]), (0, 31), "红 5 位满量程 31");
+                assert_eq!((format[6], format[7]), (0, 63), "绿 6 位满量程 63");
+                assert_eq!(format[10], 11, "红从第 11 位起");
+                assert_eq!(format[11], 5, "绿从第 5 位起");
+                // 编码表：伪编码在前（桌面尺寸 -223、LastRect -224），压缩表里不许有 Tight。
+                assert!(!observed.encodings.contains(&7), "16 位下不得递 Tight");
+                assert!(observed.encodings.contains(&16), "退化后要落在 Zrle");
+                assert!(observed.encodings.contains(&0), "Raw 永远在表尾兜底");
             }
             drop(session);
 
@@ -1277,16 +1353,25 @@ mod tests {
 
             {
                 let observed = log.lock().unwrap();
-            assert_eq!(observed.shared_flag, Some(1), "出厂是可共享");
-            let format = observed.pixel_format.as_ref().unwrap();
-            assert_eq!(format[0], 32, "真彩一档 32 位");
-            // 表头：桌面尺寸(0xFF…21)、LastRect(0xFF…20)、扩展剪贴板(0xc0a1e5ce)、
-            // 光标形状(0xFF…11 = -239) ——四个伪编码之后才是压缩档：Tight、Zrle……
-            assert_eq!(
-                observed.encodings.get(2..6),
-                Some(&[0xc0a1e5ceu32, 0xffff_ff11, 7u32, 16u32][..]),
-                "扩展剪贴板与光标形状是能力声明，和另两个伪编码排在一起；Tight 必须排第二压缩位，Zrle 跟着"
-            );
+                assert_eq!(observed.shared_flag, Some(1), "出厂是可共享");
+                let format = observed.pixel_format.as_ref().unwrap();
+                assert_eq!(format[0], 32, "真彩一档 32 位");
+                // 五个伪编码之后才是压缩档：Tight、Zrle……动态分辨率不改变压缩优先级。
+                assert_eq!(
+                    observed.encodings.get(..7),
+                    Some(
+                        &[
+                            0xffff_ff21u32,
+                            0xffff_fecc,
+                            0xffff_ff20,
+                            0xc0a1e5ce,
+                            0xffff_ff11,
+                            7,
+                            16
+                        ][..]
+                    ),
+                    "桌面尺寸、扩展桌面、LastRect、剪贴板和光标能力在前；Tight 优先，Zrle 跟随"
+                );
             }
         });
     }
@@ -1345,7 +1430,10 @@ mod tests {
         use crate::proxy::{ProxyConfig, ProxyMode};
 
         let desktop: Vec<u8> = (0..64u8).collect();
-        let expected = desktop.clone();
+        let mut expected = desktop.clone();
+        for pixel in expected.as_chunks_mut::<4>().0 {
+            pixel[3] = 255;
+        }
         db::runtime().block_on(async {
             let (rfb_addr, _server) = fake_server(
                 desktop,
@@ -1378,7 +1466,9 @@ mod tests {
                     assert_eq!(image.as_bytes(0).unwrap(), expected.as_slice());
                 }
                 VncOutput::Disconnected(reason) => panic!("经代理断了：{reason}"),
-                VncOutput::CutText(_) => unreachable!(),
+                VncOutput::CutText(_)
+                | VncOutput::ResizeSupported(_)
+                | VncOutput::ResizeResult(_) => unreachable!(),
             }
         });
     }
@@ -1387,9 +1477,12 @@ mod tests {
     /// 协商的 BGRA 与画布、`RenderImage` 之间的字节序只要有一头想反了，
     /// 那条逐字节的断言就会红。
     #[test]
-    fn a_frame_from_a_real_wire_arrives_byte_for_byte() {
+    fn a_frame_from_a_real_wire_preserves_color_and_makes_padding_opaque() {
         let desktop: Vec<u8> = (0..64u8).collect();
-        let expected = desktop.clone();
+        let mut expected = desktop.clone();
+        for pixel in expected.as_chunks_mut::<4>().0 {
+            pixel[3] = 255;
+        }
         db::runtime().block_on(async {
             let (addr, server) = fake_server(
                 desktop,
@@ -1416,7 +1509,9 @@ mod tests {
                     panic!("还没等到帧就断了：{reason}")
                 }
                 // 这座服务器不发剪贴板文本。
-                VncOutput::CutText(_) => unreachable!(),
+                VncOutput::CutText(_)
+                | VncOutput::ResizeSupported(_)
+                | VncOutput::ResizeResult(_) => unreachable!(),
             }
 
             // 丢掉会话：输入通道断了，后台循环收工并向这边道别。

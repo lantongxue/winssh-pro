@@ -197,6 +197,8 @@ ironrdp = { version = "0.17", default-features = false, features = ["core", "pdu
 # reqwest 本来就在依赖树里（rig 的 HTTP 后端），这里只多开它一个 feature。
 ironrdp-tokio = { version = "0.10", features = ["reqwest"] }
 ironrdp-tls = { version = "0.2", features = ["rustls"] }
+# FastPath 帧边界适配使用同一份解压器，避免为识别帧标记重复解压。
+ironrdp-bulk = "0.1.1"
 
 # russh 的默认加密后端 aws-lc-rs 会用 C + 汇编编译 aws-lc-sys；在 x86_64 Windows 上
 # 它的汇编要靠 NASM 汇编，本机没有 nasm.exe 时 build 脚本直接 panic。开启
@@ -207,8 +209,6 @@ ironrdp-tls = { version = "0.2", features = ["rustls"] }
 aws-lc-rs = { version = "1.16.2", features = ["prebuilt-nasm"] }
 
 [dev-dependencies]
-# 构造跨分辨率切换的连续 MPPC 数据，验证重新激活不会丢失压缩历史。
-ironrdp-bulk = "0.1.1"
 # 让界面能在无窗口的测试里真的画一遍（`TestAppContext` + `window.draw`）。
 # 有些错只在完整的 layout/prepaint/paint 走完之后才暴露 —— 比如元素树自己
 # 套自己，编译期看不出来，跑起来是栈溢出。门面 crate 的 `test-support` 转开的就是
@@ -227,7 +227,7 @@ flate2 = "1"
 # 天文数字的经典正文，直接报错把会话带下水。0.6.0 已是 crates.io 上的最新版，
 # 没有"升级即修"的路，于是在一份本地副本上打补丁：`vendor/vnc-rs` 逐字来自
 # crates.io 的 0.6.0（含 LICENSE 与上游 git 信息），改动清单见
-# `vendor/vnc-rs/PATCHES.md`，只有剪贴板这一处。
+# `vendor/vnc-rs/PATCHES.md`；另补齐完整帧边界，避免应用显示半帧。
 #
 # 想挪成 `refs/` 那种子模块 fork 也容易：把那份目录推成一个仓库，这里改指
 # `{ git = "…" }` 就行 —— 布局是照着那条路留的。

@@ -6,6 +6,7 @@ mod backup;
 mod command_history;
 mod credential;
 mod db;
+mod desktop;
 mod forward;
 mod host;
 mod i18n;

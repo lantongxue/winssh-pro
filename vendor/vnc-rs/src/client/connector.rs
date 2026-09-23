@@ -149,6 +149,7 @@ where
                             connector.allow_shared,
                             connector.pixel_format,
                             connector.encodings,
+                            connector.frame_events,
                         )
                         .await?,
                     ))
@@ -177,6 +178,7 @@ where
     auth_methond: Option<F>,
     rfb_version: VncVersion,
     allow_shared: bool,
+    frame_events: bool,
     pixel_format: Option<PixelFormat>,
     encodings: Vec<VncEncoding>,
 }
@@ -218,6 +220,7 @@ where
             stream,
             auth_methond: None,
             allow_shared: true,
+            frame_events: false,
             rfb_version: VncVersion::RFB38,
             pixel_format: None,
             encodings: Vec::new(),
@@ -274,6 +277,13 @@ where
     ///
     pub fn set_version(mut self, version: VncVersion) -> Self {
         self.rfb_version = version;
+        self
+    }
+
+    /// 订阅完整 FramebufferUpdate 的 BeginFrame / EndFrame 边界。
+    /// 默认关闭以保持旧消费者的事件与背压行为。开启后必须持续消费事件。
+    pub fn with_frame_events(mut self) -> Self {
+        self.frame_events = true;
         self
     }
 

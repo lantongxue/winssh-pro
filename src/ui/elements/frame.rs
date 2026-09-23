@@ -33,12 +33,30 @@ use gpui_kit::{
 };
 use gpui_kit::{RenderImage, point};
 
-/// 两种远端桌面画法。面板保存选择，FrameElement 的父级按它决定画布尺寸。
+/// 替换桌面或指针图像，同时释放旧图在所有窗口的纹理图集项。
+/// RenderImage 的 Arc 释放只回收 CPU 字节，不能替代 GPUI 的 drop_image。
+/// 延后到当前窗口归还 App 后执行，也覆盖重连、标签关闭和跨窗口拖动。
+pub fn replace_image(
+    slot: &mut Option<Arc<RenderImage>>,
+    image: Option<Arc<RenderImage>>,
+    cx: &mut App,
+) {
+    if let Some(previous) = std::mem::replace(slot, image) {
+        if slot.as_ref().is_some_and(|next| next.id == previous.id) {
+            return;
+        }
+        cx.defer(move |cx| cx.drop_image(previous, None));
+    }
+}
+
+/// 远端桌面显示策略。面板保存选择，FrameElement 的父级决定画布尺寸。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DesktopScale {
     #[default]
     Adaptive,
     Actual,
+    /// VNC：协商调整远端分辨率，始终按物理像素 1:1 绘制。
+    FollowViewport,
 }
 
 /// 原始帧像素尺寸换成 GPUI 的逻辑尺寸。Retina 2x 上的 1920 像素帧
@@ -279,6 +297,42 @@ mod tests {
         cx.update(|window, cx| {
             _ = window.draw(cx);
         });
+    }
+
+    #[gpui_kit::test]
+    fn replacing_a_streamed_image_releases_its_atlas_entry(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let first = Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(200, 150))]));
+        let (view, cx) = cx.add_window_view(|_, _| ScrollHarness {
+            image: first.clone(),
+            display: Rc::new(Cell::new(None)),
+            scroll: ScrollHandle::new(),
+        });
+        draw(cx);
+        cx.update(|window, _| assert!(window.has_image_atlas_entry(&first)));
+        let mut old = first;
+        for _ in 0..20 {
+            let next = Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(200, 150))]));
+            view.update(cx, |view, cx| {
+                let mut current = Some(view.image.clone());
+                replace_image(&mut current, Some(next.clone()), cx);
+                view.image = current.unwrap();
+                cx.notify();
+            });
+            draw(cx);
+            cx.update(|window, _| {
+                assert!(!window.has_image_atlas_entry(&old));
+                assert!(window.has_image_atlas_entry(&next));
+            });
+            old = next;
+        }
+        // 同一张图的光标移动/重画无需重传纹理。
+        cx.update(|_, cx| replace_image(&mut Some(old.clone()), Some(old.clone()), cx));
+        cx.run_until_parked();
+        cx.update(|window, _| assert!(window.has_image_atlas_entry(&old)));
+        cx.update(|_, cx| replace_image(&mut Some(old.clone()), None, cx));
+        cx.run_until_parked();
+        cx.update(|window, _| assert!(!window.has_image_atlas_entry(&old)));
     }
 
     #[test]

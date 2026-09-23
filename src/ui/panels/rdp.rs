@@ -58,7 +58,7 @@ use crate::{
         Workspace,
         elements::{
             DesktopScale, FrameElement, PointerOverlay, native_frame_size, remote_frame_point,
-            scrollable_frame,
+            replace_image, scrollable_frame,
         },
         menus::{DesktopSessionAction, DesktopSessionKind, DesktopSessionMenu},
         panels::SessionEvent,
@@ -187,6 +187,11 @@ impl RdpPanel {
                     }
                 }),
             ];
+            cx.on_release(|this, cx| {
+                replace_image(&mut this.image, None, cx);
+                replace_image(&mut this.pointer_image, None, cx);
+            })
+            .detach();
             this.watch_clipboard(cx);
             this
         })
@@ -200,9 +205,9 @@ impl RdpPanel {
         };
         self.phase = RdpPhase::Connecting;
         self.inputs = None;
-        self.image = None;
+        replace_image(&mut self.image, None, cx);
         self.resolution = None;
-        self.pointer_image = None;
+        replace_image(&mut self.pointer_image, None, cx);
         self.pointer_visible = false;
         self.pointer_position = (0, 0);
         self.display.set(None);
@@ -271,7 +276,7 @@ impl RdpPanel {
                                     Some(RdpOutput::PointerDefault) => {
                                         if this
                                             .update(cx, |this, cx| {
-                                                this.pointer_image = None;
+                                                replace_image(&mut this.pointer_image, None, cx);
                                                 this.pointer_visible = false;
                                                 cx.notify();
                                             })
@@ -381,7 +386,7 @@ impl RdpPanel {
         }
         let image = frame.size(0);
         self.resolution = Some((image.width.0.max(0) as u16, image.height.0.max(0) as u16));
-        self.image = Some(frame);
+        replace_image(&mut self.image, Some(frame), cx);
         self.set_alive(true, cx);
         cx.notify();
     }
@@ -396,11 +401,11 @@ impl RdpPanel {
         self.pointer_hotspot = (pointer.hotspot_x, pointer.hotspot_y);
         match pointer_to_render_image(pointer) {
             Some(image) => {
-                self.pointer_image = Some(image);
+                replace_image(&mut self.pointer_image, Some(image), cx);
                 self.pointer_visible = true;
             }
             None => {
-                self.pointer_image = None;
+                replace_image(&mut self.pointer_image, None, cx);
                 self.pointer_visible = false;
             }
         }

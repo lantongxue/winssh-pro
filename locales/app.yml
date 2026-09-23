@@ -919,6 +919,27 @@ desktop_scale.actual_tooltip:
 vnc.redraw:
   en: Redraw
   zh-CN: 刷新画面
+vnc.follow_viewport:
+  en: Match remote resolution to window
+  zh-CN: 跟随窗口调整远端分辨率
+vnc.resize_unavailable:
+  en: Keeping 1:1
+  zh-CN: 保持 1:1
+vnc.resize_not_supported:
+  en: The server has not offered a resizable single-screen desktop. Keep 1:1 and use the scrollbars.
+  zh-CN: 远端尚未提供可调整的单屏桌面，画面保持 1:1，可通过滚动条查看。
+vnc.resize_too_large:
+  en: The canvas exceeds the supported desktop size. Reduce the window size to try again.
+  zh-CN: 画布超过可调整的尺寸上限，缩小窗口后会重试。
+vnc.resize_denied:
+  en: The server rejected the resolution change. Automatic changes are stopped for this connection; reconnect to try again.
+  zh-CN: 服务器拒绝调整分辨率，本次连接已停止自动调整；重连后可重试。
+vnc.resize_uncertain:
+  en: The resolution change was not confirmed. Automatic changes are stopped; reconnect before trying again.
+  zh-CN: 远端未确认调整结果，已停止自动调整；请重连后再试。
+vnc.resize_failed:
+  en: The resolution could not be changed. Automatic changes are stopped for this connection; reconnect to try again.
+  zh-CN: 调整分辨率失败，本次连接已停止自动调整；重连后可重试。
 vnc.redraw_tooltip:
   en: Ask the server for the whole screen again. Use it when part of the picture is stuck black or stale - the incremental updates only carry what changed, so a region that was never sent never comes back on its own.
   zh-CN: 跟服务器重新要一整屏。画面有一块一直黑着或者停在旧内容时按它——增量更新只带回变过的区域，从没发过来的那一片不会自己回来。

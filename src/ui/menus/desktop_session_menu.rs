@@ -94,19 +94,27 @@ impl RenderOnce for DesktopSessionMenu {
                     window,
                     cx,
                     move |menu, _, _| {
-                        menu.min_w(MENU_MIN_WIDTH)
-                            .item(item(
-                                t!("desktop_scale.adaptive"),
-                                scale == DesktopScale::Adaptive,
-                                DesktopSessionAction::Scale(DesktopScale::Adaptive),
+                        let menu = menu.min_w(MENU_MIN_WIDTH).item(item(
+                            t!("desktop_scale.adaptive"),
+                            scale == DesktopScale::Adaptive,
+                            DesktopSessionAction::Scale(DesktopScale::Adaptive),
+                            &scale_handler,
+                        ));
+                        match kind {
+                            DesktopSessionKind::Vnc => menu.item(item(
+                                t!("vnc.follow_viewport"),
+                                scale == DesktopScale::FollowViewport,
+                                DesktopSessionAction::Scale(DesktopScale::FollowViewport),
                                 &scale_handler,
-                            ))
-                            .item(item(
-                                t!("desktop_scale.actual"),
-                                scale == DesktopScale::Actual,
-                                DesktopSessionAction::Scale(DesktopScale::Actual),
-                                &scale_handler,
-                            ))
+                            )),
+                            DesktopSessionKind::Rdp => menu,
+                        }
+                        .item(item(
+                            t!("desktop_scale.actual"),
+                            scale == DesktopScale::Actual,
+                            DesktopSessionAction::Scale(DesktopScale::Actual),
+                            &scale_handler,
+                        ))
                     },
                 );
 

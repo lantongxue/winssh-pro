@@ -7,8 +7,8 @@
 //! 不做局部纹理更新：VNC 的增量本来就以"服务器只在变了时推"为节流，
 //! 而打包一份 1920×1080 的 BGRA 也就 8MB 的 memcpy，量在毫秒以下。
 //!
-//! 真彩 32 位时线上就是 BGRA（[`vnc::PixelFormat::bgra`]，网络序即
-//! B,G,R,A 四字节），GPUI 的纹理要的同序，原样搬；16 位/8 位是每像素
+//! 真彩 32 位采用 [`vnc::PixelFormat::bgra`]，线上是 B,G,R,X 四字节。
+//! 颜色原样搬，生成快照时将填充 X 设为不透明 alpha；16 位/8 位是每像素
 //! 两个/一个字的**打包值**，进画布前按 [点名的位段](super::VncColorDepth::pixel_format)
 //! 展开成 BGRA —— 画布内部恒定 32 位，`Copy` 的搬运与最终打包就不用管
 //! 当前线上是哪种深度。
@@ -26,7 +26,6 @@
 use std::sync::Arc;
 
 use gpui_kit::RenderImage;
-use image::{Frame, RgbaImage};
 use vnc::Rect;
 
 use super::VncColorDepth;
@@ -140,19 +139,23 @@ impl Canvas {
     /// 记下"从 `start` 起的 `len` 个像素画过了"。`start` 是像素下标，
     /// 不是字节下标。
     fn mark(&mut self, start: usize, len: usize) {
-        let unpainted = &mut self.unpainted;
-        for flag in &mut self.painted[start..start + len] {
-            if !*flag {
-                *flag = true;
-                *unpainted -= 1;
-            }
+        if self.unpainted == 0 {
+            return;
         }
+        let flags = &mut self.painted[start..start + len];
+        self.unpainted -= flags.iter().filter(|painted| !**painted).count();
+        flags.fill(true);
     }
 
     /// 一块矩形换成这些字节。`data` 按行铺满 `rect`（行主序），每像素的
     /// 字节数与打包方式跟着建画布时的深度；短了、歪了、越界了都只画能
     /// 对上的那部分。
     pub fn apply_raw(&mut self, rect: &Rect, data: &[u8]) {
+        // 常用的真彩路径按行 memcpy，不能为 4K 每帧做八百万次切片和记账。
+        if self.wire == WireFormat::Bgra32 {
+            self.apply_bgra(rect, data);
+            return;
+        }
         let Some((columns, rows)) = self.clip(rect) else {
             return;
         };
@@ -163,7 +166,8 @@ impl Canvas {
         for row in 0..rows {
             let source = row * stride;
             let line = (rect.y as usize + row) * self.width as usize + rect.x as usize;
-            for column in 0..columns {
+            let available = columns.min(data.len().saturating_sub(source) / source_bpp);
+            for column in 0..available {
                 let at = source + column * source_bpp;
                 let Some(pixel) = data.get(at..at + source_bpp) else {
                     // 正文短了一截：这一行剩下的和后面的行都没数据可画，
@@ -177,7 +181,10 @@ impl Canvas {
                 };
                 let target = (line + column) * BYTES_PER_PIXEL;
                 self.pixels[target..target + BYTES_PER_PIXEL].copy_from_slice(&bgra);
-                self.mark(line + column, 1);
+            }
+            self.mark(line, available);
+            if available < columns {
+                break;
             }
         }
     }
@@ -189,16 +196,23 @@ impl Canvas {
             return;
         };
         let stride = rect.width as usize * BYTES_PER_PIXEL;
-        let row_bytes = columns * BYTES_PER_PIXEL;
         for row in 0..rows {
             let source = row * stride;
+            let available = columns.min(data.len().saturating_sub(source) / BYTES_PER_PIXEL);
+            let row_bytes = available * BYTES_PER_PIXEL;
+            if row_bytes == 0 {
+                break;
+            }
             let Some(bytes) = data.get(source..source + row_bytes) else {
                 break;
             };
             let line = (rect.y as usize + row) * self.width as usize + rect.x as usize;
             let target = line * BYTES_PER_PIXEL;
             self.pixels[target..target + row_bytes].copy_from_slice(bytes);
-            self.mark(line, columns);
+            self.mark(line, available);
+            if available < columns {
+                break;
+            }
         }
     }
 
@@ -213,12 +227,15 @@ impl Canvas {
             return;
         };
         // 源也得在画布里，且可搬的行数列数不能越过它的边界。
-        let columns = columns.min(source.width as usize);
-        let rows = rows.min(source.height as usize);
+        let Some((source_columns, source_rows)) = self.clip(source) else {
+            return;
+        };
+        let columns = columns.min(source_columns);
+        let rows = rows.min(source_rows);
         let row_bytes = columns * BYTES_PER_PIXEL;
 
-        let downward = destination.y > source.y
-            && source.y as usize + rows > destination.y as usize;
+        let downward =
+            destination.y > source.y && source.y as usize + rows > destination.y as usize;
         let order: Box<dyn Iterator<Item = usize>> = if downward {
             Box::new((0..rows).rev())
         } else {
@@ -234,6 +251,9 @@ impl Canvas {
                 continue;
             }
             self.pixels.copy_within(from..from + row_bytes, to);
+            if self.unpainted == 0 {
+                continue;
+            }
             // "画过没有"跟着像素一起搬：从一块**没画过**的地方搬来的是黑的，
             // 目的地也就该继续算没画过 —— 否则一次 CopyRect 就能把黑块洗成
             // "已经画好的黑"，再也要不回来了。
@@ -255,8 +275,7 @@ impl Canvas {
     /// 这一帧打包成 GPUI 的图像。还没有尺寸（没连上）时是 `None`。
     pub fn to_render_image(&self) -> Option<Arc<RenderImage>> {
         self.size()?;
-        let buffer = RgbaImage::from_raw(self.width as u32, self.height as u32, self.pixels.clone())?;
-        Some(Arc::new(RenderImage::new(vec![Frame::new(buffer)])))
+        crate::desktop::opaque_frame(self.width as u32, self.height as u32, &self.pixels)
     }
 
     /// 矩形的哪个部分真的落在画布里：可画的列数与行数。整个在画布外是 `None`。
@@ -310,6 +329,31 @@ impl Default for Canvas {
 mod tests {
     use super::*;
 
+    /// 整屏搬运与快照的 CPU 量尺，不包含网络、解码和 GPU 上传。
+    /// macOS arm64 release：1080p 4.051 → 0.713 ms，4K 15.777 → 2.900 ms；
+    /// 优化后包含不透明 alpha 修正，详情见 docs/remote-desktop-rendering.md。
+    #[test]
+    #[ignore = "性能量尺，按需手动跑"]
+    fn frame_copy_cost() {
+        for (width, height) in [(1920, 1080), (3840, 2160)] {
+            let mut canvas = Canvas::new();
+            canvas.resize(width, height);
+            let pixels = vec![255; width as usize * height as usize * 4];
+            let area = rect(0, 0, width, height);
+            canvas.apply_raw(&area, &pixels);
+            const FRAMES: u32 = 120;
+            let start = std::time::Instant::now();
+            for _ in 0..FRAMES {
+                canvas.apply_raw(&area, std::hint::black_box(&pixels));
+                std::hint::black_box(canvas.to_render_image());
+            }
+            println!(
+                "VNC {width}×{height} apply + snapshot: {:?}/frame",
+                start.elapsed() / FRAMES
+            );
+        }
+    }
+
     fn rect(x: u16, y: u16, width: u16, height: u16) -> Rect {
         Rect {
             x,
@@ -329,8 +373,13 @@ mod tests {
         let mut canvas = Canvas::new();
         canvas.resize(2, 2);
 
-        let block: Vec<u8> = [pixel(1, 0, 0), pixel(2, 0, 0), pixel(3, 0, 0), pixel(4, 0, 0)]
-            .concat();
+        let block: Vec<u8> = [
+            pixel(1, 0, 0),
+            pixel(2, 0, 0),
+            pixel(3, 0, 0),
+            pixel(4, 0, 0),
+        ]
+        .concat();
         canvas.apply_raw(&rect(0, 0, 2, 2), &block);
 
         assert_eq!(&canvas.pixels[0..4], &pixel(1, 0, 0));
@@ -358,7 +407,11 @@ mod tests {
         let partial: Vec<u8> = [pixel(1, 0, 0), pixel(2, 0, 0), pixel(3, 0, 0)].concat();
         canvas.apply_raw(&rect(0, 0, 2, 2), &partial);
         assert_eq!(&canvas.pixels[4..8], &pixel(2, 0, 0));
-        assert_eq!(&canvas.pixels[8..12], &pixel(3, 0, 0), "第三格落在它自己的格子");
+        assert_eq!(
+            &canvas.pixels[8..12],
+            &pixel(3, 0, 0),
+            "第三格落在它自己的格子"
+        );
         assert_eq!(&canvas.pixels[12..16], &[0, 0, 0, 0], "缺的字节不发明像素");
     }
 
@@ -391,8 +444,13 @@ mod tests {
         // 挪完 1,2,1,2 而不是 1,2,2,2。
         let mut canvas = Canvas::new();
         canvas.resize(4, 1);
-        let block: Vec<u8> = [pixel(1, 0, 0), pixel(2, 0, 0), pixel(0, 0, 0), pixel(0, 0, 0)]
-            .concat();
+        let block: Vec<u8> = [
+            pixel(1, 0, 0),
+            pixel(2, 0, 0),
+            pixel(0, 0, 0),
+            pixel(0, 0, 0),
+        ]
+        .concat();
         canvas.apply_raw(&rect(0, 0, 4, 1), &block);
         canvas.apply_copy(&rect(1, 0, 2, 1), &rect(0, 0, 2, 1));
 
@@ -417,7 +475,11 @@ mod tests {
         // 已被覆盖的第 1 行 —— 三条断言里钉的就是这个差别。
         assert_eq!(&canvas.pixels[0..4], &pixel(1, 0, 0));
         assert_eq!(&canvas.pixels[4..8], &pixel(1, 0, 0));
-        assert_eq!(&canvas.pixels[8..12], &pixel(2, 0, 0), "第 2 行该是原第 1 行");
+        assert_eq!(
+            &canvas.pixels[8..12],
+            &pixel(2, 0, 0),
+            "第 2 行该是原第 1 行"
+        );
     }
 
     #[test]

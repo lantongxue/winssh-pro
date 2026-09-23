@@ -25,7 +25,9 @@
 //! 不支持的（有意，见 [`session`] 的模块文档）：声音、驱动器/文件重定向、
 //! 智能卡、UDP 多传输、Kerberos。
 
+mod bitmap;
 mod clipboard;
+mod graphics;
 mod keyboard;
 mod session;
 mod settings;
