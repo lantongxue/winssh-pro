@@ -10,6 +10,7 @@ mod assistant;
 #[allow(dead_code)]
 mod event_log;
 mod monitor;
+mod rdp;
 mod sftp;
 mod sftp_editor;
 mod terminal;
@@ -18,6 +19,7 @@ mod welcome;
 
 pub use assistant::{ASSISTANT_DOCK_WIDTH, AssistantPanel};
 pub use monitor::{MonitorEvent, MonitorPanel};
+pub use rdp::RdpPanel;
 pub use sftp::{
     ExtendSelectionDown, ExtendSelectionUp, OpenSelection, SelectAllEntries, SftpPanel,
     SftpPanelEvent,

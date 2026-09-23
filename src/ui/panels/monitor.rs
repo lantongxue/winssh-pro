@@ -1584,6 +1584,7 @@ mod tests {
     fn host(intervals: MonitorIntervals) -> Host {
         Host {
             vnc: Default::default(),
+            rdp: Default::default(),
             kind: crate::host::HostKind::Ssh,
             id: "settings-test".into(),
             name: "web-01".into(),

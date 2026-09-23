@@ -42,6 +42,7 @@ use crate::{
     credential::{Credential, CredentialKind},
     host::{AuthMethod, Host, HostDraft, HostGroup, HostKind},
     proxy::{self, HostProxy, ProxyConfig, ProxyMode},
+    rdp::{RdpColorDepth, RdpPerformance, RdpSecurity, RdpSettings},
     vnc::{
         VncClipboardCharset, VncColorDepth, VncEncodingChoice, VncFrameRate, VncProtocolVersion,
         VncSettings,
@@ -54,8 +55,8 @@ use crate::{
 };
 use rust_i18n::t;
 
-/// 连接类型在下拉里的两档，顺序即 [`crate::host::HostKind`] 的编号顺序：
-/// 0 SSH、1 VNC。和认证方式一样按**下标**判断，不比文案。
+/// 连接类型在下拉里的三档，顺序即 [`crate::host::HostKind`] 的编号顺序：
+/// 0 SSH、1 VNC、2 RDP。和认证方式一样按**下标**判断，不比文案。
 fn host_kinds() -> Vec<SharedString> {
     HostKind::ALL.map(|kind| kind.label()).to_vec()
 }
@@ -89,6 +90,28 @@ fn share_choices() -> Vec<SharedString> {
     vec![
         t!("vnc.share_shared").into(),
         t!("vnc.share_exclusive").into(),
+    ]
+}
+
+/// RDP 那几档下拉的候选，顺序即各枚举的 `ALL`：安全档 / 色深 / 性能档。
+fn rdp_securities() -> Vec<SharedString> {
+    RdpSecurity::ALL.map(|security| security.label()).to_vec()
+}
+
+fn rdp_color_depths() -> Vec<SharedString> {
+    RdpColorDepth::ALL.map(|depth| depth.label()).to_vec()
+}
+
+fn rdp_performances() -> Vec<SharedString> {
+    RdpPerformance::ALL.map(|performance| performance.label()).to_vec()
+}
+
+/// 开/关两格（RDP 的剪贴板与压缩用）。0 是开，1 是关 —— 和共享档同一个
+/// 写法，出厂档在第一个是"开"的那两个。
+fn toggle_choices() -> Vec<SharedString> {
+    vec![
+        t!("host_form.option_on").into(),
+        t!("host_form.option_off").into(),
     ]
 }
 
@@ -187,7 +210,7 @@ type EditedHost = (Host, SharedString);
 pub struct HostForm {
     name: Entity<InputState>,
     group: Entity<InputState>,
-    /// 连接类型：SSH / VNC。它决定这一台主机怎么连、表单认哪几格，
+    /// 连接类型：SSH / VNC / RDP。它决定这一台主机怎么连、表单认哪几格，
     /// 以及落库后 [`crate::ui::views::HostExplorerView::open_host`] 开哪种面板。
     kind: Entity<SelectState<Vec<SharedString>>>,
     /// 新建还是编辑。换连接类型时只有新建会顺手改端口和标签默认值 ——
@@ -213,6 +236,15 @@ pub struct HostForm {
     vnc_version: Entity<SelectState<Vec<SharedString>>>,
     vnc_share: Entity<SelectState<Vec<SharedString>>>,
     vnc_charset: Entity<SelectState<Vec<SharedString>>>,
+    /// RDP 那几档：安全 / 色深 / 性能 / 剪贴板 / 压缩，外加域那一格。
+    /// 和 VNC 一样常驻状态，换回 SSH 再换回来不丢用户拧过的档。
+    rdp_security: Entity<SelectState<Vec<SharedString>>>,
+    rdp_depth: Entity<SelectState<Vec<SharedString>>>,
+    rdp_performance: Entity<SelectState<Vec<SharedString>>>,
+    rdp_clipboard: Entity<SelectState<Vec<SharedString>>>,
+    rdp_compression: Entity<SelectState<Vec<SharedString>>>,
+    /// Windows 域（`DOMAIN\user` 的那个 `DOMAIN`），空串是本地账号。
+    rdp_domain: Entity<InputState>,
     proxy_jump: Entity<SelectState<Vec<SharedString>>>,
     /// 走不走 SOCKS5 代理：不使用 / 跟随全局 / 配置代理，见 [`proxy_modes`]。
     ///
@@ -447,6 +479,56 @@ impl HostForm {
                 cx,
             )
         });
+        let initial_rdp = match editing {
+            Some((host, _)) => host.rdp.clone(),
+            None => RdpSettings::default(),
+        };
+        let rdp_security = cx.new(|cx| {
+            SelectState::new(
+                rdp_securities(),
+                Some(IndexPath::new(initial_rdp.security.index())),
+                window,
+                cx,
+            )
+        });
+        let rdp_depth = cx.new(|cx| {
+            SelectState::new(
+                rdp_color_depths(),
+                Some(IndexPath::new(initial_rdp.color_depth.index())),
+                window,
+                cx,
+            )
+        });
+        let rdp_performance = cx.new(|cx| {
+            SelectState::new(
+                rdp_performances(),
+                Some(IndexPath::new(initial_rdp.performance.index())),
+                window,
+                cx,
+            )
+        });
+        // 开/关档：0 开、1 关，所以取反。
+        let rdp_clipboard = cx.new(|cx| {
+            SelectState::new(
+                toggle_choices(),
+                Some(IndexPath::new(usize::from(!initial_rdp.clipboard))),
+                window,
+                cx,
+            )
+        });
+        let rdp_compression = cx.new(|cx| {
+            SelectState::new(
+                toggle_choices(),
+                Some(IndexPath::new(usize::from(!initial_rdp.compression))),
+                window,
+                cx,
+            )
+        });
+        let rdp_domain = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("host_form.field_rdp_domain_placeholder"))
+                .default_value(initial_rdp.domain.clone())
+        });
         let kind = cx.new(|cx| {
             SelectState::new(
                 host_kinds(),
@@ -565,6 +647,12 @@ impl HostForm {
             vnc_version,
             vnc_share,
             vnc_charset,
+            rdp_security,
+            rdp_depth,
+            rdp_performance,
+            rdp_clipboard,
+            rdp_compression,
+            rdp_domain,
             proxy_jump,
             proxy_mode,
             proxy_host,
@@ -665,6 +753,29 @@ impl HostForm {
         match kind {
             HostKind::Ssh => vec!["Linux".into(), "SSH".into()],
             HostKind::Vnc => vec!["VNC".into()],
+            HostKind::Rdp => vec!["Windows".into(), "RDP".into()],
+        }
+    }
+
+    /// RDP 那几档下拉现在选中的折回一份 [`RdpSettings`]。按下标判断，不比文案。
+    fn selected_rdp(&self, cx: &App) -> RdpSettings {
+        let row = |select: &Entity<SelectState<Vec<SharedString>>>| {
+            select
+                .read(cx)
+                .selected_index(cx)
+                .map(|index| index.row)
+                .unwrap_or_default()
+        };
+        RdpSettings {
+            security: RdpSecurity::from_index(row(&self.rdp_security)),
+            color_depth: RdpColorDepth::from_index(row(&self.rdp_depth)),
+            performance: RdpPerformance::from_index(row(&self.rdp_performance)),
+            // 开/关两格，0 就是开 —— 和共享档同一个写法。
+            clipboard: row(&self.rdp_clipboard) == 0,
+            compression: row(&self.rdp_compression) == 0,
+            // 域不 trim：Windows 的域名里真可能有空格？不，域是 NetBIOS 名或
+            // DNS 后缀，前后空白只可能是粘贴带进来的，剪掉。
+            domain: self.rdp_domain.read(cx).value().trim().to_string(),
         }
     }
 
@@ -731,12 +842,13 @@ impl HostForm {
         let hostname = self.hostname.read(cx).value().trim().to_string();
         let username = self.username.read(cx).value().trim().to_string();
         // VNC 没有"以哪个账号进去"这件事 —— 账号只是展示名，空着就补一个。
+        // RDP 有，而且 NLA 要它，空着由表单报必填。
         let username = if kind == HostKind::Vnc && username.is_empty() {
             "vnc".to_string()
         } else {
             username
         };
-        let requires_user = kind == HostKind::Ssh;
+        let requires_user = matches!(kind, HostKind::Ssh | HostKind::Rdp);
         if name.is_empty() || hostname.is_empty() || (requires_user && username.is_empty()) {
             return Err(t!("host_form.required_fields").into());
         }
@@ -765,8 +877,9 @@ impl HostForm {
 
         // 认证方式按下拉的下标折回枚举，不拿那行字反查 —— 见 [`auth_types`]。
         // VNC 只有一种认证：服务器那把密码（[`crate::vnc`]），下拉不画，
-        // 落库也固定按密码档存，读回时那一格恰好显示密码框。
-        let auth_method = if kind == HostKind::Vnc {
+        // 落库也固定按密码档存，读回时那一格恰好显示密码框。RDP 同理：
+        // CredSSP/NLA 吃的是账号密码，没有密钥/Agent 那两档。
+        let auth_method = if matches!(kind, HostKind::Vnc | HostKind::Rdp) {
             AuthMethod::Password
         } else {
             AuthMethod::from_index(
@@ -821,6 +934,7 @@ impl HostForm {
                 tags: self.tags.clone(),
                 proxy,
                 vnc: self.selected_vnc(cx),
+                rdp: self.selected_rdp(cx),
             },
         ))
     }
@@ -949,10 +1063,10 @@ impl HostForm {
         )
     }
 
-    /// 认证那一行的左半。VNC 只认一把服务器密码，没有"以哪个账号进去"和
-    /// 认证方式选档可言 —— 整行收成账号一格。
+    /// 认证那一行的左半。VNC 只认一把服务器密码，RDP 的账号密码也不分档 ——
+/// 两种都收成账号一格。
     fn render_auth_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.selected_kind(cx) == HostKind::Vnc {
+        if matches!(self.selected_kind(cx), HostKind::Vnc | HostKind::Rdp) {
             return field(
                 t!("host_form.field_username").into(),
                 Input::new(&self.username).font_family("monospace").w_full(),
@@ -979,10 +1093,25 @@ impl HostForm {
     }
 
     /// 密码认证给密码框，密钥认证给私钥路径与私钥密码，Agent 转发不需要额外字段。
-    /// VNC 只有"服务器那把密码"一档，恒等于密码那一格。
+    /// VNC 只有"服务器那把密码"一档，RDP 是账号密码 + 可选域，都恒等于密码那一格。
     fn render_auth_detail(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.selected_kind(cx) == HostKind::Vnc {
+        let kind = self.selected_kind(cx);
+        if kind == HostKind::Vnc {
             return Some(self.render_password_section(cx, true).into_any_element());
+        }
+        if kind == HostKind::Rdp {
+            return Some(
+                v_flex()
+                    .gap_3()
+                    .w_full()
+                    .child(field(
+                        t!("host_form.field_rdp_domain").into(),
+                        Input::new(&self.rdp_domain).font_family("monospace").w_full(),
+                        cx,
+                    ))
+                    .child(self.render_password_section(cx, false))
+                    .into_any_element(),
+            );
         }
         // 按下标分派，不比文案 —— 见 [`auth_types`]。
         let selected = self
@@ -1273,6 +1402,60 @@ impl HostForm {
             )
     }
 
+    /// RDP 那一段：五档下拉，只在连接类型是 RDP 时画
+    /// （画不画由宿主 `advanced_page` 按当下类型决定）。域那一格在认证页，
+    /// 因为它属于身份，不属于画质。
+    fn render_rdp_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_3()
+            .w_full()
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_rdp_security").into(),
+                    Select::new(&self.rdp_security).w_full(),
+                    cx,
+                ),
+                1.,
+                field(
+                    t!("host_form.field_rdp_depth").into(),
+                    Select::new(&self.rdp_depth).w_full(),
+                    cx,
+                ),
+                1.,
+            ))
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_rdp_performance").into(),
+                    Select::new(&self.rdp_performance).w_full(),
+                    cx,
+                ),
+                1.,
+                field(
+                    t!("host_form.field_rdp_clipboard").into(),
+                    Select::new(&self.rdp_clipboard).w_full(),
+                    cx,
+                ),
+                1.,
+            ))
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_rdp_compression").into(),
+                    Select::new(&self.rdp_compression).w_full(),
+                    cx,
+                ),
+                1.,
+                // 右半留白：这一行只有一格，和上面两行对齐。
+                div(),
+                1.,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(t!("host_form.rdp_hint"))),
+            )
+    }
+
     fn render_tag_chip(
         &self,
         ix: usize,
@@ -1525,9 +1708,9 @@ impl HostFormWindow {
 
     /// Settings 核心组件：左栏分类导航，右栏一页一类主机配置。
     fn render_settings(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // 连接类型是 VNC 才有「VNC 画质」这一段 —— 页在每次渲染时现拼，
-        // 类型一换这一段就整个消失/出现，不留空壳。
-        let is_vnc = self.form.read(cx).selected_kind(cx) == HostKind::Vnc;
+        // 连接类型决定「高级」页里挂哪一段协议专属设置 —— 页在每次渲染时
+        // 现拼，类型一换就整个消失/出现，不留空壳。
+        let kind = self.form.read(cx).selected_kind(cx);
         Settings::new(("winssh-host-form", self.page_seq))
             .with_group_variant(GroupBoxVariant::Fill)
             .sidebar_width(px(210.))
@@ -1537,7 +1720,7 @@ impl HostFormWindow {
             })
             .page(self.connection_page())
             .page(self.auth_page())
-            .page(self.advanced_page(is_vnc))
+            .page(self.advanced_page(kind))
             .page(self.tags_page())
     }
 
@@ -1572,7 +1755,7 @@ impl HostFormWindow {
             )
     }
 
-    fn advanced_page(&self, is_vnc: bool) -> SettingPage {
+    fn advanced_page(&self, kind: HostKind) -> SettingPage {
         let page = SettingPage::new(t!("host_form.page_advanced"))
             .icon(AppIcon::Zap)
             .default_open(true)
@@ -1587,13 +1770,19 @@ impl HostFormWindow {
                     .title(t!("host_form.group_proxy"))
                     .item(self.row(|this, cx| this.render_proxy_section(cx).into_any_element())),
             );
-        match is_vnc {
-            true => page.group(
+        // 协议专属那一段：一台主机同一时刻只有一种连接类型。
+        match kind {
+            HostKind::Vnc => page.group(
                 SettingGroup::new()
                     .title(t!("host_form.group_vnc"))
                     .item(self.row(|this, cx| this.render_vnc_section(cx).into_any_element())),
             ),
-            false => page,
+            HostKind::Rdp => page.group(
+                SettingGroup::new()
+                    .title(t!("host_form.group_rdp"))
+                    .item(self.row(|this, cx| this.render_rdp_section(cx).into_any_element())),
+            ),
+            HostKind::Ssh => page,
         }
     }
 
@@ -1708,6 +1897,7 @@ impl HostFormWindow {
                         updated_host.tags = draft.tags.clone();
                         updated_host.proxy = draft.proxy.clone();
                         updated_host.vnc = draft.vnc;
+                updated_host.rdp = draft.rdp.clone();
                         service
                             .update_host(&host.id, &group, draft)
                             .await
@@ -1789,6 +1979,7 @@ mod tests {
                 tags: vec!["生产".into(), "web".into()],
                 proxy: HostProxy::default(),
                 vnc: VncSettings::default(),
+                rdp: RdpSettings::default(),
                 shell_integration: false,
             },
             "生产环境".into(),

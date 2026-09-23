@@ -49,6 +49,7 @@ const SCHEMA: [&str; 10] = [
         tags         TEXT    NOT NULL DEFAULT '',
         proxy        TEXT    NOT NULL DEFAULT '',
         vnc_settings TEXT    NOT NULL DEFAULT '',
+        rdp_settings TEXT    NOT NULL DEFAULT '',
         shell_integration INTEGER NOT NULL DEFAULT 0
     )",
     // 保险箱。和 hosts 之间没有外键：主机存的是凭据的内容本身，不是一个指向
@@ -151,7 +152,7 @@ const SCHEMA: [&str; 10] = [
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 13] = [
+const MIGRATIONS: [&str; 14] = [
     // 连接类型（见 [`crate::host::HostKind`]）。老库补出来的是 `ssh` ——
     // 这一列出现之前存的每一台主机都是 SSH，出厂值不改变任何人的行为。
     "ALTER TABLE hosts ADD COLUMN kind TEXT NOT NULL DEFAULT 'ssh'",
@@ -187,6 +188,10 @@ const MIGRATIONS: [&str; 13] = [
     // —— 往用户的服务器上打字这件事只能由他自己开，绝不能因为升级了一版就
     // 默默开始做。
     "ALTER TABLE hosts ADD COLUMN shell_integration INTEGER NOT NULL DEFAULT 0",
+    // RDP 连接配置（见 [`crate::rdp::RdpSettings`]）。空串就是出厂档 ——
+    // TLS+NLA 自动协商、真彩、平衡性能档、剪贴板开、压缩开，这一列出现之前
+    // 根本没有 RDP 主机，老库补出来不影响任何一台主机现在的连法。
+    "ALTER TABLE hosts ADD COLUMN rdp_settings TEXT NOT NULL DEFAULT ''",
 ];
 
 /// 数据层专用的 tokio runtime，进程生命周期内只建一次。

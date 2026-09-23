@@ -114,6 +114,7 @@ impl HostService {
                         tags: Set(crate::host::encode_tags(&draft.tags)),
                         proxy: Set(crate::proxy::encode(&draft.proxy)),
                         vnc_settings: Set(crate::vnc::encode(&draft.vnc)),
+                        rdp_settings: Set(crate::rdp::encode(&draft.rdp)),
                         // shell 集成同理不在表单里，新主机一律不装 ——
                         // 往对端打字这件事只能由用户自己在命令历史那扇窗里开
                         // （[`Self::update_shell_integration`]）。
@@ -141,6 +142,7 @@ impl HostService {
                 tags: draft.tags,
                 proxy: draft.proxy,
                 vnc: draft.vnc,
+                rdp: draft.rdp,
                 shell_integration: false,
             })
         })
@@ -184,6 +186,7 @@ impl HostService {
                         tags: Set(crate::host::encode_tags(&draft.tags)),
                         proxy: Set(crate::proxy::encode(&draft.proxy)),
                         vnc_settings: Set(crate::vnc::encode(&draft.vnc)),
+                        rdp_settings: Set(crate::rdp::encode(&draft.rdp)),
                     },
                 )
                 .await;
@@ -281,6 +284,7 @@ impl HostService {
                         tags: Set(source.tags.clone()),
                         proxy: Set(source.proxy.clone()),
                         vnc_settings: Set(source.vnc_settings.clone()),
+                        rdp_settings: Set(source.rdp_settings.clone()),
                         shell_integration: Set(source.shell_integration),
                     },
                 )
@@ -309,6 +313,7 @@ impl HostService {
                 tags: crate::host::decode_tags(&source.tags),
                 proxy: crate::proxy::decode(&source.proxy),
                 vnc: crate::vnc::decode(&source.vnc_settings),
+                rdp: crate::rdp::decode(&source.rdp_settings),
                 shell_integration: source.shell_integration,
             })
         })
@@ -468,6 +473,7 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                     tags: crate::host::decode_tags(&host.tags),
                     proxy: crate::proxy::decode(&host.proxy),
                     vnc: crate::vnc::decode(&host.vnc_settings),
+                    rdp: crate::rdp::decode(&host.rdp_settings),
                     shell_integration: host.shell_integration,
                 })
                 .collect(),
@@ -519,8 +525,9 @@ mod tests {
             key_passphrase: String::new(),
             jump_host_id: None,
             tags: Vec::new(),
-            proxy: Default::default(),
+proxy: Default::default(),
             vnc: Default::default(),
+            rdp: Default::default(),
         }
     }
 
@@ -548,8 +555,9 @@ mod tests {
             key_passphrase: key_passphrase.into(),
             jump_host_id: None,
             tags: Vec::new(),
-            proxy: Default::default(),
+proxy: Default::default(),
             vnc: Default::default(),
+            rdp: Default::default(),
         }
     }
 
@@ -1272,6 +1280,38 @@ mod tests {
 
             let copy = service.duplicate_host(&host.id).await.unwrap();
             assert_eq!(copy.vnc, tuned, "副本连画质一并照抄");
+        });
+    }
+
+    /// RDP 连接配置走的是同一套：新主机出厂档，表单整行重写，副本照抄。
+    #[test]
+    fn rdp_settings_round_trip() {
+        use crate::rdp::{RdpColorDepth, RdpPerformance, RdpSecurity, RdpSettings};
+
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("win-01")).await.unwrap();
+            assert_eq!(host.rdp, RdpSettings::default(), "新主机拿出厂连接配置");
+
+            let tuned = RdpSettings {
+                security: RdpSecurity::TlsOnly,
+                color_depth: RdpColorDepth::High16,
+                performance: RdpPerformance::Wan,
+                clipboard: false,
+                compression: false,
+                domain: "EXAMPLE".into(),
+            };
+            let mut edited = draft("win-01");
+            edited.kind = crate::host::HostKind::Rdp;
+            edited.rdp = tuned.clone();
+            service.update_host(&host.id, "分组", edited).await.unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].rdp, tuned);
+            assert_eq!(groups[0].hosts[0].kind, crate::host::HostKind::Rdp);
+
+            let copy = service.duplicate_host(&host.id).await.unwrap();
+            assert_eq!(copy.rdp, tuned, "副本连连接配置一并照抄");
         });
     }
 

@@ -11,6 +11,7 @@ mod host;
 mod i18n;
 mod monitor;
 mod proxy;
+mod rdp;
 mod repository;
 mod service;
 mod session;

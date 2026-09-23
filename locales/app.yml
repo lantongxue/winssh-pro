@@ -959,6 +959,107 @@ vnc.charset_latin1:
   en: Latin-1 (what RFC 6143 says)
   zh-CN: Latin-1（规范字面那一档）
 
+# ── RDP 会话（协议层与中心区那块远程桌面，见 src/rdp/） ──────────────────
+rdp.connecting:
+  en: Connecting to the RDP server…
+  zh-CN: 正在连接 RDP 服务器…
+rdp.waiting_frame:
+  en: Connected, waiting for the first frame…
+  zh-CN: 已连接，等待第一帧画面…
+rdp.disconnected:
+  en: The RDP session ended.
+  zh-CN: RDP 会话已结束。
+rdp.closed:
+  en: The session was closed.
+  zh-CN: 会话已关闭。
+rdp.session_ended:
+  en: "The RDP server ended the session: %{detail}"
+  zh-CN: RDP 服务器结束了会话：%{detail}
+rdp.access_denied:
+  en: "Login was denied: wrong user name or password, or this account is not allowed to sign in remotely."
+  zh-CN: 登录被拒绝：账号或密码不对，或者这个账号没有远程登录权限。
+rdp.auth_failed:
+  en: "RDP authentication failed: %{detail}"
+  zh-CN: RDP 认证失败：%{detail}
+rdp.negotiation_failed:
+  en: "RDP negotiation failed: %{detail}"
+  zh-CN: RDP 协商失败：%{detail}
+rdp.handshake_failed:
+  en: "RDP connection failed: %{detail}"
+  zh-CN: RDP 连接失败：%{detail}
+rdp.tls_failed:
+  en: "TLS handshake with %{host} failed."
+  zh-CN: 与 %{host} 的 TLS 握手失败。
+rdp.connect_failed:
+  en: "Cannot reach the RDP server %{host}:%{port}."
+  zh-CN: 连不上 RDP 服务器 %{host}:%{port}。
+rdp.connect_timeout:
+  en: "The RDP server %{host} did not finish connecting and authenticating in time."
+  zh-CN: RDP 服务器 %{host} 没有在时限内完成连接与认证。
+rdp.thread_crashed:
+  en: "The RDP session thread for %{host} stopped unexpectedly."
+  zh-CN: RDP 会话线程（%{host}）意外停止。
+rdp.proxy_misconfigured:
+  en: "Host %{host} has an incomplete proxy configuration: %{reason}"
+  zh-CN: 主机 %{host} 的代理配置不完整：%{reason}
+rdp.proxy_connect_failed:
+  en: "Cannot reach the RDP server %{host}:%{port} through proxy %{proxy}."
+  zh-CN: 经代理 %{proxy} 连不上 RDP 服务器 %{host}:%{port}。
+rdp.read_failed:
+  en: "Could not read from the RDP server: %{detail}"
+  zh-CN: 读取 RDP 数据失败：%{detail}
+rdp.write_failed:
+  en: "Could not send to the RDP server: %{detail}"
+  zh-CN: 发送 RDP 数据失败：%{detail}
+rdp.session_failed:
+  en: "RDP session error: %{detail}"
+  zh-CN: RDP 会话出错：%{detail}
+rdp.resize_failed:
+  en: "Could not ask the server for a new desktop size: %{detail}"
+  zh-CN: 请求改桌面尺寸失败：%{detail}
+rdp.clipboard_failed:
+  en: "RDP clipboard error: %{detail}"
+  zh-CN: RDP 剪贴板出错：%{detail}
+rdp.reconnect:
+  en: Reconnect
+  zh-CN: 重连
+rdp.reconnect_tooltip:
+  en: Close this session and dial the server again.
+  zh-CN: 结束当前会话，重新拨一次这台服务器。
+rdp.close_session:
+  en: Close desktop
+  zh-CN: 关闭桌面
+rdp.send_ctrl_alt_del:
+  en: Ctrl+Alt+Del
+  zh-CN: Ctrl+Alt+Del
+rdp.send_ctrl_alt_del_tooltip:
+  en: Send the secure attention sequence to the remote machine. The local system swallows that chord, so it has to go through this button.
+  zh-CN: 给远端发一次安全注意序列。这个组合会被本地系统吃掉，只能从这颗按钮走。
+rdp.security_auto:
+  en: Automatic (TLS + NLA)
+  zh-CN: 自动（TLS + NLA）
+rdp.security_tls:
+  en: TLS only (graphical login)
+  zh-CN: 仅 TLS（图形登录）
+rdp.security_nla:
+  en: NLA required
+  zh-CN: NLA 强制
+rdp.depth_true32:
+  en: True colour (32-bit)
+  zh-CN: 真彩（32 位）
+rdp.depth_high16:
+  en: High colour (16-bit)
+  zh-CN: 高彩（16 位）
+rdp.perf_lan:
+  en: LAN (all effects)
+  zh-CN: 局域网（全部动效）
+rdp.perf_balanced:
+  en: Balanced
+  zh-CN: 平衡
+rdp.perf_wan:
+  en: Narrow band (no wallpaper/themes)
+  zh-CN: 窄带（关壁纸/主题）
+
 # ── 主机表单（新建 / 编辑主机的对话框） ──────────────────────────────────
 host_form.title_new:
   en: New host
@@ -1071,6 +1172,39 @@ host_form.field_vnc_charset:
 host_form.vnc_hint:
   en: "High compression (Tight) only applies in 32-bit true colour; other depths fall back to Zrle. Exclusive disconnects viewers already on this desktop. The clipboard charset only matters for servers without the extended clipboard: RFB's plain cut text carries no charset, so a Windows server uses its own ANSI code page - pick GBK for a Simplified Chinese one if pasted Chinese comes out garbled."
   zh-CN: "高压缩（Tight）只在真彩 32 位下生效，其余深度自动落回 Zrle；独占会踢掉已在该桌面上的其他查看者。剪贴板字符集只对没有扩展剪贴板的服务器起作用：RFB 的经典正文不带字符集，Windows 上的服务器用的是它自己的 ANSI 代码页 —— 复制中文乱码时，简体中文那台点 GBK。"
+host_form.group_rdp:
+  en: RDP connection
+  zh-CN: RDP 连接
+host_form.field_rdp_security:
+  en: Security
+  zh-CN: 安全档
+host_form.field_rdp_depth:
+  en: Colour depth
+  zh-CN: 颜色深度
+host_form.field_rdp_performance:
+  en: Experience
+  zh-CN: 性能档
+host_form.field_rdp_clipboard:
+  en: Clipboard sync
+  zh-CN: 剪贴板同步
+host_form.field_rdp_compression:
+  en: Compression (MPPC)
+  zh-CN: 压缩（MPPC）
+host_form.field_rdp_domain:
+  en: Windows domain
+  zh-CN: Windows 域
+host_form.field_rdp_domain_placeholder:
+  en: Leave empty for a local account
+  zh-CN: 本地账号留空
+host_form.option_on:
+  en: "On"
+  zh-CN: 开
+host_form.option_off:
+  en: "Off"
+  zh-CN: 关
+host_form.rdp_hint:
+  en: "Automatic offers both TLS and NLA and lets the server pick; NLA required refuses servers without it. The certificate is not verified (same as the IronRDP default), so use this on networks you trust. Narrow band turns off wallpaper, themes and cursor shadows on the remote side."
+  zh-CN: "自动档同时报 TLS 与 NLA、由服务器挑；NLA 强制会拒绝不支持 NLA 的服务器。证书不验证（IronRDP 的出厂取舍），请在信得过的网络里用。窄带档会让远端关掉壁纸、主题与光标阴影。"
 host_form.field_key_content:
   en: Private key *
   zh-CN: 私钥 *

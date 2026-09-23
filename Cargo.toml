@@ -166,6 +166,38 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 # 本来就在依赖树里（reqwest 的 charset 一档拉的就是它），不多一行编译。
 encoding_rs = "0.8"
 
+# RDP（远程桌面）客户端。协议是 Microsoft 的 RDP，整套由 IronRDP 提供：
+# `ironrdp` 是那个门面 crate，把连接序列（connector）、会话状态机（session）、
+# 输入数据库（input）、剪贴板通道（cliprdr）、位图/指针处理（graphics, pdu）
+# 一起 re-export 出来，和 gpui-kit 是同一个门面思路。
+#
+# 门面里没有的两块要单独列：`ironrdp-tokio` 是把状态机套在 tokio 流上的
+# `Framed`/connect 助手（SSH 那边有 russh 代劳，RDP 这边没有），
+# `ironrdp-tls` 是 TLS 升级。铁律和 gpui 那条一样 —— 这几份必须来自同一批
+# 版本，各自的窄依赖（connector 0.10 / session 0.11 / pdu 0.9……）由它们自己
+# 对齐；`ironrdp` 门面把它们钉在同一版。
+#
+# TLS 后端选 rustls + aws-lc-rs：和 russh 的加密后端同一份 aws-lc-sys，
+# 不多编一套 C 库；`rustls` feature 是 `rustls-aws-lc-rs` 的简写。
+# cert 验证按上游默认关着（`ironrdp-tls` 的 rustls 后端写死
+# `NoCertificateVerification`，理由在那一份源码里，企业自签证书的 RDP
+# 服务器太常见），我们没有比它更严的口径，就没做一个假的"证书开关"。
+#
+# 没开 `client` feature（那会拖进 ironrdp-client 那个自带事件循环的引擎）：
+# 它的剪贴板在 Windows 上用 Win32 剪贴板、其余平台是 Stub，接不到 GPUI 的
+# 剪贴板；而且它每帧把整张图再转一遍 u32。我们自己驱动状态机（照
+# `src/rdp/session.rs` 的模块文档），剪贴板走 `CliprdrBackend` 桥到 GPUI，
+# 和 VNC 那条路是一个形状。
+#
+# 不开任何 feature 时门面连 pdu/core 都没有，所以 core 与 pdu 要点名带上；
+# `displaycontrol` 是动态改分辨率那条 DVC（窗口拖大拖小用）。
+ironrdp = { version = "0.17", default-features = false, features = ["core", "pdu", "connector", "session", "input", "cliprdr", "graphics", "dvc", "svc", "displaycontrol"] }
+# `reqwest` 这一档给 CredSSP 里的 KDC 请求（Kerberos 那条路）备一个
+# `NetworkClient` 实现；NTLM 走不到它，但错误必须在编译期就有个答案。
+# reqwest 本来就在依赖树里（rig 的 HTTP 后端），这里只多开它一个 feature。
+ironrdp-tokio = { version = "0.10", features = ["reqwest"] }
+ironrdp-tls = { version = "0.2", features = ["rustls"] }
+
 # russh 的默认加密后端 aws-lc-rs 会用 C + 汇编编译 aws-lc-sys；在 x86_64 Windows 上
 # 它的汇编要靠 NASM 汇编，本机没有 nasm.exe 时 build 脚本直接 panic。开启
 # `prebuilt-nasm` 让 aws-lc-sys 使用 crate 里随附的预汇编 .obj，构建机就不必再装 NASM。
@@ -197,8 +229,28 @@ flate2 = "1"
 #
 # 想挪成 `refs/` 那种子模块 fork 也容易：把那份目录推成一个仓库，这里改指
 # `{ git = "…" }` 就行 —— 布局是照着那条路留的。
+#
+# 后面三处是同一场冲突（IronRDP 的 RustCrypto 预发布版 vs russh 的稳定版）的
+# 三个落点，各自逐字来自 crates.io 的对应版本，逐文件改动清单见各自的
+# PATCHES.md：
+#
+# - `vendor/ironrdp-connector`（0.10.0）只把 picky 的 default features 关掉。
+#   它的 default 里 jose 会把 aes-gcm 钉在 `=0.11.0-rc.4`，而本 crate 只用到
+#   不受 feature 门控的 `picky::key`；关掉之后这份 picky 与 sspi 早已在用的
+#   那一份（同样 default-features = false）完全一致，也少编一堆 JOSE 代码。
+# - `vendor/picky`（7.0.0-rc.25）把 16 条 RustCrypto 预发布精确锁放到稳定版
+#   （curve25519-dalek、p256/p384/p521、ed25519-dalek、ecdsa、primeorder…）。
+#   这批 crate 在图上必须只有一份，而 russh 要的是稳定版。
+# - `vendor/sspi`（0.21.3）同理，放的是 sspi 自己那份锁（六条）。
+#
+# 没有稳定版可换的三条（rsa 0.10.0-rc.18、pkcs1 0.8.0-rc.4、
+# rustcrypto-ff/group/ff_derive 0.14.0-rc.x）在 picky/sspi 的补丁里只去掉
+# `=`，保留预发布版本号 —— russh 那条链不用它们，图上只有这一份。
 [patch.crates-io]
 vnc-rs = { path = "vendor/vnc-rs" }
+ironrdp-connector = { path = "vendor/ironrdp-connector" }
+picky = { path = "vendor/picky" }
+sspi = { path = "vendor/sspi" }
 
 # 依赖全部按发布级优化编译。gpui 与 alacritty_terminal 是每一帧真正在跑的代码，
 # dev 默认的 opt-level=0 会让它们慢出一个数量级 —— 界面卡、CPU 占用高，多半就是

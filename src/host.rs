@@ -7,8 +7,8 @@
 use gpui_kit::SharedString;
 use rust_i18n::t;
 
-/// 连接类型。一台主机要么是一条 SSH，要么是一个 VNC 桌面，落库时存为
-/// 字符串（`ssh` / `vnc`），读回时按小写匹配。
+/// 连接类型。一台主机要么是一条 SSH，要么是一个 VNC 桌面，要么是一个 RDP
+/// 远程桌面，落库时存为字符串（`ssh` / `vnc` / `rdp`），读回时按小写匹配。
 ///
 /// 和 [`AuthMethod`] 一样：界面上的下拉按下标折回枚举，不拿那行字反查。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -16,15 +16,17 @@ pub enum HostKind {
     #[default]
     Ssh,
     Vnc,
+    Rdp,
 }
 
 impl HostKind {
-    pub const ALL: [Self; 2] = [Self::Ssh, Self::Vnc];
+    pub const ALL: [Self; 3] = [Self::Ssh, Self::Vnc, Self::Rdp];
 
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Ssh => "ssh",
             Self::Vnc => "vnc",
+            Self::Rdp => "rdp",
         }
     }
 
@@ -33,15 +35,17 @@ impl HostKind {
         match self {
             Self::Ssh => "SSH".into(),
             Self::Vnc => "VNC".into(),
+            Self::Rdp => "RDP".into(),
         }
     }
 
-    /// 这一档的惯例端口：SSH 22，VNC 5900。[`crate::host::Host::address`]
+    /// 这一档的惯例端口：SSH 22，VNC 5900，RDP 3389。[`crate::host::Host::address`]
     /// 拿它决定要不要省略端口，表单拿它做换档时的默认值。
     pub fn default_port(&self) -> u16 {
         match self {
             Self::Ssh => 22,
             Self::Vnc => 5900,
+            Self::Rdp => 3389,
         }
     }
 
@@ -61,8 +65,15 @@ impl HostKind {
     pub fn from_str_or_default(raw: &str) -> Self {
         match raw.trim().to_lowercase().as_str() {
             "vnc" => Self::Vnc,
+            "rdp" => Self::Rdp,
             _ => Self::Ssh,
         }
+    }
+
+    /// 这一档是不是远程桌面（画面 + 键鼠的那一类）。界面有几处按这个分叉
+    /// （会话卡片上的说法、菜单文案），不是"哪个协议"的分叉。
+    pub fn is_remote_desktop(&self) -> bool {
+        matches!(self, Self::Vnc | Self::Rdp)
     }
 }
 
@@ -234,8 +245,13 @@ pub struct Host {
     /// VNC 的画质配置。见 [`crate::vnc::VncSettings`]。
     ///
     /// 同样进 [`HostDraft`]：它只在 [`HostKind::Vnc`] 的连接里有意义，和代理
-    /// 一样是"怎么连"的事；SSH 主机的这一份原样存着但没人读。
+    /// 一样是"怎么连"的事；SSH / RDP 主机的这一份原样存着但没人读。
     pub vnc: crate::vnc::VncSettings,
+    /// RDP 的连接配置。见 [`crate::rdp::RdpSettings`]。
+    ///
+    /// 同样进 [`HostDraft`]：它只在 [`HostKind::Rdp`] 的连接里有意义；
+    /// 别的协议主机这一份原样存着但没人读。
+    pub rdp: crate::rdp::RdpSettings,
     /// 每次连上这台机器，要不要往对端 shell 里装一份 OSC 133 标记。
     ///
     /// 不进 [`HostDraft`]：和采集节奏、转发规则一样，它是连上之后在命令历史
@@ -298,6 +314,8 @@ pub struct HostDraft {
     pub proxy: crate::proxy::HostProxy,
     /// VNC 画质设置，见 [`Host::vnc`]。
     pub vnc: crate::vnc::VncSettings,
+    /// RDP 连接设置，见 [`Host::rdp`]。
+    pub rdp: crate::rdp::RdpSettings,
 }
 
 /// 一台主机的运行时状态。
@@ -355,6 +373,17 @@ mod tests {
         // 老库补出来的是 `ssh`；任何读不懂的值也按 SSH 处理，行为不变。
         assert_eq!(HostKind::from_str_or_default(""), HostKind::Ssh);
         assert_eq!(HostKind::from_str_or_default("VNC"), HostKind::Vnc);
+        assert_eq!(HostKind::from_str_or_default("RDP"), HostKind::Rdp);
+        assert_eq!(HostKind::from_str_or_default("rdp "), HostKind::Rdp);
+    }
+
+    /// 远程桌面那一档（VNC / RDP）与 SSH 的分叉点：界面拿它决定
+    /// "打开终端"还是"打开远程桌面"这类说法。
+    #[test]
+    fn remote_desktop_kinds_are_marked_as_such() {
+        assert!(!HostKind::Ssh.is_remote_desktop());
+        assert!(HostKind::Vnc.is_remote_desktop());
+        assert!(HostKind::Rdp.is_remote_desktop());
     }
 
     #[test]
@@ -377,6 +406,7 @@ mod tests {
             tags: Vec::new(),
             proxy: crate::proxy::HostProxy::default(),
             vnc: crate::vnc::VncSettings::default(),
+            rdp: crate::rdp::RdpSettings::default(),
             shell_integration: false,
         };
         assert_eq!(host.address(), "root@10.0.0.1");
@@ -386,6 +416,12 @@ mod tests {
         assert_eq!(host.address(), "root@10.0.0.1");
         host.port = 5901;
         assert_eq!(host.address(), "root@10.0.0.1:5901");
+
+        host.kind = HostKind::Rdp;
+        host.port = 3389;
+        assert_eq!(host.address(), "root@10.0.0.1");
+        host.port = 3390;
+        assert_eq!(host.address(), "root@10.0.0.1:3390");
     }
 
     #[test]

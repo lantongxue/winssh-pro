@@ -57,6 +57,10 @@ const CMD: &str = "ctrl";
 /// `key_context` 同一个名字。
 const VNC: &str = "VncPanel";
 
+/// RDP 面板的按键上下文，和 [`RdpPanel`](panels::RdpPanel) 里那句
+/// `key_context` 同一个名字。
+const RDP: &str = "RdpPanel";
+
 /// 注册主窗口的快捷键与初始外观，必须在 `gpui_kit::init` 之后调用。
 pub fn init(cx: &mut App) {
     theme::appearance::init(cx);
@@ -75,7 +79,7 @@ pub fn init(cx: &mut App) {
 /// 后来者居上。末尾那批 `VncPanel` 的 `NoAction` 压的就是前面这些，
 /// 以及 `gpui_kit::init` 更早注册的那些（`Root` 的 tab / 复制）。
 fn bindings() -> Vec<KeyBinding> {
-    vec![
+    let mut bindings = vec![
         KeyBinding::new(&format!("{CMD}-k"), ToggleCommandPalette, None),
         KeyBinding::new(&format!("{CMD}-b"), ToggleSidebar, None),
         KeyBinding::new(&format!("{CMD}-,"), OpenSettingsWindow, None),
@@ -133,13 +137,13 @@ fn bindings() -> Vec<KeyBinding> {
         // action 默认停掉传播，所以按下去只粘贴一次，不会顺带再送一个
         // 转义序列给对端。裸 Insert 不受影响，照旧是 `\x1b[2~`。
         KeyBinding::new("shift-insert", PasteClipboard, Some("Terminal")),
-        // ── VNC 面板：键盘归对端 ───────────────────────────────────────────
+        // ── 远端桌面面板（VNC / RDP）：键盘归对端 ─────────────────────────
         //
         // 远端桌面上 Tab、Ctrl+W、Ctrl+K 都是**人家的**键位，被本地快捷键截走
         // 就等于这些键在远端永远按不出来。GPUI 先派按键绑定、再走 `on_key_down`
-        //（见 `Window::dispatch_key_event`），所以拦是拦不住的 —— 只能在
-        // `VncPanel` 上下文里把它们绑成 `NoAction`：一条 `NoAction` 会压掉同一
-        // 下按键上排名不如它的绑定，绑定没派出去，这一下就顺势落到面板的
+        //（见 `Window::dispatch_key_event`），所以拦是拦不住的 —— 只能在面板
+        // 上下文里把它们绑成 `NoAction`：一条 `NoAction` 会压掉同一下按键上
+        // 排名不如它的绑定，绑定没派出去，这一下就顺势落到面板的
         // `on_key_down` 里送给对端。同深度按注册顺序算，所以这批要摆在最后，
         // 既压得住上面那些全局键，也压得住 `Root` 的 tab / 复制。
         //
@@ -151,26 +155,34 @@ fn bindings() -> Vec<KeyBinding> {
         //
         // 压不住的只有 macOS 原生菜单那几颗（⌘Q / ⌘H / ⌘M）：AppKit 在事件进
         // 窗口之前就吃掉了，keymap 管不着。
-        KeyBinding::new("tab", NoAction, Some(VNC)),
-        KeyBinding::new("shift-tab", NoAction, Some(VNC)),
-        KeyBinding::new("alt-3", NoAction, Some(VNC)),
-        KeyBinding::new("alt-4", NoAction, Some(VNC)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new(&format!("{CMD}-c"), NoAction, Some(VNC)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new(&format!("{CMD}-k"), NoAction, Some(VNC)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new(&format!("{CMD}-b"), NoAction, Some(VNC)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new(&format!("{CMD}-w"), NoAction, Some(VNC)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new(&format!("{CMD}-,"), NoAction, Some(VNC)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-c", NoAction, Some(VNC)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-v", NoAction, Some(VNC)),
-    ]
-}
+    ];
+
+    // VNC 与 RDP 两扇窗是同一套规矩，两个上下文各绑一份。
+    for context in [VNC, RDP] {
+        bindings.extend([
+            KeyBinding::new("tab", NoAction, Some(context)),
+            KeyBinding::new("shift-tab", NoAction, Some(context)),
+            KeyBinding::new("alt-3", NoAction, Some(context)),
+            KeyBinding::new("alt-4", NoAction, Some(context)),
+            #[cfg(not(target_os = "macos"))]
+            KeyBinding::new(&format!("{CMD}-c"), NoAction, Some(context)),
+            #[cfg(not(target_os = "macos"))]
+            KeyBinding::new(&format!("{CMD}-k"), NoAction, Some(context)),
+            #[cfg(not(target_os = "macos"))]
+            KeyBinding::new(&format!("{CMD}-b"), NoAction, Some(context)),
+            #[cfg(not(target_os = "macos"))]
+            KeyBinding::new(&format!("{CMD}-w"), NoAction, Some(context)),
+            #[cfg(not(target_os = "macos"))]
+            KeyBinding::new(&format!("{CMD}-,"), NoAction, Some(context)),
+            #[cfg(not(target_os = "macos"))]
+            KeyBinding::new("ctrl-shift-c", NoAction, Some(context)),
+            #[cfg(not(target_os = "macos"))]
+            KeyBinding::new("ctrl-shift-v", NoAction, Some(context)),
+        ]);
+    }
+
+    bindings
+    }
 
 #[cfg(test)]
 mod tests {
@@ -217,6 +229,14 @@ mod tests {
         assert!(dispatch(&["Root"], "tab").is_some());
     }
 
+    /// RDP 面板是同一套规矩：这些键都是远端的。
+    #[test]
+    fn the_rdp_panel_keeps_the_same_keys_for_the_remote_desktop() {
+        assert_eq!(dispatch(&["Root", "RdpPanel"], "tab"), None);
+        assert_eq!(dispatch(&["Root", "RdpPanel"], "alt-3"), None);
+        assert_eq!(dispatch(&["Root", "RdpPanel"], "alt-4"), None);
+    }
+
     /// 本仓库自己的全局快捷键在 VNC 面板里让开，别处一个不少。
     #[test]
     fn the_vnc_panel_hands_the_stolen_chords_back() {
@@ -231,6 +251,19 @@ mod tests {
         // 连 `Root` 的复制一起让开；macOS 的 ⌘ 那一档留给本地。
         let closes_panel = dispatch(&["Root", "VncPanel"], &format!("{CMD}-w"));
         let copies = dispatch(&["Root", "VncPanel"], &format!("{CMD}-c"));
+        if cfg!(target_os = "macos") {
+            assert_eq!(closes_panel.as_deref(), Some(ClosePanel.name()));
+        } else {
+            assert_eq!(closes_panel, None);
+            assert_eq!(copies, None);
+        }
+    }
+
+    /// RDP 面板把同一批 ⌃ 组合也让开（非 macOS 上就是那一档）。
+    #[test]
+    fn the_rdp_panel_hands_the_stolen_chords_back() {
+        let closes_panel = dispatch(&["Root", "RdpPanel"], &format!("{CMD}-w"));
+        let copies = dispatch(&["Root", "RdpPanel"], &format!("{CMD}-c"));
         if cfg!(target_os = "macos") {
             assert_eq!(closes_panel.as_deref(), Some(ClosePanel.name()));
         } else {

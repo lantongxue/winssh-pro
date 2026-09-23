@@ -46,7 +46,7 @@ use crate::{
     ui::{
         cards::{HOST_CARD_HEIGHT, HostCard},
         menus::HostAction,
-        panels::{SessionEvent, TerminalPanel, VncPanel},
+        panels::{RdpPanel, SessionEvent, TerminalPanel, VncPanel},
         theme::{AppIcon, palette},
         windows::HostFormWindow,
     },
@@ -142,11 +142,12 @@ struct TrackedSession {
     panel: TrackedPanel,
 }
 
-/// 名册能数得出来的那两种会话窗。一台主机是什么类型，开出来的就是哪一种
+/// 名册能数得出来的那三种会话窗。一台主机是什么类型，开出来的就是哪一种
 /// （见 [`HostExplorerView::open_host`]）。
 enum TrackedPanel {
     Terminal(WeakEntity<TerminalPanel>),
     Vnc(WeakEntity<VncPanel>),
+    Rdp(WeakEntity<RdpPanel>),
 }
 
 impl TrackedPanel {
@@ -156,6 +157,7 @@ impl TrackedPanel {
         match self {
             Self::Terminal(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive(cx)),
             Self::Vnc(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
+            Self::Rdp(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
         }
     }
 
@@ -164,6 +166,7 @@ impl TrackedPanel {
         match self {
             Self::Terminal(panel) => panel.upgrade().is_some(),
             Self::Vnc(panel) => panel.upgrade().is_some(),
+            Self::Rdp(panel) => panel.upgrade().is_some(),
         }
     }
 
@@ -171,6 +174,7 @@ impl TrackedPanel {
         match self {
             Self::Terminal(panel) => panel.entity_id(),
             Self::Vnc(panel) => panel.entity_id(),
+            Self::Rdp(panel) => panel.entity_id(),
         }
     }
 }
@@ -436,7 +440,7 @@ impl HostExplorerView {
         self.recent.insert(0, host.id.clone());
         self.recent.truncate(RECENT_LIMIT);
 
-        // 主机的类型决定开哪一扇会话窗：SSH 进终端，VNC 进远端桌面。
+        // 主机的类型决定开哪一扇会话窗：SSH 进终端，VNC / RDP 各进自己的远端桌面。
         let panel = match host.kind {
             HostKind::Ssh => {
                 let panel = TerminalPanel::new(
@@ -446,13 +450,19 @@ impl HostExplorerView {
                     window,
                     cx,
                 );
-                self.track_session(host.id.clone(), &panel, window, cx);
+                self.track_panel(host.id.clone(), &panel, TrackedPanel::Terminal, window, cx);
                 panel_handle(panel)
             }
             HostKind::Vnc => {
                 let panel =
                     VncPanel::new(host.clone(), self.dock_area.clone(), window, cx);
-                self.track_vnc_session(host.id.clone(), &panel, window, cx);
+                self.track_panel(host.id.clone(), &panel, TrackedPanel::Vnc, window, cx);
+                panel_handle(panel)
+            }
+            HostKind::Rdp => {
+                let panel =
+                    RdpPanel::new(host.clone(), self.dock_area.clone(), window, cx);
+                self.track_panel(host.id.clone(), &panel, TrackedPanel::Rdp, window, cx);
                 panel_handle(panel)
             }
         };
@@ -463,7 +473,7 @@ impl HostExplorerView {
         self.rebuild_rows(cx);
     }
 
-    /// 把新开的会话记进名册，并盯着它的存亡。
+    /// 把一扇会话窗记进名册，并盯着它的存亡。
     ///
     /// 卡片上那颗会话点不是"开过就亮"：连着才亮，断了、关了就回到默认色。
     /// 断和关这两件事都由标签页自己报（[`SessionEvent`]），这里只做两件事 ——
@@ -473,16 +483,22 @@ impl HostExplorerView {
     /// 那一下绕过了这个视图直接落库。手上这份 `groups` 是快照，听见
     /// [`SessionEvent::HostChanged`] 就得回库里重读一份，不然下次从列表里
     /// 开会话，带过去的还是开关扳之前的那份主机。
-    fn track_session(
+    ///
+    /// `wrap` 是"这扇窗在名册上算哪一种"：终端、VNC、RDP 三个实体类型都在
+    /// 这里落成 [`TrackedPanel`]，订阅与清理只写一遍。
+    fn track_panel<P>(
         &mut self,
         host: SharedString,
-        panel: &Entity<TerminalPanel>,
+        panel: &Entity<P>,
+        wrap: fn(WeakEntity<P>) -> TrackedPanel,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) where
+        P: EventEmitter<SessionEvent> + 'static,
+    {
         self.sessions.push(TrackedSession {
             host,
-            panel: TrackedPanel::Terminal(panel.downgrade()),
+            panel: wrap(panel.downgrade()),
         });
 
         cx.subscribe_in(
@@ -495,32 +511,7 @@ impl HostExplorerView {
         .detach();
     }
 
-    /// 照一台 VNC 主机开出来的那条桌面会话：入名册、盯存亡。和
-    /// [`Self::track_session`] 是同一件事，只是实体换了类型 —— 名册上那颗
-    /// 点不分终端还是桌面。
-    fn track_vnc_session(
-        &mut self,
-        host: SharedString,
-        panel: &Entity<VncPanel>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.sessions.push(TrackedSession {
-            host,
-            panel: TrackedPanel::Vnc(panel.downgrade()),
-        });
-
-        cx.subscribe_in(
-            panel,
-            window,
-            |this, panel, event: &SessionEvent, window, cx| {
-                this.on_session_event(panel.entity_id(), event, window, cx)
-            },
-        )
-        .detach();
-    }
-
-    /// 名册上的一条会话报上来的那件事怎么处置。终端与 VNC 两路共用这一份。
+    /// 名册上的一条会话报上来的那件事怎么处置。三种会话窗共用这一份。
     fn on_session_event(
         &mut self,
         closed: gpui_kit::EntityId,
@@ -1451,6 +1442,7 @@ mod tests {
     fn sample_host(name: &str, hostname: &str, tags: Vec<&str>) -> Host {
         Host {
             vnc: Default::default(),
+            rdp: Default::default(),
             id: name.into(),
             name: name.into(),
             kind: HostKind::Ssh,

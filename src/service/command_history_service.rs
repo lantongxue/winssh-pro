@@ -153,6 +153,7 @@ mod tests {
                 "默认分组",
                 HostDraft {
                     vnc: Default::default(),
+                    rdp: Default::default(),
                     kind: crate::host::HostKind::Ssh,
                     name: "测试机".into(),
                     user: "root".into(),

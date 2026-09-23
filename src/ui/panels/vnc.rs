@@ -11,7 +11,7 @@
 //!
 //! 区别也全在中间那一块：终端是"给我一块地方我按格子铺"，VNC 是"对端给了
 //! 一张位图，我把它等比缩进这块地方" —— 尺寸换算与焦点归本面板，画面本身归
-//! [`VncFrameElement`](crate::ui::elements::VncFrameElement)。
+//! [`FrameElement`](crate::ui::elements::FrameElement)。
 //!
 //! **输入没有本地语义**：这里不存在选区、搜索、滚动回卷 —— 每一次击键、
 //! 每一段指针移动都原样（翻成 keysym 和按钮掩码之后）送给对端。所以焦点
@@ -67,7 +67,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::{
     host::Host,
     ui::{
-        elements::VncFrameElement,
+        elements::FrameElement,
         panels::SessionEvent,
         theme::{AppIcon, palette},
     },
@@ -122,7 +122,7 @@ pub struct VncPanel {
     image: Option<Arc<RenderImage>>,
     /// 桌面分辨率，从最近一帧的图像尺寸读出。信息栏那一格用它。
     resolution: Option<(u16, u16)>,
-    /// 画面这一帧真正落在窗口里的矩形，由 [`VncFrameElement`] 回报；
+    /// 画面这一帧真正落在窗口里的矩形，由 [`FrameElement`] 回报；
     /// 指针换算是它和图像尺寸之间的一次除法（见 [`Self::remote_point`]）。
     display: Rc<Cell<Option<gpui_kit::Bounds<Pixels>>>>,
     /// 此刻按着的 RFB 按钮掩码。松手事件丢了（拖出窗外）时会被下一次
@@ -746,7 +746,7 @@ impl VncPanel {
                 .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
                 .on_mouse_move(cx.listener(Self::on_mouse_move))
                 .on_scroll_wheel(cx.listener(Self::on_scroll))
-                .child(VncFrameElement::new(image, self.display.clone())),
+                .child(FrameElement::new(image, self.display.clone())),
         )
     }
 }

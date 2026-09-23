@@ -902,6 +902,7 @@ mod tests {
     fn host_at(addr: SocketAddr) -> Host {
         Host {
             vnc: Default::default(),
+            rdp: Default::default(),
             id: "desk".into(),
             name: "desk".into(),
             kind: HostKind::Vnc,
