@@ -192,8 +192,6 @@ encoding_rs = "0.8"
 # 不开任何 feature 时门面连 pdu/core 都没有，所以 core 与 pdu 要点名带上；
 # `displaycontrol` 是动态改分辨率那条 DVC（窗口拖大拖小用）。
 ironrdp = { version = "0.17", default-features = false, features = ["core", "pdu", "connector", "session", "input", "cliprdr", "graphics", "dvc", "svc", "displaycontrol"] }
-# 反激活后要重建 FastPath 的 MPPC 解压器；首次激活由 ironrdp-session 建。
-ironrdp-bulk = "0.1.1"
 # `reqwest` 这一档给 CredSSP 里的 KDC 请求（Kerberos 那条路）备一个
 # `NetworkClient` 实现；NTLM 走不到它，但错误必须在编译期就有个答案。
 # reqwest 本来就在依赖树里（rig 的 HTTP 后端），这里只多开它一个 feature。
@@ -209,6 +207,8 @@ ironrdp-tls = { version = "0.2", features = ["rustls"] }
 aws-lc-rs = { version = "1.16.2", features = ["prebuilt-nasm"] }
 
 [dev-dependencies]
+# 构造跨分辨率切换的连续 MPPC 数据，验证重新激活不会丢失压缩历史。
+ironrdp-bulk = "0.1.1"
 # 让界面能在无窗口的测试里真的画一遍（`TestAppContext` + `window.draw`）。
 # 有些错只在完整的 layout/prepaint/paint 走完之后才暴露 —— 比如元素树自己
 # 套自己，编译期看不出来，跑起来是栈溢出。门面 crate 的 `test-support` 转开的就是

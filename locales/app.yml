@@ -901,6 +901,9 @@ vnc.close_session:
 desktop_scale.settings:
   en: Display settings
   zh-CN: 画面设置
+desktop_session.fullscreen:
+  en: Full screen
+  zh-CN: 全屏
 desktop_scale.adaptive:
   en: Fit window
   zh-CN: 自适应

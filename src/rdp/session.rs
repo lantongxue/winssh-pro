@@ -50,11 +50,14 @@ use image::{Frame, RgbaImage};
 use ironrdp::cliprdr::backend::ClipboardMessage;
 use ironrdp::cliprdr::pdu::{ClipboardFormat, ClipboardFormatId};
 use ironrdp::cliprdr::{Cliprdr, CliprdrClient};
-use ironrdp::connector::connection_activation::ConnectionActivationState;
-use ironrdp::connector::{
-    ClientConnector, ConnectionResult, ConnectorError, ConnectorErrorKind, Credentials, ServerName,
+use ironrdp::connector::connection_activation::{
+    ConnectionActivationSequence, ConnectionActivationState,
 };
-use ironrdp::core::WriteBuf;
+use ironrdp::connector::{
+    ClientConnector, ConnectionResult, ConnectorError, ConnectorErrorKind, Credentials,
+    DesktopSize, Sequence as _, ServerName,
+};
+use ironrdp::core::{ReadCursor, WriteBuf, decode, decode_cursor};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp::dvc::DrdynvcClient;
@@ -64,14 +67,16 @@ use ironrdp::input::{Database, Operation};
 use ironrdp::pdu::gcc::KeyboardType;
 use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabilities};
 use ironrdp::pdu::rdp::client_info::{CompressionType, TimezoneInfo};
+use ironrdp::pdu::rdp::headers::{ShareControlHeader, ShareControlPdu, ShareDataPdu};
+use ironrdp::pdu::{Action, mcs, x224::X224};
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason};
-use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
+use ironrdp::session::{
+    ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason,
+};
 use ironrdp_tls::upgrade as tls_upgrade;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{
-    FramedWrite, TokioFramed, connect_begin, connect_finalize, mark_as_upgraded, single_sequence_step_read,
-    split_tokio_framed,
+    FramedWrite, TokioFramed, connect_begin, connect_finalize, mark_as_upgraded, split_tokio_framed,
 };
 use rust_i18n::t;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -249,7 +254,15 @@ fn session_thread(parts: SessionParts) {
             }
             Ok(Ok((framed, connection_result))) => {
                 let _ = result_tx.send(Ok(()));
-                run(framed, connection_result, input_rx, clipboard_rx, events_tx, local).await;
+                run(
+                    framed,
+                    connection_result,
+                    input_rx,
+                    clipboard_rx,
+                    events_tx,
+                    local,
+                )
+                .await;
             }
         }
     });
@@ -273,15 +286,17 @@ async fn open(
     local: LocalClipboard,
 ) -> Result<(UpgradedFramed, ConnectionResult)> {
     let stream = transport::dial(&host).await?;
-    let client_addr = stream
-        .local_addr()
-        .with_context(|| t!("rdp.connect_failed", host => host.hostname, port => host.port).to_string())?;
+    let client_addr = stream.local_addr().with_context(|| {
+        t!("rdp.connect_failed", host => host.hostname, port => host.port).to_string()
+    })?;
 
     let mut framed = TokioFramed::new(stream);
-    let mut connector = ClientConnector::new(connector_config(&host, desktop, &settings), client_addr);
+    let mut connector =
+        ClientConnector::new(connector_config(&host, desktop, &settings), client_addr);
 
     // 动态通道：DisplayControl 是"改分辨率"那条（窗口拖大拖小时用）。
-    let drdynvc = DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
+    let drdynvc =
+        DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
     connector = connector.with_static_channel(drdynvc);
 
     if settings.clipboard {
@@ -322,7 +337,11 @@ async fn open(
 }
 
 /// 一台主机的 IronRDP 连接参数。
-fn connector_config(host: &Host, desktop: (u16, u16), settings: &RdpSettings) -> ironrdp::connector::Config {
+fn connector_config(
+    host: &Host,
+    desktop: (u16, u16),
+    settings: &RdpSettings,
+) -> ironrdp::connector::Config {
     // 位图能力：色深按设置，lossy 与 RemoteFX 码流照 ironrdp-client 的默认来。
     let codecs = client_codecs_capabilities(&["remotefx"]).unwrap_or_default();
     let bitmap = ironrdp::connector::BitmapConfig {
@@ -433,7 +452,10 @@ async fn run(
     .await
     {
         Ok(reason) => reason,
-        Err(error) => SharedString::from(format!("{error:#}")),
+        Err(error) => {
+            log::error!("RDP 会话中断：{error:#}");
+            SharedString::from(format!("{error:#}"))
+        }
     };
     let _ = events_tx.send(RdpOutput::Disconnected(reason));
 }
@@ -453,6 +475,9 @@ async fn session_loop(
     let mut image = DecodedImage::new(PixelFormat::BgrX32, desktop.width, desktop.height);
     let activation_factory = connection_result.activation_factory;
     let compression_type = connection_result.compression_type;
+    let fastpath_share_id = connection_result.share_id;
+    let mut share_id = fastpath_share_id;
+    let enable_server_pointer = connection_result.enable_server_pointer;
 
     let mut active_stage = ActiveStageBuilder {
         static_channels: connection_result.static_channels,
@@ -472,17 +497,79 @@ async fn session_loop(
     // 剪贴板通道关了就把它从 select 里摘掉（`recv()` 在关闭的通道上会立刻
     // 返回 `None`，继续挂着就是忙轮询）。它只在会话整条收摊时才会关。
     let clipboard_open = AtomicBool::new(true);
+    let mut activation: Option<ConnectionActivationSequence> = None;
+    let mut activation_buf = WriteBuf::new();
 
     let reason = 'outer: loop {
+        // 重激活仍走同一条读包循环。read_by_hint 会丢弃夹在握手里的 FastPath，
+        // 既漏帧又丢压缩历史；静态通道消息也不能塞给只认识握手的 Sequence。
+        while let Some(sequence) = activation.as_mut() {
+            if let ConnectionActivationState::Finalized { desktop_size, .. } =
+                sequence.connection_activation_state()
+            {
+                log::debug!(
+                    "RDP 桌面重新激活完成：{}×{}",
+                    desktop_size.width,
+                    desktop_size.height
+                );
+                activation = None;
+                break;
+            }
+            if sequence.next_pdu_hint().is_some() {
+                break;
+            }
+            activation_buf.clear();
+            let written = sequence
+                .step_no_input(&mut activation_buf)
+                .map_err(|error| {
+                    anyhow!("{}", t!("rdp.session_failed", detail => error.report()))
+                })?;
+            if written.size().is_some() {
+                writer
+                    .write_all(activation_buf.filled())
+                    .await
+                    .map_err(|error| anyhow!("{}", t!("rdp.write_failed", detail => error)))?;
+            }
+        }
         let outputs = tokio::select! {
             frame = reader.read_pdu() => {
                 let (action, payload) = frame
                     .map_err(|error| anyhow!("{}", t!("rdp.read_failed", detail => error)))?;
-                active_stage
-                    .process(&mut image, action, &payload)
-                    .map_err(|error| anyhow!("{}", t!("rdp.session_failed", detail => error)))?
+                if let Some(sequence) = activation.as_mut()
+                    && is_activation_frame(sequence, action, &payload)
+                {
+                    let exchanging_capabilities = matches!(
+                        sequence.connection_activation_state(),
+                        ConnectionActivationState::CapabilitiesExchange,
+                    );
+                    activation_buf.clear();
+                    let written = sequence.step(&payload, &mut activation_buf)
+                        .map_err(|error| anyhow!("{}", t!("rdp.session_failed", detail => error.report())))?;
+                    if exchanging_capabilities
+                        && let ConnectionActivationState::ConnectionFinalization {
+                            desktop_size, share_id: new_share_id, ..
+                        } = sequence.connection_activation_state()
+                    {
+                        // 发完 FontList 后服务器就可以发新尺寸的图形，不必等 FontMap。
+                        reactivate_desktop(
+                            &mut active_stage, &mut image, desktop_size,
+                            new_share_id, enable_server_pointer,
+                        );
+                        share_id = new_share_id;
+                    }
+                    if written.size().is_some() {
+                        vec![ActiveStageOutput::ResponseFrame(activation_buf.filled().to_vec())]
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    process_server_frame(
+                        &mut active_stage, &mut image, action, &payload,
+                        fastpath_share_id, share_id,
+                    )?
+                }
             }
-            input = input_rx.recv() => {
+            input = input_rx.recv(), if activation.is_none() => {
                 let Some(input) = input else {
                     // 面板走了：尽力优雅断开，把响应的帧写完就收摊。
                     if let Ok(outputs) = active_stage.graceful_shutdown() {
@@ -543,7 +630,7 @@ async fn session_loop(
                         .map_err(|error| anyhow!("{}", t!("rdp.session_failed", detail => error)))?,
                 }
             }
-            message = clipboard_message(clipboard_rx, &clipboard_open) => {
+            message = clipboard_message(clipboard_rx, &clipboard_open), if activation.is_none() => {
                 let Some(message) = message else {
                     clipboard_open.store(false, Ordering::Relaxed);
                     continue;
@@ -581,7 +668,7 @@ async fn session_loop(
                     Vec::new()
                 }
             }
-            _ = cleanup_interval.tick() => {
+            _ = cleanup_interval.tick(), if activation.is_none() => {
                 // 让 CLIPRDR 把过期的锁收掉。
                 match active_stage.get_svc_processor_mut::<CliprdrClient>() {
                     Some(client) => match client.drive_timeouts() {
@@ -631,51 +718,16 @@ async fn session_loop(
                     let _ = events_tx.send(RdpOutput::PointerDefault);
                 }
                 ActiveStageOutput::DeactivateAll => {
-                    // 反激活-再激活序列：服务器要改桌面尺寸/重置会话时走这一趟。
-                    // 照 ironrdp-client 的写法，序列跑完用新的尺寸重建画面缓冲。
-                    let mut activation = activation_factory.create();
-                    let mut buf = WriteBuf::new();
-                    'activation: loop {
-                        let written = single_sequence_step_read(&mut reader, &mut activation, &mut buf)
-                            .await
-                            .map_err(|error| anyhow!("{}", t!("rdp.session_failed", detail => error)))?;
-                        if written.size().is_some() {
-                            writer
-                                .write_all(buf.filled())
-                                .await
-                                .map_err(|error| anyhow!("{}", t!("rdp.write_failed", detail => error)))?;
-                        }
-                        if let ConnectionActivationState::Finalized {
-                            desktop_size,
-                            share_id,
-                            enable_server_pointer,
-                            pointer_software_rendering,
-                        } = activation.connection_activation_state()
-                        {
-                            image = DecodedImage::new(PixelFormat::BgrX32, desktop_size.width, desktop_size.height);
-                            active_stage.set_fastpath_processor(
-                                ironrdp::session::fast_path::ProcessorBuilder {
-                                    io_channel_id: activation.io_channel_id(),
-                                    user_channel_id: activation.user_channel_id(),
-                                    share_id,
-                                    enable_server_pointer,
-                                    pointer_software_rendering,
-                                    bulk_decompressor: reactivation_decompressor(
-                                        compression_type,
-                                    )?,
-                                }
-                                .build(),
-                            );
-                            active_stage.set_share_id(share_id);
-                            active_stage.set_enable_server_pointer(enable_server_pointer);
-                            break 'activation;
-                        }
-                    }
+                    log::debug!("RDP 桌面开始重新激活");
+                    activation = Some(activation_factory.create());
                 }
                 // UDP 传输没实现：不理会，会话继续走 TCP。
                 ActiveStageOutput::MultitransportRequest(_) => {}
                 ActiveStageOutput::AutoDetect(_) => {}
-                ActiveStageOutput::Terminate(reason) => break 'outer disconnect_reason(&reason),
+                ActiveStageOutput::Terminate(reason) => {
+                    log::info!("RDP 会话结束：{}", reason.description());
+                    break 'outer disconnect_reason(&reason);
+                }
             }
         }
     };
@@ -683,23 +735,92 @@ async fn session_loop(
     Ok(reason)
 }
 
-/// 首次激活由 `ActiveStageBuilder` 建解压器；桌面重新激活会换掉整个
-/// FastPath 处理器，也必须照原先协商的类型给新处理器一份新解压状态。
-fn reactivation_decompressor(
-    compression_type: Option<CompressionType>,
-) -> Result<Option<BulkCompressor>> {
-    compression_type
-        .map(|compression_type| {
-            let level = match compression_type {
-                CompressionType::K8 => BulkCompressionType::Rdp4,
-                CompressionType::K64 => BulkCompressionType::Rdp5,
-                CompressionType::Rdp6 => BulkCompressionType::Rdp6,
-                CompressionType::Rdp61 => BulkCompressionType::Rdp61,
-            };
-            BulkCompressor::new(level)
-                .map_err(|error| anyhow!("{}", t!("rdp.session_failed", detail => error)))
-        })
-        .transpose()
+/// 只把当前阶段的握手消息交给激活序列；图形、光标、剪贴板以及断开通知
+/// 继续交给 ActiveStage。这里匹配失败不吞包，普通会话处理器仍会校验它。
+fn is_activation_frame(
+    sequence: &ConnectionActivationSequence,
+    action: Action,
+    payload: &[u8],
+) -> bool {
+    if action != Action::X224 {
+        return false;
+    }
+    let Ok(context) = mcs::decode_send_data_indication(payload) else {
+        return false;
+    };
+    if context.channel_id != sequence.io_channel_id() {
+        return false;
+    }
+    let Ok(context) = ironrdp::pdu::rdp::headers::decode_share_control(context) else {
+        return false;
+    };
+    match sequence.connection_activation_state() {
+        ConnectionActivationState::CapabilitiesExchange => matches!(
+            context.pdu,
+            ShareControlPdu::ServerDemandActive(_) | ShareControlPdu::ServerDeactivateAll(_)
+        ),
+        ConnectionActivationState::ConnectionFinalization { .. } => matches!(
+            context.pdu,
+            ShareControlPdu::Data(data) if matches!(data.share_data_pdu,
+                ShareDataPdu::Synchronize(_) | ShareDataPdu::Control(_) |
+                ShareDataPdu::FontMap(_) | ShareDataPdu::ServerSetErrorInfo(_)
+            )
+        ),
+        _ => false,
+    }
+}
+
+/// 分辨率改变没有新建传输连接。MPPC 的历史由服务器包里的 FLUSHED / AT_FRONT
+/// 标志维护；单方清零会把后续的历史引用解成零字节（包括光标尺寸和图形数据）。
+/// 同样保留光标缓存，服务器随后仍可能发送 CachedPointer。
+fn reactivate_desktop(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    desktop: DesktopSize,
+    share_id: u32,
+    enable_server_pointer: bool,
+) {
+    *image = DecodedImage::new(PixelFormat::BgrX32, desktop.width, desktop.height);
+    active_stage.set_share_id(share_id);
+    active_stage.set_enable_server_pointer(enable_server_pointer);
+}
+
+fn process_server_frame(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    action: Action,
+    payload: &[u8],
+    fastpath_share_id: u32,
+    share_id: u32,
+) -> Result<Vec<ActiveStageOutput>> {
+    let mut outputs = active_stage
+        .process(image, action, payload)
+        .map_err(|error| anyhow!("{}", t!("rdp.session_failed", detail => error.report())))?;
+
+    // IronRDP 的 set_share_id 只更新 X224 处理器。保留 FastPath 处理器后，
+    // 它生成的帧确认还带首次激活的 share ID；服务器换 ID 时按公开编解码 API
+    // 重封装确认。常见的 ID 不变路径没有额外解析或分配。
+    if action == Action::FastPath && fastpath_share_id != share_id {
+        for output in &mut outputs {
+            if let ActiveStageOutput::ResponseFrame(frame) = output {
+                let mut input = ReadCursor::new(frame);
+                let mut rewritten = WriteBuf::new();
+                while !input.is_empty() {
+                    let request = decode_cursor::<X224<mcs::SendDataRequest<'_>>>(&mut input)?.0;
+                    let mut header = decode::<ShareControlHeader>(&request.user_data)?;
+                    header.share_id = share_id;
+                    mcs::encode_send_data_request(
+                        request.initiator_id,
+                        request.channel_id,
+                        &header,
+                        &mut rewritten,
+                    )?;
+                }
+                *frame = rewritten.into_inner();
+            }
+        }
+    }
+    Ok(outputs)
 }
 
 /// 剪贴板回程消息的下一次投递。
@@ -729,7 +850,10 @@ fn render_image(image: &DecodedImage) -> Option<Arc<RenderImage>> {
 
 /// 服务器主动断开时，把原因翻成人话。
 fn disconnect_reason(reason: &GracefulDisconnectReason) -> SharedString {
-    SharedString::from(format!("{}", t!("rdp.session_ended", detail => reason.description())))
+    SharedString::from(format!(
+        "{}",
+        t!("rdp.session_ended", detail => reason.description())
+    ))
 }
 
 /// 指针位图（`Accelerated` 档）是 RGBA，GPUI 要 BGRA —— 换一次序。
@@ -751,21 +875,437 @@ pub fn pointer_to_render_image(pointer: &DecodedPointer) -> Option<Arc<RenderIma
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ironrdp::core::encode_vec;
+    use ironrdp::pdu::fast_path::{
+        EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode,
+    };
+    use ironrdp::pdu::pointer::{CachedPointerAttribute, ColorPointerAttribute, Point16};
+    use ironrdp::pdu::rdp::headers::{CompressionFlags, ShareControlPdu, ShareDataPdu};
+    use ironrdp::pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
+    use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
+
+    const INITIAL_SHARE_ID: u32 = 0x10000;
+
+    fn active_stage() -> ActiveStage {
+        ActiveStageBuilder {
+            static_channels: Default::default(),
+            io_channel_id: 1003,
+            user_channel_id: 1001,
+            message_channel_id: None,
+            share_id: INITIAL_SHARE_ID,
+            compression_type: Some(CompressionType::K64),
+            enable_server_pointer: true,
+            pointer_software_rendering: false,
+        }
+        .build()
+    }
+
+    fn fastpath_frame(update: FastPathUpdatePdu<'_>) -> Vec<u8> {
+        let update = encode_vec(&update).unwrap();
+        let mut frame =
+            encode_vec(&FastPathHeader::new(EncryptionFlags::empty(), update.len())).unwrap();
+        frame.extend(update);
+        frame
+    }
+
+    fn uncompressed_frame(code: UpdateCode, data: &[u8]) -> Vec<u8> {
+        fastpath_frame(FastPathUpdatePdu {
+            fragmentation: Fragmentation::Single,
+            update_code: code,
+            compression_flags: None,
+            compression_type: None,
+            data,
+        })
+    }
+
+    fn compressed_pointer(sender: &mut BulkCompressor) -> Vec<u8> {
+        let data = encode_vec(&ColorPointerAttribute {
+            cache_index: 0,
+            hot_spot: Point16 { x: 0, y: 0 },
+            width: 16,
+            height: 16,
+            xor_mask: &[0x7f; 16 * 16 * 3],
+            and_mask: &[0; 16 * 2],
+        })
+        .unwrap();
+        let (size, flags) = sender.compress(&data).unwrap();
+        assert_ne!(flags & ironrdp_bulk::flags::PACKET_COMPRESSED, 0);
+        fastpath_frame(FastPathUpdatePdu {
+            fragmentation: Fragmentation::Single,
+            update_code: UpdateCode::ColorPointer,
+            compression_flags: Some(CompressionFlags::from_bits_retain(flags as u8 & 0xe0)),
+            compression_type: Some(CompressionType::K64),
+            data: sender.compressed_data(size),
+        })
+    }
 
     #[test]
-    fn reactivation_recreates_the_negotiated_bulk_decompressor() {
-        assert!(reactivation_decompressor(None).unwrap().is_none());
-        for (negotiated, expected) in [
-            (CompressionType::K8, BulkCompressionType::Rdp4),
-            (CompressionType::K64, BulkCompressionType::Rdp5),
-            (CompressionType::Rdp6, BulkCompressionType::Rdp6),
-            (CompressionType::Rdp61, BulkCompressionType::Rdp61),
-        ] {
-            let decompressor = reactivation_decompressor(Some(negotiated))
-                .unwrap()
-                .expect("compression was negotiated");
-            assert_eq!(decompressor.compression_level(), expected);
+    fn compressed_pointer_after_resize_still_decodes() {
+        let mut sender = BulkCompressor::new(BulkCompressionType::Rdp5).unwrap();
+        let mut image = DecodedImage::new(PixelFormat::BgrX32, 640, 480);
+        let mut receiver = active_stage();
+        for round in 0..4 {
+            let share_id = INITIAL_SHARE_ID + round;
+            if round > 0 {
+                reactivate_desktop(
+                    &mut receiver,
+                    &mut image,
+                    DesktopSize {
+                        width: 1920,
+                        height: 1080,
+                    },
+                    share_id,
+                    true,
+                );
+                assert_eq!((image.width(), image.height()), (1920, 1080));
+            }
+            let updates = process_server_frame(
+                &mut receiver,
+                &mut image,
+                Action::FastPath,
+                &compressed_pointer(&mut sender),
+                INITIAL_SHARE_ID,
+                share_id,
+            )
+            .unwrap();
+            assert!(
+                updates.iter().any(|update| matches!(
+                    update,
+                    ActiveStageOutput::PointerBitmap(pointer)
+                        if pointer.width == 16 && pointer.height == 16
+                )),
+                "pointer lost in round {round}: {updates:?}"
+            );
         }
+    }
+
+    #[test]
+    fn cached_pointer_survives_reactivation() {
+        let mut sender = BulkCompressor::new(BulkCompressionType::Rdp5).unwrap();
+        let mut receiver = active_stage();
+        let mut image = DecodedImage::new(PixelFormat::BgrX32, 640, 480);
+        receiver
+            .process(
+                &mut image,
+                Action::FastPath,
+                &compressed_pointer(&mut sender),
+            )
+            .unwrap();
+        reactivate_desktop(
+            &mut receiver,
+            &mut image,
+            DesktopSize {
+                width: 1920,
+                height: 1080,
+            },
+            INITIAL_SHARE_ID,
+            true,
+        );
+        let cached = encode_vec(&CachedPointerAttribute { cache_index: 0 }).unwrap();
+        let updates = receiver
+            .process(
+                &mut image,
+                Action::FastPath,
+                &uncompressed_frame(UpdateCode::CachedPointer, &cached),
+            )
+            .unwrap();
+        assert!(
+            updates
+                .iter()
+                .any(|update| matches!(update, ActiveStageOutput::PointerBitmap(_)))
+        );
+    }
+
+    #[test]
+    fn frame_acknowledgements_use_the_reactivated_share_id() {
+        let mut receiver = active_stage();
+        let mut image = DecodedImage::new(PixelFormat::BgrX32, 640, 480);
+        let mut markers = Vec::new();
+        for id in [7, 8] {
+            markers.extend(
+                encode_vec(&SurfaceCommand::FrameMarker(FrameMarkerPdu {
+                    frame_action: FrameAction::End,
+                    frame_id: Some(id),
+                }))
+                .unwrap(),
+            );
+        }
+        // ID 不变、改变、又恢复原值三条路径；一个 FastPath 响应可包含多个确认。
+        for share_id in [INITIAL_SHARE_ID, INITIAL_SHARE_ID + 1, INITIAL_SHARE_ID] {
+            reactivate_desktop(
+                &mut receiver,
+                &mut image,
+                DesktopSize {
+                    width: 1920,
+                    height: 1080,
+                },
+                share_id,
+                true,
+            );
+            let outputs = process_server_frame(
+                &mut receiver,
+                &mut image,
+                Action::FastPath,
+                &uncompressed_frame(UpdateCode::SurfaceCommands, &markers),
+                INITIAL_SHARE_ID,
+                share_id,
+            )
+            .unwrap();
+            let mut ids = Vec::new();
+            for output in outputs {
+                if let ActiveStageOutput::ResponseFrame(frame) = output {
+                    let mut input = ReadCursor::new(&frame);
+                    while !input.is_empty() {
+                        let request = decode_cursor::<X224<mcs::SendDataRequest<'_>>>(&mut input)
+                            .unwrap()
+                            .0;
+                        assert_eq!((request.initiator_id, request.channel_id), (1001, 1003));
+                        let header = decode::<ShareControlHeader>(&request.user_data).unwrap();
+                        assert_eq!(header.share_id, share_id);
+                        let ShareControlPdu::Data(data) = header.share_control_pdu else {
+                            panic!("expected share data")
+                        };
+                        let ShareDataPdu::FrameAcknowledge(ack) = data.share_data_pdu else {
+                            panic!("expected frame acknowledgement")
+                        };
+                        ids.push(ack.frame_id);
+                    }
+                }
+            }
+            assert_eq!(ids, [7, 8]);
+        }
+    }
+
+    #[test]
+    fn an_invalid_pointer_does_not_end_the_session() {
+        let mut receiver = active_stage();
+        let mut image = DecodedImage::new(PixelFormat::BgrX32, 640, 480);
+        // 合法长度的属性头，但高度为零，正是 lengthAndMask 的那条警告。
+        let invalid = uncompressed_frame(UpdateCode::ColorPointer, &[0; 15]);
+        receiver
+            .process(&mut image, Action::FastPath, &invalid)
+            .unwrap();
+        let outputs = receiver
+            .process(
+                &mut image,
+                Action::FastPath,
+                &uncompressed_frame(UpdateCode::DefaultPointer, &[]),
+            )
+            .unwrap();
+        assert!(
+            outputs
+                .iter()
+                .any(|output| matches!(output, ActiveStageOutput::PointerDefault))
+        );
+    }
+
+    /// 真正驱动会话循环：重新激活前、握手中、握手后的压缩包共用一本历史。
+    /// 在 FontMap 之前发新桌面的帧，确认既不丢包，也不会在完成握手时清掉画面。
+    #[tokio::test]
+    async fn reactivation_keeps_processing_interleaved_updates() {
+        use ironrdp::connector::connection_activation::ConnectionActivationFactory;
+        use ironrdp::pdu::rdp::capability_sets::{
+            Bitmap, BitmapDrawingFlags, CapabilitySet, DemandActive, ServerDemandActive,
+        };
+        use ironrdp::pdu::rdp::finalization_messages::FontPdu;
+        use ironrdp::pdu::rdp::headers::{ServerDeactivateAll, encode_share_data};
+        use ironrdp::pdu::rdp::server_error_info::{
+            ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu,
+        };
+        use std::borrow::Cow;
+
+        fn server_control(pdu: ShareControlPdu, share_id: u32) -> Vec<u8> {
+            let data = encode_vec(&ShareControlHeader {
+                share_control_pdu: pdu,
+                pdu_source: 1002,
+                share_id,
+            })
+            .unwrap();
+            encode_vec(&X224(mcs::SendDataIndication {
+                initiator_id: 1002,
+                channel_id: 1003,
+                user_data: Cow::Owned(data),
+            }))
+            .unwrap()
+        }
+
+        fn server_data(pdu: ShareDataPdu, share_id: u32) -> Vec<u8> {
+            let mut data = WriteBuf::new();
+            encode_share_data(1002, 1003, share_id, pdu, &mut data).unwrap();
+            let request = decode::<X224<mcs::SendDataRequest<'_>>>(data.filled())
+                .unwrap()
+                .0;
+            encode_vec(&X224(mcs::SendDataIndication {
+                initiator_id: 1002,
+                channel_id: 1003,
+                user_data: request.user_data,
+            }))
+            .unwrap()
+        }
+
+        let host = Host {
+            id: "test".into(),
+            name: "test".into(),
+            kind: crate::host::HostKind::Rdp,
+            user: "test".into(),
+            hostname: "localhost".into(),
+            port: 3389,
+            platform: "".into(),
+            auth_method: crate::host::AuthMethod::Password,
+            password: "".into(),
+            key_content: "".into(),
+            key_passphrase: "".into(),
+            jump_host_id: None,
+            monitor_intervals: Default::default(),
+            forwards: Vec::new(),
+            tags: Vec::new(),
+            proxy: Default::default(),
+            vnc: Default::default(),
+            rdp: Default::default(),
+            shell_integration: false,
+        };
+        let config = connector_config(&host, (640, 480), &host.rdp);
+        let connection = ConnectionResult {
+            io_channel_id: 1003,
+            user_channel_id: 1001,
+            message_channel_id: None,
+            share_id: INITIAL_SHARE_ID,
+            static_channels: Default::default(),
+            desktop_size: DesktopSize {
+                width: 640,
+                height: 480,
+            },
+            enable_server_pointer: true,
+            pointer_software_rendering: false,
+            activation_factory: ConnectionActivationFactory::new(config, 1003, 1001),
+            compression_type: Some(CompressionType::K64),
+        };
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let client: Box<dyn AsyncReadWrite + Unpin + Send + Sync> = Box::new(client);
+        let mut server = TokioFramed::new(server);
+        let (_inputs, mut input_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let mut clipboard_rx = None;
+        let local = Arc::new(Mutex::new(String::new()));
+        let session = session_loop(
+            TokioFramed::new(client),
+            connection,
+            &mut input_rx,
+            &mut clipboard_rx,
+            &events_tx,
+            local,
+        );
+        let peer = async move {
+            let mut compressor = BulkCompressor::new(BulkCompressionType::Rdp5).unwrap();
+            server
+                .write_all(&compressed_pointer(&mut compressor))
+                .await
+                .unwrap();
+            server
+                .write_all(&server_control(
+                    ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll),
+                    INITIAL_SHARE_ID,
+                ))
+                .await
+                .unwrap();
+            // 即使夹在 DeactivateAll 与 DemandActive 中间，也不能用 read_by_hint 丢掉。
+            server
+                .write_all(&compressed_pointer(&mut compressor))
+                .await
+                .unwrap();
+            let new_share_id = INITIAL_SHARE_ID + 1;
+            server
+                .write_all(&server_control(
+                    ShareControlPdu::ServerDemandActive(ServerDemandActive {
+                        pdu: DemandActive {
+                            source_descriptor: "test".into(),
+                            capability_sets: vec![CapabilitySet::Bitmap(Bitmap {
+                                pref_bits_per_pix: 32,
+                                desktop_width: 1920,
+                                desktop_height: 1080,
+                                desktop_resize_flag: true,
+                                drawing_flags: BitmapDrawingFlags::empty(),
+                            })],
+                        },
+                    }),
+                    new_share_id,
+                ))
+                .await
+                .unwrap();
+            // ConfirmActive、Synchronize、Control×2、FontList。
+            for _ in 0..5 {
+                let (action, _) = server.read_pdu().await.unwrap();
+                assert_eq!(action, Action::X224);
+            }
+            server
+                .write_all(&compressed_pointer(&mut compressor))
+                .await
+                .unwrap();
+            let marker = encode_vec(&SurfaceCommand::FrameMarker(FrameMarkerPdu {
+                frame_action: FrameAction::End,
+                frame_id: Some(9),
+            }))
+            .unwrap();
+            server
+                .write_all(&uncompressed_frame(UpdateCode::SurfaceCommands, &marker))
+                .await
+                .unwrap();
+            let (_, ack) = server.read_pdu().await.unwrap();
+            let ack = decode::<X224<mcs::SendDataRequest<'_>>>(&ack).unwrap().0;
+            assert_eq!(
+                decode::<ShareControlHeader>(&ack.user_data)
+                    .unwrap()
+                    .share_id,
+                new_share_id
+            );
+
+            server
+                .write_all(&server_data(
+                    ShareDataPdu::FontMap(FontPdu::default()),
+                    new_share_id,
+                ))
+                .await
+                .unwrap();
+            server
+                .write_all(&compressed_pointer(&mut compressor))
+                .await
+                .unwrap();
+            server
+                .write_all(&server_data(
+                    ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
+                        ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::LogoffByUser),
+                    )),
+                    new_share_id,
+                ))
+                .await
+                .unwrap();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(session, peer)
+        })
+        .await
+        .expect("reactivation stalled");
+        result.expect("session must last until the server's explicit disconnect");
+        let mut pointers = 0;
+        let mut frames = 0;
+        while let Ok(event) = events_rx.try_recv() {
+            match event {
+                RdpOutput::PointerBitmap(pointer) => {
+                    assert_eq!((pointer.width, pointer.height), (16, 16));
+                    pointers += 1;
+                }
+                RdpOutput::Frame(image) => {
+                    assert_eq!(
+                        (image.size(0).width.0, image.size(0).height.0),
+                        (1920, 1080)
+                    );
+                    frames += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(pointers, 4);
+        assert_eq!(frames, 1);
     }
 
     #[test]

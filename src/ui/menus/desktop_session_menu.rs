@@ -26,6 +26,7 @@ pub enum DesktopSessionKind {
 #[derive(Clone, Copy)]
 pub enum DesktopSessionAction {
     Scale(DesktopScale),
+    ToggleFullscreen,
     Redraw,
     SecureAttention,
 }
@@ -49,6 +50,7 @@ pub struct DesktopSessionMenu {
     id: ElementId,
     kind: DesktopSessionKind,
     scale: DesktopScale,
+    fullscreen: bool,
     on_action: ActionHandler,
 }
 
@@ -57,12 +59,14 @@ impl DesktopSessionMenu {
         id: impl Into<ElementId>,
         kind: DesktopSessionKind,
         scale: DesktopScale,
+        fullscreen: bool,
         on_action: impl Fn(DesktopSessionAction, &mut Window, &mut App) + 'static,
     ) -> Self {
         Self {
             id: id.into(),
             kind,
             scale,
+            fullscreen,
             on_action: Rc::new(on_action),
         }
     }
@@ -72,6 +76,7 @@ impl RenderOnce for DesktopSessionMenu {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let kind = self.kind;
         let scale = self.scale;
+        let fullscreen = self.fullscreen;
         let on_action = self.on_action;
 
         Button::new(self.id)
@@ -112,8 +117,14 @@ impl RenderOnce for DesktopSessionMenu {
                         DesktopSessionAction::SecureAttention,
                     ),
                 };
-                menu.separator()
-                    .item(item(label, false, action, &on_action))
+                menu.item(item(
+                    t!("desktop_session.fullscreen"),
+                    fullscreen,
+                    DesktopSessionAction::ToggleFullscreen,
+                    &on_action,
+                ))
+                .separator()
+                .item(item(label, false, action, &on_action))
             })
     }
 }

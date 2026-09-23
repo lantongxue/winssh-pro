@@ -72,6 +72,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::{
     host::Host,
     ui::{
+        Workspace,
         elements::{
             DesktopScale, FrameElement, native_frame_size, remote_frame_point, scrollable_frame,
         },
@@ -617,7 +618,7 @@ fn remote_button(button: MouseButton, control_click: bool) -> MouseButton {
 /// 那一栏的每个动作（分屏、隧道、SFTP、监控、复制、清屏）都是 SSH 的事，
 /// VNC 一个都没有 —— 接满回调不如自己画一条只说"这是谁的桌面、多大"。
 impl VncPanel {
-    fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let alive = self.alive;
         let panel = cx.entity().downgrade();
         let status = match &self.phase {
@@ -672,9 +673,15 @@ impl VncPanel {
                 "vnc-panel-menu",
                 DesktopSessionKind::Vnc,
                 self.scale,
+                Workspace::desktop_fullscreen_for(cx.entity().entity_id(), window, cx),
                 move |action, window, cx| {
                     let _ = panel.update(cx, |this, cx| match action {
                         DesktopSessionAction::Scale(scale) => this.set_scale(scale, window, cx),
+                        DesktopSessionAction::ToggleFullscreen => {
+                            Workspace::toggle_desktop_fullscreen(cx.entity(), window, cx);
+                            cx.focus_self(window);
+                            cx.notify();
+                        }
                         DesktopSessionAction::Redraw => this.send(VncInput::Redraw),
                         DesktopSessionAction::SecureAttention => {}
                     });
@@ -843,7 +850,7 @@ impl Render for VncPanel {
             .flex()
             .flex_col()
             .bg(cx.theme().background)
-            .child(self.render_bar(cx))
+            .child(self.render_bar(window, cx))
             .child(self.render_canvas(window, cx))
     }
 }

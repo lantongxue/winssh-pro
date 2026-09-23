@@ -53,6 +53,7 @@ use crate::{
     host::Host,
     rdp::{RdpInput, RdpKeyboard, RdpOutput, RdpSession, pointer_to_render_image},
     ui::{
+        Workspace,
         elements::{
             DesktopScale, FrameElement, PointerOverlay, native_frame_size, remote_frame_point,
             scrollable_frame,
@@ -684,7 +685,7 @@ fn secure_attention_operations() -> Vec<Operation> {
 
 /// 信息栏。和 VNC 面板一样不复用 `SessionInfoBar`：那一栏的动作都是 SSH 的事。
 impl RdpPanel {
-    fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let alive = self.alive;
         let panel = cx.entity().downgrade();
         let status = match &self.phase {
@@ -739,9 +740,15 @@ impl RdpPanel {
                 "rdp-panel-menu",
                 DesktopSessionKind::Rdp,
                 self.scale,
+                Workspace::desktop_fullscreen_for(cx.entity().entity_id(), window, cx),
                 move |action, window, cx| {
                     let _ = panel.update(cx, |this, cx| match action {
                         DesktopSessionAction::Scale(scale) => this.set_scale(scale, window, cx),
+                        DesktopSessionAction::ToggleFullscreen => {
+                            Workspace::toggle_desktop_fullscreen(cx.entity(), window, cx);
+                            cx.focus_self(window);
+                            cx.notify();
+                        }
                         DesktopSessionAction::SecureAttention => this.send_secure_attention(),
                         DesktopSessionAction::Redraw => {}
                     });
@@ -914,7 +921,7 @@ impl Render for RdpPanel {
             .flex()
             .flex_col()
             .bg(cx.theme().background)
-            .child(self.render_bar(cx))
+            .child(self.render_bar(window, cx))
             .child(self.render_canvas(window, cx))
     }
 }

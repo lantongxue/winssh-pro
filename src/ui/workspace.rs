@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use gpui_fps::fps_monitor;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, ResizableState, Sizable as _, StyledExt as _, TitleBar,
+    ActiveTheme as _, Icon, ResizableState, Root, Sizable as _, StyledExt as _, TitleBar,
     WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{DockArea, DockLayout, DockPlacement, DockSkin, PanelStyle, panel_handle},
@@ -23,8 +23,8 @@ use gpui_kit::component::{
     resizable_panel,
 };
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render,
+    Anchor, AnyElement, AnyView, App, AppContext as _, Context, Entity, EntityId, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render,
     Styled as _, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 
@@ -107,6 +107,12 @@ pub struct Workspace {
     /// 侧边栏是否展开。收起时活动栏留在原处，右边整块让给 Dock。
     sidebar_open: bool,
     resizable_state: Entity<ResizableState>,
+    /// 当前独占窗口内容的远程桌面；Dock 布局仍留在原处，退出后原样呈现。
+    desktop_fullscreen: Option<AnyView>,
+    /// 进入时是否由我们把窗口切成原生全屏；退出时只撤销自己开启的状态。
+    desktop_fullscreen_owns_window: bool,
+    /// 至少观察到一次原生全屏，才能把后续的退出事件当成用户主动退出。
+    desktop_fullscreen_native_seen: bool,
     _skin: Rc<DockSkin>,
 }
 
@@ -118,6 +124,11 @@ impl Workspace {
         // 那一行上没有标签，也就没有关闭按钮，只开着一条会话时就关不掉了。
         skin.set_panel_style(PanelStyle::TabBar, cx);
         let resizable_state = cx.new(|_| ResizableState::default());
+
+        cx.observe_window_bounds(window, |this, window, cx| {
+            this.sync_desktop_fullscreen(window, cx);
+        })
+        .detach();
 
         // 主机服务先于一切要读它的界面打开。打不开就退回内存库：应用照常可用，
         // 但得等界面装配完（通知层就位）再告诉用户改动不会留存。
@@ -274,8 +285,77 @@ impl Workspace {
             view: SidebarView::Hosts,
             sidebar_open: true,
             resizable_state,
+            desktop_fullscreen: None,
+            desktop_fullscreen_owns_window: false,
+            desktop_fullscreen_native_seen: false,
             _skin: skin,
         }
+    }
+
+    fn in_window(window: &Window, cx: &App) -> Option<Entity<Self>> {
+        let root = window.root::<Root>().flatten()?;
+        root.read(cx).view().clone().downcast::<Self>().ok()
+    }
+
+    /// 系统全屏被窗口控件或操作系统撤销时，恢复原工作区。
+    fn sync_desktop_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.desktop_fullscreen.is_none() {
+            return;
+        }
+        if window.is_fullscreen() {
+            self.desktop_fullscreen_native_seen = true;
+        } else if self.desktop_fullscreen_native_seen {
+            self.desktop_fullscreen = None;
+            self.desktop_fullscreen_owns_window = false;
+            self.desktop_fullscreen_native_seen = false;
+            cx.notify();
+            window.refresh();
+        }
+    }
+
+    /// 菜单勾选项只表示这一条会话是否独占窗口，而不是窗口是否碰巧由系统全屏。
+    pub(crate) fn desktop_fullscreen_for(panel: EntityId, window: &Window, cx: &App) -> bool {
+        Self::in_window(window, cx).is_some_and(|workspace| {
+            workspace
+                .read(cx)
+                .desktop_fullscreen
+                .as_ref()
+                .is_some_and(|view| view.entity_id() == panel)
+        })
+    }
+
+    /// 远程桌面独占主窗口内容，原生全屏由同一次动作控制。Dock 不改布局。
+    pub(crate) fn toggle_desktop_fullscreen(
+        panel: impl Into<AnyView>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let Some(workspace) = Self::in_window(window, cx) else {
+            return;
+        };
+        let panel = panel.into();
+        workspace.update(cx, |this, cx| {
+            let same_panel = this
+                .desktop_fullscreen
+                .as_ref()
+                .is_some_and(|view| view.entity_id() == panel.entity_id());
+            if same_panel {
+                this.desktop_fullscreen = None;
+                if this.desktop_fullscreen_owns_window && window.is_fullscreen() {
+                    window.toggle_fullscreen();
+                }
+                this.desktop_fullscreen_owns_window = false;
+                this.desktop_fullscreen_native_seen = false;
+            } else {
+                this.desktop_fullscreen_owns_window = !window.is_fullscreen();
+                this.desktop_fullscreen_native_seen = window.is_fullscreen();
+                this.desktop_fullscreen = Some(panel);
+                if this.desktop_fullscreen_owns_window {
+                    window.toggle_fullscreen();
+                }
+            }
+            cx.notify();
+        });
     }
 
     /// 在一扇独立窗口里全屏打开保险箱；已经开着就把它叫到前面来。
@@ -469,9 +549,10 @@ impl Focusable for Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_desktop_fullscreen(window, cx);
         let show_fps = show_fps_monitor(cx);
 
-        div()
+        let shell = div()
             .id("workspace")
             .track_focus(&self.focus_handle)
             .relative()
@@ -491,7 +572,13 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|_, _: &Zoom, window, _cx| {
                 window.zoom_window();
-            }))
+            }));
+
+        if let Some(panel) = self.desktop_fullscreen.clone() {
+            return shell.child(panel).into_any_element();
+        }
+
+        shell
             .child(self.render_title_bar(window, cx))
             .child(
                 // 活动栏宽度固定，不参与拖拽，所以它在 resizable 之外；
@@ -550,5 +637,6 @@ impl Render for Workspace {
             .when(show_fps, |this| {
                 this.child(fps_monitor(window, cx).anchor(Anchor::BottomRight))
             })
-                }
+            .into_any_element()
+    }
 }
