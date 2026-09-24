@@ -12746,6 +12746,7 @@ dependencies = [
  "tokio-util",
  "vnc-rs",
  "winres",
+ "zmodem2",
 ]
 
 [[package]]
@@ -13269,6 +13270,17 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zmodem2"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2ac5e85856f619f7d6c15cbf915448147607f31d028f54b08a0a3ea7ff632e5"
+dependencies = [
+ "bitflags 2.13.2",
+ "hex",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "zune-core"

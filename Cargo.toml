@@ -68,6 +68,15 @@ gpui-fps = { path = "refs/gpui-kit/crates/fps", version = "0.6.0" }
 # `src/terminal/` 是照着 zed 的 `crates/terminal` + `crates/terminal_view`
 # 移植的，API 必须对得上。落到本地检出，不走网络克隆。
 alacritty_terminal = { path = "refs/alacritty/alacritty_terminal", version = "0.26.1-dev" }
+
+# 终端里的 rz/sz 文件收发（ZMODEM 协议）。`zmodem2` 是纯 Rust、零传递依赖的
+# caller-driven 状态机：`Sender`/`Receiver` 只吐动作（写线、读文件、写文件、
+# 事件），字节的进出全归我们 —— 正好把终端的入站流与 `Transport` 的出站
+# 接上。选它而不是 fork lrzsz：协议里 hex/bin16/bin32 三种头、ZDLE 转义、
+# CRC 回退、子包与回执这些细节，自己写一份等于把几十年的兼容性坑重踩一遍。
+# 0.7.2 支持手动接受文件（等用户决策期间不产线字节）与批量传输，见
+# `src/zmodem/session.rs`。
+zmodem2 = "0.7.2"
 futures = "0.3"
 async-trait = "0.1"
 log = "0.4"

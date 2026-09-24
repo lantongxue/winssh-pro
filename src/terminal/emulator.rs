@@ -25,7 +25,7 @@
 //! 都复用同一套：对终端来说，SSH 通道和本机 PTY 都只是一条双向字节流，
 //! 输入经 `Transport` 送往对端，输出经 `write_output` 喂回解析器。
 
-use std::{borrow::Cow, collections::HashMap, path::PathBuf, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 
 use alacritty_terminal::{
     event::{Event as AlacEvent, EventListener, Notify as _, WindowSize},
@@ -302,6 +302,14 @@ pub enum EmulatorEvent {
     /// 和标题一个路子：事件只说"有变化"，内容另取 —— 这个枚举是 `Copy` 的，
     /// 一条命令文本挂在上面就不是了，而它每帧都在被到处传。
     CommandRecorded,
+    /// 远端在等着 rz / sz 的交代：[`Emulator::zmodem_offer`] 现在有东西了。
+    ZmodemOffer,
+    /// 有几句要跟用户说的话（自动落盘时跳过的文件），用
+    /// [`Emulator::take_zmodem_notices`] 取。和命令历史同一个路子：事件是
+    /// `Copy` 的，话在别处排着队。
+    ZmodemNotice,
+    /// 一场 ZMODEM 收场了：[`Emulator::take_zmodem_outcome`] 拿终局。
+    ZmodemFinished,
 }
 
 /// 终端的字节源：要么是本机 PTY，要么是远端 SSH 通道，要么是远端 Telnet 会话。
@@ -310,6 +318,100 @@ enum Transport {
     Ssh(crate::ssh::SshBridge),
     Telnet(crate::telnet::TelnetBridge),
     None,
+}
+
+/// ZMODEM 会话在跑的时候，多久没有对端字节就当它没气了。
+///
+/// 上传时回执每 ≤64 KiB 就来一次，下载更是连着来 —— 一分钟没有一点动静，
+/// 那边基本已经不在了（进程被暂停、链路断了、`sz` 被 Ctrl+Z 了），拖着只是
+/// 让进度条停在原地。
+const ZMODEM_SILENT_GIVE_UP: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// 冷却期的基数：正常收场短一点（只需吞掉 `OO` 与尾随的换行），
+/// 取消/失败长一点（对端停手前已经在路上的字节更多）。
+const ZMODEM_COOLDOWN_DONE: std::time::Duration = std::time::Duration::from_millis(600);
+const ZMODEM_COOLDOWN_ABORT: std::time::Duration = std::time::Duration::from_millis(1500);
+/// 冷却期内还在来字节就顺延，但最多延到这儿。
+const ZMODEM_COOLDOWN_MAX: std::time::Duration = std::time::Duration::from_millis(3000);
+/// 冷却收尾要求的静默：最后一枚字节之后安安静静地过这么久，尾巴里
+/// 剩的才是"提示符"而不是"残渣中间的一截"。
+const ZMODEM_COOLDOWN_QUIET: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// 指纹扫描器扣住候选前缀之后的兜底放行时限：签名被网络切在两个 chunk
+/// 之间是常事（毫秒级接上），但下一段永远不来时不能把字节永远扣着。
+const ZMODEM_HOLD_RELEASE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// ZMODEM 状态机的驱动节拍：会话在跑时每拍推一轮、顺带处理
+/// 决策过期与冷却到期。一帧的预算里，250ms 一拍的重量可以忽略。
+const ZMODEM_TICK: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// 一次 `zmodem_drive` 里最多推几轮会话（每轮内部还有
+/// [`zmodem::session`] 的步数预算）。轮数到顶就挂一个 1ms 的续批任务，
+/// 让渲染帧插得进来。
+const ZMODEM_DRIVE_ROUNDS: usize = 4;
+
+/// ZMODEM 在这条终端上的挂载点。
+///
+/// 字节路由的四个态（与 `src/zmodem/` 的模块文档一一对应）：
+///
+/// - [`ZmodemState::Idle`]：嗅探器在扫签名，其余字节原样进屏幕；
+/// - [`ZmodemState::OfferSend`]：远端 `rz` 认出来了，等用户在弹窗上选文件
+///   —— 这段里对端重试的 `ZRINIT` 全吞；
+/// - [`ZmodemState::Run`]：会话在跑，入站字节都归它（接收侧等落点的那一段
+///   也不例外，那时状态机自己会停在手动接受上）；
+/// - [`ZmodemState::Cooldown`]：取消/收场之后的一小段，协议残渣不进屏幕，
+///   尾巴留到最后按文本判据放出来。
+struct ZmodemSlot {
+    /// Idle 态的签名扫描器。
+    scanner: crate::zmodem::Scanner,
+    state: ZmodemState,
+    /// 最近一次有远端字节到达（冷却顺延用它）。
+    last_inbound: Instant,
+    /// 远端 `rz` 等决策的开始时刻（决策过期的计时起点）。
+    offered_at: Option<Instant>,
+    /// 这一件提议已经报给界面过了，别重复弹窗。
+    offer_notified: bool,
+    /// 攒着要跟用户说的话，等界面来取。
+    notices: Vec<String>,
+    /// 已经收场、还没被界面取走的终局。
+    outcome: Option<crate::zmodem::Outcome>,
+    /// 续批任务已经挂上了没有（同一时间只挂一个）。
+    resume_armed: bool,
+    /// 兜底放行任务已经挂上了没有。
+    hold_release_armed: bool,
+    /// 节拍任务已经挂上了没有。
+    ticker_armed: bool,
+}
+
+impl ZmodemSlot {
+    fn new() -> Self {
+        Self {
+            scanner: crate::zmodem::Scanner::new(),
+            state: ZmodemState::Idle,
+            last_inbound: Instant::now(),
+            offered_at: None,
+            offer_notified: false,
+            notices: Vec::new(),
+            outcome: None,
+            resume_armed: false,
+            hold_release_armed: false,
+            ticker_armed: false,
+        }
+    }
+}
+
+enum ZmodemState {
+    Idle,
+    /// 远端 `rz` 在等选文件，会话还没建。
+    OfferSend,
+    Run(Box<crate::zmodem::Session>),
+    Cooldown {
+        /// 最早放行时刻（静默一久就顺延，不超过 `hard_until`）。
+        until: Instant,
+        /// 最晚放行时刻：字节一直来也要收手。
+        hard_until: Instant,
+        tail: crate::zmodem::CooledTail,
+    },
 }
 
 /// 一条终端（PTY 或 SSH）。
@@ -344,6 +446,12 @@ pub struct Emulator {
     _pump: Task<()>,
     /// SSH 输出转发任务（GPUI 侧）。丢掉它就停掉远端到本地的字节流。
     _ssh_forward: Option<Task<()>>,
+    /// ZMODEM 在这条终端上的挂载点（见 [`ZmodemSlot`]）。
+    zmodem: ZmodemSlot,
+    /// 仅测试：`Transport::None` 下 `transport_send` 送出的字节都落在这里，
+    /// 让协议方向在离线的用例里也验得出来。
+    #[cfg(test)]
+    sent_by_test: Vec<Vec<u8>>,
 }
 
 impl Emulator {
@@ -416,6 +524,9 @@ impl Emulator {
                 search: None,
                 scan_epoch: 0,
                 scan_armed: false,
+                zmodem: ZmodemSlot::new(),
+                #[cfg(test)]
+                sent_by_test: Vec::new(),
                 _pump: cx.spawn(async move |this, cx| pump(this, events_rx, cx).await),
                 _ssh_forward: None,
             };
@@ -467,6 +578,9 @@ impl Emulator {
                 search: None,
                 scan_epoch: 0,
                 scan_armed: false,
+                zmodem: ZmodemSlot::new(),
+                #[cfg(test)]
+                sent_by_test: Vec::new(),
                 _pump: cx.spawn(async move |this, cx| pump(this, events_rx, cx).await),
                 _ssh_forward: None,
             };
@@ -525,6 +639,9 @@ impl Emulator {
                 search: None,
                 scan_epoch: 0,
                 scan_armed: false,
+                zmodem: ZmodemSlot::new(),
+                #[cfg(test)]
+                sent_by_test: Vec::new(),
                 _pump: cx.spawn(async move |this, cx| pump(this, events_rx, cx).await),
                 _ssh_forward: None,
             };
@@ -569,6 +686,9 @@ impl Emulator {
                 search: None,
                 scan_epoch: 0,
                 scan_armed: false,
+                zmodem: ZmodemSlot::new(),
+                #[cfg(test)]
+                sent_by_test: Vec::new(),
                 _pump: cx.spawn(async move |this, cx| pump(this, events_rx, cx).await),
                 _ssh_forward: None,
             };
@@ -655,6 +775,18 @@ impl Emulator {
     /// 那一刻 —— 这时候读到的光标才是对的。一口气扫完再读，读到的是这一整段
     /// 画完之后的样子，`B` 记下的列和 `C` 圈出的行就都错位了。
     pub fn write_output(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        // ZMODEM 是第一道关：认出手就是协议的路（字节不进屏幕），冷却期还要
+        // 把协议残渣挡掉。见 [`ZmodemSlot`] 与 `src/zmodem/`。
+        let terminal = self.zmodem_intake(bytes, cx);
+        if !terminal.is_empty() {
+            self.write_terminal(&terminal, cx);
+        }
+        self.zmodem_drive(cx);
+        self.refresh(cx);
+    }
+
+    /// 把一段字节喂给屏幕与标记扫描器（[`Emulator::write_output`] 的终端那半）。
+    fn write_terminal(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
         let recorded = feed(
             bytes,
             &self.term,
@@ -666,7 +798,6 @@ impl Emulator {
         if recorded {
             cx.emit(EmulatorEvent::CommandRecorded);
         }
-        self.refresh(cx);
     }
 
     /// 取走已经认出来的那几条命令，清空队列。
@@ -676,6 +807,11 @@ impl Emulator {
 
     /// 往对端写一段字节：PTY 时走 PTY，SSH / Telnet 时走各自的桥。
     pub fn input(&mut self, bytes: impl Into<Cow<'static, [u8]>>, cx: &mut Context<Self>) {
+        // ZMODEM 占着这条终端的时候，键盘与粘贴都不往对端送：那边在跑协议，
+        // 插进去的字节会把它搅乱。要停它，只有进度条上那颗"取消"。
+        if self.zmodem_busy() {
+            return;
+        }
         // 有输入就意味着用户在跟最新的输出打交道：跳回底部，并撤掉选中
         // —— 那一段的位置是按当前视图记的，滚过之后就不是原来那一段了。
         self.clear_selection();
@@ -706,6 +842,16 @@ impl Emulator {
     }
 
     fn send_bytes(&mut self, bytes: Vec<u8>) {
+        // ZMODEM 占着终端时这些一律不发：对端在跑 `rz`/`sz`，没有谁在等
+        // 鼠标位置。协议自己的出站不走这里，见 [`Self::transport_send`]。
+        if self.zmodem_busy() {
+            return;
+        }
+        self.transport_send(bytes);
+    }
+
+    /// 往对端写一段字节（不做 ZMODEM 挂起检查）。
+    fn transport_send(&mut self, bytes: Vec<u8>) {
         match &self.transport {
             Transport::Pty(pty) => pty.notify(bytes),
             Transport::Ssh(bridge) => {
@@ -714,8 +860,472 @@ impl Emulator {
             Transport::Telnet(bridge) => {
                 let _ = bridge.input_tx.send(bytes);
             }
-            Transport::None => {}
+            Transport::None => {
+                // 占位终端没有对端；测试拿它当"收件箱"验协议方向。
+                #[cfg(test)]
+                self.sent_by_test.push(bytes);
+            }
         }
+    }
+
+    /// ZMODEM 是不是正占着这条终端（有会话在跑，或者在等用户决策）。
+    fn zmodem_busy(&self) -> bool {
+        matches!(
+            self.zmodem.state,
+            ZmodemState::OfferSend | ZmodemState::Run(_)
+        )
+    }
+
+    // ─── ZMODEM（rz / sz）────────────────────────────────────────────────────
+
+    /// 远端字节进屏幕前的第一道关。返回该进屏幕的那一段。
+    ///
+    /// 四个态各自的路由见 [`ZmodemSlot`]；Idle 态里签名扫到一半的候选
+    /// 前缀会被扣住，扣住时挂一个兜底（[`Self::zmodem_flush_hold`]），
+    /// 免得下一段永远不来时那几个字节永远不见天日。
+    fn zmodem_intake<'a>(&mut self, bytes: &'a [u8], cx: &mut Context<Self>) -> Cow<'a, [u8]> {
+        self.zmodem.last_inbound = Instant::now();
+        match &self.zmodem.state {
+            ZmodemState::Idle => {}
+            // 等用户选文件：对端重试的 ZRINIT 全吞。
+            ZmodemState::OfferSend => return Cow::Borrowed(&[]),
+            // 会话在跑：入站字节都归它。
+            ZmodemState::Run(_) => {
+                if let ZmodemState::Run(session) = &mut self.zmodem.state {
+                    session.feed(bytes);
+                }
+                return Cow::Borrowed(&[]);
+            }
+            // 冷却：全吞，尾巴留着；字节还在来就顺延，不超过硬顶。
+            ZmodemState::Cooldown { .. } => {
+                let now = Instant::now();
+                if let ZmodemState::Cooldown {
+                    tail,
+                    until,
+                    hard_until,
+                } = &mut self.zmodem.state
+                {
+                    tail.swallow(bytes);
+                    *until = (now + ZMODEM_COOLDOWN_QUIET).min(*hard_until).max(*until);
+                }
+                return Cow::Borrowed(&[]);
+            }
+        }
+
+        if !crate::zmodem::config::enabled() {
+            return Cow::Borrowed(bytes);
+        }
+        let routed = self.zmodem.scanner.route(bytes);
+        if self.zmodem.scanner.has_hold() {
+            self.zmodem_arm_hold_release(cx);
+        }
+        if let Some(trigger) = routed.trigger {
+            self.zmodem_open(trigger, cx);
+        }
+        routed.terminal
+    }
+
+    /// 认出一枚握手：接收（远端 `sz`）当场建会话，发送（远端 `rz`）先摆
+    /// 提议等用户选文件。
+    fn zmodem_open(&mut self, trigger: crate::zmodem::Trigger, cx: &mut Context<Self>) {
+        self.zmodem.offer_notified = false;
+        self.zmodem.offered_at = None;
+        match trigger.kind {
+            crate::zmodem::TriggerKind::Receive => {
+                // 会话当场建：它会把 `ZRINIT` 排上，对端收到才会把 `ZFILE`
+                // （文件名与大小）送过来 —— 弹窗与自动落盘都靠它。
+                match crate::zmodem::Session::receive(&trigger.bytes) {
+                    Ok(session) => {
+                        self.zmodem.state = ZmodemState::Run(Box::new(session));
+                        self.zmodem_arm_ticker(cx);
+                    }
+                    Err(error) => log::warn!("ZMODEM 接收会话建不起来：{error:#}"),
+                }
+            }
+            crate::zmodem::TriggerKind::Send => {
+                self.zmodem.state = ZmodemState::OfferSend;
+                self.zmodem.offered_at = Some(Instant::now());
+                self.zmodem.offer_notified = true;
+                self.zmodem_arm_ticker(cx);
+                cx.emit(EmulatorEvent::ZmodemOffer);
+            }
+        }
+    }
+
+    /// 推一轮 ZMODEM：把会话的线字节送出去、把协议往前推、处理提议与终局。
+    ///
+    /// 轮数用完就挂一个 1ms 的续批任务 —— 上传是自驱泵（不等入站字节也要
+    /// 接着读文件），不能让一次调用把一帧占死。
+    fn zmodem_drive(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.zmodem.state, ZmodemState::Run(_)) {
+            return;
+        }
+        // 把会话从槽里取出来推进，推完再放回去 —— 免得隔着枚举借用 self。
+        let ZmodemState::Run(mut session) =
+            std::mem::replace(&mut self.zmodem.state, ZmodemState::Idle)
+        else {
+            unreachable!("刚检查过是 Run");
+        };
+
+        let out = session.take_out();
+        if !out.is_empty() {
+            self.transport_send(out);
+        }
+
+        let mut resume = false;
+        for round in 0..ZMODEM_DRIVE_ROUNDS {
+            let more = session.step();
+            let out = session.take_out();
+            if !out.is_empty() {
+                self.transport_send(out);
+            }
+            self.zmodem_handle_offer(&mut session, cx);
+            let notices = session.take_warnings();
+            if !notices.is_empty() {
+                self.zmodem.notices.extend(notices);
+                cx.emit(EmulatorEvent::ZmodemNotice);
+            }
+            if session.outcome().is_some() {
+                break;
+            }
+            if !more {
+                break;
+            }
+            if round + 1 == ZMODEM_DRIVE_ROUNDS {
+                resume = true;
+            }
+        }
+
+        match session.outcome().cloned() {
+            Some(outcome) => {
+                // 收场：剩下的入站字节进冷却（`OO`、尾随换行、报错行都在这
+                // 一段里淌完），终局挂着等界面来取。
+                let leftover = session.take_leftover();
+                let base = match outcome {
+                    crate::zmodem::Outcome::Completed { .. } => ZMODEM_COOLDOWN_DONE,
+                    _ => ZMODEM_COOLDOWN_ABORT,
+                };
+                self.zmodem_enter_cooldown(&leftover, base);
+                self.zmodem.outcome = Some(outcome);
+                self.zmodem.offer_notified = false;
+                self.zmodem.offered_at = None;
+                cx.emit(EmulatorEvent::ZmodemFinished);
+            }
+            None => {
+                self.zmodem.state = ZmodemState::Run(session);
+                if resume {
+                    self.zmodem_arm_resume(cx);
+                }
+            }
+        }
+    }
+
+    /// 会话摆出了提议（接收侧文件宣布了）：自动模式直接落默认目录，
+    /// 否则报给界面弹确认框。
+    fn zmodem_handle_offer(
+        &mut self,
+        session: &mut crate::zmodem::Session,
+        cx: &mut Context<Self>,
+    ) {
+        if session.offer().is_none() {
+            self.zmodem.offer_notified = false;
+            self.zmodem.offered_at = None;
+            return;
+        }
+        if self.zmodem.offer_notified {
+            return;
+        }
+        // 只报一次：决策还挂着时，每一轮驱动都会再走到这里。
+        self.zmodem.offer_notified = true;
+        self.zmodem.offered_at = Some(Instant::now());
+
+        let config = crate::zmodem::config::global();
+        if config.ask_before_receive {
+            cx.emit(EmulatorEvent::ZmodemOffer);
+            return;
+        }
+
+        // 自动模式：直接落默认目录；打不开就跳过这一个（对端会接着下一个），
+        // 并跟用户说一声 —— 不说话的跳过是最坏的。
+        let name = match session.offer() {
+            Some(crate::zmodem::Offer::Receive { name, .. }) => name.clone(),
+            _ => return,
+        };
+        let dir = config.dir_or_start_dir();
+        if let Err(error) = session.accept(&dir) {
+            let notice = format!(
+                "{}",
+                t!(
+                    "zmodem.skipped_file",
+                    name => name.clone(),
+                    error => format!("{error:#}"),
+                )
+            );
+            self.zmodem_notice(notice, cx);
+            if let Err(error) = session.skip_current() {
+                log::warn!("ZMODEM 跳过文件失败：{error:#}");
+            }
+        }
+    }
+
+    /// 记一句要跟用户说的话，并叫界面来取。
+    fn zmodem_notice(&mut self, message: String, cx: &mut Context<Self>) {
+        self.zmodem.notices.push(message);
+        cx.emit(EmulatorEvent::ZmodemNotice);
+    }
+
+    /// 进冷却：把这段残渣先吞进尾巴，其后的字节也全归它，直到静下来。
+    fn zmodem_enter_cooldown(&mut self, seed: &[u8], base: std::time::Duration) {
+        let now = Instant::now();
+        let mut tail = crate::zmodem::CooledTail::new();
+        tail.swallow(seed);
+        self.zmodem.state = ZmodemState::Cooldown {
+            until: now + base,
+            hard_until: now + ZMODEM_COOLDOWN_MAX,
+            tail,
+        };
+    }
+
+    /// 冷却到期：尾巴里那段"看着像终端文本"的字节放回屏幕。
+    fn zmodem_release_cooldown(&mut self, cx: &mut Context<Self>) {
+        let ZmodemState::Cooldown { mut tail, .. } =
+            std::mem::replace(&mut self.zmodem.state, ZmodemState::Idle)
+        else {
+            return;
+        };
+        if let Some(text) = tail.release() {
+            self.write_terminal(&text, cx);
+        }
+    }
+
+    /// 节拍：处理决策过期、对端没气、冷却到期；会话在跑就再推一轮。
+    ///
+    /// 由 [`Self::zmodem_arm_ticker`] 挂上的任务按 [`ZMODEM_TICK`] 的
+    /// 节奏调它。
+    fn zmodem_tick(&mut self, cx: &mut Context<Self>) {
+        let decision_expired = self
+            .zmodem
+            .offered_at
+            .is_some_and(|since| since.elapsed() >= crate::zmodem::config::DECISION_TIMEOUT);
+
+        // 冷却：静下来又到了最早放行时刻就放行；字节一直来就到硬顶收手。
+        if matches!(self.zmodem.state, ZmodemState::Cooldown { .. }) {
+            let (until, hard_until) = match &self.zmodem.state {
+                ZmodemState::Cooldown {
+                    until, hard_until, ..
+                } => (*until, *hard_until),
+                _ => unreachable!("刚检查过是 Cooldown"),
+            };
+            let now = Instant::now();
+            let quiet = now.duration_since(self.zmodem.last_inbound) >= ZMODEM_COOLDOWN_QUIET;
+            if now >= hard_until || (now >= until && quiet) {
+                self.zmodem_release_cooldown(cx);
+            }
+            return;
+        }
+
+        // 远端 `rz` 等太久：对端多半已经放弃了，放它走。
+        if matches!(self.zmodem.state, ZmodemState::OfferSend) {
+            if decision_expired {
+                self.transport_send(crate::zmodem::can_run());
+                self.zmodem_notice(t!("zmodem.notify_timeout").to_string(), cx);
+                self.zmodem_enter_cooldown(&[], ZMODEM_COOLDOWN_ABORT);
+                self.zmodem.offer_notified = false;
+                self.zmodem.offered_at = None;
+                // 确认框可能还开着：发一发收场信号让它自己收起来。
+                cx.emit(EmulatorEvent::ZmodemFinished);
+            }
+            return;
+        }
+
+        if matches!(self.zmodem.state, ZmodemState::Run(_)) {
+            let (waiting_decision, quiet_for) = match &self.zmodem.state {
+                ZmodemState::Run(session) => (session.offer().is_some(), session.quiet_for()),
+                _ => unreachable!("刚检查过是 Run"),
+            };
+            if waiting_decision && decision_expired {
+                // 用户一直没点头，对端多半也等不下去了。
+                if let ZmodemState::Run(session) = &mut self.zmodem.state {
+                    session.abandon(t!("zmodem.notify_timeout").to_string());
+                }
+                self.zmodem_drive(cx);
+            } else if !waiting_decision && quiet_for >= ZMODEM_SILENT_GIVE_UP {
+                // 等决策的窗口里对端本来就在安静地重试，不算"没气"。
+                if let ZmodemState::Run(session) = &mut self.zmodem.state {
+                    session.abandon(t!("zmodem.notify_peer_gone").to_string());
+                }
+                self.zmodem_drive(cx);
+            } else {
+                self.zmodem_drive(cx);
+            }
+        }
+    }
+
+    /// 挂一个节拍任务；回到 Idle 之后任务自己收手。
+    fn zmodem_arm_ticker(&mut self, cx: &mut Context<Self>) {
+        if self.zmodem.ticker_armed {
+            return;
+        }
+        self.zmodem.ticker_armed = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(ZMODEM_TICK).await;
+                let keep_going = this
+                    .update(cx, |this, cx| {
+                        this.zmodem_tick(cx);
+                        if matches!(this.zmodem.state, ZmodemState::Idle) {
+                            // 先放标记再收手：下一场会话要能挂上新的节拍。
+                            this.zmodem.ticker_armed = false;
+                            false
+                        } else {
+                            true
+                        }
+                    })
+                    .unwrap_or(false);
+                if !keep_going {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// 一次驱动没推完（预算到顶）：挂一个 1ms 的续批，让渲染帧插进来。
+    fn zmodem_arm_resume(&mut self, cx: &mut Context<Self>) {
+        if self.zmodem.resume_armed {
+            return;
+        }
+        self.zmodem.resume_armed = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(1))
+                .await;
+            _ = this.update(cx, |this, cx| {
+                this.zmodem.resume_armed = false;
+                this.zmodem_drive(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// 扫描器扣住了候选前缀（签名可能被切成两段）：挂一个兜底。
+    fn zmodem_arm_hold_release(&mut self, cx: &mut Context<Self>) {
+        if self.zmodem.hold_release_armed {
+            return;
+        }
+        self.zmodem.hold_release_armed = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(ZMODEM_HOLD_RELEASE).await;
+            _ = this.update(cx, |this, cx| {
+                this.zmodem.hold_release_armed = false;
+                this.zmodem_flush_hold(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// 把扫描器扣住的候选前缀放出来，当作普通输出进屏幕。
+    pub fn zmodem_flush_hold(&mut self, cx: &mut Context<Self>) {
+        if !self.zmodem.scanner.has_hold() {
+            return;
+        }
+        let held = self.zmodem.scanner.flush();
+        self.write_terminal(&held, cx);
+        self.refresh(cx);
+    }
+
+    /// 远端在等交代的那件事（没有就是 `None`）。
+    pub fn zmodem_offer(&self) -> Option<crate::zmodem::Offer> {
+        match &self.zmodem.state {
+            ZmodemState::OfferSend => Some(crate::zmodem::Offer::Send),
+            ZmodemState::Run(session) => session.offer().cloned(),
+            _ => None,
+        }
+    }
+
+    /// ZMODEM 的进度读数；没有在跑的传输就是 `None`。
+    ///
+    /// 接收侧"等落点"的那一段不算：那时该看的是弹窗，不是进度条。
+    pub fn zmodem_progress(&self) -> Option<crate::zmodem::Progress> {
+        match &self.zmodem.state {
+            ZmodemState::Run(session) if session.offer().is_none() => Some(session.progress()),
+            _ => None,
+        }
+    }
+
+    /// 取走攒下的提醒（跳过某个文件之类）。
+    pub fn take_zmodem_notices(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.zmodem.notices)
+    }
+
+    /// 取走已经收场的终局（没取走之前一直挂着）。
+    pub fn take_zmodem_outcome(&mut self) -> Option<crate::zmodem::Outcome> {
+        self.zmodem.outcome.take()
+    }
+
+    /// 用户确认了落点：打开目标文件、请对端从 0 开始发。
+    ///
+    /// 打开失败时把错误原样带回去（弹窗那边可以换个目录再试）——
+    /// 这是唯一个会带着用户看得懂的理由失败在弹窗面前的路径。
+    pub fn zmodem_accept_save(
+        &mut self,
+        dir: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        let ZmodemState::Run(session) = &mut self.zmodem.state else {
+            anyhow::bail!("{}", t!("zmodem.no_pending_file"));
+        };
+        session.accept(&dir)?;
+        self.zmodem.offer_notified = false;
+        self.zmodem.offered_at = None;
+        self.zmodem_drive(cx);
+        Ok(())
+    }
+
+    /// 用户挑好了要上传的文件：建发送会话，自己送 `ZRQINIT` 起手。
+    pub fn zmodem_accept_send(
+        &mut self,
+        files: Vec<std::path::PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        if !matches!(self.zmodem.state, ZmodemState::OfferSend) {
+            anyhow::bail!("{}", t!("zmodem.no_pending_file"));
+        }
+        let session = crate::zmodem::Session::send(files)?;
+        self.zmodem.state = ZmodemState::Run(Box::new(session));
+        self.zmodem.offer_notified = false;
+        self.zmodem.offered_at = None;
+        self.zmodem_arm_ticker(cx);
+        self.zmodem_drive(cx);
+        Ok(())
+    }
+
+    /// 用户按了取消（或者等决策过期、对端没气了之后由节拍代手）。
+    pub fn zmodem_cancel(&mut self, cx: &mut Context<Self>) {
+        match std::mem::replace(&mut self.zmodem.state, ZmodemState::Idle) {
+            ZmodemState::Run(mut session) => {
+                session.cancel();
+                // 放回去，让 drive 把 CAN 排出去、把终局结算掉。
+                self.zmodem.state = ZmodemState::Run(session);
+                self.zmodem_drive(cx);
+            }
+            ZmodemState::OfferSend => {
+                // 会话都还没建：一串 CAN 直接送出去，对端 `rz` 读到就停手。
+                self.transport_send(crate::zmodem::can_run());
+                self.zmodem_enter_cooldown(&[], ZMODEM_COOLDOWN_ABORT);
+                self.zmodem.offer_notified = false;
+                self.zmodem.offered_at = None;
+                // 让节拍在冷却到期时收尾。
+                self.zmodem_arm_ticker(cx);
+            }
+            other => self.zmodem.state = other,
+        }
+    }
+
+    /// 仅测试：占位终端上协议方向送出的字节（`transport_send` 的收件箱）。
+    #[cfg(test)]
+    pub(crate) fn take_sent_by_test(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut self.sent_by_test)
     }
 
     /// 一下按键。返回是否被终端吃掉了 —— 没吃掉的留给窗口的快捷键。
@@ -1888,6 +2498,280 @@ mod tests {
                 gpui_kit::NavigationDirection::Back
             )),
             None
+        );
+    }
+
+    // ─── ZMODEM（rz / sz）的路由与生命周期 ───────────────────────────────
+
+    /// 一枚真实的 hex 头帧的字节：`**\x18B` + 帧类型 + 八个 hex + CRC16 + `\r\n`。
+    /// 嗅探器只认签名与帧类型，所以参数随便：真正的解析归 `zmodem2`。
+    fn hex_frame(frame_type: u8) -> Vec<u8> {
+        let mut bytes = vec![b'*', b'*', 0x18, b'B'];
+        bytes.extend_from_slice(format!("{frame_type:02x}").as_bytes());
+        bytes.extend_from_slice(b"00000000");
+        bytes.extend_from_slice(b"0000\r\n");
+        bytes
+    }
+
+    /// 一台离线的终端（`Transport::None`）：协议方向送出的字节都落在
+    /// `take_sent_by_test` 里，测试拿它当"对端收件箱"。
+    fn emulator_for_test(cx: &mut gpui_kit::TestAppContext) -> Entity<Emulator> {
+        cx.update(gpui_kit::init);
+        cx.update(Emulator::new_empty)
+    }
+
+    /// 远端 `sz` 的一整场接收，真的从 emulator 上走完：
+    /// 握手字节不进屏幕、提议带名字与大小、接受之后文件逐字节收下来、
+    /// 两边都报完成。对端是一个真的 `Session`（不是手搓的字节）。
+    #[gpui_kit::test]
+    fn a_real_receive_session_runs_through_the_emulator(cx: &mut gpui_kit::TestAppContext) {
+        use crate::zmodem::Session;
+
+        let root = std::env::temp_dir().join(format!(
+            "winssh-pro-zmodem-emulator-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(&root).expect("建临时目录");
+        let source = root.join("hello.bin");
+        let payload: Vec<u8> = (0..2048u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&source, &payload).expect("写源文件");
+        let dest = root.join("incoming");
+        std::fs::create_dir_all(&dest).expect("建落点目录");
+
+        let emulator = emulator_for_test(cx);
+
+        // 对端（发送方）先排一个 ZRQINIT 当开场。
+        let mut peer = Session::send(vec![source]).expect("建发送会话");
+        peer.step();
+        let trigger = peer.take_out();
+        emulator.update(cx, |emulator, cx| emulator.write_output(&trigger, cx));
+
+        // 开场字节不该进屏幕：网格上一个字符也没有。
+        emulator.update(cx, |emulator, _| emulator.snapshot());
+        let painted: String = emulator.read_with(cx, |emulator, _| {
+            emulator
+                .content()
+                .cells
+                .iter()
+                .map(GridCell::character)
+                .collect()
+        });
+        assert!(
+            painted.trim().is_empty(),
+            "ZMODEM 握手不该落到屏幕上：{painted:?}"
+        );
+
+        let mut seen_offer = false;
+        let mut outcome = None;
+        for _ in 0..4000 {
+            // 窗格送出的线字节交给对端。
+            for chunk in emulator.update(cx, |emulator, _| emulator.take_sent_by_test()) {
+                peer.feed(&chunk);
+            }
+            peer.step();
+            let back = peer.take_out();
+            if !back.is_empty() {
+                emulator.update(cx, |emulator, cx| emulator.write_output(&back, cx));
+            }
+
+            if !seen_offer
+                && let Some(crate::zmodem::Offer::Receive { name, size }) =
+                    emulator.read_with(cx, |emulator, _| emulator.zmodem_offer())
+            {
+                assert_eq!(name, "hello.bin", "提议要说清是哪个文件");
+                assert_eq!(size, Some(payload.len() as u64), "大小来自 ZFILE");
+                seen_offer = true;
+            }
+            if seen_offer
+                && emulator.read_with(cx, |emulator, _| emulator.zmodem_offer().is_some())
+            {
+                emulator
+                    .update(cx, |emulator, cx| {
+                        emulator.zmodem_accept_save(dest.clone(), cx)
+                    })
+                    .expect("打开目标文件");
+            }
+
+            outcome = emulator.update(cx, |emulator, _| emulator.take_zmodem_outcome());
+            if outcome.is_some() {
+                break;
+            }
+        }
+
+        assert!(seen_offer, "整场跑完都没见到接收提议");
+        match outcome {
+            Some(crate::zmodem::Outcome::Completed { files, bytes, saved_to, .. }) => {
+                assert_eq!(files, 1);
+                assert_eq!(bytes, payload.len() as u64);
+                assert_eq!(saved_to.as_deref(), Some(dest.as_path()));
+            }
+            other => panic!("窗格这一侧的终局不对：{other:?}"),
+        }
+        // 对端也要收场（OO 那一步在冷却里被吞掉了，不影响它）。
+        for _ in 0..200 {
+            for chunk in emulator.update(cx, |emulator, _| emulator.take_sent_by_test()) {
+                peer.feed(&chunk);
+            }
+            peer.step();
+            let back = peer.take_out();
+            if !back.is_empty() {
+                emulator.update(cx, |emulator, cx| emulator.write_output(&back, cx));
+            }
+            if peer.outcome().is_some() {
+                break;
+            }
+        }
+        assert!(
+            matches!(
+                peer.outcome(),
+                Some(crate::zmodem::Outcome::Completed { .. })
+            ),
+            "对端该报完成：{:?}",
+            peer.outcome()
+        );
+
+        let received = std::fs::read(dest.join("hello.bin")).expect("收到文件");
+        assert_eq!(received, payload, "内容逐字节一致");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 把识别整个关掉：字节原样进屏幕，一枚提议都不摆 —— 和没有这个
+    /// 功能之前的行为一样。
+    #[gpui_kit::test]
+    fn a_disabled_sniffer_passes_everything_through(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = crate::zmodem::config::exclusive_for_test();
+        cx.update(|_| {
+            crate::zmodem::config::set_global(crate::zmodem::config::ZmodemConfig {
+                enabled: false,
+                ..crate::zmodem::config::ZmodemConfig::default()
+            });
+        });
+        let emulator = emulator_for_test(cx);
+
+        emulator.update(cx, |emulator, cx| {
+            let zrinit = hex_frame(0x01);
+            emulator.write_output(&zrinit, cx);
+        });
+
+        assert_eq!(
+            emulator.read_with(cx, |emulator, _| emulator.zmodem_offer()),
+            None,
+            "关掉之后不该再摆提议"
+        );
+        emulator.update(cx, |emulator, _| emulator.snapshot());
+        let painted: String = emulator.read_with(cx, |emulator, _| {
+            emulator
+                .content()
+                .cells
+                .iter()
+                .map(GridCell::character)
+                .collect()
+        });
+        assert!(
+            !painted.trim().is_empty(),
+            "关掉之后字节该原样进屏幕（会是一堆乱码，但这是用户要的）"
+        );
+    }
+
+    /// 嗅探器坐在终端输出热路径上的那点开销。**平时不跑**，要量的时候：
+    ///
+    /// ```text
+    /// cargo test --release --bin winssh-pro zmodem_scan_cost \
+    ///     -- --ignored --nocapture
+    /// ```
+    ///
+    /// 同一批字节并排量两段：整段走 `Emulator::write_output`（嗅探 + 解析），
+    /// 以及单独过一遍签名扫描器。两者的比例就是"这个功能在输出热路径上
+    /// 加了多少"。落这条量尺时（release 档，M 系列 Mac）：
+    ///
+    /// | 量什么 | 每 64 KiB |
+    /// | --- | --- |
+    /// | `write_output`（含嗅探） | 0.65ms |
+    /// | 签名扫描单独一遍 | 34µs（≈ 5%） |
+    #[gpui_kit::test]
+    #[ignore = "性能量尺，按需手动跑"]
+    fn zmodem_scan_cost(cx: &mut gpui_kit::TestAppContext) {
+        use std::time::Instant;
+
+        const CHUNK: usize = 64 * 1024;
+        const CHUNKS: u32 = 64;
+        let line = b"-rwxr-xr-x 1 deploy deploy 122345678 Sep 24 12:00 app-release*\r\n";
+        let mut chunk = Vec::with_capacity(CHUNK);
+        while chunk.len() < CHUNK {
+            chunk.extend_from_slice(line);
+        }
+        chunk.truncate(CHUNK);
+
+        let emulator = emulator_for_test(cx);
+        let start = Instant::now();
+        for _ in 0..CHUNKS {
+            emulator.update(cx, |emulator, cx| emulator.write_output(&chunk, cx));
+        }
+        println!(
+            "write_output（含嗅探）: {:?}/64KiB",
+            start.elapsed() / CHUNKS
+        );
+
+        let mut scanner = crate::zmodem::Scanner::new();
+        let start = Instant::now();
+        for _ in 0..CHUNKS {
+            let _ = scanner.route(&chunk);
+        }
+        println!("签名扫描单独一遍: {:?}/64KiB", start.elapsed() / CHUNKS);
+    }
+
+    /// 远端 `rz`：认出 `ZRINIT` 当场摆提议（还没建会话），等确认的时候
+    /// 键盘字被吞掉；取消时送出一串 CAN，对端读到才停手。
+    #[gpui_kit::test]
+    fn a_remote_rz_offer_swallows_input_and_cancels_with_can(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let emulator = emulator_for_test(cx);
+
+        emulator.update(cx, |emulator, cx| {
+            let zrinit = hex_frame(0x01);
+            emulator.write_output(&zrinit, cx);
+        });
+
+        assert_eq!(
+            emulator.read_with(cx, |emulator, _| emulator.zmodem_offer()),
+            Some(crate::zmodem::Offer::Send),
+            "ZRINIT 该摆出一个发送提议"
+        );
+        emulator.update(cx, |emulator, _| emulator.snapshot());
+        let painted: String = emulator.read_with(cx, |emulator, _| {
+            emulator
+                .content()
+                .cells
+                .iter()
+                .map(GridCell::character)
+                .collect()
+        });
+        assert!(painted.trim().is_empty(), "ZRINIT 不该进屏幕：{painted:?}");
+
+        // 等确认的时候键盘字不该往对端送。
+        emulator.update(cx, |emulator, cx| {
+            emulator.input("x".as_bytes().to_vec(), cx);
+        });
+        assert!(
+            emulator.update(cx, |emulator, _| emulator.take_sent_by_test()).is_empty(),
+            "等确认时键盘字不该出去"
+        );
+
+        // 取消：对端该读到 CAN 连击，提议随之撤下。
+        emulator.update(cx, |emulator, cx| emulator.zmodem_cancel(cx));
+        let cans: usize = emulator
+            .update(cx, |emulator, _| emulator.take_sent_by_test())
+            .iter()
+            .flatten()
+            .filter(|&&byte| byte == 0x18)
+            .count();
+        assert!(cans >= 5, "取消该送至少五枚 CAN，实际 {cans}");
+        assert_eq!(
+            emulator.read_with(cx, |emulator, _| emulator.zmodem_offer()),
+            None,
+            "取消之后没有提议了"
         );
     }
 }

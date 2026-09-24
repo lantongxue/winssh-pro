@@ -27,6 +27,7 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::ContextMenuExt as _,
+    progress::Progress,
     v_flex,
 };
 use gpui_kit::{
@@ -39,6 +40,7 @@ use gpui_kit::{
 use crate::{
     command_history::CommandRun,
     host::Host,
+    sftp::human_size,
     service::TrustedHostService,
     ssh::SshSession,
     terminal::{
@@ -50,7 +52,7 @@ use crate::{
         dialogs::{HostTrustDialog, TrustDecision, TrustDecisionHandler},
         elements::{TerminalGridElement, cell_at, point_at},
         menus::{TerminalAction, TerminalActionHandler, TerminalMenu, terminal_menu_allowed},
-        theme::ansi,
+        theme::{AppIcon, ansi, palette},
     },
 };
 use rust_i18n::t;
@@ -136,6 +138,9 @@ pub enum TerminalPaneEvent {
     /// 这条 shell 里跑完了几条命令（shell 自己打的 OSC 133 标记，见
     /// [`crate::terminal`]）。窗格不知道自己是哪台主机，落库归标签页。
     CommandsRecorded(Vec<CommandRun>),
+    /// 远端在等 rz / sz 的交代，该弹确认框了。开框要窗口，而窗格只有
+    /// 面板那层给得到它 —— 和 [`Self::Notify`] 一个路子。
+    ZmodemOffer,
 }
 
 pub struct TerminalPane {
@@ -690,9 +695,34 @@ impl TerminalPane {
                     }
                 }
                 EmulatorEvent::Bell => {}
+                EmulatorEvent::ZmodemOffer => {
+                    // 开确认框要窗口，交给面板那层。
+                    cx.emit(TerminalPaneEvent::ZmodemOffer);
+                    cx.notify();
+                }
+                EmulatorEvent::ZmodemNotice => {
+                    // 内容同样在事件外挂着，当场取（自动落盘时跳过的文件）。
+                    let notices = emulator.update(cx, |em, _| em.take_zmodem_notices());
+                    for notice in notices {
+                        cx.emit(TerminalPaneEvent::Notify(SharedString::from(notice)));
+                    }
+                }
+                EmulatorEvent::ZmodemFinished => {
+                    let outcome = emulator.update(cx, |em, _| em.take_zmodem_outcome());
+                    if let Some(outcome) = outcome {
+                        cx.emit(TerminalPaneEvent::Notify(SharedString::from(
+                            zmodem_outcome_message(&outcome),
+                        )));
+                    }
+                }
             },
         )
         .detach();
+    }
+
+    /// 这个窗格手边的终端（ZMODEM 的确认框要拿着它去读提议）。
+    pub(super) fn emulator(&self) -> Option<&Entity<Emulator>> {
+        self.emulator.as_ref()
     }
 
     /// SSH 成功后的开场白。
@@ -1325,6 +1355,109 @@ impl TerminalPane {
         )
     }
 
+    /// ZMODEM 传着的时候挂在网格左上角的进度条。
+    ///
+    /// 和搜索栏一样浮在网格**之上**（`absolute`）：顶下去会让终端重排，
+    /// 传一次抖一屏。等落点的那一段不画 —— 那时该看的是确认框。
+    fn render_zmodem_strip(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
+        let emulator = self.emulator.clone()?;
+        let progress = emulator.read(cx).zmodem_progress()?;
+        let accent = palette::sky();
+
+        // 比例优先看当前文件；接收侧一份文件的大小是对端在 `ZFILE` 里报的，
+        // 还没报到就退回"来回滑"的不确定态。
+        let fraction = match (progress.file_done, progress.file_total) {
+            (done, Some(total)) if total > 0 => Some(done as f32 / total as f32),
+            _ => match (progress.session_done, progress.session_total) {
+                (done, Some(total)) if total > 0 => Some(done as f32 / total as f32),
+                _ => None,
+            },
+        };
+        let percent = fraction.map(|fraction| format!("{}%", (fraction * 100.).round() as u32));
+        let name = match progress.name.is_empty() {
+            true => SharedString::from(t!("zmodem.strip_waiting").to_string()),
+            false => SharedString::from(match (progress.file_index, progress.file_count) {
+                (index, Some(count)) if count > 1 => format!("{index}/{count} {}", progress.name),
+                _ => progress.name.clone(),
+            }),
+        };
+        let speed = (progress.bytes_per_sec > 0)
+            .then(|| format!("{}/s", human_size(progress.bytes_per_sec)));
+
+        Some(
+            h_flex()
+                .absolute()
+                .top(SEARCH_BAR_TOP)
+                .left_4()
+                .occlude()
+                .items_center()
+                .gap_2()
+                .h(SEARCH_BAR_HEIGHT)
+                .pl_3()
+                .pr_1()
+                .w(px(440.))
+                .rounded_lg()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().popover)
+                .shadow_md()
+                .child(
+                    Icon::new(match progress.direction {
+                        crate::zmodem::Direction::Receive => AppIcon::Download,
+                        crate::zmodem::Direction::Send => AppIcon::Upload,
+                    })
+                    .with_size(px(14.))
+                    .text_color(accent),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .child(name),
+                )
+                .child(
+                    Progress::new(("zmodem-strip", cx.entity_id()))
+                        .xsmall()
+                        .w(px(120.))
+                        .value(fraction.unwrap_or(0.) * 100.)
+                        .loading(fraction.is_none())
+                        .color(accent),
+                )
+                .children(
+                    percent.map(|percent| {
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(palette::idle(cx))
+                            .child(percent)
+                    }),
+                )
+                .children(
+                    speed.map(|speed| {
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(speed)
+                    }),
+                )
+                .child(
+                    Button::new(("zmodem-strip-cancel", cx.entity_id()))
+                        .ghost()
+                        .small()
+                        .label(t!("zmodem.cancel"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(emulator) = this.emulator.clone() {
+                                emulator.update(cx, |emulator, cx| emulator.zmodem_cancel(cx));
+                            }
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     // ─── 右键菜单 ───────────────────────────────────────────────────────────
 
     /// 右键菜单选了某一项。
@@ -1413,6 +1546,50 @@ fn window_size() -> crate::ssh::WindowSize {
 impl Focusable for TerminalPane {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+/// 一场 ZMODEM 收场之后要说给用户的那句话。
+///
+/// 收场的那一刻窗格手上只有终局——名字、方向、落点都在里面，文案在这里
+/// 拼好再当 [`TerminalPaneEvent::Notify`] 报上去；面板那层只管弹。
+fn zmodem_outcome_message(outcome: &crate::zmodem::Outcome) -> String {
+    match outcome {
+        crate::zmodem::Outcome::Completed {
+            files,
+            bytes,
+            saved_to,
+            name,
+        } => {
+            let size = human_size(*bytes);
+            let named = name
+                .clone()
+                .unwrap_or_else(|| t!("zmodem.unnamed_file").to_string());
+            match saved_to {
+                Some(dir) => {
+                    let dir = dir.display().to_string();
+                    match files {
+                        1 => t!("zmodem.notify_received", name => named, size => size, dir => dir),
+                        _ => t!(
+                            "zmodem.notify_received_batch",
+                            files => files,
+                            size => size,
+                            dir => dir,
+                        ),
+                    }
+                    .to_string()
+                }
+                None => match files {
+                    1 => t!("zmodem.notify_sent", name => named, size => size),
+                    _ => t!("zmodem.notify_sent_batch", files => files, size => size),
+                }
+                .to_string(),
+            }
+        }
+        crate::zmodem::Outcome::Cancelled => t!("zmodem.notify_cancelled").to_string(),
+        crate::zmodem::Outcome::Failed { reason } => {
+            t!("zmodem.notify_failed", error => reason.clone()).to_string()
+        }
     }
 }
 
@@ -1506,8 +1683,10 @@ impl Render for TerminalPane {
             .on_mouse_up_out(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Middle, cx.listener(Self::on_mouse_up))
             .child(TerminalGridElement::new(emulator, focused, self.cursor_visible))
-            // 搜索栏浮在网格上（`absolute`），所以放在网格之后当兄弟画，
-            // 而不是把网格顶下去 —— 顶下去会让终端重排，开关一次抖一屏。
+            // 搜索栏与 ZMODEM 进度条浮在网格上（`absolute`），所以放在网格
+            // 之后当兄弟画，而不是把网格顶下去 —— 顶下去会让终端重排，
+            // 开关一次抖一屏。一个贴右上、一个贴左上，不打架。
+            .children(self.render_zmodem_strip(cx))
             .children(self.render_search_bar(cx))
             .context_menu(self.context_menu_builder(cx))
             .into_any_element()

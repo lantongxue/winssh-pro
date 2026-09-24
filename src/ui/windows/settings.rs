@@ -28,8 +28,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, WindowBounds,
-    WindowHandle, WindowKind, WindowOptions, div, img, prelude::FluentBuilder as _, px, size,
+    ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _, Subscription, Window,
+    WindowBounds, WindowHandle, WindowKind, WindowOptions, div, img, prelude::FluentBuilder as _,
+    px, size,
 };
 
 use crate::assistant::{
@@ -44,6 +45,7 @@ use crate::terminal::font::{self, TerminalFont};
 use crate::terminal::scheme;
 use crate::ui::dialogs::BackupRestoreDialog;
 use crate::ui::theme::{AppIcon, appearance, palette};
+use crate::zmodem::config as zmodem_config;
 use rust_i18n::t;
 
 /// 全局代理那个下拉的两档。存的是这两个 ascii 词而不是界面上那行字 ——
@@ -157,6 +159,24 @@ fn persist_cursor_blink(blink: bool, cx: &mut App) {
     cx.background_spawn(async move {
         if let Err(error) = SettingService::open().save_cursor_blink(blink).await {
             log::error!("终端光标闪烁存不下去：{error:#}");
+        }
+    })
+    .detach();
+}
+
+/// 换掉 ZMODEM 收发偏好。缓存立刻生效、重画所有窗口、落库派到后台，
+/// 三步都同 [`persist_terminal_font`]。
+///
+/// 重画是必需的：这一页那个"默认接收目录"是把当前值直接画出来的，
+/// 不叫一声还停在旧值上。
+fn persist_zmodem_config(config: zmodem_config::ZmodemConfig, cx: &mut App) {
+    zmodem_config::set_global(config.clone());
+    for handle in cx.windows() {
+        _ = handle.update(cx, |_, window, _| window.refresh());
+    }
+    cx.background_spawn(async move {
+        if let Err(error) = SettingService::open().save_zmodem_config(config).await {
+            log::error!("ZMODEM 设置存不下去：{error:#}");
         }
     })
     .detach();
@@ -942,6 +962,111 @@ impl SettingsWindow {
                             |_cx: &App| cursor::global(),
                             |checked: bool, cx: &mut App| persist_cursor_blink(checked, cx),
                         ),
+                    )),
+            )
+            // ZMODEM：终端流里的 rz / sz 收发。三档一起摆着："认不认"、
+            // "收了之后问不问"、"问不到的时候落哪儿"。
+            .group(
+                SettingGroup::new()
+                    .title(t!("settings.zmodem_group"))
+                    .item(SettingItem::new(
+                        t!("settings.zmodem_enabled"),
+                        SettingField::switch(
+                            |_cx: &App| zmodem_config::global().enabled,
+                            |checked: bool, cx: &mut App| {
+                                persist_zmodem_config(
+                                    zmodem_config::ZmodemConfig {
+                                        enabled: checked,
+                                        ..zmodem_config::global()
+                                    },
+                                    cx,
+                                );
+                            },
+                        ),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.zmodem_ask_receive"),
+                        SettingField::switch(
+                            |_cx: &App| zmodem_config::global().ask_before_receive,
+                            |checked: bool, cx: &mut App| {
+                                persist_zmodem_config(
+                                    zmodem_config::ZmodemConfig {
+                                        ask_before_receive: checked,
+                                        ..zmodem_config::global()
+                                    },
+                                    cx,
+                                );
+                            },
+                        ),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.zmodem_download_dir"),
+                        SettingField::render(|_options, _window, cx: &mut App| {
+                            let picked = zmodem_config::global().download_dir.clone();
+                            let following = picked.trim().is_empty();
+                            let label = match following {
+                                true => SharedString::from(
+                                    t!("settings.zmodem_download_dir_follow").to_string(),
+                                ),
+                                false => picked.clone(),
+                            };
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_sm()
+                                        .text_color(match following {
+                                            true => cx.theme().muted_foreground,
+                                            false => cx.theme().foreground,
+                                        })
+                                        .child(SharedString::from(label.to_string())),
+                                )
+                                .child(
+                                    Button::new("settings-zmodem-dir")
+                                        .ghost()
+                                        .small()
+                                        .label(t!("settings.zmodem_choose_dir"))
+                                        .on_click(|_, _, cx: &mut App| {
+                                            let picked = cx.prompt_for_paths(PathPromptOptions {
+                                                files: false,
+                                                directories: true,
+                                                multiple: false,
+                                                prompt: Some(
+                                                    t!("settings.zmodem_download_dir")
+                                                        .to_string()
+                                                        .into(),
+                                                ),
+                                            });
+                                            cx.spawn(async move |cx| {
+                                                let Ok(Ok(Some(paths))) = picked.await else {
+                                                    return;
+                                                };
+                                                let Some(dir) = paths.into_iter().next() else {
+                                                    return;
+                                                };
+                                                cx.update(|cx| {
+                                                    persist_zmodem_config(
+                                                        zmodem_config::ZmodemConfig {
+                                                            download_dir: dir
+                                                                .display()
+                                                                .to_string()
+                                                                .into(),
+                                                            ..zmodem_config::global()
+                                                        },
+                                                        cx,
+                                                    );
+                                                });
+                                            })
+                                            .detach();
+                                        }),
+                                )
+                        }),
                     )),
             )
     }

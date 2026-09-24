@@ -1,8 +1,9 @@
 //! 应用级偏好服务：`settings` 表那些"不属于某台主机、某条凭据"的设置。
 //!
-//! 现在有五项 —— 全局代理（[`crate::proxy::GlobalProxy`]）、终端字体
+//! 现在有六项 —— 全局代理（[`crate::proxy::GlobalProxy`]）、终端字体
 //! （[`crate::terminal::font::TerminalFont`]）、终端配色
-//! （[`crate::terminal::scheme`]）、终端光标闪烁（[`crate::terminal::cursor`]）
+//! （[`crate::terminal::scheme`]）、终端光标闪烁（[`crate::terminal::cursor`]）、
+//! ZMODEM 收发（[`crate::zmodem::config`]）
 //! 与智能助手的供应商配置
 //! （[`crate::assistant::AssistantConfig`]）。它们的读法一样刁钻：
 //!
@@ -30,6 +31,7 @@ use crate::{
         font::{self, TerminalFont},
         scheme,
     },
+    zmodem::config as zmodem_config,
 };
 
 /// 全局代理在 `settings` 表里的键。
@@ -44,6 +46,8 @@ const ASSISTANT_CONFIG_KEY: &str = "assistant.config";
 const CURSOR_BLINK_KEY: &str = "terminal.cursor_blink";
 /// 数据备份同步配置在 `settings` 表里的键。存的是一份 JSON。
 const BACKUP_CONFIG_KEY: &str = "backup.config";
+/// ZMODEM 收发偏好在 `settings` 表里的键。存的是一份 JSON。
+const ZMODEM_CONFIG_KEY: &str = "terminal.zmodem";
 
 /// 应用级偏好的业务入口。廉价克隆：界面各处各拿一份，共享同一条连接。
 #[derive(Clone)]
@@ -89,6 +93,7 @@ impl SettingService {
                 this.load_assistant_config().await,
                 this.load_cursor_blink().await,
                 this.load_backup_config().await,
+                this.load_zmodem_config().await,
             )
         });
         match loaded.0 {
@@ -114,6 +119,10 @@ impl SettingService {
         match loaded.5 {
             Ok(config) => backup::set_global(config),
             Err(error) => log::warn!("备份同步配置读不出来，这次运行按出厂档处理：{error:#}"),
+        }
+        match loaded.6 {
+            Ok(config) => zmodem_config::set_global(config),
+            Err(error) => log::warn!("ZMODEM 设置读不出来，这次运行按出厂档处理：{error:#}"),
         }
     }
 
@@ -280,6 +289,34 @@ impl SettingService {
         })
         .await
     }
+
+    /// 库里那份 ZMODEM 偏好。没写过就是出厂档（开着、接收先问、跟随系统
+    /// 下载目录）。
+    pub async fn load_zmodem_config(&self) -> Result<zmodem_config::ZmodemConfig> {
+        let this = self.clone();
+        db::run(async move {
+            let raw = this.repo.get(&this.db, ZMODEM_CONFIG_KEY).await?;
+            Ok(zmodem_config::decode(&raw.unwrap_or_default()))
+        })
+        .await
+    }
+
+    /// 写回 ZMODEM 偏好，并同时换掉进程里那份缓存。
+    ///
+    /// 缓存先换，理由同 [`Self::save_global_proxy`]：改完这一格，下一次
+    /// 认出 rz/sz 就该按新的走。
+    pub async fn save_zmodem_config(&self, config: zmodem_config::ZmodemConfig) -> Result<()> {
+        zmodem_config::set_global(config.clone());
+        let this = self.clone();
+        let encoded = zmodem_config::encode(&config);
+        db::run(async move {
+            this.repo
+                .set(&this.db, ZMODEM_CONFIG_KEY, &encoded)
+                .await
+                .map_err(Into::into)
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -430,6 +467,29 @@ mod tests {
             service.save_backup_config(custom_cfg.clone()).await.unwrap();
             assert_eq!(service.load_backup_config().await.unwrap(), custom_cfg);
             assert_eq!(backup::global(), custom_cfg, "全局缓存同步更新");
+        });
+    }
+
+    /// ZMODEM 偏好走的是独立的一行，读写、出厂档与缓存同步都要成立。
+    #[test]
+    fn the_zmodem_config_round_trips_into_its_own_row() {
+        let _guard = zmodem_config::exclusive_for_test();
+        db::runtime().block_on(async {
+            let service = SettingService::in_memory().await.unwrap();
+            assert_eq!(
+                service.load_zmodem_config().await.unwrap(),
+                zmodem_config::ZmodemConfig::default(),
+                "没写过就是开着、接收先问、跟随系统下载目录"
+            );
+
+            let picked = zmodem_config::ZmodemConfig {
+                enabled: true,
+                ask_before_receive: false,
+                download_dir: "/tmp/zmodem-incoming".into(),
+            };
+            service.save_zmodem_config(picked.clone()).await.unwrap();
+            assert_eq!(service.load_zmodem_config().await.unwrap(), picked);
+            assert_eq!(zmodem_config::global(), picked, "缓存也一起换了");
         });
     }
 }

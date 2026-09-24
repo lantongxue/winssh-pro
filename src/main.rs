@@ -25,6 +25,7 @@ mod terminal;
 mod trusted_host;
 mod ui;
 mod vnc;
+mod zmodem;
 
 use gpui_kit::component::{Root, TitleBar};
 use gpui_kit::{

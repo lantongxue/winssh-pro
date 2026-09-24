@@ -3522,3 +3522,136 @@ trusted_hosts.confirm_delete:
 terminal.banner_trust_rejected:
   en: '[WinSSH] Host identity not verified — connection cancelled.'
   zh-CN: '[WinSSH] 主机身份未确认，连接已取消。'
+
+# ── 终端里的 rz / sz 文件收发（ZMODEM，见 src/zmodem/） ───────────────────────
+zmodem.bad_file_name:
+  en: 'Cannot take a file name from: %{path}'
+  zh-CN: 无法从路径里取文件名：%{path}
+zmodem.stat_failed:
+  en: 'Cannot read file metadata: %{path}'
+  zh-CN: 读不到文件信息：%{path}
+zmodem.too_large:
+  en: 'The file exceeds the 4 GiB ZMODEM limit: %{path}'
+  zh-CN: 文件超过 ZMODEM 的 4 GiB 上限：%{path}
+zmodem.no_files:
+  en: No files to send
+  zh-CN: 没有可发送的文件
+zmodem.no_pending_file:
+  en: No file is waiting for a destination
+  zh-CN: 没有等着落点的文件
+zmodem.no_open_file:
+  en: No target file is open
+  zh-CN: 没有打开的目标文件
+zmodem.open_read_failed:
+  en: 'Cannot open the file to send: %{path}'
+  zh-CN: 打不开要发送的文件：%{path}
+zmodem.read_short:
+  en: 'The file shrank while being sent: %{path}'
+  zh-CN: 文件在发送途中变短了：%{path}
+zmodem.create_failed:
+  en: 'Cannot create the target file: %{path}'
+  zh-CN: 建不了目标文件：%{path}
+zmodem.mkdir_failed:
+  en: 'Cannot create the destination directory: %{path}'
+  zh-CN: 建不了落点目录：%{path}
+zmodem.unnamed_file:
+  en: unnamed
+  zh-CN: 未命名文件
+zmodem.backlog:
+  en: Incoming data piled up faster than it could be processed; transfer aborted
+  zh-CN: 对端送来的数据积压过多，已中止这次传输
+zmodem.peer_aborted:
+  en: The peer aborted the transfer
+  zh-CN: 对端中止了传输
+zmodem.skipped_file:
+  en: 'Skipped %{name}: %{error}'
+  zh-CN: 已跳过 %{name}：%{error}
+
+# 确认框（ZmodemTransferDialog）
+zmodem.receive_title:
+  en: Receive file (sz)
+  zh-CN: 接收文件（sz）
+zmodem.receive_hint:
+  en: The remote side is sending a file. Confirm where to save it to start.
+  zh-CN: 远端正在发送文件，确认保存位置后开始接收。
+zmodem.send_title:
+  en: Send files (rz)
+  zh-CN: 发送文件（rz）
+zmodem.send_hint:
+  en: The remote side is waiting to receive files. Pick them to start.
+  zh-CN: 远端正在等待接收文件，选择要上传的文件后开始。
+zmodem.file_name:
+  en: 'File'
+  zh-CN: 文件名
+zmodem.file_size:
+  en: 'Size'
+  zh-CN: 大小
+zmodem.save_to:
+  en: 'Save to'
+  zh-CN: 保存到
+zmodem.change_dir:
+  en: Change…
+  zh-CN: 更改…
+zmodem.save:
+  en: Save
+  zh-CN: 保存
+zmodem.cancel:
+  en: Cancel
+  zh-CN: 取消
+zmodem.choose_files:
+  en: Choose files…
+  zh-CN: 选择文件…
+
+# 终端里的进度条（TerminalPane）
+zmodem.strip_waiting:
+  en: waiting for the remote side…
+  zh-CN: 等待远端…
+
+# 完成 / 中止的通知
+zmodem.notify_received:
+  en: 'Received %{name} (%{size}) → %{dir}'
+  zh-CN: 已接收 %{name}（%{size}）→ %{dir}
+zmodem.notify_received_batch:
+  en: 'Received %{files} files (%{size}) → %{dir}'
+  zh-CN: 已接收 %{files} 个文件（%{size}）→ %{dir}
+zmodem.notify_sent:
+  en: 'Sent %{name} (%{size}) to the remote side'
+  zh-CN: 已发送 %{name}（%{size}）到远端
+zmodem.notify_sent_batch:
+  en: 'Sent %{files} files (%{size}) to the remote side'
+  zh-CN: 已发送 %{files} 个文件（%{size}）到远端
+zmodem.notify_cancelled:
+  en: ZMODEM transfer cancelled
+  zh-CN: ZMODEM 传输已取消
+zmodem.notify_timeout:
+  en: Gave up waiting for a confirmation (remote rz/sz likely timed out)
+  zh-CN: 等待确认超时，已放弃这次 rz / sz
+zmodem.notify_peer_gone:
+  en: The remote rz/sz went silent; transfer aborted
+  zh-CN: 对端 rz / sz 已无响应，传输中止
+zmodem.notify_failed:
+  en: 'ZMODEM transfer failed: %{error}'
+  zh-CN: ZMODEM 传输失败：%{error}
+
+# 设置窗口 · 终端页里的"文件传输"分组
+settings.zmodem_group:
+  en: File transfer (ZMODEM)
+  zh-CN: 文件传输（ZMODEM）
+settings.zmodem_enabled:
+  en: Detect rz / sz automatically
+  zh-CN: 自动识别 rz / sz
+settings.zmodem_ask_receive:
+  en: Ask where to save before receiving
+  zh-CN: 接收前先询问保存位置
+settings.zmodem_download_dir:
+  en: Default receive directory
+  zh-CN: 默认接收目录
+settings.zmodem_download_dir_follow:
+  en: Follow the system download folder
+  zh-CN: 跟随系统下载目录
+settings.zmodem_choose_dir:
+  en: Choose…
+  zh-CN: 选择…
+zmodem.size_unknown:
+  en: unknown
+  zh-CN: 未知

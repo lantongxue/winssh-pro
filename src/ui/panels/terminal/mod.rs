@@ -61,7 +61,7 @@ use crate::{
         bars::{SessionInfoBar, SessionStatusBar},
         dialogs::{
             CommandHistoryDialog, ForwardsHandler, HistoryRunHandler, PortForwardDialog,
-            ShellIntegrationHandler,
+            ShellIntegrationHandler, ZmodemTransferDialog,
         },
         panels::{MonitorEvent, MonitorPanel, SftpPanel, SftpPanelEvent},
         theme::palette,
@@ -421,6 +421,14 @@ impl TerminalPanel {
             }
             TerminalPaneEvent::CommandsRecorded(runs) => {
                 self.record_commands(runs.clone(), cx);
+            }
+            TerminalPaneEvent::ZmodemOffer => {
+                // 远端 `rz` / `sz` 在等交代：弹出确认框。框开在窗口上，
+                // 所以归这层管（窗格够不到窗口）。
+                let Some(emulator) = pane.read(cx).emulator().cloned() else {
+                    return;
+                };
+                ZmodemTransferDialog::open(emulator, window, cx);
             }
         }
     }

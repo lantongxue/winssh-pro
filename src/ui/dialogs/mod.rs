@@ -20,6 +20,7 @@ mod sftp_chmod;
 mod sftp_form;
 mod snippet_form;
 mod snippet_params;
+mod zmodem_transfer;
 
 pub use backup_restore::BackupRestoreDialog;
 
@@ -34,6 +35,7 @@ pub use sftp_chmod::{ChmodHandler, SftpChmodDialog};
 pub use sftp_form::{SftpFormDialog, SftpFormKind, SftpNameHandler};
 pub use snippet_form::{SnippetFormDialog, SnippetSavedHandler};
 pub use snippet_params::{SnippetParamsDialog, SnippetRunHandler};
+pub use zmodem_transfer::ZmodemTransferDialog;
 
 use gpui_kit::{Pixels, Window, px};
 
