@@ -5,6 +5,9 @@
 //!
 //! 远端光标（[`RemoteCursor`]）也是两个协议共用的：RDP 与 VNC 都不把光标画进
 //! 桌面，而是把形状单独发来，面板交给平台当系统光标显示。
+//!
+//! 最后一小块共用的是错误文本：[`strip_source_locations`] —— RDP / VNC 两个
+//! 面板把要摆给用户的失败原因都过它一遍，剥掉 ironrdp 详情里构建机的源码路径。
 
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{self, error::SendError};
@@ -35,6 +38,48 @@ pub fn opaque_frame(width: u32, height: u32, pixels: &[u8]) -> Option<Arc<gpui_k
     Some(Arc::new(gpui_kit::RenderImage::new(vec![
         image::Frame::new(buffer),
     ])))
+}
+
+/// 把错误文本里 ironrdp 的源码位置剥掉，让失败原因只剩对端发生了什么。
+///
+/// ironrdp 的 `Error<Kind>` 显示形如
+/// `[read frame by hint @ /Users/…/framed.rs:260] custom error, caused by: …`：
+/// 方括号里 `@` 之后是构建时捕获的源码路径 —— 发布版里是构建机的
+/// `~/.cargo` 缓存，摆到界面上纯是噪声，还顺带把目录结构泄露给用户。
+/// 这里删掉 ` @ …:行号` 一段，方括号里的上下文与后面的原因链原样留下；
+/// 不带这层格式的句子原样返回，所以 VNC 的错误过一遍也无妨。
+pub fn strip_source_locations(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let Some(close) = rest[open + 1..].find(']') else {
+            break;
+        };
+        out.push_str(&rest[..open]);
+        let inside = &rest[open + 1..open + 1 + close];
+        let mut tail = &rest[open + 1 + close + 1..];
+        match inside.find(" @ ") {
+            // `[上下文 @ 路径:行号]`：路径删掉，上下文留下。
+            Some(at) if at > 0 => {
+                out.push('[');
+                out.push_str(&inside[..at]);
+                out.push(']');
+            }
+            // 空上下文（`[ @ …]`）：连方括号带后面那格空格一起吞。
+            Some(_) => {
+                tail = tail.strip_prefix(' ').unwrap_or(tail);
+            }
+            // 别的方括号不是这层格式，原样搬。
+            None => {
+                out.push('[');
+                out.push_str(inside);
+                out.push(']');
+            }
+        }
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
 }
 
 #[derive(Debug)]
@@ -181,5 +226,32 @@ mod tests {
         drop(rx);
         assert_eq!(Arc::strong_count(&frame), 1);
         assert!(tx.send(frame.clone()).is_err());
+    }
+
+    #[test]
+    fn source_locations_inside_error_brackets_are_stripped() {
+        let text = "[read frame by hint @ /Users/kali/.cargo/registry/src/ironrdp-async-0.10.0/src/framed.rs:260] custom error, caused by: Connection reset by peer (os error 54)";
+        assert_eq!(
+            strip_source_locations(text),
+            "[read frame by hint] custom error, caused by: Connection reset by peer (os error 54)"
+        );
+        // 一条链里两段位置：每段都得洗，不能只认第一段。
+        assert_eq!(
+            strip_source_locations("[connect @ /a/b.rs:1] nope, caused by: [read @ /c/d.rs:2] boom"),
+            "[connect] nope, caused by: [read] boom"
+        );
+    }
+
+    #[test]
+    fn text_without_the_ironrdp_shape_passes_through_untouched() {
+        let text = "连不上 VNC 服务器 10.0.0.7:5900（[提示] 检查对端是否在跑 VNC）。";
+        assert_eq!(strip_source_locations(text), text);
+        assert_eq!(strip_source_locations(""), "");
+    }
+
+    #[test]
+    fn an_empty_context_drops_the_brackets_and_their_space() {
+        // `Error::new("", …)` 的形态：`[ @ …]` 连后面那格空格一起去掉。
+        assert_eq!(strip_source_locations("[ @ /tmp/lib.rs:7] oops"), "oops");
     }
 }

@@ -75,7 +75,7 @@ use gpui_kit::{
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    desktop::RemoteCursor,
+    desktop::{RemoteCursor, strip_source_locations},
     host::Host,
     netstats::LinkStats,
     ui::{
@@ -455,7 +455,8 @@ impl VncPanel {
     }
 
     fn fail(&mut self, reason: SharedString, cx: &mut Context<Self>) {
-        self.phase = VncPhase::Failed(reason);
+        // 和 RDP 面板同一道手：详情里的本机源码路径一律剥掉再摆给用户。
+        self.phase = VncPhase::Failed(strip_source_locations(&reason).into());
         self.inputs = None;
         self.stats = None;
         // 最后一帧还留在画布上，远端光标却不该跟着留：远端藏了光标时，

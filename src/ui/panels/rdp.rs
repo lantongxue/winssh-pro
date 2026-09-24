@@ -52,7 +52,7 @@ use ironrdp::input::{
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    desktop::RemoteCursor,
+    desktop::{RemoteCursor, strip_source_locations},
     host::Host,
     netstats::LinkStats,
     rdp::{RdpInput, RdpKeyboard, RdpOutput, RdpSession},
@@ -407,7 +407,9 @@ impl RdpPanel {
     }
 
     fn fail(&mut self, reason: SharedString, cx: &mut Context<Self>) {
-        self.phase = RdpPhase::Failed(reason);
+        // 详情里可能带着 ironrdp 的源码路径（`[read frame by hint @
+        // ~/.cargo/…/framed.rs:260] …`），摆给用户前剥掉；日志里留的原样。
+        self.phase = RdpPhase::Failed(strip_source_locations(&reason).into());
         self.inputs = None;
         self.stats = None;
         // 最后一帧还留在画布上，远端光标却不该跟着留：远端藏了光标时，
