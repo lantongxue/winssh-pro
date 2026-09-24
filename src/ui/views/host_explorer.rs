@@ -440,9 +440,11 @@ impl HostExplorerView {
         self.recent.insert(0, host.id.clone());
         self.recent.truncate(RECENT_LIMIT);
 
-        // 主机的类型决定开哪一扇会话窗：SSH 进终端，VNC / RDP 各进自己的远端桌面。
+        // 主机的类型决定开哪一扇会话窗：SSH 与 Telnet 都进终端面板（字节流
+        // 同一套），底下协议在 [`crate::ui::panels::TerminalPane::dial`] 里
+        // 分派；VNC / RDP 各进自己的远端桌面。
         let panel = match host.kind {
-            HostKind::Ssh => {
+            HostKind::Ssh | HostKind::Telnet => {
                 let panel = TerminalPanel::new(
                     host.clone(),
                     self.service.clone(),

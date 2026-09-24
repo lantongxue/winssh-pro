@@ -758,6 +758,9 @@ impl HostForm {
             HostKind::Ssh => vec!["Linux".into()],
             HostKind::Vnc => vec![],
             HostKind::Rdp => vec!["Windows".into()],
+            // Telnet 常见于老式内网设备（路由器、交换机、BBS）；不给一个
+            // 默认发行版标签，用户自己填。
+            HostKind::Telnet => vec![],
         }
     }
 
@@ -847,6 +850,7 @@ impl HostForm {
         let username = self.username.read(cx).value().trim().to_string();
         // VNC 没有"以哪个账号进去"这件事 —— 账号只是展示名，空着就补一个。
         // RDP 有，而且 NLA 要它，空着由表单报必填。
+        // Telnet 的 login 提示走的是对端 shell，账号是"记一记"，不填也允许保存。
         let username = if kind == HostKind::Vnc && username.is_empty() {
             "vnc".to_string()
         } else {
@@ -883,7 +887,9 @@ impl HostForm {
         // VNC 只有一种认证：服务器那把密码（[`crate::vnc`]），下拉不画，
         // 落库也固定按密码档存，读回时那一格恰好显示密码框。RDP 同理：
         // CredSSP/NLA 吃的是账号密码，没有密钥/Agent 那两档。
-        let auth_method = if kind.is_remote_desktop() {
+        // Telnet 也没有协议级认证：账号密码都是对端 shell 里现打的，这里
+        // 存下来只当"备忘"，落库走 Password 那一档即可，界面不画下拉。
+        let auth_method = if kind.is_remote_desktop() || kind == HostKind::Telnet {
             AuthMethod::Password
         } else {
             AuthMethod::from_index(
@@ -1068,9 +1074,11 @@ impl HostForm {
     }
 
     /// 认证那一行的左半。VNC 只认一把服务器密码，RDP 的账号密码也不分档 ——
-    /// 两种都收成账号一格。
+    /// 两种都收成账号一格。Telnet 没有协议级认证，账号那一格只是"记一记"，
+    /// 走同一档 UI 免得用户看到"选密钥还是选 Agent"的空白下拉。
     fn render_auth_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.selected_kind(cx).is_remote_desktop() {
+        let kind = self.selected_kind(cx);
+        if kind.is_remote_desktop() || kind == HostKind::Telnet {
             return field(
                 t!("host_form.field_username").into(),
                 Input::new(&self.username).font_family("monospace").w_full(),
@@ -1098,9 +1106,14 @@ impl HostForm {
 
     /// 密码认证给密码框，密钥认证给私钥路径与私钥密码，Agent 转发不需要额外字段。
     /// VNC 只有"服务器那把密码"一档，RDP 是账号密码 + 可选域，都恒等于密码那一格。
+    /// Telnet 也走密码那一格 —— 只是这台"密码"是对端 shell 里 `login:` 之后要打的
+    /// 那一份，我们不在协议层自动填它（见 [`crate::telnet`] 的模块文档）。
     fn render_auth_detail(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let kind = self.selected_kind(cx);
         if kind == HostKind::Vnc {
+            return Some(self.render_password_section(cx).into_any_element());
+        }
+        if kind == HostKind::Telnet {
             return Some(self.render_password_section(cx).into_any_element());
         }
         if kind == HostKind::Rdp {
@@ -1723,7 +1736,10 @@ impl HostFormWindow {
         let settings = match kind {
             HostKind::Vnc => settings.page(self.vnc_page()),
             HostKind::Rdp => settings.page(self.rdp_page()),
-            HostKind::Ssh => settings,
+            // Telnet 没有独立的"协议参数"页 —— 协商是 [`crate::telnet`] 内部
+            // 固定的那几档（ECHO / SGA / NAWS / TTYPE），不给用户调；
+            // 未来要接 `NEW-ENVIRON` 或 LINEMODE 时在这里加一页。
+            HostKind::Ssh | HostKind::Telnet => settings,
         };
         settings.page(self.tags_page())
     }

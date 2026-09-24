@@ -270,7 +270,31 @@ impl TerminalPane {
         }
     }
 
-    /// 开出这条会话的字节源：带主机密钥信任检查，失败则回退到本机 shell。
+    /// 开出这条会话的字节源。按主机类型分派到 SSH 或 Telnet 那两条路径 ——
+    /// 两者共享同一份"先摆占位终端、拨完再 adopt"的骨架，只有底下走的协议
+    /// 与信任检查不同。
+    ///
+    /// - [`HostKind::Ssh`] 走 [`Self::dial_ssh`]：先查 `trusted_hosts` 表，
+    ///   连接失败时可能弹主机密钥确认框。
+    /// - [`HostKind::Telnet`] 走 [`Self::dial_telnet`]：Telnet 没有主机身份
+    ///   这一说（协议本身就没设计），拿到 socket 就是全部；协商走 bridge
+    ///   内部。
+    /// - 其它类型走到这里是逻辑错误：VNC / RDP 不进这个面板。写一行日志
+    ///   后什么也不做，让占位终端把"连接中"停在屏幕上，用户能看见。
+    fn dial(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.host.kind {
+            crate::host::HostKind::Ssh => self.dial_ssh(window, cx),
+            crate::host::HostKind::Telnet => self.dial_telnet(window, cx),
+            other => {
+                log::warn!(
+                    "TerminalPanel 拿到了非终端类型的主机（{}），不去拨号",
+                    other.as_str()
+                );
+            }
+        }
+    }
+
+    /// 拨 SSH：带主机密钥信任检查，失败则回退到本机 shell。
     ///
     /// 流程：
     /// 1. 查询 `trusted_hosts` 表，看 `hostname:port` 是否已有记录。
@@ -278,7 +302,7 @@ impl TerminalPane {
     /// 3. 连接失败且 capture 槽有值 → 首次连接未知主机，弹信任确认框。
     /// 4. 用户确认 → （可选）保存记录 → 发起第二次连接；用户拒绝 → 写拒绝提示。
     /// 5. 其他连接错误（网络、认证、密钥变更）→ 回退到本机 shell（保持已有行为）。
-    fn dial(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn dial_ssh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let host = self.host.clone();
         let placeholder = self.show_placeholder(
             &format!(
@@ -385,6 +409,108 @@ impl TerminalPane {
             }
         })
         .detach();
+    }
+
+    /// 拨 Telnet。与 SSH 的差别只有两件事：
+    /// 1. 没有主机密钥信任这一档 —— 协议本身没设计。少了那一整段"capture →
+    ///    弹框 → 二次拨号"的分支。
+    /// 2. 少了 SFTP / 监控 / 端口转发 —— 都建立在 SSH 的多路复用通道上，
+    ///    Telnet 一条 socket 上开不出这些。因此这里 adopt 之后**不发**
+    ///    `TerminalPaneEvent::Connected`，面板那边的 `self.ssh` 保持 `None`，
+    ///    SFTP 栏与监控栏自然挂不上。
+    ///
+    /// 失败仍然回退到本机 shell：与 SSH 走同一条 `handle_fallback`，让界面
+    /// 始终可用；不同点只是错误文案（下面 `banner_telnet_failed` 那一条）。
+    fn dial_telnet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let host = self.host.clone();
+        let placeholder = self.show_placeholder(
+            &format!(
+                "\x1b[36m{}\x1b[0m（{}，{}）\r\n\x1b[90m{}\x1b[0m\r\n",
+                host.name,
+                host.address(),
+                host.platform,
+                t!("terminal.banner_connecting_telnet"),
+            ),
+            cx,
+        );
+
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = crate::service::TelnetService::new()
+                .connect(&host, window_size())
+                .await;
+            let _ = this.update(cx, |this, cx| match outcome {
+                Ok(conn) => this.adopt_telnet(conn, cx),
+                Err(error) => this.handle_fallback_telnet(&error, &placeholder, cx),
+            });
+        })
+        .detach();
+    }
+
+    /// Telnet 通了：建一条终端，把它交给窗格。
+    ///
+    /// 与 [`Self::adopt`] 的差别就是那条 `Connected` 事件 —— 上层拿到 SSH
+    /// session 之后会去开 SFTP、挂监控、启动保存的转发；Telnet 上这三件
+    /// 都不成立，所以这里干脆不发这个事件，面板那侧看到 `self.ssh` 一直是
+    /// `None` 就知道"这是一条 Telnet"，一切按没有 SSH 通道的分支走。
+    fn adopt_telnet(&mut self, conn: crate::telnet::TelnetConnection, cx: &mut Context<Self>) {
+        let emulator = Emulator::from_telnet(conn, cx);
+        self.attach_emulator(&emulator, cx);
+        emulator.update(cx, |em, cx| {
+            em.write_output(self.telnet_banner().as_bytes(), cx);
+        });
+        self.emulator = Some(emulator);
+        self.error = None;
+        self.remote_shell = true;
+        if self.host.shell_integration {
+            self.install_shell_integration(cx);
+        }
+        cx.notify();
+    }
+
+    /// Telnet 拨不上时的错误展示与本机回退。
+    ///
+    /// 与 SSH 那边 [`Self::handle_fallback`] 是同一套流程，只有顶部那一行
+    /// 错误文案不同（说的不是 "SSH"）—— 复用会误导用户"是不是 SSH 挂了"，
+    /// 拆开来写各自的话。剩下的行为（回落到本机 shell + 弹通知）完全一致。
+    fn handle_fallback_telnet(
+        &mut self,
+        error: &anyhow::Error,
+        placeholder: &Entity<Emulator>,
+        cx: &mut Context<Self>,
+    ) {
+        let err_text = format!("{error:#}");
+        placeholder.update(cx, |em, cx| {
+            let msg = format!(
+                "\r\n\x1b[31m{}\x1b[0m\r\n\x1b[33m{}\x1b[0m\r\n\x1b[90m{}\x1b[0m\r\n\r\n",
+                t!("terminal.banner_telnet_failed", error => err_text),
+                t!("terminal.banner_fell_back"),
+                t!("terminal.banner_telnet_hint"),
+            );
+            em.write_output(msg.as_bytes(), cx);
+        });
+        match Emulator::spawn(None, cx) {
+            Ok(local) => {
+                self.attach_emulator(&local, cx);
+                let banner = self.banner_fallback();
+                local.update(cx, |em, cx| em.write_output(banner.as_bytes(), cx));
+                self.emulator = Some(local);
+                self.error = None;
+                let name = self.host.name.clone();
+                cx.emit(TerminalPaneEvent::Notify(SharedString::from(t!(
+                    "terminal.telnet_failed_notify",
+                    name => name,
+                    error => err_text,
+                ))));
+            }
+            Err(local_err) => {
+                self.error = Some(SharedString::from(t!(
+                    "terminal.both_failed",
+                    error => err_text,
+                    local_error => format!("{local_err:#}"),
+                )));
+            }
+        }
+        cx.notify();
     }
 
     /// SSH 失败时展示错误并回退到本机 shell，保持界面始终可用。
@@ -591,6 +717,24 @@ impl TerminalPane {
             ),
         )]
         .concat()
+    }
+
+    /// Telnet 成功后的开场白。
+    ///
+    /// 说的是"连上了这台 telnetd，接下来按它的提示登录"：Telnet 协议本身
+    /// 不做认证，`login:` 那一步是 telnetd 打进终端的普通字。
+    /// 这一行不做"自动替你填用户名"的事，见 [`crate::telnet`] 的模块文档。
+    fn telnet_banner(&self) -> String {
+        let Host {
+            name, hostname, port, ..
+        } = &self.host;
+        format!(
+            "\x1b[32m{}\x1b[0m\x1b[90m{}:{}\x1b[0m\r\n\x1b[90m{}\x1b[0m\r\n",
+            t!("terminal.banner_connected", name => name),
+            hostname,
+            port,
+            t!("terminal.banner_telnet_login"),
+        )
     }
 
     /// 回退到本机时的补充说明。

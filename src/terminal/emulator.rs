@@ -58,6 +58,7 @@ use super::{
 
 use crate::command_history::{CommandRun, should_record};
 use crate::ssh::{SshHandler, spawn_bridge};
+use crate::telnet::TelnetConnection;
 use russh::{Channel, client::Handle, client::Msg as ClientMsg};
 use rust_i18n::t;
 
@@ -303,10 +304,11 @@ pub enum EmulatorEvent {
     CommandRecorded,
 }
 
-/// 终端的字节源：要么是本机 PTY，要么是远端 SSH 通道。
+/// 终端的字节源：要么是本机 PTY，要么是远端 SSH 通道，要么是远端 Telnet 会话。
 enum Transport {
     Pty(Notifier),
     Ssh(crate::ssh::SshBridge),
+    Telnet(crate::telnet::TelnetBridge),
     None,
 }
 
@@ -478,6 +480,65 @@ impl Emulator {
         })
     }
 
+    /// 基于一条已经建立的 Telnet 会话创建一个终端。
+    ///
+    /// 与 [`Self::from_ssh`] 是同一个形状：`TelnetConnection` 已经握着 socket
+    /// 与两条 OS 线程（reader / writer），这里只把 `bridge` 塞进 `Transport`，
+    /// 再把 `output_rx` 里的字节接到 `write_output` 上 —— 终端本身不知道
+    /// 底下的字节是从 SSH 通道里来的还是从一条 Telnet 里读出来的。
+    ///
+    /// 与 SSH 的差别只在没有 `handle` 那一份 Arc：Telnet 一条 socket 就是
+    /// 一条会话，不会在同一条连接上再开一条 shell 或子系统。
+    pub fn from_telnet(conn: TelnetConnection, cx: &mut App) -> Entity<Self> {
+        let bounds = TerminalBounds::default();
+        let (events_tx, events_rx) = mpsc::unbounded();
+
+        let config = Config {
+            scrolling_history: SCROLL_HISTORY_LINES,
+            semantic_escape_chars: format!("{SEMANTIC_ESCAPE_CHARS}─"),
+            ..Config::default()
+        };
+        let term = Arc::new(FairMutex::new(Term::new(
+            config,
+            &bounds,
+            EventProxy(events_tx.clone()),
+        )));
+
+        let TelnetConnection {
+            bridge,
+            mut output_rx,
+        } = conn;
+
+        cx.new(|cx| {
+            let mut this = Self {
+                term,
+                transport: Transport::Telnet(bridge),
+                parser: Processor::new(),
+                marks: MarkScanner::default(),
+                command: CommandState::Idle,
+                recorded: Vec::new(),
+                bounds,
+                content: Content::default(),
+                title: None,
+                exited: false,
+                last_mouse_cell: None,
+                search: None,
+                scan_epoch: 0,
+                scan_armed: false,
+                _pump: cx.spawn(async move |this, cx| pump(this, events_rx, cx).await),
+                _ssh_forward: None,
+            };
+            this.snapshot();
+            // Telnet 输出转发：从桥那端把远端字节喂回 `write_output`。
+            // 与 SSH 用的是同一条 pump 逻辑，只是通道类型不一样。
+            let forward = cx.spawn(async move |this, cx| {
+                telnet_pump(this, &mut output_rx, cx).await;
+            });
+            this._ssh_forward = Some(forward);
+            this
+        })
+    }
+
     /// 仅用于测试或无需通道的占位终端，不持有任何传输层。
     pub fn new_empty(cx: &mut App) -> Entity<Self> {
         let bounds = TerminalBounds::default();
@@ -564,6 +625,13 @@ impl Emulator {
                     .window_tx
                     .send((size.num_cols as u32, size.num_lines as u32));
             }
+            Transport::Telnet(bridge) => {
+                // Telnet 走 IAC SB NAWS，只带列与行两个数；像素尺寸协议里没有。
+                let size = bounds.window_size();
+                let _ = bridge
+                    .window_tx
+                    .send((size.num_cols as u32, size.num_lines as u32));
+            }
             Transport::None => {}
         }
         // 不在这儿重取快照：这个方法只被元素的 prepaint 调用，紧接着 prepaint
@@ -606,7 +674,7 @@ impl Emulator {
         std::mem::take(&mut self.recorded)
     }
 
-    /// 往对端写一段字节：PTY 时走 PTY，SSH 时走通道。
+    /// 往对端写一段字节：PTY 时走 PTY，SSH / Telnet 时走各自的桥。
     pub fn input(&mut self, bytes: impl Into<Cow<'static, [u8]>>, cx: &mut Context<Self>) {
         // 有输入就意味着用户在跟最新的输出打交道：跳回底部，并撤掉选中
         // —— 那一段的位置是按当前视图记的，滚过之后就不是原来那一段了。
@@ -617,6 +685,18 @@ impl Emulator {
             Transport::Pty(pty) => pty.notify(bytes),
             Transport::Ssh(bridge) => {
                 let _ = bridge.input_tx.send(bytes.into_owned());
+            }
+            Transport::Telnet(bridge) => {
+                // HK Telnet Server 那一类"管道到 cmd.exe"的服务器在 shell
+                // 阶段不做远端回显；bridge 会跟踪"最近用户发送 / 最近服务器
+                // 有回音"的时间戳，一旦发现用户刚打过字而服务器 500ms 静默,
+                // 就把这一帧在本地回显一份。见 [`crate::telnet::LocalEcho`]。
+                let local_echo = bridge.should_local_echo();
+                let owned = bytes.into_owned();
+                let _ = bridge.input_tx.send(owned.clone());
+                if local_echo {
+                    self.write_output(&owned, cx);
+                }
             }
             Transport::None => {
                 // 占位终端：直接回显，给用户一个"还没连上"的反馈
@@ -629,6 +709,9 @@ impl Emulator {
         match &self.transport {
             Transport::Pty(pty) => pty.notify(bytes),
             Transport::Ssh(bridge) => {
+                let _ = bridge.input_tx.send(bytes);
+            }
+            Transport::Telnet(bridge) => {
                 let _ = bridge.input_tx.send(bytes);
             }
             Transport::None => {}
@@ -1156,6 +1239,31 @@ async fn pump(
 async fn ssh_pump(
     this: gpui_kit::WeakEntity<Emulator>,
     mut rx: crate::ssh::SshOutputReceiver,
+    cx: &mut gpui_kit::AsyncApp,
+) {
+    while let Some(data) = rx.recv().await {
+        let outcome = this.update(cx, |this, cx| {
+            this.write_output(&data, cx);
+        });
+        if outcome.is_err() {
+            return;
+        }
+        yield_now().await;
+    }
+}
+
+/// Telnet 输出泵：形状与 [`ssh_pump`] 完全一致，只是接收端类型不同。
+///
+/// 之所以复制一份而不是抽个泛型出来：两边的 `UnboundedReceiver<Vec<u8>>`
+/// 其实是**同一个具体类型**（都是 `tokio::sync::mpsc::UnboundedReceiver`），
+/// 泛型参数会写成 `R: DerefMut<Target=...>` 之类的噪音；直接抄 12 行更好读。
+///
+/// `rx` 用 `&mut` 传进来，是因为 `Emulator::from_telnet` 里已经把接收端
+/// 放在了 `conn` 的解构里，`cx.spawn(async move { ... })` 会把它 move 进
+/// 闭包，再 borrow 给这个函数用 —— 这样也能省一层 `Box::pin`。
+async fn telnet_pump(
+    this: gpui_kit::WeakEntity<Emulator>,
+    rx: &mut crate::telnet::TelnetOutputReceiver,
     cx: &mut gpui_kit::AsyncApp,
 ) {
     while let Some(data) = rx.recv().await {

@@ -77,6 +77,19 @@ env_logger = "0.11"
 russh = { version = "0.63", default-features = false, features = ["aws-lc-rs", "rsa"] }
 ssh-key = { version = "0.7.0-rc.11", features = ["encryption"] }
 
+# Telnet 协议：`telnet` 是 SLMT/telnet-rs（crates.io 上的 crate 名叫 `telnet`），
+# 一个纯协议层的小库 —— 它不碰 socket，也不代跑事件循环，只把已经拿到手的
+# `std::net::TcpStream` 包成 `Telnet<TcpStream>`，读的时候过滤 IAC 并自动回应
+# WILL/WONT/DO/DONT，写的时候把控制命令插进待发队列。我们这边照 SSH 那一条桥的
+# 形状套：`std::net::TcpStream` 开成 nonblocking、丢进 `spawn_blocking` 跑读写循
+# 环，两端接 `mpsc::unbounded_channel`，`Emulator` 收到的还是普通字节。
+#
+# 0.2.5 是 crates.io 上的最新稳定版（作者最后一次发版是 2021 年），API 简单、
+# 无异步 runtime 依赖、不携带任何加密或 C 绑定 —— 与项目"依赖越少越好"的取向
+# 吻合；协商矩阵不完美的那部分（新终端类型、压缩扩展）我们在 `src/telnet/`
+# 里手工补，不去 fork 它。
+telnet = "0.2"
+
 # SFTP 客户端。`russh-sftp` 只讲 SFTP 协议本身，字节流从外面喂进去
 # （`SftpSession::new(stream)`），russh 是它的 dev-dependency 而已 —— 所以这里
 # 用 0.63 的 russh 不会有版本打架；它自己不碰 socket，子系统通道还是我们的

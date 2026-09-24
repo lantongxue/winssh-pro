@@ -2405,6 +2405,21 @@ terminal.banner_ssh_hint:
 terminal.ssh_failed_notify:
   en: "SSH connection to %{name} failed, fell back to this machine: %{error}"
   zh-CN: SSH 连接 %{name} 失败，已回退到本机：%{error}
+terminal.banner_connecting_telnet:
+  en: Connecting over Telnet…
+  zh-CN: 正在通过 Telnet 连接...
+terminal.banner_telnet_failed:
+  en: "Telnet connection failed: %{error}"
+  zh-CN: Telnet 连接失败：%{error}
+terminal.banner_telnet_hint:
+  en: "Hint: check the host address and port; the remote needs a telnetd listening on the port."
+  zh-CN: 提示：检查主机地址与端口是否正确；远端需开启 telnetd 服务。
+terminal.banner_telnet_login:
+  en: "Type the account and password at the remote's login prompt."
+  zh-CN: 请按对端 login 提示输入账号与密码。
+terminal.telnet_failed_notify:
+  en: "Telnet connection to %{name} failed, fell back to this machine: %{error}"
+  zh-CN: Telnet 连接 %{name} 失败，已回退到本机：%{error}
 terminal.both_failed:
   en: "SSH failed: %{error}; the local shell failed too: %{local_error}"
   zh-CN: "SSH 失败：%{error}；本机 Shell 也失败：%{local_error}"
@@ -3225,6 +3240,11 @@ ssh.auth_key_failed:
 ssh.auth_agent_failed:
   en: "Agent authentication failed (methods the remote still offers: %{remaining})"
   zh-CN: Agent 认证失败（对端剩余方法：%{remaining}）
+
+# ── Telnet 连接 ─────────────────────────────────────────────────────────
+telnet.connect_failed:
+  en: "Connecting to %{host}:%{port} failed"
+  zh-CN: "连接到 %{host}:%{port} 失败"
 
 # ── SSH 端口转发 ─────────────────────────────────────────────────────────
 ssh_forward.bind_failed:

@@ -20,6 +20,7 @@ mod session;
 mod sftp;
 mod snippet;
 mod ssh;
+mod telnet;
 mod terminal;
 mod trusted_host;
 mod ui;

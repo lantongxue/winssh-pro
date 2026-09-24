@@ -8,7 +8,8 @@ use gpui_kit::SharedString;
 use rust_i18n::t;
 
 /// 连接类型。一台主机要么是一条 SSH，要么是一个 VNC 桌面，要么是一个 RDP
-/// 远程桌面，落库时存为字符串（`ssh` / `vnc` / `rdp`），读回时按小写匹配。
+/// 远程桌面，要么是一条 Telnet，落库时存为字符串（`ssh` / `vnc` / `rdp` /
+/// `telnet`），读回时按小写匹配。
 ///
 /// 和 [`AuthMethod`] 一样：界面上的下拉按下标折回枚举，不拿那行字反查。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -17,16 +18,18 @@ pub enum HostKind {
     Ssh,
     Vnc,
     Rdp,
+    Telnet,
 }
 
 impl HostKind {
-    pub const ALL: [Self; 3] = [Self::Ssh, Self::Vnc, Self::Rdp];
+    pub const ALL: [Self; 4] = [Self::Ssh, Self::Vnc, Self::Rdp, Self::Telnet];
 
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Ssh => "ssh",
             Self::Vnc => "vnc",
             Self::Rdp => "rdp",
+            Self::Telnet => "telnet",
         }
     }
 
@@ -36,16 +39,19 @@ impl HostKind {
             Self::Ssh => "SSH".into(),
             Self::Vnc => "VNC".into(),
             Self::Rdp => "RDP".into(),
+            Self::Telnet => "Telnet".into(),
         }
     }
 
-    /// 这一档的惯例端口：SSH 22，VNC 5900，RDP 3389。[`crate::host::Host::address`]
+    /// 这一档的惯例端口：SSH 22，VNC 5900，RDP 3389，Telnet 23。
+    /// [`crate::host::Host::address`]
     /// 拿它决定要不要省略端口，表单拿它做换档时的默认值。
     pub fn default_port(&self) -> u16 {
         match self {
             Self::Ssh => 22,
             Self::Vnc => 5900,
             Self::Rdp => 3389,
+            Self::Telnet => 23,
         }
     }
 
@@ -66,6 +72,7 @@ impl HostKind {
         match raw.trim().to_lowercase().as_str() {
             "vnc" => Self::Vnc,
             "rdp" => Self::Rdp,
+            "telnet" => Self::Telnet,
             _ => Self::Ssh,
         }
     }
@@ -375,6 +382,8 @@ mod tests {
         assert_eq!(HostKind::from_str_or_default("VNC"), HostKind::Vnc);
         assert_eq!(HostKind::from_str_or_default("RDP"), HostKind::Rdp);
         assert_eq!(HostKind::from_str_or_default("rdp "), HostKind::Rdp);
+        assert_eq!(HostKind::from_str_or_default("telnet"), HostKind::Telnet);
+        assert_eq!(HostKind::from_str_or_default("Telnet"), HostKind::Telnet);
     }
 
     /// 远程桌面那一档（VNC / RDP）与 SSH 的分叉点：界面拿它决定
@@ -384,6 +393,7 @@ mod tests {
         assert!(!HostKind::Ssh.is_remote_desktop());
         assert!(HostKind::Vnc.is_remote_desktop());
         assert!(HostKind::Rdp.is_remote_desktop());
+        assert!(!HostKind::Telnet.is_remote_desktop());
     }
 
     #[test]
@@ -422,6 +432,12 @@ mod tests {
         assert_eq!(host.address(), "root@10.0.0.1");
         host.port = 3390;
         assert_eq!(host.address(), "root@10.0.0.1:3390");
+
+        host.kind = HostKind::Telnet;
+        host.port = 23;
+        assert_eq!(host.address(), "root@10.0.0.1");
+        host.port = 2323;
+        assert_eq!(host.address(), "root@10.0.0.1:2323");
     }
 
     #[test]
