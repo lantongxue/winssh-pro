@@ -1,5 +1,5 @@
 //! 新建/编辑主机窗口：把主机项按「连接 / 认证 / 高级 / 标签」分类铺在一扇独立窗口里，
-//! 协议专属配置（VNC / RDP）按当下连接类型单独成一级类目，插在「高级」与「标签」之间。
+//! 协议专属配置（VNC / RDP / 串口）按当下连接类型单独成一级类目，插在「高级」与「标签」之间。
 //!
 //! 为什么不是对话框：字段越来越多（代理那一段就是后来才加的），再往一个盖在主窗口
 //! 中央、"问一件事就收起"的弹层里堆，高度与分类都撑不住；而未来要扩展不同的服务器
@@ -44,11 +44,15 @@ use crate::{
     host::{AuthMethod, Host, HostDraft, HostGroup, HostKind},
     proxy::{self, HostProxy, ProxyConfig, ProxyMode},
     rdp::{RdpColorDepth, RdpPerformance, RdpSecurity, RdpSettings},
+    serial::{
+        SerialBaud, SerialDataBits, SerialFlowControl, SerialLineState, SerialParity,
+        SerialSettings, SerialStopBits,
+    },
     vnc::{
         VncClipboardCharset, VncColorDepth, VncEncodingChoice, VncFrameRate, VncProtocolVersion,
         VncSettings,
     },
-    service::{HostService, LocalFileService, SshService},
+    service::{HostService, LocalFileService, SerialService, SshService},
     ui::{
         theme::{AppIcon, appearance, palette},
         views::HostExplorerView,
@@ -56,8 +60,8 @@ use crate::{
 };
 use rust_i18n::t;
 
-/// 连接类型在下拉里的三档，顺序即 [`crate::host::HostKind`] 的编号顺序：
-/// 0 SSH、1 VNC、2 RDP。和认证方式一样按**下标**判断，不比文案。
+/// 连接类型在下拉里的五档，顺序即 [`crate::host::HostKind`] 的编号顺序：
+/// 0 SSH、1 VNC、2 RDP、3 Telnet、4 Serial。和认证方式一样按**下标**判断，不比文案。
 fn host_kinds() -> Vec<SharedString> {
     HostKind::ALL.map(|kind| kind.label()).to_vec()
 }
@@ -105,6 +109,42 @@ fn rdp_color_depths() -> Vec<SharedString> {
 
 fn rdp_performances() -> Vec<SharedString> {
     RdpPerformance::ALL.map(|performance| performance.label()).to_vec()
+}
+
+/// 串口那几档下拉的候选，顺序即各枚举的 `ALL`：波特率 / 数据位 / 校验 /
+/// 停止位 / 流控 / 信号线处置。全按下标折回枚举，和认证方式同一套规矩。
+fn serial_baud_choices() -> Vec<SharedString> {
+    SerialBaud::ALL.map(|baud| baud.label()).to_vec()
+}
+
+fn serial_data_bits_choices() -> Vec<SharedString> {
+    SerialDataBits::ALL.map(|bits| bits.label()).to_vec()
+}
+
+fn serial_parity_choices() -> Vec<SharedString> {
+    SerialParity::ALL.map(|parity| parity.label()).to_vec()
+}
+
+fn serial_stop_bits_choices() -> Vec<SharedString> {
+    SerialStopBits::ALL.map(|stop| stop.label()).to_vec()
+}
+
+fn serial_flow_choices() -> Vec<SharedString> {
+    SerialFlowControl::ALL.map(|flow| flow.label()).to_vec()
+}
+
+/// DTR / RTS 两格共用的一档：不动（跟随系统默认）/ 拉高 / 拉低。
+fn serial_line_choices() -> Vec<SharedString> {
+    SerialLineState::ALL.map(|state| state.label()).to_vec()
+}
+
+/// 「检测到的串口」下拉的候选：头一行是"还没挑"的说明行，其余是本机枚举
+/// 出来的设备名。挑中一条是**取用** —— 把设备路径填进「串口设备」那格，
+/// 不是建立引用，和保险箱那几个取用下拉同一个模式。
+fn serial_port_picks(ports: &[SharedString]) -> Vec<SharedString> {
+    let mut items = vec![SharedString::from(t!("host_form.serial_pick_none"))];
+    items.extend(ports.iter().cloned());
+    items
 }
 
 /// 开/关两格（RDP 的剪贴板与压缩用）。0 是开，1 是关 —— 和共享档同一个
@@ -211,12 +251,15 @@ type EditedHost = (Host, SharedString);
 pub struct HostForm {
     name: Entity<InputState>,
     group: Entity<InputState>,
-    /// 连接类型：SSH / VNC / RDP。它决定这一台主机怎么连、表单认哪几格，
-    /// 以及落库后 [`crate::ui::views::HostExplorerView::open_host`] 开哪种面板。
+    /// 连接类型：SSH / VNC / RDP / Telnet / 串口。它决定这一台主机怎么连、
+    /// 表单认哪几格，以及落库后 [`crate::ui::views::HostExplorerView::open_host`]
+    /// 开哪种面板。
     kind: Entity<SelectState<Vec<SharedString>>>,
     /// 新建还是编辑。换连接类型时只有新建会顺手改端口和标签默认值 ——
     /// 编辑一台已有主机不该把用户填过的端口抹成惯例端口。
     is_new: bool,
+    /// 主机名或 IP。串口主机这一格是**设备路径**（`/dev/cu.usbserial-0001`、
+    /// `COM3`……），标签与提示语跟着连接类型换，见 [`Self::render_address_row`]。
     hostname: Entity<InputState>,
     port: Entity<InputState>,
     username: Entity<InputState>,
@@ -246,6 +289,28 @@ pub struct HostForm {
     rdp_compression: Entity<SelectState<Vec<SharedString>>>,
     /// Windows 域（`DOMAIN\user` 的那个 `DOMAIN`），空串是本地账号。
     rdp_domain: Entity<InputState>,
+    /// 串口那七档下拉 + 本地回显开关。设备路径复用上面那格 `hostname`
+    ///（标签跟着连接类型换成「串口设备」），这里只管线路参数。只有连接
+    /// 类型是串口才画出来 —— 状态常驻是因为换回别的协议再换回来，
+    /// 用户拧过的档位不该蒸发。
+    serial_baud: Entity<SelectState<Vec<SharedString>>>,
+    serial_data_bits: Entity<SelectState<Vec<SharedString>>>,
+    serial_parity: Entity<SelectState<Vec<SharedString>>>,
+    serial_stop_bits: Entity<SelectState<Vec<SharedString>>>,
+    serial_flow: Entity<SelectState<Vec<SharedString>>>,
+    /// 开端口时 DTR / RTS 两条信号线的处置（不动 / 拉高 / 拉低）。
+    /// 出厂是"不动" —— 拉高会复位某些开发板、拉低会让某些设备不再回
+    /// 数据，那两种后果只能由用户明确点开（见 [`crate::serial::SerialLineState`]）。
+    serial_dtr: Entity<SelectState<Vec<SharedString>>>,
+    serial_rts: Entity<SelectState<Vec<SharedString>>>,
+    /// 本地回显开关（开/关两格，0 开 1 关）。对端不回显的裸设备才开。
+    serial_local_echo: Entity<SelectState<Vec<SharedString>>>,
+    /// 枚举出来的本机串口设备名（`/dev/cu.*`、`COMx`……）。表单打开时
+    /// 枚举一次，刷新按钮再枚举一次；枚举失败保持空表，手填路径不受影响。
+    serial_ports: Vec<SharedString>,
+    /// 「检测到的串口」下拉：选中即把设备路径写进「串口设备」那格
+    ///（[`Self::apply_serial_port_pick`]）。
+    serial_port_pick: Entity<SelectState<Vec<SharedString>>>,
     proxy_jump: Entity<SelectState<Vec<SharedString>>>,
     /// 走不走 SOCKS5 代理：不使用 / 跟随全局 / 配置代理，见 [`proxy_modes`]。
     ///
@@ -530,6 +595,94 @@ impl HostForm {
                 .placeholder(t!("host_form.field_rdp_domain_placeholder"))
                 .default_value(initial_rdp.domain.clone())
         });
+        let initial_serial = match editing {
+            Some((host, _)) => host.serial,
+            None => SerialSettings::default(),
+        };
+        let serial_baud = cx.new(|cx| {
+            SelectState::new(
+                serial_baud_choices(),
+                Some(IndexPath::new(initial_serial.baud.index())),
+                window,
+                cx,
+            )
+        });
+        let serial_data_bits = cx.new(|cx| {
+            SelectState::new(
+                serial_data_bits_choices(),
+                Some(IndexPath::new(initial_serial.data_bits.index())),
+                window,
+                cx,
+            )
+        });
+        let serial_parity = cx.new(|cx| {
+            SelectState::new(
+                serial_parity_choices(),
+                Some(IndexPath::new(initial_serial.parity.index())),
+                window,
+                cx,
+            )
+        });
+        let serial_stop_bits = cx.new(|cx| {
+            SelectState::new(
+                serial_stop_bits_choices(),
+                Some(IndexPath::new(initial_serial.stop_bits.index())),
+                window,
+                cx,
+            )
+        });
+        let serial_flow = cx.new(|cx| {
+            SelectState::new(
+                serial_flow_choices(),
+                Some(IndexPath::new(initial_serial.flow_control.index())),
+                window,
+                cx,
+            )
+        });
+        let serial_dtr = cx.new(|cx| {
+            SelectState::new(
+                serial_line_choices(),
+                Some(IndexPath::new(initial_serial.dtr.index())),
+                window,
+                cx,
+            )
+        });
+        let serial_rts = cx.new(|cx| {
+            SelectState::new(
+                serial_line_choices(),
+                Some(IndexPath::new(initial_serial.rts.index())),
+                window,
+                cx,
+            )
+        });
+        // 开/关档：0 开、1 关，所以取反。
+        let serial_local_echo = cx.new(|cx| {
+            SelectState::new(
+                toggle_choices(),
+                Some(IndexPath::new(usize::from(!initial_serial.local_echo))),
+                window,
+                cx,
+            )
+        });
+        // 设备枚举结果此刻还是空的（要扫系统），打开表单后由窗口那层补扫
+        //（[`HostFormWindow::new`]）；先把只有头一行的下拉摆上。
+        let serial_ports: Vec<SharedString> = Vec::new();
+        let serial_port_pick = cx.new(|cx| {
+            SelectState::new(
+                serial_port_picks(&serial_ports),
+                Some(IndexPath::default()),
+                window,
+                cx,
+            )
+        });
+        cx.subscribe_in(
+            &serial_port_pick,
+            window,
+            |this, _, _: &SelectEvent<Vec<SharedString>>, window, cx| {
+                this.apply_serial_port_pick(window, cx);
+            },
+        )
+        .detach();
         let kind = cx.new(|cx| {
             SelectState::new(
                 host_kinds(),
@@ -654,6 +807,16 @@ impl HostForm {
             rdp_clipboard,
             rdp_compression,
             rdp_domain,
+            serial_baud,
+            serial_data_bits,
+            serial_parity,
+            serial_stop_bits,
+            serial_flow,
+            serial_dtr,
+            serial_rts,
+            serial_local_echo,
+            serial_ports,
+            serial_port_pick,
             proxy_jump,
             proxy_mode,
             proxy_host,
@@ -718,6 +881,49 @@ impl HostForm {
         Some(credential.name)
     }
 
+    /// 从「检测到的串口」里挑中了一条：把设备路径写进「串口设备」那格。
+    ///
+    /// 头一行（下标 0）是"还没挑"，落到那儿什么也不做 —— 下拉每次点开
+    /// 合上都会发一次事件，那不是一次选择。
+    fn apply_serial_port_pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let row = self
+            .serial_port_pick
+            .read(cx)
+            .selected_index(cx)
+            .map(|index| index.row);
+        let Some(device) = row
+            .and_then(|row| row.checked_sub(1))
+            .and_then(|ix| self.serial_ports.get(ix))
+            .cloned()
+        else {
+            return;
+        };
+        self.hostname.update(cx, |state, cx| {
+            state.set_value(device.to_string(), window, cx)
+        });
+        cx.notify();
+    }
+
+    /// 「重新检测串口」那颗按钮：再枚举一次，替换下拉的候选。
+    ///
+    /// 枚举走 [`SerialService::list_ports`]（阻塞活派到 blocking 池），
+    /// 结果回来才换下拉；失败时服务层给空表，这里不另弹通知。
+    fn refresh_serial_ports(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            let ports = SerialService::new().list_ports().await;
+            this.update_in(cx, |this, window, cx| {
+                this.serial_ports = ports.into_iter().map(SharedString::from).collect();
+                let items = serial_port_picks(&this.serial_ports);
+                this.serial_port_pick.update(cx, |select, cx| {
+                    select.set_items(items, window, cx);
+                });
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// 下拉现在选中的是哪一档。按下标折回枚举，不拿那行字反查 —— 见 [`host_kinds`]。
     fn selected_kind(&self, cx: &App) -> HostKind {
         HostKind::from_index(
@@ -751,7 +957,8 @@ impl HostForm {
 
     /// 新建主机在各档连接类型下的出厂标签。
     ///
-    /// 只放操作系统这类分类标签；协议（SSH / VNC / RDP）不再当标签存 ——
+    /// 只放操作系统这类分类标签；协议（SSH / VNC / RDP / Telnet / 串口）
+    /// 不再当标签存 ——
     /// 卡片直接从 `kind` 画成一枚徽标，跟着换型走，不会因为复制、改档而对不上。
     fn default_tags(kind: HostKind) -> Vec<SharedString> {
         match kind {
@@ -761,6 +968,9 @@ impl HostForm {
             // Telnet 常见于老式内网设备（路由器、交换机、BBS）；不给一个
             // 默认发行版标签，用户自己填。
             HostKind::Telnet => vec![],
+            // 串口连的可能是任何东西（开发板、交换机 console、PLC），
+            // 不给默认标签。
+            HostKind::Serial => vec![],
         }
     }
 
@@ -786,20 +996,55 @@ impl HostForm {
         }
     }
 
-    /// 换连接类型之后跟进新建主机的两处出厂值：
+    /// 串口那几档下拉现在选中的折回一份 [`SerialSettings`]。按下标判断，
+    /// 不比文案。
+    fn selected_serial(&self, cx: &App) -> SerialSettings {
+        let row = |select: &Entity<SelectState<Vec<SharedString>>>| {
+            select
+                .read(cx)
+                .selected_index(cx)
+                .map(|index| index.row)
+                .unwrap_or_default()
+        };
+        SerialSettings {
+            baud: SerialBaud::from_index(row(&self.serial_baud)),
+            data_bits: SerialDataBits::from_index(row(&self.serial_data_bits)),
+            parity: SerialParity::from_index(row(&self.serial_parity)),
+            stop_bits: SerialStopBits::from_index(row(&self.serial_stop_bits)),
+            flow_control: SerialFlowControl::from_index(row(&self.serial_flow)),
+            dtr: SerialLineState::from_index(row(&self.serial_dtr)),
+            rts: SerialLineState::from_index(row(&self.serial_rts)),
+            // 开/关两格，0 就是开 —— 和共享档、RDP 的剪贴板同一个写法。
+            local_echo: row(&self.serial_local_echo) == 0,
+        }
+    }
+
+    /// 换连接类型之后跟进几处出厂值：
     ///
+    /// - 「主机名」/「串口设备」两格的提示语跟着类型换 —— 它说的是"这一格
+    ///   填什么"，编辑老主机换档时也换。
     /// - 端口换回这一档的惯例端口（22 / 5900）—— 但**只在它还是惯例端口或空着**
     ///   的时候改，用户自己敲过的自定义端口不该被换档顺手抹掉。
     /// - 标签同理：还停在出厂标签上就跟着换档，改过一个字就不动。
     ///
-    /// 编辑一台已有主机两处都不动：它的端口和标签是用户存下来的事实，
+    /// 编辑一台已有主机后两处都不动：它的端口和标签是用户存下来的事实，
     /// 换档只是换一种看法。
     fn on_kind_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let kind = self.selected_kind(cx);
+
+        // 串口主机那一格装的是设备路径，提示语换一个例子 —— 用户不知道
+        // `/dev/cu.usbserial-0001` 长什么样时，这一行就是说明书。
+        let placeholder = match kind {
+            HostKind::Serial => t!("host_form.serial_device_placeholder"),
+            _ => t!("host_form.hostname_placeholder"),
+        };
+        self.hostname.update(cx, |state, cx| {
+            state.set_placeholder(placeholder, window, cx)
+        });
+
         if !self.is_new {
             return;
         }
-        let kind = self.selected_kind(cx);
-
         let port = self.port.read(cx).value().trim().to_string();
         let conventional = port.is_empty()
             || HostKind::ALL
@@ -851,6 +1096,7 @@ impl HostForm {
         // VNC 没有"以哪个账号进去"这件事 —— 账号只是展示名，空着就补一个。
         // RDP 有，而且 NLA 要它，空着由表单报必填。
         // Telnet 的 login 提示走的是对端 shell，账号是"记一记"，不填也允许保存。
+        // 串口同 Telnet：设备那头的 login 是它自己 shell 的事，账号只是备忘。
         let username = if kind == HostKind::Vnc && username.is_empty() {
             "vnc".to_string()
         } else {
@@ -889,7 +1135,11 @@ impl HostForm {
         // CredSSP/NLA 吃的是账号密码，没有密钥/Agent 那两档。
         // Telnet 也没有协议级认证：账号密码都是对端 shell 里现打的，这里
         // 存下来只当"备忘"，落库走 Password 那一档即可，界面不画下拉。
-        let auth_method = if kind.is_remote_desktop() || kind == HostKind::Telnet {
+        // 串口更没有认证这一层：设备那头若弹 login，那是它自己的 shell 在
+        // 说话，账号密码同样只是备忘。
+        let auth_method = if kind.is_remote_desktop()
+            || matches!(kind, HostKind::Telnet | HostKind::Serial)
+        {
             AuthMethod::Password
         } else {
             AuthMethod::from_index(
@@ -945,6 +1195,7 @@ impl HostForm {
                 proxy,
                 vnc: self.selected_vnc(cx),
                 rdp: self.selected_rdp(cx),
+                serial: self.selected_serial(cx),
             },
         ))
     }
@@ -1056,7 +1307,19 @@ impl HostForm {
         )
     }
 
-    fn render_address_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// 地址那一行。绝大多数协议是「主机名 + 端口」两格；串口主机没有这对
+    /// 概念 —— 设备路径就是它的"地址"，两格并成一格（见
+    /// [`crate::host::Host::address`]），下面再接一行设备枚举下拉
+    ///（[`Self::render_serial_pick_row`]）。
+    fn render_address_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.selected_kind(cx) == HostKind::Serial {
+            return field(
+                t!("host_form.field_serial_device").into(),
+                Input::new(&self.hostname).font_family("monospace").w_full(),
+                cx,
+            )
+            .into_any_element();
+        }
         two_field_row(
             field(
                 t!("host_form.field_hostname").into(),
@@ -1071,14 +1334,43 @@ impl HostForm {
             ),
             1.,
         )
+        .into_any_element()
+    }
+
+    /// 「检测到的串口」那一行：一个下拉加一颗重新检测按钮。下拉选中即把
+    /// 设备名写进上面那格（[`Self::apply_serial_port_pick`]）；枚举结果在
+    /// 表单打开时扫一次、点刷新再扫一次。
+    fn render_serial_pick_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        field(
+            t!("host_form.field_serial_detect").into(),
+            h_flex()
+                .w_full()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(Select::new(&self.serial_port_pick).w_full()),
+                )
+                .child(
+                    Button::new("host-form-serial-refresh")
+                        .ghost()
+                        .icon(Icon::new(AppIcon::RefreshCw))
+                        .tooltip(t!("host_form.serial_refresh_tooltip"))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.refresh_serial_ports(window, cx)
+                        })),
+                ),
+            cx,
+        )
     }
 
     /// 认证那一行的左半。VNC 只认一把服务器密码，RDP 的账号密码也不分档 ——
     /// 两种都收成账号一格。Telnet 没有协议级认证，账号那一格只是"记一记"，
-    /// 走同一档 UI 免得用户看到"选密钥还是选 Agent"的空白下拉。
+    /// 走同一档 UI 免得用户看到"选密钥还是选 Agent"的空白下拉；串口同理。
     fn render_auth_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let kind = self.selected_kind(cx);
-        if kind.is_remote_desktop() || kind == HostKind::Telnet {
+        if kind.is_remote_desktop() || matches!(kind, HostKind::Telnet | HostKind::Serial) {
             return field(
                 t!("host_form.field_username").into(),
                 Input::new(&self.username).font_family("monospace").w_full(),
@@ -1107,13 +1399,14 @@ impl HostForm {
     /// 密码认证给密码框，密钥认证给私钥路径与私钥密码，Agent 转发不需要额外字段。
     /// VNC 只有"服务器那把密码"一档，RDP 是账号密码 + 可选域，都恒等于密码那一格。
     /// Telnet 也走密码那一格 —— 只是这台"密码"是对端 shell 里 `login:` 之后要打的
-    /// 那一份，我们不在协议层自动填它（见 [`crate::telnet`] 的模块文档）。
+    /// 那一份，我们不在协议层自动填它（见 [`crate::telnet`] 的模块文档）；
+    /// 串口同样是"记一记"。
     fn render_auth_detail(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let kind = self.selected_kind(cx);
         if kind == HostKind::Vnc {
             return Some(self.render_password_section(cx).into_any_element());
         }
-        if kind == HostKind::Telnet {
+        if matches!(kind, HostKind::Telnet | HostKind::Serial) {
             return Some(self.render_password_section(cx).into_any_element());
         }
         if kind == HostKind::Rdp {
@@ -1465,6 +1758,79 @@ impl HostForm {
             )
     }
 
+    /// 串口那一段：线路参数（波特率 / 数据位 / 校验 / 停止位 / 流控）、
+    /// 两条信号线的开端口处置、本地回显，共八格，排成四行。
+    ///
+    /// 全在「串口」页里画，但状态常驻在表单上 —— 只有连接类型是串口才
+    /// 露出来（见 [`HostFormWindow::render_settings`]）。
+    fn render_serial_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_3()
+            .w_full()
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_serial_baud").into(),
+                    Select::new(&self.serial_baud).w_full(),
+                    cx,
+                ),
+                1.,
+                field(
+                    t!("host_form.field_serial_data_bits").into(),
+                    Select::new(&self.serial_data_bits).w_full(),
+                    cx,
+                ),
+                1.,
+            ))
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_serial_parity").into(),
+                    Select::new(&self.serial_parity).w_full(),
+                    cx,
+                ),
+                1.,
+                field(
+                    t!("host_form.field_serial_stop_bits").into(),
+                    Select::new(&self.serial_stop_bits).w_full(),
+                    cx,
+                ),
+                1.,
+            ))
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_serial_flow").into(),
+                    Select::new(&self.serial_flow).w_full(),
+                    cx,
+                ),
+                1.,
+                field(
+                    t!("host_form.field_serial_local_echo").into(),
+                    Select::new(&self.serial_local_echo).w_full(),
+                    cx,
+                ),
+                1.,
+            ))
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_serial_dtr").into(),
+                    Select::new(&self.serial_dtr).w_full(),
+                    cx,
+                ),
+                1.,
+                field(
+                    t!("host_form.field_serial_rts").into(),
+                    Select::new(&self.serial_rts).w_full(),
+                    cx,
+                ),
+                1.,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(t!("host_form.serial_hint"))),
+            )
+    }
+
     fn render_tag_chip(
         &self,
         ix: usize,
@@ -1535,12 +1901,14 @@ impl Render for HostForm {
             .child(self.render_kind_row(cx))
             .child(self.render_identity_row(cx))
             .child(self.render_address_row(cx))
+            .child(self.render_serial_pick_row(cx))
             .child(self.render_auth_row(cx))
             .children(self.render_auth_detail(cx))
             .child(self.render_platform(cx))
             .child(self.render_jump(cx))
             .child(self.render_proxy_section(cx))
             .child(self.render_vnc_section(cx))
+            .child(self.render_serial_section(cx))
             .child(self.render_tags_row(cx))
     }
 }
@@ -1666,6 +2034,10 @@ impl HostFormWindow {
         // 表单里任何一处 notify（换认证档、加删标签、从保险箱取用回填）都要让这一屏
         // 重画一遍 —— 条件区段露不露、标签 chips 少不少，都是从表单现读出来的。
         cx.observe(&form, |_, _, cx| cx.notify()).detach();
+        // 打开就扫一遍本机串口，喂「检测到的串口」下拉 —— 枚举是阻塞活，
+        // 在表单构造里等不起，所以放这儿异步补扫；结果回来前那行只是个
+        // 只有"手动输入"的头。
+        form.update(cx, |form, cx| form.refresh_serial_ports(window, cx));
 
         Self {
             form,
@@ -1728,14 +2100,20 @@ impl HostFormWindow {
                 page_ix: 0,
                 group_ix: None,
             })
-            .page(self.connection_page())
-            .page(self.auth_page())
-            .page(self.advanced_page());
+            .page(self.connection_page(kind))
+            .page(self.auth_page());
+        // 串口是本机设备：没有跳板机也没有 SOCKS5 代理（那是网络协议才有的
+        // 两个概念），「高级」页整个不挂；别的类型照旧。
+        let settings = match kind {
+            HostKind::Serial => settings,
+            _ => settings.page(self.advanced_page()),
+        };
         // 协议专属配置是一级类目，插在「高级」与「标签」之间：
         // 一台主机同一时刻只有一种连接类型，对应那一页跟着类型出现。
         let settings = match kind {
             HostKind::Vnc => settings.page(self.vnc_page()),
             HostKind::Rdp => settings.page(self.rdp_page()),
+            HostKind::Serial => settings.page(self.serial_page()),
             // Telnet 没有独立的"协议参数"页 —— 协商是 [`crate::telnet`] 内部
             // 固定的那几档（ECHO / SGA / NAWS / TTYPE），不给用户调；
             // 未来要接 `NEW-ENVIRON` 或 LINEMODE 时在这里加一页。
@@ -1744,18 +2122,26 @@ impl HostFormWindow {
         settings.page(self.tags_page())
     }
 
-    fn connection_page(&self) -> SettingPage {
+    fn connection_page(&self, kind: HostKind) -> SettingPage {
+        let group = SettingGroup::new()
+            .title(t!("host_form.group_basic"))
+            .item(self.row(|this, cx| this.render_kind_row(cx).into_any_element()))
+            .item(self.row(|this, cx| this.render_identity_row(cx).into_any_element()))
+            .item(self.row(|this, cx| this.render_address_row(cx).into_any_element()));
+        // 串口主机多一行「检测到的串口」：设备名没人记得住，那一行负责
+        // 枚举出来让用户挑（挑中即填进上面那格）；别的协议主机没有设备可枚举。
+        let group = match kind {
+            HostKind::Serial => {
+                group.item(self.row(|this, cx| this.render_serial_pick_row(cx).into_any_element()))
+            }
+            _ => group,
+        };
         SettingPage::new(t!("host_form.page_connection"))
             .icon(AppIcon::Server)
             .default_open(true)
             .resettable(false)
             .group(
-                SettingGroup::new()
-                    .title(t!("host_form.group_basic"))
-                    .item(self.row(|this, cx| this.render_kind_row(cx).into_any_element()))
-                    .item(self.row(|this, cx| this.render_identity_row(cx).into_any_element()))
-                    .item(self.row(|this, cx| this.render_address_row(cx).into_any_element()))
-                    .item(self.row(|this, cx| this.render_platform(cx).into_any_element())),
+                group.item(self.row(|this, cx| this.render_platform(cx).into_any_element())),
             )
     }
 
@@ -1814,6 +2200,18 @@ impl HostFormWindow {
             .group(
                 SettingGroup::new()
                     .item(self.row(|this, cx| this.render_rdp_section(cx).into_any_element())),
+            )
+    }
+
+    /// 串口专属配置页：同 [`Self::vnc_page`]，一级类目、单组无头衔。
+    fn serial_page(&self) -> SettingPage {
+        SettingPage::new(t!("host_form.page_serial"))
+            .icon(AppIcon::Cable)
+            .default_open(true)
+            .resettable(false)
+            .group(
+                SettingGroup::new()
+                    .item(self.row(|this, cx| this.render_serial_section(cx).into_any_element())),
             )
     }
 
@@ -2011,6 +2409,45 @@ mod tests {
                 proxy: HostProxy::default(),
                 vnc: VncSettings::default(),
                 rdp: RdpSettings::default(),
+                serial: SerialSettings::default(),
+                shell_integration: false,
+            },
+            "生产环境".into(),
+        )
+    }
+
+    /// 一台串口主机：设备路径在 `hostname` 那一格，参数是拧过的那一份。
+    fn serial_host() -> EditedHost {
+        (
+            Host {
+                id: "console-01".into(),
+                name: "console-01".into(),
+                kind: HostKind::Serial,
+                user: "".into(),
+                hostname: "/dev/cu.usbserial-0001".into(),
+                port: 0,
+                platform: "Ubuntu".into(),
+                auth_method: AuthMethod::Password,
+                password: "".into(),
+                key_content: "".into(),
+                key_passphrase: "".into(),
+                jump_host_id: None,
+                monitor_intervals: MonitorIntervals::default(),
+                forwards: Vec::new(),
+                tags: Vec::new(),
+                proxy: HostProxy::default(),
+                vnc: VncSettings::default(),
+                rdp: RdpSettings::default(),
+                serial: SerialSettings {
+                    baud: SerialBaud::B9600,
+                    data_bits: SerialDataBits::Seven,
+                    parity: SerialParity::Even,
+                    stop_bits: SerialStopBits::Two,
+                    flow_control: SerialFlowControl::Hardware,
+                    dtr: SerialLineState::Clear,
+                    rts: SerialLineState::Assert,
+                    local_echo: true,
+                },
                 shell_integration: false,
             },
             "生产环境".into(),
@@ -2115,6 +2552,30 @@ mod tests {
             .expect("这张表填得是全的");
         assert_eq!(draft.key_content, KEY_TEXT);
         assert_eq!(draft.key_passphrase, " pass ");
+    }
+
+    /// 串口主机走表单这一趟：设备路径整份落在 `hostname`（带前后的空白剪掉），
+    /// 参数按下拉折回，认证固定压到密码档（串口没有协议级认证，那一页只是
+    /// "记一记"）；账号空着也允许保存。
+    #[gpui_kit::test]
+    fn a_serial_host_drafts_the_device_path_and_settings(cx: &mut gpui_kit::TestAppContext) {
+        let (edited, _) = serial_host();
+        let expected = edited.serial;
+        let (form, cx) = draw_form(cx, Some(serial_host()));
+
+        form.read_with(cx, |this, cx| {
+            assert_eq!(this.selected_kind(cx), HostKind::Serial);
+            assert_eq!(this.selected_serial(cx), expected, "参数没有预填回来");
+        });
+
+        let (_, draft) = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect("这张表填得是全的");
+        assert_eq!(draft.kind, HostKind::Serial);
+        assert_eq!(draft.hostname, "/dev/cu.usbserial-0001");
+        assert_eq!(draft.port, 0, "串口没有端口这一说");
+        assert_eq!(draft.auth_method, AuthMethod::Password);
+        assert_eq!(draft.serial, expected);
     }
 
     /// 保险箱里一条都没有时那个下拉整个不画 —— 一个永远只有"还没挑"

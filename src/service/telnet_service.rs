@@ -52,6 +52,7 @@ mod tests {
         Host {
             vnc: Default::default(),
             rdp: Default::default(),
+            serial: Default::default(),
             kind: HostKind::Telnet,
             id: "test-telnet-unreachable".into(),
             name: "telnet-unreachable".into(),

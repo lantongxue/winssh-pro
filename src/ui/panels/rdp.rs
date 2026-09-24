@@ -1057,6 +1057,7 @@ mod tests {
                     clipboard: false,
                     ..Default::default()
                 },
+                serial: Default::default(),
                 shell_integration: false,
             };
             let panel = RdpPanel::new(host, dock.downgrade(), window, cx);

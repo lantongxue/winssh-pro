@@ -57,6 +57,7 @@ use super::{
 };
 
 use crate::command_history::{CommandRun, should_record};
+use crate::serial::SerialConnection;
 use crate::ssh::{SshHandler, spawn_bridge};
 use crate::telnet::TelnetConnection;
 use russh::{Channel, client::Handle, client::Msg as ClientMsg};
@@ -312,11 +313,13 @@ pub enum EmulatorEvent {
     ZmodemFinished,
 }
 
-/// 终端的字节源：要么是本机 PTY，要么是远端 SSH 通道，要么是远端 Telnet 会话。
+/// 终端的字节源：要么是本机 PTY，要么是远端 SSH 通道，要么是远端 Telnet
+/// 会话，要么是本机串口设备。
 enum Transport {
     Pty(Notifier),
     Ssh(crate::ssh::SshBridge),
     Telnet(crate::telnet::TelnetBridge),
+    Serial(crate::serial::SerialBridge),
     None,
 }
 
@@ -649,7 +652,70 @@ impl Emulator {
             // Telnet 输出转发：从桥那端把远端字节喂回 `write_output`。
             // 与 SSH 用的是同一条 pump 逻辑，只是通道类型不一样。
             let forward = cx.spawn(async move |this, cx| {
-                telnet_pump(this, &mut output_rx, cx).await;
+                remote_pump(this, &mut output_rx, cx).await;
+            });
+            this._ssh_forward = Some(forward);
+            this
+        })
+    }
+
+    /// 基于一条已经打开的串口会话创建一个终端。
+    ///
+    /// 与 [`Self::from_telnet`] 逐字同构：`SerialConnection` 已经握着设备
+    /// 句柄与两条 OS 线程（reader / writer），这里只把 `bridge` 塞进
+    /// `Transport`，再把 `output_rx` 里的字节接到 `write_output` 上 ——
+    /// 终端本身不知道底下的字节是从 SSH 通道、Telnet 还是串口来的。
+    ///
+    /// 与 Telnet 的差别：串口是本机设备，没有窗口尺寸协议（[`Self::resize`]
+    /// 对它是个空操作），本地回显是用户在主机表单里拧的明确开关而不是
+    /// 自适应嗅探（见 `Transport::Serial` 那条分支的注释）。
+    pub fn from_serial(conn: SerialConnection, cx: &mut App) -> Entity<Self> {
+        let bounds = TerminalBounds::default();
+        let (events_tx, events_rx) = mpsc::unbounded();
+
+        let config = Config {
+            scrolling_history: SCROLL_HISTORY_LINES,
+            semantic_escape_chars: format!("{SEMANTIC_ESCAPE_CHARS}─"),
+            ..Config::default()
+        };
+        let term = Arc::new(FairMutex::new(Term::new(
+            config,
+            &bounds,
+            EventProxy(events_tx.clone()),
+        )));
+
+        let SerialConnection {
+            bridge,
+            mut output_rx,
+        } = conn;
+
+        cx.new(|cx| {
+            let mut this = Self {
+                term,
+                transport: Transport::Serial(bridge),
+                parser: Processor::new(),
+                marks: MarkScanner::default(),
+                command: CommandState::Idle,
+                recorded: Vec::new(),
+                bounds,
+                content: Content::default(),
+                title: None,
+                exited: false,
+                last_mouse_cell: None,
+                search: None,
+                scan_epoch: 0,
+                scan_armed: false,
+                zmodem: ZmodemSlot::new(),
+                #[cfg(test)]
+                sent_by_test: Vec::new(),
+                _pump: cx.spawn(async move |this, cx| pump(this, events_rx, cx).await),
+                _ssh_forward: None,
+            };
+            this.snapshot();
+            // 串口输出转发：从桥那端把设备字节喂回 `write_output`。
+            // 与 SSH / Telnet 用的是同一条 pump 逻辑。
+            let forward = cx.spawn(async move |this, cx| {
+                remote_pump(this, &mut output_rx, cx).await;
             });
             this._ssh_forward = Some(forward);
             this
@@ -752,6 +818,10 @@ impl Emulator {
                     .window_tx
                     .send((size.num_cols as u32, size.num_lines as u32));
             }
+            Transport::Serial(_) => {
+                // 串口没有窗口尺寸这一说：NAWS 是 Telnet 的协商，线上只有字节。
+                // 屏幕多大只影响本地渲染，对端一无所知。
+            }
             Transport::None => {}
         }
         // 不在这儿重取快照：这个方法只被元素的 prepaint 调用，紧接着 prepaint
@@ -805,7 +875,7 @@ impl Emulator {
         std::mem::take(&mut self.recorded)
     }
 
-    /// 往对端写一段字节：PTY 时走 PTY，SSH / Telnet 时走各自的桥。
+    /// 往对端写一段字节：PTY 时走 PTY，SSH / Telnet / 串口时走各自的桥。
     pub fn input(&mut self, bytes: impl Into<Cow<'static, [u8]>>, cx: &mut Context<Self>) {
         // ZMODEM 占着这条终端的时候，键盘与粘贴都不往对端送：那边在跑协议，
         // 插进去的字节会把它搅乱。要停它，只有进度条上那颗"取消"。
@@ -830,6 +900,18 @@ impl Emulator {
                 let local_echo = bridge.should_local_echo();
                 let owned = bytes.into_owned();
                 let _ = bridge.input_tx.send(owned.clone());
+                if local_echo {
+                    self.write_output(&owned, cx);
+                }
+            }
+            Transport::Serial(bridge) => {
+                // 本地回显是主机表单里那个开关：串口的对端是一块硬件，
+                // 它回显不回显用户自己清楚，不做 Telnet 那种自适应嗅探。
+                // 开着就把这一帧同时写一份到屏幕上，见
+                // [`crate::serial::SerialSettings::local_echo`]。
+                let local_echo = bridge.local_echo();
+                let owned = bytes.into_owned();
+                bridge.send(owned.clone());
                 if local_echo {
                     self.write_output(&owned, cx);
                 }
@@ -859,6 +941,9 @@ impl Emulator {
             }
             Transport::Telnet(bridge) => {
                 let _ = bridge.input_tx.send(bytes);
+            }
+            Transport::Serial(bridge) => {
+                bridge.send(bytes);
             }
             Transport::None => {
                 // 占位终端没有对端；测试拿它当"收件箱"验协议方向。
@@ -1862,18 +1947,21 @@ async fn ssh_pump(
     }
 }
 
-/// Telnet 输出泵：形状与 [`ssh_pump`] 完全一致，只是接收端类型不同。
+/// 远端输出泵：把 Telnet / 串口两种桥送来的字节喂回
+/// [`Emulator::write_output`]。形状与 [`ssh_pump`] 完全一致，只是接收端类型
+/// 不同。
 ///
 /// 之所以复制一份而不是抽个泛型出来：两边的 `UnboundedReceiver<Vec<u8>>`
 /// 其实是**同一个具体类型**（都是 `tokio::sync::mpsc::UnboundedReceiver`），
 /// 泛型参数会写成 `R: DerefMut<Target=...>` 之类的噪音；直接抄 12 行更好读。
+/// Telnet 与串口共用这一份。
 ///
-/// `rx` 用 `&mut` 传进来，是因为 `Emulator::from_telnet` 里已经把接收端
-/// 放在了 `conn` 的解构里，`cx.spawn(async move { ... })` 会把它 move 进
-/// 闭包，再 borrow 给这个函数用 —— 这样也能省一层 `Box::pin`。
-async fn telnet_pump(
+/// `rx` 用 `&mut` 传进来，是因为 `Emulator::from_telnet` / `from_serial`
+/// 里已经把接收端放在了 `conn` 的解构里，`cx.spawn(async move { ... })` 会
+/// 把它 move 进闭包，再 borrow 给这个函数用 —— 这样也能省一层 `Box::pin`。
+async fn remote_pump(
     this: gpui_kit::WeakEntity<Emulator>,
-    rx: &mut crate::telnet::TelnetOutputReceiver,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     cx: &mut gpui_kit::AsyncApp,
 ) {
     while let Some(data) = rx.recv().await {

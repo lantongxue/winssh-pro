@@ -115,6 +115,7 @@ impl HostService {
                         proxy: Set(crate::proxy::encode(&draft.proxy)),
                         vnc_settings: Set(crate::vnc::encode(&draft.vnc)),
                         rdp_settings: Set(crate::rdp::encode(&draft.rdp)),
+                        serial_settings: Set(crate::serial::encode(&draft.serial)),
                         // shell 集成同理不在表单里，新主机一律不装 ——
                         // 往对端打字这件事只能由用户自己在命令历史那扇窗里开
                         // （[`Self::update_shell_integration`]）。
@@ -143,6 +144,7 @@ impl HostService {
                 proxy: draft.proxy,
                 vnc: draft.vnc,
                 rdp: draft.rdp,
+                serial: draft.serial,
                 shell_integration: false,
             })
         })
@@ -187,6 +189,7 @@ impl HostService {
                         proxy: Set(crate::proxy::encode(&draft.proxy)),
                         vnc_settings: Set(crate::vnc::encode(&draft.vnc)),
                         rdp_settings: Set(crate::rdp::encode(&draft.rdp)),
+                        serial_settings: Set(crate::serial::encode(&draft.serial)),
                     },
                 )
                 .await;
@@ -285,6 +288,7 @@ impl HostService {
                         proxy: Set(source.proxy.clone()),
                         vnc_settings: Set(source.vnc_settings.clone()),
                         rdp_settings: Set(source.rdp_settings.clone()),
+                        serial_settings: Set(source.serial_settings.clone()),
                         shell_integration: Set(source.shell_integration),
                     },
                 )
@@ -314,6 +318,7 @@ impl HostService {
                 proxy: crate::proxy::decode(&source.proxy),
                 vnc: crate::vnc::decode(&source.vnc_settings),
                 rdp: crate::rdp::decode(&source.rdp_settings),
+                serial: crate::serial::decode(&source.serial_settings),
                 shell_integration: source.shell_integration,
             })
         })
@@ -474,6 +479,7 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                     proxy: crate::proxy::decode(&host.proxy),
                     vnc: crate::vnc::decode(&host.vnc_settings),
                     rdp: crate::rdp::decode(&host.rdp_settings),
+                    serial: crate::serial::decode(&host.serial_settings),
                     shell_integration: host.shell_integration,
                 })
                 .collect(),
@@ -528,6 +534,7 @@ mod tests {
 proxy: Default::default(),
             vnc: Default::default(),
             rdp: Default::default(),
+            serial: Default::default(),
         }
     }
 
@@ -558,6 +565,7 @@ proxy: Default::default(),
 proxy: Default::default(),
             vnc: Default::default(),
             rdp: Default::default(),
+            serial: Default::default(),
         }
     }
 
@@ -1312,6 +1320,50 @@ proxy: Default::default(),
 
             let copy = service.duplicate_host(&host.id).await.unwrap();
             assert_eq!(copy.rdp, tuned, "副本连连接配置一并照抄");
+        });
+    }
+
+    /// 串口参数走的是同一套：新主机出厂档，表单整行重写，副本照抄；
+    /// 设备路径跟在 `hostname` 那一列（串口主机的"地址"就是它）。
+    #[test]
+    fn serial_settings_round_trip() {
+        use crate::serial::{
+            SerialBaud, SerialDataBits, SerialFlowControl, SerialLineState, SerialParity,
+            SerialSettings, SerialStopBits,
+        };
+
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("console-01")).await.unwrap();
+            assert_eq!(host.serial, SerialSettings::default(), "新主机拿出厂参数");
+
+            let tuned = SerialSettings {
+                baud: SerialBaud::B9600,
+                data_bits: SerialDataBits::Seven,
+                parity: SerialParity::Even,
+                stop_bits: SerialStopBits::Two,
+                flow_control: SerialFlowControl::Hardware,
+                dtr: SerialLineState::Clear,
+                rts: SerialLineState::Assert,
+                local_echo: true,
+            };
+            let mut edited = draft("console-01");
+            edited.kind = crate::host::HostKind::Serial;
+            edited.hostname = "/dev/cu.usbserial-0001".into();
+            edited.port = 0;
+            edited.serial = tuned;
+            service.update_host(&host.id, "分组", edited).await.unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            let loaded = &groups[0].hosts[0];
+            assert_eq!(loaded.kind, crate::host::HostKind::Serial);
+            assert_eq!(loaded.hostname, "/dev/cu.usbserial-0001");
+            assert_eq!(loaded.serial, tuned);
+            // 串口的地址就是设备路径。
+            assert_eq!(loaded.address(), "/dev/cu.usbserial-0001");
+
+            let copy = service.duplicate_host(&host.id).await.unwrap();
+            assert_eq!(copy.serial, tuned, "副本连串口参数一并照抄");
         });
     }
 

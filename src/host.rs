@@ -8,8 +8,8 @@ use gpui_kit::SharedString;
 use rust_i18n::t;
 
 /// 连接类型。一台主机要么是一条 SSH，要么是一个 VNC 桌面，要么是一个 RDP
-/// 远程桌面，要么是一条 Telnet，落库时存为字符串（`ssh` / `vnc` / `rdp` /
-/// `telnet`），读回时按小写匹配。
+/// 远程桌面，要么是一条 Telnet，要么是一条本机串口，落库时存为字符串
+/// （`ssh` / `vnc` / `rdp` / `telnet` / `serial`），读回时按小写匹配。
 ///
 /// 和 [`AuthMethod`] 一样：界面上的下拉按下标折回枚举，不拿那行字反查。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -19,10 +19,13 @@ pub enum HostKind {
     Vnc,
     Rdp,
     Telnet,
+    /// 本机串口（见 [`crate::serial`]）。设备路径存在 [`Host::hostname`] 里，
+    /// [`Host::address`] 对它整份返回那个路径。
+    Serial,
 }
 
 impl HostKind {
-    pub const ALL: [Self; 4] = [Self::Ssh, Self::Vnc, Self::Rdp, Self::Telnet];
+    pub const ALL: [Self; 5] = [Self::Ssh, Self::Vnc, Self::Rdp, Self::Telnet, Self::Serial];
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -30,6 +33,7 @@ impl HostKind {
             Self::Vnc => "vnc",
             Self::Rdp => "rdp",
             Self::Telnet => "telnet",
+            Self::Serial => "serial",
         }
     }
 
@@ -40,18 +44,24 @@ impl HostKind {
             Self::Vnc => "VNC".into(),
             Self::Rdp => "RDP".into(),
             Self::Telnet => "Telnet".into(),
+            Self::Serial => "Serial".into(),
         }
     }
 
     /// 这一档的惯例端口：SSH 22，VNC 5900，RDP 3389，Telnet 23。
     /// [`crate::host::Host::address`]
     /// 拿它决定要不要省略端口，表单拿它做换档时的默认值。
+    ///
+    /// 串口没有端口这一说，给 0 —— 它永远不会出现在地址里（`address()`
+    /// 对串口整份返回设备路径），表单换档时把隐藏的端口格归 0，
+    /// 之后再换回别的协议也认得出来那是"没填过"、该换回惯例端口。
     pub fn default_port(&self) -> u16 {
         match self {
             Self::Ssh => 22,
             Self::Vnc => 5900,
             Self::Rdp => 3389,
             Self::Telnet => 23,
+            Self::Serial => 0,
         }
     }
 
@@ -73,6 +83,7 @@ impl HostKind {
             "vnc" => Self::Vnc,
             "rdp" => Self::Rdp,
             "telnet" => Self::Telnet,
+            "serial" => Self::Serial,
             _ => Self::Ssh,
         }
     }
@@ -202,8 +213,9 @@ pub struct Host {
     pub id: SharedString,
     /// 显示名，例如 `web-01`。
     pub name: SharedString,
-    /// 连接类型，见 [`HostKind`]。SSH 与 VNC 分派的就是它（见
-    /// [`crate::ui::views::HostExplorerView::open_host`]）。
+    /// 连接类型，见 [`HostKind`]。界面按它分派会话窗（SSH / Telnet / 串口
+    /// 进终端面板，VNC / RDP 各进自己的远程桌面），见
+    /// [`crate::ui::views::HostExplorerView::open_host`]。
     pub kind: HostKind,
     pub user: SharedString,
     /// 主机名或 IP，例如 `10.0.1.11`。
@@ -259,6 +271,12 @@ pub struct Host {
     /// 同样进 [`HostDraft`]：它只在 [`HostKind::Rdp`] 的连接里有意义；
     /// 别的协议主机这一份原样存着但没人读。
     pub rdp: crate::rdp::RdpSettings,
+    /// 串口参数。见 [`crate::serial::SerialSettings`]。
+    ///
+    /// 同样进 [`HostDraft`]：它只在 [`HostKind::Serial`] 的连接里有意义
+    /// （设备路径在 [`Self::hostname`] 里）；别的协议主机这一份原样存着
+    /// 但没人读。
+    pub serial: crate::serial::SerialSettings,
     /// 每次连上这台机器，要不要往对端 shell 里装一份 OSC 133 标记。
     ///
     /// 不进 [`HostDraft`]：和采集节奏、转发规则一样，它是连上之后在命令历史
@@ -270,7 +288,13 @@ pub struct Host {
 
 impl Host {
     /// `user@hostname:port` 形式的地址，端口为该连接类型的惯例端口时省略端口。
+    ///
+    /// 串口主机是唯一整份改写的：它没有 user 也没有 TCP 端口，"地址"就是
+    /// 设备路径本身（存在 `hostname` 列里），直接原样返回。
     pub fn address(&self) -> String {
+        if self.kind == HostKind::Serial {
+            return self.hostname.to_string();
+        }
         if self.port == self.kind.default_port() {
             format!("{}@{}", self.user, self.hostname)
         } else {
@@ -323,6 +347,8 @@ pub struct HostDraft {
     pub vnc: crate::vnc::VncSettings,
     /// RDP 连接设置，见 [`Host::rdp`]。
     pub rdp: crate::rdp::RdpSettings,
+    /// 串口参数，见 [`Host::serial`]。
+    pub serial: crate::serial::SerialSettings,
 }
 
 /// 一台主机的运行时状态。
@@ -384,6 +410,8 @@ mod tests {
         assert_eq!(HostKind::from_str_or_default("rdp "), HostKind::Rdp);
         assert_eq!(HostKind::from_str_or_default("telnet"), HostKind::Telnet);
         assert_eq!(HostKind::from_str_or_default("Telnet"), HostKind::Telnet);
+        assert_eq!(HostKind::from_str_or_default("serial"), HostKind::Serial);
+        assert_eq!(HostKind::from_str_or_default("Serial "), HostKind::Serial);
     }
 
     /// 远程桌面那一档（VNC / RDP）与 SSH 的分叉点：界面拿它决定
@@ -394,6 +422,7 @@ mod tests {
         assert!(HostKind::Vnc.is_remote_desktop());
         assert!(HostKind::Rdp.is_remote_desktop());
         assert!(!HostKind::Telnet.is_remote_desktop());
+        assert!(!HostKind::Serial.is_remote_desktop());
     }
 
     #[test]
@@ -417,6 +446,7 @@ mod tests {
             proxy: crate::proxy::HostProxy::default(),
             vnc: crate::vnc::VncSettings::default(),
             rdp: crate::rdp::RdpSettings::default(),
+            serial: crate::serial::SerialSettings::default(),
             shell_integration: false,
         };
         assert_eq!(host.address(), "root@10.0.0.1");
@@ -438,6 +468,14 @@ mod tests {
         assert_eq!(host.address(), "root@10.0.0.1");
         host.port = 2323;
         assert_eq!(host.address(), "root@10.0.0.1:2323");
+
+        // 串口：地址就是设备路径，user、port 一概不参与。
+        host.kind = HostKind::Serial;
+        host.hostname = "/dev/cu.usbserial-0001".into();
+        host.port = 0;
+        assert_eq!(host.address(), "/dev/cu.usbserial-0001");
+        host.port = 22;
+        assert_eq!(host.address(), "/dev/cu.usbserial-0001");
     }
 
     #[test]

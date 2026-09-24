@@ -15,6 +15,10 @@ pub enum AppIcon {
     Activity,
     /// 打包箱：`.tar.gz`、`.zip` 这类归档。
     Archive,
+    /// 一头插头、一头裸线的线缆：串口协议的专属配置页，也是串口这一类。
+    /// 组件库默认图标集没带这一枚（`Cable` 只在全量目录里，默认不内嵌，
+    /// 取不到字节），所以自带一份。
+    Cable,
     /// 竖着一分为二的方框：左右分屏。
     Columns2,
     /// 横着一分为二的方框：上下分屏。
@@ -82,6 +86,7 @@ impl IconNamed for AppIcon {
         match self {
             Self::Activity => "icons/activity.svg",
             Self::Archive => "icons/archive.svg",
+            Self::Cable => "icons/cable.svg",
             Self::Columns2 => "icons/columns-2.svg",
             Self::Rows2 => "icons/rows-2.svg",
             Self::Square => "icons/square.svg",
@@ -202,6 +207,7 @@ mod tests {
         let paths = [
             AppIcon::Activity.path(),
             AppIcon::Archive.path(),
+            AppIcon::Cable.path(),
             AppIcon::Columns2.path(),
             AppIcon::Rows2.path(),
             AppIcon::Square.path(),
@@ -217,6 +223,7 @@ mod tests {
             AppIcon::KeyRound.path(),
             AppIcon::Keyboard.path(),
             AppIcon::Laptop.path(),
+            AppIcon::Monitor.path(),
             AppIcon::Pencil.path(),
             AppIcon::RefreshCw.path(),
             AppIcon::Server.path(),

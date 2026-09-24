@@ -35,5 +35,5 @@ pub mod bridge;
 pub mod client;
 pub mod negotiation;
 
-pub use bridge::{TelnetBridge, TelnetOutputReceiver};
+pub use bridge::TelnetBridge;
 pub use client::TelnetConnection;

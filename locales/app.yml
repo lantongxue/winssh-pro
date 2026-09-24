@@ -1130,6 +1130,9 @@ host_form.page_vnc:
 host_form.page_rdp:
   en: RDP connection
   zh-CN: RDP 连接
+host_form.page_serial:
+  en: Serial connection
+  zh-CN: 串口连接
 host_form.group_basic:
   en: Basic info
   zh-CN: 基本信息
@@ -1247,6 +1250,84 @@ host_form.option_off:
 host_form.rdp_hint:
   en: "Automatic offers both TLS and NLA and lets the server pick; NLA required refuses servers without it. The certificate is not verified (same as the IronRDP default), so use this on networks you trust. Narrow band turns off wallpaper, themes and cursor shadows on the remote side."
   zh-CN: "自动档同时报 TLS 与 NLA、由服务器挑；NLA 强制会拒绝不支持 NLA 的服务器。证书不验证（IronRDP 的出厂取舍），请在信得过的网络里用。窄带档会让远端关掉壁纸、主题与光标阴影。"
+host_form.field_serial_device:
+  en: Serial device
+  zh-CN: 串口设备
+host_form.field_serial_detect:
+  en: Detected ports
+  zh-CN: 检测到的串口
+host_form.serial_device_placeholder:
+  en: /dev/cu.usbserial-0001 or COM3
+  zh-CN: /dev/cu.usbserial-0001 或 COM3
+host_form.serial_pick_none:
+  en: — type a device path, or pick one below —
+  zh-CN: — 直接输入设备路径，或从下拉里挑一个 —
+host_form.serial_refresh_tooltip:
+  en: Rescan serial ports
+  zh-CN: 重新检测串口
+host_form.field_serial_baud:
+  en: Baud rate
+  zh-CN: 波特率
+host_form.field_serial_data_bits:
+  en: Data bits
+  zh-CN: 数据位
+host_form.field_serial_parity:
+  en: Parity
+  zh-CN: 校验位
+host_form.field_serial_stop_bits:
+  en: Stop bits
+  zh-CN: 停止位
+host_form.field_serial_flow:
+  en: Flow control
+  zh-CN: 流控
+host_form.field_serial_dtr:
+  en: DTR on open
+  zh-CN: DTR 初始电平
+host_form.field_serial_rts:
+  en: RTS on open
+  zh-CN: RTS 初始电平
+host_form.field_serial_local_echo:
+  en: Local echo
+  zh-CN: 本地回显
+host_form.serial_hint:
+  en: "Leave DTR and RTS at their default unless the device needs them driven: asserting DTR can reset some boards, and clearing RTS can stop some devices from sending at all. Local echo is for devices that never echo your typing back."
+  zh-CN: "DTR / RTS 除非设备需要，否则留在默认档：拉高 DTR 会把某些开发板复位，拉低 RTS 会让某些设备不再回数据。本地回显给的是“对端不回显你敲的字”的裸设备。"
+serial.parity_none:
+  en: None
+  zh-CN: 无
+serial.parity_odd:
+  en: Odd
+  zh-CN: 奇
+serial.parity_even:
+  en: Even
+  zh-CN: 偶
+serial.flow_none:
+  en: None
+  zh-CN: 无
+serial.flow_software:
+  en: XON/XOFF (software)
+  zh-CN: XON/XOFF（软件）
+serial.flow_hardware:
+  en: RTS/CTS (hardware)
+  zh-CN: RTS/CTS（硬件）
+serial.line_default:
+  en: Leave as is
+  zh-CN: 不动
+serial.line_assert:
+  en: Assert (high)
+  zh-CN: 拉高
+serial.line_clear:
+  en: Clear (low)
+  zh-CN: 拉低
+serial.open_failed:
+  en: "Could not open the serial port %{device}"
+  zh-CN: "打不开串口 %{device}"
+serial.line_failed:
+  en: "Could not set %{line} on %{device}"
+  zh-CN: "设置 %{line} 失败（%{device}）"
+serial.device_lost:
+  en: "Serial device disconnected: %{error}"
+  zh-CN: "串口连接已断开：%{error}"
 host_form.field_key_content:
   en: Private key *
   zh-CN: 私钥 *
@@ -2408,6 +2489,15 @@ terminal.ssh_failed_notify:
 terminal.banner_connecting_telnet:
   en: Connecting over Telnet…
   zh-CN: 正在通过 Telnet 连接...
+terminal.banner_connecting_serial:
+  en: Opening the serial port…
+  zh-CN: 正在打开串口...
+terminal.banner_serial_failed:
+  en: "Could not open the serial port: %{error}"
+  zh-CN: 串口打开失败：%{error}
+terminal.banner_serial_hint:
+  en: "Hint: check the device path. The device may be unplugged, already in use by another program, or the account may lack access to it."
+  zh-CN: 提示：检查设备路径；设备可能未插好、被其他程序占用，或当前账号没有访问权限。
 terminal.banner_telnet_failed:
   en: "Telnet connection failed: %{error}"
   zh-CN: Telnet 连接失败：%{error}

@@ -414,6 +414,7 @@ mod tests {
         Host {
             vnc: Default::default(),
             rdp: Default::default(),
+            serial: Default::default(),
             kind: crate::host::HostKind::Ssh,
             id: "test-unreachable".into(),
             name: "unreachable".into(),

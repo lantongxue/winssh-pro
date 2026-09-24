@@ -99,6 +99,19 @@ ssh-key = { version = "0.7.0-rc.11", features = ["encryption"] }
 # 里手工补，不去 fork 它。
 telnet = "0.2"
 
+# 串口协议：`serialport` 是跨平台的同步串口库（Unix 的 termios / IOKit、
+# Windows 的 DCB 全在内），提供打开、参数设置、双向读写与设备枚举。
+# 它和上面的 `telnet` 一样是**同步阻塞** API：读要配 `timeout`，同一句柄
+# 不能同时读又写，所以要读写并行就得 `try_clone` 一份 —— 因此照 Telnet
+# 那条桥的形状走两条 OS 线程，而不是硬套进 tokio。
+#
+# `default-features = false` 关掉默认的 `libudev`：开着它 Linux 构建要装
+# `libudev-dev`、运行还要 `libudev.so.1`，与"不依赖系统安装的库"的取向
+# 冲突。关掉之后 Linux 的 `available_ports` 退回扫 `/sys/class/tty`（库自己
+# 的回退路径），设备名一个不少，只是少了 USB 的 VID/PID 这类元数据 ——
+# 我们只用设备名，够了。
+serialport = { version = "4.8", default-features = false }
+
 # SFTP 客户端。`russh-sftp` 只讲 SFTP 协议本身，字节流从外面喂进去
 # （`SftpSession::new(stream)`），russh 是它的 dev-dependency 而已 —— 所以这里
 # 用 0.63 的 russh 不会有版本打架；它自己不碰 socket，子系统通道还是我们的

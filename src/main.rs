@@ -15,6 +15,7 @@ mod netstats;
 mod proxy;
 mod rdp;
 mod repository;
+mod serial;
 mod service;
 mod session;
 mod sftp;

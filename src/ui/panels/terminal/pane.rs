@@ -275,21 +275,25 @@ impl TerminalPane {
         }
     }
 
-    /// 开出这条会话的字节源。按主机类型分派到 SSH 或 Telnet 那两条路径 ——
-    /// 两者共享同一份"先摆占位终端、拨完再 adopt"的骨架，只有底下走的协议
-    /// 与信任检查不同。
+    /// 开出这条会话的字节源。按主机类型分派到 SSH / Telnet / 串口那三条
+    /// 路径 —— 前两者共享同一份"先摆占位终端、拨完再 adopt"的骨架，串口
+    /// 与 Telnet 同形，只有底下走的协议、信任检查与失败处理不同。
     ///
     /// - [`HostKind::Ssh`] 走 [`Self::dial_ssh`]：先查 `trusted_hosts` 表，
     ///   连接失败时可能弹主机密钥确认框。
     /// - [`HostKind::Telnet`] 走 [`Self::dial_telnet`]：Telnet 没有主机身份
     ///   这一说（协议本身就没设计），拿到 socket 就是全部；协商走 bridge
     ///   内部。
+    /// - [`HostKind::Serial`] 走 [`Self::dial_serial`]：打开的是本机设备，
+    ///   没有信任也没有协商；失败不回落本机 shell（见
+    ///   [`Self::show_serial_failure`]）。
     /// - 其它类型走到这里是逻辑错误：VNC / RDP 不进这个面板。写一行日志
     ///   后什么也不做，让占位终端把"连接中"停在屏幕上，用户能看见。
     fn dial(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.host.kind {
             crate::host::HostKind::Ssh => self.dial_ssh(window, cx),
             crate::host::HostKind::Telnet => self.dial_telnet(window, cx),
+            crate::host::HostKind::Serial => self.dial_serial(window, cx),
             other => {
                 log::warn!(
                     "TerminalPanel 拿到了非终端类型的主机（{}），不去拨号",
@@ -515,6 +519,80 @@ impl TerminalPane {
                 )));
             }
         }
+        cx.notify();
+    }
+
+    /// 拨串口。与 Telnet 的差别：
+    /// 1. 没有主机密钥信任这一档 —— 打开的是本机设备，没有"对端身份"。
+    /// 2. 失败**不回退本机 shell**（见 [`Self::show_serial_failure`]）。
+    /// 3. 和 Telnet 一样不发出 `Connected` 事件：SFTP / 监控 / 端口转发
+    ///    都建立在 SSH 通道上，串口一条都没有。
+    fn dial_serial(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let host = self.host.clone();
+        let placeholder = self.show_placeholder(
+            &format!(
+                "\x1b[36m{}\x1b[0m（{} · {}）\r\n\x1b[90m{}\x1b[0m\r\n",
+                host.name,
+                host.address(),
+                host.serial.summary(),
+                t!("terminal.banner_connecting_serial"),
+            ),
+            cx,
+        );
+
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = crate::service::SerialService::new().connect(&host).await;
+            let _ = this.update(cx, |this, cx| match outcome {
+                Ok(conn) => this.adopt_serial(conn, cx),
+                Err(error) => this.show_serial_failure(&error, &placeholder, cx),
+            });
+        })
+        .detach();
+    }
+
+    /// 串口开了：建一条终端，把它交给窗格。
+    ///
+    /// 与 [`Self::adopt_telnet`] 逐字同形：不发 `Connected` 事件，面板那侧
+    /// 的 `self.ssh` 保持 `None`，SFTP 栏与监控栏自然挂不上。
+    fn adopt_serial(&mut self, conn: crate::serial::SerialConnection, cx: &mut Context<Self>) {
+        let emulator = Emulator::from_serial(conn, cx);
+        self.attach_emulator(&emulator, cx);
+        emulator.update(cx, |em, cx| {
+            em.write_output(self.serial_banner().as_bytes(), cx);
+        });
+        self.emulator = Some(emulator);
+        self.error = None;
+        self.remote_shell = true;
+        if self.host.shell_integration {
+            self.install_shell_integration(cx);
+        }
+        cx.notify();
+    }
+
+    /// 串口打不开时的错误展示。
+    ///
+    /// **不回落本机 shell**（这是与 Telnet / SSH 有意不同的一处）：串口是
+    /// 一条本机设备，失败的原因（节点不存在、被别的程序占着、权限不够）
+    /// 与网络无关，掉头去开一个本机 shell 只会把真正的问题盖住。错误直接
+    /// 留在占位终端里 —— 标签页本身就是反馈，用户改完配置重开一个即可，
+    /// 不必再弹一条通知。
+    fn show_serial_failure(
+        &mut self,
+        error: &anyhow::Error,
+        placeholder: &Entity<Emulator>,
+        cx: &mut Context<Self>,
+    ) {
+        let err_text = format!("{error:#}");
+        placeholder.update(cx, |em, cx| {
+            let msg = format!(
+                "\r\n\x1b[31m{}\x1b[0m\r\n\x1b[90m{}\x1b[0m\r\n\r\n",
+                t!("terminal.banner_serial_failed", error => err_text),
+                t!("terminal.banner_serial_hint"),
+            );
+            em.write_output(msg.as_bytes(), cx);
+        });
+        // 占位终端已经挂在 `self.emulator` 上（[`Self::show_placeholder`]
+        // 挂的），屏幕上就是"正在打开"加下面这两行错误。
         cx.notify();
     }
 
@@ -764,6 +842,21 @@ impl TerminalPane {
             hostname,
             port,
             t!("terminal.banner_telnet_login"),
+        )
+    }
+
+    /// 串口打开成功后的开场白。
+    ///
+    /// 说的是"设备开了、参数是什么"：串口没有认证与登录这一层，`login:`
+    /// 若出现，那也是设备那头的 shell 打进终端的普通字，照 Telnet 的规矩
+    /// 由用户自己回答。
+    fn serial_banner(&self) -> String {
+        let Host { name, hostname, .. } = &self.host;
+        format!(
+            "\x1b[32m{}\x1b[0m\x1b[90m{} · {}\x1b[0m\r\n",
+            t!("terminal.banner_connected", name => name),
+            hostname,
+            self.host.serial.summary(),
         )
     }
 

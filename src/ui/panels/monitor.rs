@@ -1585,6 +1585,7 @@ mod tests {
         Host {
             vnc: Default::default(),
             rdp: Default::default(),
+            serial: Default::default(),
             kind: crate::host::HostKind::Ssh,
             id: "settings-test".into(),
             name: "web-01".into(),

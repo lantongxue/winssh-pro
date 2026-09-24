@@ -1273,6 +1273,7 @@ mod tests {
             proxy: Default::default(),
             vnc: Default::default(),
             rdp: Default::default(),
+            serial: Default::default(),
             shell_integration: false,
         };
         let config = connector_config(&host, desktop, &host.rdp);

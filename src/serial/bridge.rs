@@ -1,0 +1,377 @@
+//! 把 `serialport` 那一份同步阻塞的句柄，套成 GPUI 与串口设备之间的
+//! 一条字节流桥。
+//!
+//! 结构对齐 [`crate::telnet::bridge`]，但底下不是 socket 而是本地串口：
+//!
+//! ```text
+//! GPUI 输入 ─▶ input_tx ─▶ writer 线程 ─▶ 串口设备
+//! GPUI 输出 ◀─ output_rx ◀─ reader 线程 ◀─ 串口设备
+//! ```
+//!
+//! # 为什么是两条 OS 线程
+//!
+//! 和 `telnet` crate 同一条理由：`serialport` 的读要带超时轮询、写会随
+//! 输出缓冲满而停住，全是同步阻塞调用；`SerialPort` 又不能同时被读和写
+//!（`read` / `write` 都要 `&mut`），所以 `spawn_bridge` 先 `try_clone`
+//! 一份句柄 —— 两个 fd 读同一份输入队列、写同一份输出队列，读写各走一条
+//! 线程互不等待。硬套进 tokio 要么长期占一个 worker、要么自己包一层
+//! `AsyncRead`，都比直接开两条线程复杂。
+//!
+//! # 读超时 / 写重试
+//!
+//! `serialport` 的 read / write 都带同一份 poll 超时（Unix 默认 100ms，
+//! 我们对两端都显式设成 [`READ_POLL`]）：
+//!
+//! - **读**：到点没数据是 `Err(ErrorKind::TimedOut)`（Unix）或 `Ok(0)`
+//!   （Windows 那套 COMMTIMEOUTS 的语义），两者都当「没数据」继续下一轮 ——
+//!   这个节奏同时是关闭标志的检查点（见下）。
+//! - **写**：缓冲满（高速率、流控拉住）时 write 到点返回 `TimedOut`。
+//!   这是「等一会再写」而不是错误 —— 一个字节都不能丢，必须接着写
+//!   （[`write_all_patiently`]）。
+//!
+//! # 关闭
+//!
+//! 串口没有 socket 的 `shutdown()` 可以踢醒阻塞的 reader，所以用一条
+//! `AtomicBool`：`SerialBridge::drop` 把它置上，reader 在最迟一个读超时
+//! 后自行退出，writer 在「收线时放弃没写完的尾巴」的同一条标志上退出，
+//! 另一条路是 `input_tx` 随桥丢弃、`blocking_recv` 拿到 `None`。不 join、
+//! 不 abort，照 Telnet。
+//!
+//! 设备被拔掉（或驱动报错）时，reader 先往终端里补一行红色提示再收线 ——
+//! 串口拔线是在用户眼皮底下发生的事，静悄悄停住比一行提示更令人困惑。
+
+use std::io::{self, Read as _};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use rust_i18n::t;
+use serialport::SerialPort;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+
+/// reader 每次 `read` 的等待上限。
+///
+/// 两个作用：没数据时 reader 多久回来看一眼关闭标志（也就是"关标签页后
+/// 最迟多久真正收线"），以及写入侧 poll 的粒度。100ms 是"关会话不迟滞"
+/// 与"空闲时不空转"之间的一档。
+pub const READ_POLL: Duration = Duration::from_millis(100);
+
+/// 单包读缓冲大小。串口速率上限就是几百 KB/s，4 KiB 足够一趟读满一屏。
+const READ_BUF: usize = 4096;
+
+/// 前台持有它就能往设备送字节；丢掉它，两条线程随之收线。
+pub struct SerialBridge {
+    input_tx: UnboundedSender<Vec<u8>>,
+    /// 本地回显开关。见 [`SerialSettings::local_echo`]。
+    ///
+    /// [`SerialSettings::local_echo`]: crate::serial::SerialSettings::local_echo
+    local_echo: bool,
+    /// 收线标志，`Drop` 里置上；reader / writer 每个检查点读它。
+    closed: Arc<AtomicBool>,
+    /// 两条 OS 线程的句柄。不主动 join，留着是为了 Drop 之后它们仍然
+    /// 自持一份 `Arc`，不因句柄字段被丢而失去引用计数。
+    _reader: Arc<JoinHandle<()>>,
+    _writer: Arc<JoinHandle<()>>,
+}
+
+impl SerialBridge {
+    /// 往设备送一段字节。发不出去只可能是桥已经关了，丢弃即可。
+    pub fn send(&self, bytes: Vec<u8>) {
+        let _ = self.input_tx.send(bytes);
+    }
+
+    /// `Emulator::input` 在送回显之前问一次：这一帧要不要顺手打到屏幕上。
+    pub fn local_echo(&self) -> bool {
+        self.local_echo
+    }
+}
+
+impl Drop for SerialBridge {
+    fn drop(&mut self) {
+        // 置上之后，reader 最迟一个读超时退出，writer 要么在
+        // `blocking_recv` 上拿到 `None`（input_tx 随本结构一起丢），要么在
+        // 下一次写检查点放弃没送完的字节。
+        self.closed.store(true, Ordering::Relaxed);
+    }
+}
+
+/// 设备 → 本地 的字节通道（GPUI 侧接收，reader 线程发送）。
+pub type SerialOutputReceiver = UnboundedReceiver<Vec<u8>>;
+
+/// 建桥、起线程，返回前台持有的 [`SerialBridge`] 与 GPUI 侧的输出接收端。
+///
+/// `port` 是已经打开并配置好参数的那份句柄（见
+/// [`SerialConnection::open_blocking`]）；这里 `try_clone` 一份给 reader，
+/// 原句柄给 writer。克隆失败只可能是 fd 表耗尽之类的系统级问题，按错误
+/// 往回抛，由调用方带上设备路径再报给用户。
+///
+/// [`SerialConnection::open_blocking`]: super::client::SerialConnection::open_blocking
+pub fn spawn_bridge(
+    port: Box<dyn SerialPort>,
+    local_echo: bool,
+) -> anyhow::Result<(SerialBridge, SerialOutputReceiver)> {
+    let reader_port = port
+        .try_clone()
+        .map_err(|error| anyhow::anyhow!("复制串口句柄失败：{error}"))?;
+
+    let (input_tx, input_rx) = unbounded_channel::<Vec<u8>>();
+    let (output_tx, output_rx) = unbounded_channel::<Vec<u8>>();
+    let closed = Arc::new(AtomicBool::new(false));
+
+    let reader_closed = closed.clone();
+    let reader = Arc::new(
+        std::thread::Builder::new()
+            .name("serial-reader".into())
+            .spawn(move || reader_task(reader_port, output_tx, reader_closed))
+            .expect("spawn serial-reader"),
+    );
+    let writer_closed = closed.clone();
+    let writer = Arc::new(
+        std::thread::Builder::new()
+            .name("serial-writer".into())
+            .spawn(move || writer_task(port, input_rx, writer_closed))
+            .expect("spawn serial-writer"),
+    );
+
+    Ok((
+        SerialBridge {
+            input_tx,
+            local_echo,
+            closed,
+            _reader: reader,
+            _writer: writer,
+        },
+        output_rx,
+    ))
+}
+
+/// reader 线程：把设备上的字节送进 `output_tx`，直到收线或设备出事。
+fn reader_task(
+    mut port: Box<dyn SerialPort>,
+    output_tx: UnboundedSender<Vec<u8>>,
+    closed: Arc<AtomicBool>,
+) {
+    let mut buf = [0u8; READ_BUF];
+    loop {
+        if closed.load(Ordering::Relaxed) {
+            return;
+        }
+        match port.read(&mut buf) {
+            Ok(0) => {
+                // Windows 的超时语义：成功但 0 字节，等于"这一轮没数据"。
+                // 关闭标志下一轮开头再看。
+            }
+            Ok(n) => {
+                if output_tx.send(buf[..n].to_vec()).is_err() {
+                    // GPUI 侧的接收端已经丢了：会话结束，正常退出。
+                    return;
+                }
+            }
+            Err(error) => {
+                // 收线途中冒出来的错误（含拔线那一瞬）不当设备故障报 ——
+                // 用户自己关的会话，屏幕上不该多一行"串口断开"。
+                if closed.load(Ordering::Relaxed) {
+                    return;
+                }
+                match error.kind() {
+                    // 读超时 / 非阻塞空转：继续下一轮。
+                    io::ErrorKind::TimedOut
+                    | io::ErrorKind::WouldBlock
+                    | io::ErrorKind::Interrupted => {}
+                    _ => {
+                        // 拔线（macOS/Linux 上多为 EIO / POLLHUP）、驱动报错
+                        // 都从这里收线。给终端留一行再走。
+                        log::warn!("串口读取失败：{error}");
+                        let notice = format!(
+                            "\r\n\x1b[31m{}\x1b[0m\r\n",
+                            t!("serial.device_lost", error => format!("{error}")),
+                        );
+                        let _ = output_tx.send(notice.into_bytes());
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// writer 线程：把 `input_rx` 里的字节按序写到设备上。
+fn writer_task(
+    mut port: Box<dyn SerialPort>,
+    mut input_rx: UnboundedReceiver<Vec<u8>>,
+    closed: Arc<AtomicBool>,
+) {
+    while let Some(data) = input_rx.blocking_recv() {
+        if closed.load(Ordering::Relaxed) {
+            return;
+        }
+        if write_all_patiently(&mut *port, &data, &closed).is_err() {
+            return;
+        }
+    }
+}
+
+/// 连续写完整一段字节；「输出缓冲暂时满」不是错误，等下一轮再写。
+///
+/// `write_all` 在这里不够用：它内部碰到一次 `TimedOut` 就把整段交还，
+/// 调用方不知道已经送出去多少个字节，重试整段会重复发送。所以自己数
+/// 进度（`data = &data[n..]`），只对超时类错误打转。
+fn write_all_patiently(
+    port: &mut dyn SerialPort,
+    mut data: &[u8],
+    closed: &AtomicBool,
+) -> io::Result<()> {
+    while !data.is_empty() {
+        if closed.load(Ordering::Relaxed) {
+            // 收线时不再把没送完的尾巴倒出来 —— 设备那端已经不需要它了。
+            return Ok(());
+        }
+        match port.write(data) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "串口一次写入了 0 字节",
+                ));
+            }
+            Ok(n) => data = &data[n..],
+            Err(error) => match error.kind() {
+                io::ErrorKind::TimedOut
+                | io::ErrorKind::WouldBlock
+                | io::ErrorKind::Interrupted => {}
+                _ => return Err(error),
+            },
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serialport::TTYPort;
+    use std::io::Write as _;
+    use std::time::Instant;
+
+    /// 一条伪终端对当虚拟串口用：`(master, slave)`，slave 进桥，master
+    /// 在测试里扮演"对端设备"。`TTYPort::pair` 已经把 slave 拨成 raw。
+    fn pair() -> (TTYPort, TTYPort) {
+        TTYPort::pair().expect("伪终端对")
+    }
+
+    /// 从桥的输出里凑够 `want` 个字节，凑不齐就 panic。
+    fn recv_at_least(rx: &mut SerialOutputReceiver, want: usize) -> Vec<u8> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut got = Vec::new();
+        while got.len() < want {
+            while let Ok(chunk) = rx.try_recv() {
+                got.extend_from_slice(&chunk);
+            }
+            assert!(Instant::now() < deadline, "等桥的输出超时，只拿到 {got:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        got
+    }
+
+    /// 从"设备"端凑够 `want` 个字节。
+    fn read_at_least(port: &mut TTYPort, want: usize) -> Vec<u8> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut got = Vec::new();
+        let mut buf = [0u8; 256];
+        while got.len() < want {
+            match port.read(&mut buf) {
+                Ok(0) => {}
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::TimedOut
+                            | io::ErrorKind::WouldBlock
+                            | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => panic!("伪终端读失败：{error}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "等设备收到字节超时，只拿到 {got:?}"
+            );
+        }
+        got
+    }
+
+    /// 两个方向都要通：设备 → 桥 → 屏幕，键盘 → 桥 → 设备。
+    #[test]
+    fn bytes_flow_in_both_directions() {
+        let (mut master, slave) = pair();
+        let (bridge, mut output_rx) = spawn_bridge(Box::new(slave), true).unwrap();
+        assert!(bridge.local_echo(), "回显开关应当原样带出来");
+
+        // 设备 → 桥
+        master
+            .write_all(b"hello from device")
+            .expect("写伪终端 master");
+        let got = recv_at_least(&mut output_rx, 17);
+        assert_eq!(&got[..17], b"hello from device");
+
+        // 桥 → 设备
+        bridge.send(b"typed by user".to_vec());
+        let got = read_at_least(&mut master, 13);
+        assert_eq!(&got[..13], b"typed by user");
+    }
+
+    /// 丢掉桥之后，reader 线程要在读超时这一档内收线 —— 输出通道关闭
+    ///（`None`）就是"两条线程都已放掉各自的句柄"的可见信号。
+    #[test]
+    fn dropping_the_bridge_stops_the_reader() {
+        let (_master, slave) = pair();
+        let (bridge, mut output_rx) = spawn_bridge(Box::new(slave), false).unwrap();
+
+        drop(bridge);
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) = output_rx.try_recv()
+            {
+                return;
+            }
+            assert!(Instant::now() < deadline, "reader 线程没有收线");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// 大批量字节按序送出去：伪终端的一次写会分多次返回，
+    /// `write_all_patiently` 得自己数进度；设备端读回来的必须一个字节不差。
+    #[test]
+    fn a_large_payload_keeps_its_order() {
+        let (mut master, slave) = pair();
+        let (bridge, _output_rx) = spawn_bridge(Box::new(slave), false).unwrap();
+
+        let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        bridge.send(payload.clone());
+
+        let mut got = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut buf = [0u8; 8192];
+        while got.len() < payload.len() {
+            match master.read(&mut buf) {
+                Ok(0) => {}
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::TimedOut
+                            | io::ErrorKind::WouldBlock
+                            | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => panic!("伪终端读失败：{error}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "等设备收齐字节超时（已收 {} / {}）",
+                got.len(),
+                payload.len(),
+            );
+        }
+        assert_eq!(got, payload, "大批量字节必须原序原样到达");
+    }
+}

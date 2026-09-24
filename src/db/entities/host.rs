@@ -14,7 +14,8 @@ pub struct Model {
     pub port: u16,
     pub platform: String,
     pub sort_order: i64,
-    /// 连接类型：`ssh` / `vnc` / `rdp`，默认 `ssh`。见 [`crate::host::HostKind`]。
+    /// 连接类型：`ssh` / `vnc` / `rdp` / `telnet` / `serial`，默认 `ssh`。
+    /// 见 [`crate::host::HostKind`]。
     #[sea_orm(default_value = "ssh")]
     pub kind: String,
     /// 认证方式：`password` / `key` / `agent`，默认 `password`。
@@ -63,6 +64,13 @@ pub struct Model {
     /// 空串是出厂档，见 [`crate::rdp::decode`]。SSH / VNC 主机原样存着但没人读。
     #[sea_orm(default_value = "")]
     pub rdp_settings: String,
+    /// 串口参数，JSON 编码的一份 [`crate::serial::SerialSettings`]。
+    /// 空串是出厂档，见 [`crate::serial::decode`]。别的协议主机原样存着但没人读。
+    ///
+    /// 设备路径不在这里，它存在 `hostname` 那一列（串口主机的"地址"
+    /// 就是设备路径，见 [`crate::host::Host::address`]）。
+    #[sea_orm(default_value = "")]
+    pub serial_settings: String,
     /// 连上之后要不要往对端 shell 里装 OSC 133 标记，出厂是不装。
     /// 装的是什么、为什么要用户点头见 [`crate::terminal::shell_integration`]。
     #[sea_orm(default_value = false)]
