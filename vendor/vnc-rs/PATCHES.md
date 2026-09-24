@@ -3,7 +3,7 @@
 `vendor/vnc-rs` 逐字来自 crates.io 的 **vnc-rs 0.6.0**（<https://github.com/HsuJv/vnc-rs>，
 MIT OR Apache-2.0，两份 LICENSE 与 `.cargo_vcs_info.json` 都原样留着），
 `Cargo.toml` 里的 `[patch.crates-io]` 指着它。最初的补丁是**扩展剪贴板**的消息编解码，加上经典正文改为按字节交给上层；
-后续帧边界补丁见文末。
+后续帧边界与光标像素格式补丁见文末。
 
 为什么要动它：RFB 的 `ClientCutText` / `ServerCutText` 正文按 RFC 6143 §7.5.6 /
 §7.6.4 只是 Latin-1，中文装不进去；能装的是 RealVNC / TigerVNC / noVNC 共同的
@@ -73,3 +73,18 @@ ZRLE/Tight 还会拆成多个事件。网络停在矩形之间时，定时器会
   应用侧 TCP 集成测试另覆盖两矩形之间停顿 120 ms 不发布半帧。
 
 不更改任何编解码器。应用在 EndFrame 才发布快照，刷新节拍只负责请求。
+
+## 16 位 / 8 位下的光标形状
+
+应用在 `SetEncodings` 里报了 `CursorPseudo`，而对端按 RFC 6143 §7.8.1 用
+**客户端点名的像素格式**送光标像素。上游解码器只认 32 位，主机选了高彩
+（RGB565）或 256 色（RGB332）时，第一块光标就以 `WrongPixelFormat` 结束整条
+会话（日志里是 `Error occurs during the decoding WrongPixelFormat`）。
+
+- `src/codec/cursor.rs`：按 `bits_per_pixel / 8` 读像素；32 位且三个通道各占
+  一个整字节时沿用上游（线上字节序 + 掩码写进空出来的字节），其余真彩格式
+  按位移与满量程逐像素展开成 B,G,R,A。调色板模式仍报 `WrongPixelFormat`。
+- `src/event.rs`：`SetCursor` 的文档写明图像布局。
+- `src/codec/tests.rs`：RGB565 大小端、RGB332 的展开与掩码，以及光标只吞
+  自己的字节。应用侧 `src/vnc/session/tests/cursor.rs` 在真 socket 上覆盖
+  两种深度下"光标之后画面照样到、会话不断"。

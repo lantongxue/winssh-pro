@@ -78,6 +78,10 @@ pub enum VncEvent {
     ///
     /// According to [RFC6143, section-7.8.1](https://www.rfc-editor.org/rfc/rfc6143.html#section-7.8.1)
     ///
+    /// 图像恒为每像素 4 字节，掩码进 alpha（255 不透明、0 透明）。32 位且三个
+    /// 8 位通道各占一个整字节时保留线上字节序；其余格式（16 位、8 位）展开成
+    /// B,G,R,A。
+    ///
     SetCursor(Rect, ImageData),
     /// Just ring a bell
     ///

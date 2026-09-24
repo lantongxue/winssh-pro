@@ -103,6 +103,83 @@ async fn cursor_preserves_alpha_mask_and_accepts_empty_shapes() {
     }
 }
 
+/// 16 位 / 8 位下光标一像素两个/一个字节：按点名的深度读，展开成 B,G,R,A，
+/// 掩码进 alpha，而且正好吞掉这么多字节 —— 后面的那条消息不能错位。
+#[tokio::test]
+async fn cursor_expands_packed_pixel_formats_to_bgra() {
+    let mut rgb565 = PixelFormat::bgra();
+    rgb565.bits_per_pixel = 16;
+    rgb565.depth = 16;
+    rgb565.red_max = 31;
+    rgb565.green_max = 63;
+    rgb565.blue_max = 31;
+    rgb565.red_shift = 11;
+    rgb565.green_shift = 5;
+    rgb565.blue_shift = 0;
+    let mut rgb565_be = rgb565;
+    rgb565_be.big_endian_flag = 1;
+    let mut rgb332 = PixelFormat::bgra();
+    rgb332.bits_per_pixel = 8;
+    rgb332.depth = 8;
+    rgb332.red_max = 7;
+    rgb332.green_max = 7;
+    rgb332.blue_max = 3;
+    rgb332.red_shift = 5;
+    rgb332.green_shift = 2;
+    rgb332.blue_shift = 0;
+    // 两格：纯红（不透明）、纯白（透明），掩码 0b10。
+    for (format, pixels) in [
+        (rgb565, vec![0x00, 0xF8, 0xFF, 0xFF]),
+        (rgb565_be, vec![0xF8, 0x00, 0xFF, 0xFF]),
+        (rgb332, vec![0xE0, 0xFF]),
+    ] {
+        let mut bytes = pixels;
+        bytes.push(0b1000_0000);
+        bytes.push(0xAA); // 下一条消息的第一个字节
+        let mut input = bytes.as_slice();
+        let output = Mutex::new(Vec::new());
+        CursorDecoder::new()
+            .decode(
+                &format,
+                &Rect {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 1,
+                },
+                &mut input,
+                &|event| {
+                    output.lock().unwrap().push(event);
+                    async { Ok(()) }
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(input, [0xAA], "光标只吞自己的字节");
+        assert!(
+            matches!(&output.into_inner().unwrap()[0], VncEvent::SetCursor(_, image) if image == &[0, 0, 255, 255, 255, 255, 255, 0]),
+            "{format:?}"
+        );
+    }
+
+    let mut indexed = rgb332;
+    indexed.true_color_flag = 0;
+    let result = CursorDecoder::new()
+        .decode(
+            &indexed,
+            &Rect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+            &mut &[0, 0x80][..],
+            &|_| async { Ok(()) },
+        )
+        .await;
+    assert!(matches!(result, Err(VncError::WrongPixelFormat)));
+}
+
 #[tokio::test]
 async fn tight_rejects_component_widths_its_filters_cannot_decode() {
     let mut format = PixelFormat::rgba();
