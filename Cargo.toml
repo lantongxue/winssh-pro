@@ -248,11 +248,21 @@ flate2 = "1"
 # 没有稳定版可换的三条（rsa 0.10.0-rc.18、pkcs1 0.8.0-rc.4、
 # rustcrypto-ff/group/ff_derive 0.14.0-rc.x）在 picky/sspi 的补丁里只去掉
 # `=`，保留预发布版本号 —— russh 那条链不用它们，图上只有这一份。
+#
+# 最后两处是 GPUI 本体（gpui-kit 钉的 `=0.3.6` 快照），给它补一档"应用给的光标
+# 位图"：RDP 的远端光标要当成真正的系统光标用（反色、隐藏、零延迟跟手），
+# 而 GPUI 只有一张固定的 `CursorStyle` 表。`vendor/gpui-pre` 加接口（按 hitbox
+# 登记一张光标图，平台不支持时退回样式），`vendor/gpui-pre-windows` 用
+# `CreateIconIndirect` 落地。理由与逐文件改动见两边的 PATCHES.md。gpui-kit 升
+# GPUI 版本时这两份要跟着重做 —— 版本对不上时 patch 不生效，应用侧用到的新接口
+# 会直接编译报错，不会静默退回。
 [patch.crates-io]
 vnc-rs = { path = "vendor/vnc-rs" }
 ironrdp-connector = { path = "vendor/ironrdp-connector" }
 picky = { path = "vendor/picky" }
 sspi = { path = "vendor/sspi" }
+gpui-pre = { path = "vendor/gpui-pre" }
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 
 # 依赖全部按发布级优化编译。gpui 与 alacritty_terminal 是每一帧真正在跑的代码，
 # dev 默认的 opt-level=0 会让它们慢出一个数量级 —— 界面卡、CPU 占用高，多半就是

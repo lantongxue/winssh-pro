@@ -13,13 +13,16 @@
 //!
 //! - **VNC** 只给它一帧画面：`SetEncodings` 报了 `CursorPseudo` 后，服务端不再
 //!   把光标绘进 framebuffer（见 [`crate::vnc::session`]），本地系统光标即用户
-//!   所见，因此不挂 [`PointerOverlay`]。
-//! - **RDP** 还可以挂一个 [`PointerOverlay`]：光标位图与位置分开送，
-//!   每动一下只重画那一小块，不必重传整张桌面纹理（见
-//!   [`crate::rdp::session`] 的模块文档）。
+//!   所见，因此不挂 [`FrameCursor`]。
+//! - **RDP** 挂一个 [`FrameCursor`]：远端光标的形状按画面这块 hitbox 登记给
+//!   GPUI，平台把它当真正的系统光标显示 —— 跟手、能隐藏、反色由系统完成，
+//!   和 mstsc 一样（见 [`crate::rdp::RemoteCursor`]）。移出画面、被菜单或
+//!   滚动条盖住时，GPUI 按 hitbox 自己换回那边的光标。
 //!
-//! 光标位置与热点都是**远端像素**，绘制时按画面在 X、Y 两轴的实际缩放
-//! 分别折算；自适应填满不同长宽比的视口时仍能与桌面对齐。
+//! 平台显示不了应用给的光标时（[`gpui_kit::App::supports_cursor_images`]），
+//! 退回 [`FrameCursor::Overlay`]：按远端报的位置把形状画进画面，本地光标照常
+//! 显示。位置与热点都是**远端像素**，绘制时按画面在 X、Y 两轴的实际缩放
+//! 分别折算。
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -27,11 +30,13 @@ use std::sync::Arc;
 
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::{
-    App, Bounds, Div, Element, GlobalElementId, InspectorElementId, InteractiveElement as _,
-    IntoElement, LayoutId, ParentElement as _, Pixels, ScrollHandle, Size,
-    StatefulInteractiveElement as _, Style, Styled as _, Window, div, px, relative, size,
+    App, Bounds, CursorImage, CursorPixels, CursorStyle, Div, Element, GlobalElementId, Hitbox,
+    HitboxBehavior, InspectorElementId, InteractiveElement as _, IntoElement, LayoutId,
+    ParentElement as _, Pixels, ScrollHandle, Size, StatefulInteractiveElement as _, Style,
+    Styled as _, Window, div, px, relative, size,
 };
 use gpui_kit::{RenderImage, point};
+use image::{Frame, RgbaImage};
 
 /// 替换桌面或指针图像，同时释放旧图在所有窗口的纹理图集项。
 /// RenderImage 的 Arc 释放只回收 CPU 字节，不能替代 GPUI 的 drop_image。
@@ -124,16 +129,56 @@ pub fn remote_frame_point(
     Some((x, y))
 }
 
-/// RDP 的远端光标：位图 + 位置 + 热点，都是远端像素。
+/// 画面上的远端光标怎么显示。见模块文档。
+#[derive(Clone, Debug)]
+pub enum FrameCursor {
+    /// 本地默认箭头：远端说"用客户端自己的"。
+    Arrow,
+    /// 远端的形状，交给平台当系统光标。隐藏也是一张图。
+    Native(Arc<CursorImage>),
+    /// 平台显示不了应用光标时的退路：把形状画进画面。
+    Overlay(PointerOverlay),
+}
+
+/// 画进画面的远端光标：位图 + 位置 + 热点，都是远端像素。
 #[derive(Clone, Debug)]
 pub struct PointerOverlay {
-    /// 光标位图（BGRA，非预乘 alpha）。
+    /// 光标位图（BGRA，非预乘 alpha），见 [`cursor_overlay`]。
     pub image: Arc<RenderImage>,
     /// 热点：位图左上角相对指针位置的偏移。`position - hotspot` 才是
     /// 位图左上角该画的地方。
-    pub hotspot: (u16, u16),
+    pub hotspot: (u32, u32),
     /// 指针在远端桌面里的位置。
     pub position: (u16, u16),
+}
+
+/// 把一张光标图画成 [`PointerOverlay`] 用的位图。只给平台显示不了应用光标
+/// 时的退路用：画进画面的图做不了反色，反色像素画成黑白棋盘格（和 IronRDP
+/// 的做法一样），隐藏的光标没有图。
+pub fn cursor_overlay(cursor: &CursorImage) -> Option<Arc<RenderImage>> {
+    let bgra = match cursor.pixels() {
+        CursorPixels::Hidden => return None,
+        CursorPixels::Bgra(bgra) => bgra.clone(),
+        CursorPixels::Masked { and, xor } => {
+            let width = cursor.width() as usize;
+            and.iter()
+                .zip(xor.as_chunks::<4>().0)
+                .enumerate()
+                .flat_map(|(index, (&keep, &[b, g, r, _]))| match (keep, [b, g, r]) {
+                    (false, _) => [b, g, r, 0xff],
+                    (true, [0, 0, 0]) => [0; 4],
+                    (true, [0xff, 0xff, 0xff]) => match (index % width + index / width) % 2 {
+                        0 => [0xff; 4],
+                        _ => [0, 0, 0, 0xff],
+                    },
+                    // 与屏幕异或出别的颜色，画不出来，就当这个颜色本身。
+                    (true, _) => [b, g, r, 0xff],
+                })
+                .collect()
+        }
+    };
+    let buffer = RgbaImage::from_raw(cursor.width(), cursor.height(), bgra)?;
+    Some(Arc::new(RenderImage::new(vec![Frame::new(buffer)])))
 }
 
 /// 一帧远端桌面（按需带上远端光标）。见模块文档。
@@ -142,8 +187,8 @@ pub struct FrameElement {
     /// 这一帧真正落在窗口里的矩形。prepaint 写、面板的鼠标回调读 ——
     /// 同一线程，先后有序（渲染完才会派发下一轮事件），`Cell` 够用。
     display: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// 远端光标。VNC 没有这一层（光标在画面里）。
-    pointer: Option<PointerOverlay>,
+    /// 远端光标。VNC 没有这一层（光标由本地系统光标代表）。
+    cursor: Option<FrameCursor>,
 }
 
 impl FrameElement {
@@ -151,20 +196,21 @@ impl FrameElement {
         Self {
             image,
             display,
-            pointer: None,
+            cursor: None,
         }
     }
 
-    /// 挂上远端光标（RDP 的加速档）。`None` 就是不画。
-    pub fn with_pointer(mut self, pointer: Option<PointerOverlay>) -> Self {
-        self.pointer = pointer;
+    /// 挂上远端光标（RDP）。
+    pub fn with_cursor(mut self, cursor: FrameCursor) -> Self {
+        self.cursor = Some(cursor);
         self
     }
 }
 
 impl Element for FrameElement {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    /// 登记光标用的 hitbox；画进画面的光标与 VNC 不需要。
+    type PrepaintState = Option<Hitbox>;
 
     fn id(&self) -> Option<gpui_kit::ElementId> {
         None
@@ -195,10 +241,17 @@ impl Element for FrameElement {
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
-        _window: &mut Window,
+        window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
         self.display.set(Some(bounds));
+        // hitbox 记着当前内容遮罩，实际 1:1 时滚出视口的那部分不算悬停。
+        match self.cursor {
+            Some(FrameCursor::Arrow | FrameCursor::Native(_)) => {
+                Some(window.insert_hitbox(bounds, HitboxBehavior::Normal))
+            }
+            Some(FrameCursor::Overlay(_)) | None => None,
+        }
     }
 
     fn paint(
@@ -207,7 +260,7 @@ impl Element for FrameElement {
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
+        hitbox: &mut Self::PrepaintState,
         window: &mut Window,
         _cx: &mut App,
     ) {
@@ -221,8 +274,17 @@ impl Element for FrameElement {
             false,
         );
 
-        let Some(pointer) = self.pointer.clone() else {
-            return;
+        let pointer = match (&self.cursor, hitbox.as_ref()) {
+            (Some(FrameCursor::Arrow), Some(hitbox)) => {
+                window.set_cursor_style(CursorStyle::Arrow, hitbox);
+                return;
+            }
+            (Some(FrameCursor::Native(image)), Some(hitbox)) => {
+                window.set_cursor_image(image, CursorStyle::Arrow, hitbox);
+                return;
+            }
+            (Some(FrameCursor::Overlay(pointer)), _) => pointer.clone(),
+            _ => return,
         };
         let desktop = self.image.size(0);
         if desktop.width.0 <= 0 || desktop.height.0 <= 0 {
@@ -234,8 +296,8 @@ impl Element for FrameElement {
         let (x, y) = pointer.position;
         let (hotspot_x, hotspot_y) = pointer.hotspot;
         let origin = point(
-            bounds.origin.x + px((f32::from(x) - f32::from(hotspot_x)) * scale_x),
-            bounds.origin.y + px((f32::from(y) - f32::from(hotspot_y)) * scale_y),
+            bounds.origin.x + px((f32::from(x) - hotspot_x as f32) * scale_x),
+            bounds.origin.y + px((f32::from(y) - hotspot_y as f32) * scale_y),
         );
         let destination = Bounds::new(
             origin,
@@ -275,16 +337,29 @@ mod tests {
         image: Arc<RenderImage>,
         display: Rc<Cell<Option<Bounds<Pixels>>>>,
         scroll: ScrollHandle,
+        cursor: Option<FrameCursor>,
+    }
+
+    impl ScrollHarness {
+        fn new(image: Arc<RenderImage>, display: Rc<Cell<Option<Bounds<Pixels>>>>) -> Self {
+            Self {
+                image,
+                display,
+                scroll: ScrollHandle::new(),
+                cursor: None,
+            }
+        }
     }
 
     impl Render for ScrollHarness {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let mut frame = FrameElement::new(self.image.clone(), self.display.clone());
+            if let Some(cursor) = self.cursor.clone() {
+                frame = frame.with_cursor(cursor);
+            }
             scrollable_frame(
                 div().w(px(100.)).h(px(80.)),
-                div()
-                    .w(px(200.))
-                    .h(px(150.))
-                    .child(FrameElement::new(self.image.clone(), self.display.clone())),
+                div().w(px(200.)).h(px(150.)).child(frame),
                 &self.scroll,
                 "frame-test-scroll",
                 "frame-test-scrollbar",
@@ -303,11 +378,8 @@ mod tests {
     fn replacing_a_streamed_image_releases_its_atlas_entry(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let first = Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(200, 150))]));
-        let (view, cx) = cx.add_window_view(|_, _| ScrollHarness {
-            image: first.clone(),
-            display: Rc::new(Cell::new(None)),
-            scroll: ScrollHandle::new(),
-        });
+        let (view, cx) =
+            cx.add_window_view(|_, _| ScrollHarness::new(first.clone(), Rc::new(Cell::new(None))));
         draw(cx);
         cx.update(|window, _| assert!(window.has_image_atlas_entry(&first)));
         let mut old = first;
@@ -361,11 +433,7 @@ mod tests {
         cx.update(gpui_kit::init);
         let display = Rc::new(Cell::new(None));
         let image = Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(200, 150))]));
-        let (_, cx) = cx.add_window_view(|_, _| ScrollHarness {
-            image,
-            display: display.clone(),
-            scroll: ScrollHandle::new(),
-        });
+        let (_, cx) = cx.add_window_view(|_, _| ScrollHarness::new(image, display.clone()));
         let cx: &mut VisualTestContext = cx;
         draw(cx);
         let before = display.get().expect("frame was painted");
@@ -383,5 +451,66 @@ mod tests {
         assert!(after.origin.x < before.origin.x);
         assert!(after.origin.y < before.origin.y);
         assert_eq!(after.size, before.size);
+    }
+
+    fn masked_cursor() -> Arc<CursorImage> {
+        // 一行四个像素：黑色本体、透明、反色、白色本体。
+        Arc::new(
+            CursorImage::new(
+                4,
+                1,
+                (0, 0),
+                CursorPixels::Masked {
+                    and: vec![false, true, true, false],
+                    xor: [[0, 0, 0, 0], [0, 0, 0, 0], [0xff; 4], [0xff; 4]].concat(),
+                },
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn the_overlay_fallback_keeps_what_an_image_can_show() {
+        let image = cursor_overlay(&masked_cursor()).expect("an overlay image");
+        assert_eq!(
+            image.as_bytes(0).unwrap(),
+            [[0, 0, 0, 0xff], [0; 4], [0xff; 4], [0xff; 4]].concat(),
+            "黑、透明、反色落在棋盘格的白格上、白"
+        );
+        let alpha = CursorImage::new(1, 1, (0, 0), CursorPixels::Bgra(vec![1, 2, 3, 4])).unwrap();
+        assert_eq!(
+            cursor_overlay(&alpha).unwrap().as_bytes(0).unwrap(),
+            [1, 2, 3, 4]
+        );
+        assert!(cursor_overlay(&CursorImage::hidden()).is_none());
+    }
+
+    /// 每种光标都在 paint 阶段登记（GPUI 在别的阶段登记会断言失败）。
+    /// 测试平台不支持应用光标，登记的图退回箭头。
+    #[gpui_kit::test]
+    fn every_cursor_form_draws(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        assert!(!cx.update(|cx| cx.supports_cursor_images()));
+        let image = Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(200, 150))]));
+        let (view, cx) =
+            cx.add_window_view(|_, _| ScrollHarness::new(image, Rc::new(Cell::new(None))));
+        let overlay = cursor_overlay(&masked_cursor()).unwrap();
+        for cursor in [
+            FrameCursor::Arrow,
+            FrameCursor::Native(masked_cursor()),
+            FrameCursor::Native(Arc::new(CursorImage::hidden())),
+            FrameCursor::Overlay(PointerOverlay {
+                image: overlay.clone(),
+                hotspot: (1, 0),
+                position: (10, 10),
+            }),
+        ] {
+            view.update(cx, |view, cx| {
+                view.cursor = Some(cursor);
+                cx.notify();
+            });
+            draw(cx);
+        }
+        cx.update(|window, _| assert!(window.has_image_atlas_entry(&overlay)));
     }
 }

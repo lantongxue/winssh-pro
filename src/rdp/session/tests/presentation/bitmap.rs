@@ -202,12 +202,8 @@ fn slowpath_bulk_updates_and_fastpath_pointers_share_compression_history() {
             desktop.take().as_bytes(0).unwrap(),
             &[17, 17, 17, 255].repeat(4)
         );
-        assert!(
-            desktop
-                .feed(&compressed_pointer(&mut sender))
-                .iter()
-                .any(|o| matches!(o, ActiveStageOutput::PointerBitmap(_)))
-        );
+        desktop.feed(&compressed_pointer(&mut sender));
+        assert!(matches!(desktop.take_cursor(), RemoteCursor::Shape(_)));
         // 压缩的 SlowPath cached pointer 也占用历史，不能为了找 Bitmap 忽略它。
         let pointer = [7, 0, 0, 0, 0, 0];
         let (size, flags) = sender.compress(&pointer).unwrap();
@@ -216,14 +212,10 @@ fn slowpath_bulk_updates_and_fastpath_pointers_share_compression_history() {
         } else {
             &pointer
         };
-        assert!(
-            desktop
-                .feed_action(
-                    Action::X224,
-                    &slow_data(bytes, 27, flags as u8, pointer.len())
-                )
-                .iter()
-                .any(|o| matches!(o, ActiveStageOutput::PointerBitmap(_)))
+        desktop.feed_action(
+            Action::X224,
+            &slow_data(bytes, 27, flags as u8, pointer.len()),
         );
+        assert!(matches!(desktop.take_cursor(), RemoteCursor::Shape(_)));
     }
 }

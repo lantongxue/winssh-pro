@@ -38,6 +38,7 @@ struct Desktop {
     stage: ActiveStage,
     image: DecodedImage,
     fastpath: FastPathFrames,
+    pointers: PointerDecoder,
     presentation: Presentation,
     tx: FrameSender<RdpOutput>,
     rx: FrameReceiver<RdpOutput>,
@@ -50,6 +51,7 @@ impl Desktop {
             stage: active_stage(),
             image: DecodedImage::new(PixelFormat::BgrX32, 2, 2),
             fastpath: FastPathFrames::new(Some(CompressionType::K64)).unwrap(),
+            pointers: PointerDecoder::default(),
             presentation: Presentation::default(),
             tx,
             rx,
@@ -65,6 +67,7 @@ impl Desktop {
             &mut self.stage,
             &mut self.image,
             &mut self.fastpath,
+            &mut self.pointers,
             &mut self.presentation,
             (action, packet),
             &self.tx,
@@ -89,6 +92,13 @@ impl Desktop {
             panic!()
         };
         frame
+    }
+
+    fn take_cursor(&mut self) -> RemoteCursor {
+        match self.rx.try_recv().expect("cursor update") {
+            RdpOutput::Cursor(cursor) => cursor,
+            other => panic!("expected a cursor, got {other:?}"),
+        }
     }
 }
 
@@ -220,12 +230,8 @@ fn compressed_fragments_preserve_boundaries_and_history_across_resize() {
             desktop.presentation = Presentation::default();
         }
         // 指针与图形共用同一段 MPPC 历史，不能只解压图形包。
-        assert!(
-            desktop
-                .feed(&compressed_pointer(&mut sender))
-                .iter()
-                .any(|event| matches!(event, ActiveStageOutput::PointerBitmap(_)))
-        );
+        desktop.feed(&compressed_pointer(&mut sender));
+        assert!(matches!(desktop.take_cursor(), RemoteCursor::Shape(_)));
         let value = 17 + round as u8;
         let commands = [
             marker(FrameAction::Begin, round),
@@ -262,6 +268,47 @@ fn compressed_fragments_preserve_boundaries_and_history_across_resize() {
             [value, value, value, 255].repeat(4)
         );
     }
+}
+
+#[test]
+fn pointers_bypass_the_active_stage_and_their_cache_survives_reactivation() {
+    use ironrdp::pdu::pointer::CachedPointerAttribute;
+
+    let mut desktop = Desktop::new();
+    let mut sender = BulkCompressor::new(BulkCompressionType::Rdp5).unwrap();
+    assert!(
+        desktop.feed(&compressed_pointer(&mut sender)).is_empty(),
+        "指针不再交给 ActiveStage"
+    );
+    let RemoteCursor::Shape(first) = desktop.take_cursor() else {
+        panic!("a pointer shape")
+    };
+    reactivate_desktop(
+        &mut desktop.stage,
+        &mut desktop.image,
+        DesktopSize {
+            width: 2,
+            height: 2,
+        },
+        INITIAL_SHARE_ID,
+        true,
+    );
+    let cached = encode_vec(&CachedPointerAttribute { cache_index: 0 }).unwrap();
+    desktop.feed(&uncompressed_frame(UpdateCode::CachedPointer, &cached));
+    let RemoteCursor::Shape(again) = desktop.take_cursor() else {
+        panic!("the cached shape")
+    };
+    assert!(Arc::ptr_eq(&first, &again));
+}
+
+#[test]
+fn an_invalid_pointer_does_not_end_the_session() {
+    let mut desktop = Desktop::new();
+    // 合法长度的属性头，但高度为零，正是 lengthAndMask 的那条警告。
+    desktop.feed(&uncompressed_frame(UpdateCode::ColorPointer, &[0; 15]));
+    assert!(desktop.rx.try_recv().is_err(), "坏包不改光标");
+    desktop.feed(&uncompressed_frame(UpdateCode::DefaultPointer, &[]));
+    assert!(matches!(desktop.take_cursor(), RemoteCursor::Default));
 }
 
 #[test]

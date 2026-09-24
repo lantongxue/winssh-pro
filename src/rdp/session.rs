@@ -25,11 +25,11 @@
 //! 接收间隙并检查未完成的协议包。完整快照最多挂一张，
 //! 慢窗口不阻塞解码，也不积压旧画面。
 //!
-//! 指针：走**加速档**（`pointer_software_rendering: false`）—— 服务器把光标
-//! 位图（含形状序列号）单独发来，桌面帧里不掺光标。位置与位图分别更新，
-//! 光标移动不会重传整张桌面纹理。本地系统光标照常显示（和 VNC 面板同一取舍：
-//! 本地这项工作做不掉），所以远端画出来的光标与本地光标会**同时**存在，
-//! `PointerHidden` 也藏不掉本地那颗 —— 这是这条路上已知的观感代价。
+//! 指针：连接时报了 Pointer / LargePointer 能力，服务器就不把光标画进桌面，
+//! 而是单独发光标位图。这些更新在帧边界适配拼好整包后就被截下
+//! （[`process_graphics_frame`]），由 [`super::pointer`] 解成
+//! [`RdpOutput::Cursor`]，不进 ActiveStage。面板把它交给平台当系统光标：
+//! 位置由本地鼠标决定，形状、隐藏、反色都跟着远端 —— mstsc 的做法。
 //!
 //! 键鼠：面板把 GPUI 事件翻成 [`Operation`]（见 [`super::keyboard`]），这里
 //! 统一喂给 `Database` 换成 fast-path 输入事件 —— 去重、自动重复、
@@ -50,7 +50,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, anyhow};
 use futures::FutureExt as _;
 use gpui_kit::{RenderImage, SharedString};
-use image::{Frame, RgbaImage};
 use ironrdp::cliprdr::backend::ClipboardMessage;
 use ironrdp::cliprdr::pdu::{ClipboardFormat, ClipboardFormatId};
 use ironrdp::cliprdr::{Cliprdr, CliprdrClient};
@@ -66,7 +65,6 @@ use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
-use ironrdp::graphics::pointer::DecodedPointer;
 use ironrdp::input::{Database, Operation};
 use ironrdp::pdu::fast_path::{
     EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode,
@@ -92,6 +90,7 @@ use tokio::sync::mpsc;
 
 use super::clipboard::{GpuiClipboard, LocalClipboard};
 use super::graphics::FastPathFrames;
+use super::pointer::{PointerDecoder, PointerEvent, RemoteCursor};
 use super::settings::RdpSettings;
 use super::transport;
 use crate::desktop::{FrameReceiver, FrameSender, frame_channel};
@@ -124,14 +123,10 @@ pub enum RdpInput {
 pub enum RdpOutput {
     /// 一帧完整桌面（BGRA）。图形更新来了才产。
     Frame(Arc<RenderImage>),
-    /// 光标位图（形状变了才来）。`Accelerated` 档：BGRA、非预乘 alpha。
-    PointerBitmap(Arc<DecodedPointer>),
-    /// 光标位置变了。
+    /// 远端光标变了（形状、隐藏或默认箭头），见 [`super::pointer`]。
+    Cursor(RemoteCursor),
+    /// 远端程序主动把光标挪到了这里（远端像素）。
     PointerPosition { x: u16, y: u16 },
-    /// 服务器要藏起光标（本地系统光标藏不掉，见模块文档）。
-    PointerHidden,
-    /// 服务器不做光标，用客户端的默认箭头。
-    PointerDefault,
     /// 对端复制了文本。
     Clipboard(String),
     /// 链路读数：往返时延与本会话上/下行速率，信息栏每几秒刷一次。
@@ -418,7 +413,8 @@ fn connector_config(
             true => Some(CompressionType::K64),
             false => None,
         },
-        // 加速档：位图/位置分开送，桌面帧不掺光标（见模块文档）。
+        // 只是交给 ActiveStage 的两面旗：指针更新根本不进 ActiveStage
+        // （见模块文档）。能力集照报，桌面帧里不掺光标。
         enable_server_pointer: true,
         pointer_software_rendering: false,
         multitransport_flags: None,
@@ -509,6 +505,8 @@ async fn session_loop(
     let activation_factory = connection_result.activation_factory;
     let compression_type = connection_result.compression_type;
     let mut fastpath = FastPathFrames::new(compression_type)?;
+    // 光标缓存跟着会话走，重新激活不清（服务器仍会按旧下标引用）。
+    let mut pointers = PointerDecoder::default();
     let mut presentation = Presentation::default();
     // 定时到点前先取走已就绪的下一包，不能从可读的网络更新批次中间截帧。
     let mut pending_frame = None;
@@ -625,8 +623,9 @@ async fn session_loop(
                     }
                 } else {
                     process_graphics_frame(
-                        &mut active_stage, &mut image, &mut fastpath, &mut presentation,
-                        (action, &payload), events_tx, (fastpath_share_id, share_id, io_channel_id),
+                        &mut active_stage, &mut image, &mut fastpath, &mut pointers,
+                        &mut presentation, (action, &payload), events_tx,
+                        (fastpath_share_id, share_id, io_channel_id),
                     )?
                 }
             }
@@ -775,18 +774,12 @@ async fn session_loop(
                 ActiveStageOutput::GraphicsUpdate(_) => {
                     presentation.damage(Instant::now());
                 }
-                ActiveStageOutput::PointerBitmap(pointer) => {
-                    let _ = events_tx.send(RdpOutput::PointerBitmap(pointer));
-                }
-                ActiveStageOutput::PointerPosition { x, y } => {
-                    let _ = events_tx.send(RdpOutput::PointerPosition { x, y });
-                }
-                ActiveStageOutput::PointerHidden => {
-                    let _ = events_tx.send(RdpOutput::PointerHidden);
-                }
-                ActiveStageOutput::PointerDefault => {
-                    let _ = events_tx.send(RdpOutput::PointerDefault);
-                }
+                // 指针更新在 process_graphics_frame 里就截走了，ActiveStage
+                // 见不到，也就产不出这几样。
+                ActiveStageOutput::PointerBitmap(_)
+                | ActiveStageOutput::PointerPosition { .. }
+                | ActiveStageOutput::PointerHidden
+                | ActiveStageOutput::PointerDefault => {}
                 ActiveStageOutput::DeactivateAll => {
                     presentation = Presentation::default();
                     log::debug!("RDP 桌面开始重新激活");
@@ -876,10 +869,12 @@ async fn wait_for_presentation(deadline: Option<Instant>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_graphics_frame(
     active_stage: &mut ActiveStage,
     image: &mut DecodedImage,
     fastpath: &mut FastPathFrames,
+    pointers: &mut PointerDecoder,
     presentation: &mut Presentation,
     packet: (Action, &[u8]),
     events_tx: &FrameSender<RdpOutput>,
@@ -887,6 +882,17 @@ fn process_graphics_frame(
 ) -> Result<Vec<ActiveStageOutput>> {
     let mut outputs = Vec::new();
     let mut emit = |code: UpdateCode, data: &[u8], boundary: Option<FrameAction>| -> Result<()> {
+        if PointerDecoder::handles(code) {
+            // 快路径与慢路径的指针都从这里过，已解压、已拼好分片。
+            // 自己解，不交给 ActiveStage（见模块文档）。
+            let event = match pointers.decode(code, data) {
+                Some(PointerEvent::Cursor(cursor)) => RdpOutput::Cursor(cursor),
+                Some(PointerEvent::Position { x, y }) => RdpOutput::PointerPosition { x, y },
+                None => return Ok(()),
+            };
+            let _ = events_tx.send(event);
+            return Ok(());
+        }
         if boundary == Some(FrameAction::Begin) {
             // 切入有标记的帧前提交已经完成的旧式更新。
             presentation.publish(image, events_tx);
@@ -1117,31 +1123,16 @@ fn disconnect_reason(reason: &GracefulDisconnectReason) -> SharedString {
     ))
 }
 
-/// 指针位图（`Accelerated` 档）是 RGBA，GPUI 要 BGRA —— 换一次序。
-/// 光标位图小（通常 32×32），这点开销只在形状变化时付一次。
-pub fn pointer_to_render_image(pointer: &DecodedPointer) -> Option<Arc<RenderImage>> {
-    let width = u32::from(pointer.width);
-    let height = u32::from(pointer.height);
-    if width == 0 || height == 0 {
-        return None;
-    }
-    let mut buffer = pointer.bitmap_data.clone();
-    for pixel in buffer.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
-    let buffer = RgbaImage::from_raw(width, height, buffer)?;
-    Some(Arc::new(RenderImage::new(vec![Frame::new(buffer)])))
-}
-
 #[cfg(test)]
 mod tests {
     mod presentation;
     use super::*;
+    use image::{Frame, RgbaImage};
     use ironrdp::core::encode_vec;
     use ironrdp::pdu::fast_path::{
         EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode,
     };
-    use ironrdp::pdu::pointer::{CachedPointerAttribute, ColorPointerAttribute, Point16};
+    use ironrdp::pdu::pointer::{ColorPointerAttribute, Point16};
     use ironrdp::pdu::rdp::headers::{CompressionFlags, ShareControlPdu, ShareDataPdu};
     use ironrdp::pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
     use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
@@ -1202,83 +1193,6 @@ mod tests {
     }
 
     #[test]
-    fn compressed_pointer_after_resize_still_decodes() {
-        let mut sender = BulkCompressor::new(BulkCompressionType::Rdp5).unwrap();
-        let mut image = DecodedImage::new(PixelFormat::BgrX32, 640, 480);
-        let mut receiver = active_stage();
-        for round in 0..4 {
-            let share_id = INITIAL_SHARE_ID + round;
-            if round > 0 {
-                reactivate_desktop(
-                    &mut receiver,
-                    &mut image,
-                    DesktopSize {
-                        width: 1920,
-                        height: 1080,
-                    },
-                    share_id,
-                    true,
-                );
-                assert_eq!((image.width(), image.height()), (1920, 1080));
-            }
-            let updates = process_server_frame(
-                &mut receiver,
-                &mut image,
-                Action::FastPath,
-                &compressed_pointer(&mut sender),
-                INITIAL_SHARE_ID,
-                share_id,
-            )
-            .unwrap();
-            assert!(
-                updates.iter().any(|update| matches!(
-                    update,
-                    ActiveStageOutput::PointerBitmap(pointer)
-                        if pointer.width == 16 && pointer.height == 16
-                )),
-                "pointer lost in round {round}: {updates:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn cached_pointer_survives_reactivation() {
-        let mut sender = BulkCompressor::new(BulkCompressionType::Rdp5).unwrap();
-        let mut receiver = active_stage();
-        let mut image = DecodedImage::new(PixelFormat::BgrX32, 640, 480);
-        receiver
-            .process(
-                &mut image,
-                Action::FastPath,
-                &compressed_pointer(&mut sender),
-            )
-            .unwrap();
-        reactivate_desktop(
-            &mut receiver,
-            &mut image,
-            DesktopSize {
-                width: 1920,
-                height: 1080,
-            },
-            INITIAL_SHARE_ID,
-            true,
-        );
-        let cached = encode_vec(&CachedPointerAttribute { cache_index: 0 }).unwrap();
-        let updates = receiver
-            .process(
-                &mut image,
-                Action::FastPath,
-                &uncompressed_frame(UpdateCode::CachedPointer, &cached),
-            )
-            .unwrap();
-        assert!(
-            updates
-                .iter()
-                .any(|update| matches!(update, ActiveStageOutput::PointerBitmap(_)))
-        );
-    }
-
-    #[test]
     fn frame_acknowledgements_use_the_reactivated_share_id() {
         let mut receiver = active_stage();
         let mut image = DecodedImage::new(PixelFormat::BgrX32, 640, 480);
@@ -1336,29 +1250,6 @@ mod tests {
             }
             assert_eq!(ids, [7, 8]);
         }
-    }
-
-    #[test]
-    fn an_invalid_pointer_does_not_end_the_session() {
-        let mut receiver = active_stage();
-        let mut image = DecodedImage::new(PixelFormat::BgrX32, 640, 480);
-        // 合法长度的属性头，但高度为零，正是 lengthAndMask 的那条警告。
-        let invalid = uncompressed_frame(UpdateCode::ColorPointer, &[0; 15]);
-        receiver
-            .process(&mut image, Action::FastPath, &invalid)
-            .unwrap();
-        let outputs = receiver
-            .process(
-                &mut image,
-                Action::FastPath,
-                &uncompressed_frame(UpdateCode::DefaultPointer, &[]),
-            )
-            .unwrap();
-        assert!(
-            outputs
-                .iter()
-                .any(|output| matches!(output, ActiveStageOutput::PointerDefault))
-        );
     }
 
     fn test_connection(desktop: (u16, u16)) -> ConnectionResult {
@@ -1558,8 +1449,8 @@ mod tests {
         let mut frames = 0;
         while let Ok(event) = events_rx.try_recv() {
             match event {
-                RdpOutput::PointerBitmap(pointer) => {
-                    assert_eq!((pointer.width, pointer.height), (16, 16));
+                RdpOutput::Cursor(RemoteCursor::Shape(pointer)) => {
+                    assert_eq!((pointer.width(), pointer.height()), (16, 16));
                     pointers += 1;
                 }
                 RdpOutput::Frame(image) => {
@@ -1574,35 +1465,5 @@ mod tests {
         }
         assert_eq!(pointers, 4);
         assert_eq!(frames, 1);
-    }
-
-    #[test]
-    fn pointer_bitmaps_swap_red_and_blue() {
-        let pointer = DecodedPointer {
-            width: 2,
-            height: 1,
-            hotspot_x: 0,
-            hotspot_y: 0,
-            // 两个像素：红（RGBA 1,2,3,255）与蓝（4,5,6,128）。
-            bitmap_data: vec![1, 2, 3, 255, 4, 5, 6, 128],
-        };
-        let image = pointer_to_render_image(&pointer).expect("image");
-        assert_eq!(image.size(0).width.0, 2);
-        // 换序之后是 BGRA：蓝、绿、红、alpha。
-        let bytes = image.as_bytes(0).expect("bytes");
-        assert_eq!(&bytes[0..4], &[3, 2, 1, 255]);
-        assert_eq!(&bytes[4..8], &[6, 5, 4, 128]);
-    }
-
-    #[test]
-    fn an_empty_pointer_has_no_image() {
-        let pointer = DecodedPointer {
-            width: 0,
-            height: 0,
-            hotspot_x: 0,
-            hotspot_y: 0,
-            bitmap_data: Vec::new(),
-        };
-        assert!(pointer_to_render_image(&pointer).is_none());
     }
 }

@@ -13,10 +13,10 @@
 //!    布局拿到尺寸才拨号；后续画布变大变小，通过 DisplayControl 动态调整。
 //!    两档都按物理像素 1:1 绘制：自适应改变远端分辨率，实际 1:1 冻结
 //!    远端分辨率。对端尚未改好或不支持动态调整时，溢出部分从滚动条查看。
-//! 2. **光标是单独一层**。RDP 用"加速档"把光标位图与位置分开送
-//!    （见 [`crate::rdp::session`] 的模块文档），所以桌面纹理不会因为鼠标
-//!    动一下就整张重传；两者都挂到 [`FrameElement`] 上画。本地系统光标
-//!    照常显示，藏不掉 —— 和 VNC 是同一个取舍。
+//! 2. **远端光标就是本地系统光标**。服务器不把光标画进桌面，而是把形状
+//!    单独发来（见 [`crate::rdp::pointer`]）；面板把它挂到 [`FrameElement`]
+//!    的 hitbox 上，平台当真正的系统光标显示 —— 位置跟着本地鼠标，形状、
+//!    隐藏、反色跟着远端，和 mstsc 一样。平台做不到时退回把形状画进画面。
 //! 3. **Ctrl+Alt+Del 要一个按钮**。这个组合在本地就被操作系统吃掉了，
 //!    GPUI 根本收不到；信息栏那颗按钮直接把三条扫描码按顺序发给对端，
 //!    等于在远端按了一次安全注意序列。
@@ -54,13 +54,13 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::{
     host::Host,
     netstats::LinkStats,
-    rdp::{RdpInput, RdpKeyboard, RdpOutput, RdpSession, pointer_to_render_image},
+    rdp::{RdpInput, RdpKeyboard, RdpOutput, RdpSession, RemoteCursor},
     ui::{
         Workspace,
         bars::link_stats_group,
         elements::{
-            DesktopScale, FrameElement, PointerOverlay, native_frame_size, remote_frame_point,
-            replace_image, scrollable_frame,
+            DesktopScale, FrameCursor, FrameElement, PointerOverlay, cursor_overlay,
+            native_frame_size, remote_frame_point, replace_image, scrollable_frame,
         },
         menus::{DesktopSessionAction, DesktopSessionKind, DesktopSessionMenu},
         panels::SessionEvent,
@@ -124,15 +124,13 @@ pub struct RdpPanel {
     scroll: ScrollHandle,
     /// 当前画面缩放选择；实际 1:1 时冻结已协商的远端桌面尺寸。
     scale: DesktopScale,
-    /// 远端光标位图（BGRA）。随形状变化更新，不随位置。
-    pointer_image: Option<Arc<RenderImage>>,
-    /// 光标热点，见 [`PointerOverlay::hotspot`]。
-    pointer_hotspot: (u16, u16),
-    /// 光标在远端桌面里的位置。
+    /// 远端此刻的光标。随形状变化更新，不随位置 —— 位置是本地鼠标的。
+    cursor: RemoteCursor,
+    /// 平台显示不了应用光标时，画进画面的那张图（见 [`cursor_overlay`]）。
+    /// 能显示时一直是 `None`。
+    pointer_overlay: Option<Arc<RenderImage>>,
+    /// 远端报来的光标位置，只给画进画面的退路用。
     pointer_position: (u16, u16),
-    /// 光标此刻该不该画。服务器说藏（全屏播放、输入密码那种）就置否 ——
-    /// 本地系统光标我们藏不掉，这一点是已知代价。
-    pointer_visible: bool,
     /// 键盘此刻在对端那边按成什么样（[`RdpKeyboard`]）。
     keyboard: RdpKeyboard,
     /// 按下时这颗右键是否由 macOS 的 Control+左键转换而来；抬起沿用同一映射。
@@ -171,10 +169,9 @@ impl RdpPanel {
                 display: Rc::new(Cell::new(None)),
                 scroll: ScrollHandle::new(),
                 scale: DesktopScale::Adaptive,
-                pointer_image: None,
-                pointer_hotspot: (0, 0),
+                cursor: RemoteCursor::Default,
+                pointer_overlay: None,
                 pointer_position: (0, 0),
-                pointer_visible: false,
                 keyboard: RdpKeyboard::new(),
                 control_click: false,
                 clipboard: None,
@@ -199,7 +196,7 @@ impl RdpPanel {
             ];
             cx.on_release(|this, cx| {
                 replace_image(&mut this.image, None, cx);
-                replace_image(&mut this.pointer_image, None, cx);
+                replace_image(&mut this.pointer_overlay, None, cx);
             })
             .detach();
             this.watch_clipboard(cx);
@@ -217,8 +214,8 @@ impl RdpPanel {
         self.inputs = None;
         replace_image(&mut self.image, None, cx);
         self.resolution = None;
-        replace_image(&mut self.pointer_image, None, cx);
-        self.pointer_visible = false;
+        self.cursor = RemoteCursor::Default;
+        replace_image(&mut self.pointer_overlay, None, cx);
         self.pointer_position = (0, 0);
         self.display.set(None);
         self.keyboard.forget();
@@ -252,11 +249,9 @@ impl RdpPanel {
                                             break;
                                         }
                                     }
-                                    Some(RdpOutput::PointerBitmap(pointer)) => {
+                                    Some(RdpOutput::Cursor(cursor)) => {
                                         if this
-                                            .update(cx, |this, cx| {
-                                                this.set_pointer_bitmap(&pointer, cx)
-                                            })
+                                            .update(cx, |this, cx| this.set_cursor(cursor, cx))
                                             .is_err()
                                         {
                                             break;
@@ -266,30 +261,11 @@ impl RdpPanel {
                                         if this
                                             .update(cx, |this, cx| {
                                                 this.pointer_position = (x, y);
-                                                cx.notify();
-                                            })
-                                            .is_err()
-                                        {
-                                            break;
-                                        }
-                                    }
-                                    Some(RdpOutput::PointerHidden) => {
-                                        if this
-                                            .update(cx, |this, cx| {
-                                                this.pointer_visible = false;
-                                                cx.notify();
-                                            })
-                                            .is_err()
-                                        {
-                                            break;
-                                        }
-                                    }
-                                    Some(RdpOutput::PointerDefault) => {
-                                        if this
-                                            .update(cx, |this, cx| {
-                                                replace_image(&mut this.pointer_image, None, cx);
-                                                this.pointer_visible = false;
-                                                cx.notify();
+                                                // 系统光标跟的是本地鼠标，位置
+                                                // 只有画进画面的退路要重画。
+                                                if this.pointer_overlay.is_some() {
+                                                    cx.notify();
+                                                }
                                             })
                                             .is_err()
                                         {
@@ -415,24 +391,17 @@ impl RdpPanel {
         cx.notify();
     }
 
-    /// 光标形状变了。位图为空（不可见光标）时清掉这一层，
-    /// 让本地系统光标顶上。
-    fn set_pointer_bitmap(
-        &mut self,
-        pointer: &ironrdp::graphics::pointer::DecodedPointer,
-        cx: &mut Context<Self>,
-    ) {
-        self.pointer_hotspot = (pointer.hotspot_x, pointer.hotspot_y);
-        match pointer_to_render_image(pointer) {
-            Some(image) => {
-                replace_image(&mut self.pointer_image, Some(image), cx);
-                self.pointer_visible = true;
-            }
-            None => {
-                replace_image(&mut self.pointer_image, None, cx);
-                self.pointer_visible = false;
-            }
+    /// 远端光标变了。重画一次，画面的 hitbox 就把新形状登记给平台；
+    /// 平台显示不了应用光标时，另备一张画进画面的图。
+    fn set_cursor(&mut self, cursor: RemoteCursor, cx: &mut Context<Self>) {
+        if !cx.supports_cursor_images() {
+            let overlay = match &cursor {
+                RemoteCursor::Shape(image) => cursor_overlay(image),
+                RemoteCursor::Default => None,
+            };
+            replace_image(&mut self.pointer_overlay, overlay, cx);
         }
+        self.cursor = cursor;
         cx.notify();
     }
 
@@ -880,13 +849,18 @@ impl RdpPanel {
             );
         };
 
-        let pointer = match (&self.pointer_image, self.pointer_visible) {
-            (Some(image), true) => Some(PointerOverlay {
-                image: image.clone(),
-                hotspot: self.pointer_hotspot,
+        let cursor = match (&self.cursor, &self.pointer_overlay) {
+            (RemoteCursor::Default, _) => FrameCursor::Arrow,
+            (RemoteCursor::Shape(shape), Some(overlay)) => FrameCursor::Overlay(PointerOverlay {
+                image: overlay.clone(),
+                hotspot: shape.hotspot(),
                 position: self.pointer_position,
             }),
-            _ => None,
+            (RemoteCursor::Shape(shape), None) if cx.supports_cursor_images() => {
+                FrameCursor::Native(shape.clone())
+            }
+            // 画进画面的退路里，隐藏的光标没有图：本地那颗照常显示。
+            (RemoteCursor::Shape(_), None) => FrameCursor::Arrow,
         };
 
         let frame = div()
@@ -904,7 +878,7 @@ impl RdpPanel {
             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_scroll_wheel(cx.listener(Self::on_scroll))
-            .child(FrameElement::new(image, self.display.clone()).with_pointer(pointer));
+            .child(FrameElement::new(image, self.display.clone()).with_cursor(cursor));
 
         let native = native_frame_size(self.resolution.unwrap_or_default(), window.scale_factor());
         scrollable_frame(

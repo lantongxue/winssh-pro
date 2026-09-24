@@ -14,6 +14,8 @@
 //!   输入事件，外加修饰键那本"此刻哪几颗按着"的账。
 //! - **剪贴板**（[`clipboard`]）：CLIPRDR 通道与 GPUI 剪贴板之间的桥。
 //!   正文就是 UTF-16LE（CF_UNICODETEXT），没有 VNC 经典正文那种字符集问题。
+//! - **光标**（[`pointer`]）：服务器发来的光标位图原样解成 GPUI 的
+//!   `CursorImage`，由平台当真正的系统光标显示（和 mstsc 一样跟手、反色）。
 //! - **连接配置**（[`settings`]）：安全档、色深、性能档、剪贴板、压缩、域，
 //!   摆在主机表单里由用户自己拧。
 //!
@@ -29,10 +31,12 @@ mod bitmap;
 mod clipboard;
 mod graphics;
 mod keyboard;
+mod pointer;
 mod session;
 mod settings;
 mod transport;
 
 pub use keyboard::RdpKeyboard;
-pub use session::{RdpInput, RdpOutput, RdpSession, pointer_to_render_image};
+pub use pointer::RemoteCursor;
+pub use session::{RdpInput, RdpOutput, RdpSession};
 pub use settings::{RdpColorDepth, RdpPerformance, RdpSecurity, RdpSettings, decode, encode};
