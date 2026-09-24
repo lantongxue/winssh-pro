@@ -76,12 +76,17 @@ const BAR_HEIGHT: Pixels = px(26.);
 const TAB_DOT_SIZE: Pixels = px(6.);
 
 /// 滚轮一次事件最多折算成几档。触控板一挥手滑出很远时，
-/// 发几十档没有意义，限个死值当刹车。
+/// 发几十档没有意义，限个死值当刹车。超出一档装不下的部分拆成多条 PDU。
 const MAX_WHEEL_CLICKS: i16 = 5;
 
 /// RDP 滚轮一格（一个 notch）的旋转量。协议里就是 120 的倍数，
 /// Windows 的 `WM_MOUSEWHEEL` 同源。
 const WHEEL_UNITS_PER_CLICK: i16 = 120;
+
+/// 一条滚轮 PDU 最多几格。旋转量在线上半宽符号数只有 9 位（[-256, 255]），
+/// 两格 240 就到顶 —— 三格 360 会让 ironrdp 当场 panic（debug）或按位截断成
+/// 另一个数（release），所以再多也只能拆成多条发。
+const MAX_CLICKS_PER_ROTATION: i16 = 2;
 
 /// 本地剪贴板的查看节奏，毫秒。和 VNC 面板同一条理由：没有回调可等。
 const CLIPBOARD_POLL_MS: u64 = 500;
@@ -658,12 +663,26 @@ fn remote_button(button: MouseButton, control_click: bool) -> Option<RdpMouseBut
     }
 }
 
+/// 除 Windows 外，gpui 报的正 `delta.y` 都是"内容跟着手指走"（macOS 的自然滚动，
+/// X11/Wayland 同这一套）；Windows 的滚轮是"往上滚为正"。远端只认 Windows 的符号，
+/// 所以要按客户端系统决定取不取反。
+const INVERT_WHEEL: bool = !cfg!(windows);
+
+/// gpui 把本地"一格滚几行"先乘进了 delta 幅度：Windows 用的是系统的
+/// `SPI_GETWHEELSCROLLLINES`（默认 3），Linux 是 gpui 自己的 `SCROLL_LINES = 3`，
+/// macOS 一格就是一行。远端收到一格又会按远端的设置乘一遍，所以这里除回去，
+/// 一格就是一格 —— 不然一格滚轮在远端变成三格。
+#[cfg(any(windows, target_os = "linux"))]
+const LINES_PER_NOTCH: f32 = 3.;
+
+#[cfg(not(any(windows, target_os = "linux")))]
+const LINES_PER_NOTCH: f32 = 1.;
+
 /// 滚轮事件 → RDP 的旋转操作。
 ///
-/// 符号按 Windows 的约定：`WM_MOUSEWHEEL` 正数是"往前推"（内容往上走，
-/// 也就是看上面），所以本地"往下滚"（gpui 的 `delta.y` 为正）对应负的
-/// 旋转量。水平同源，正数是向右滚。`row_height` 只用于把触控板的像素
-/// 增量折算成"几行"。
+/// 送给远端的符号固定按 Windows 的约定：`WM_MOUSEWHEEL` 正数是"往前推"
+/// （内容往上走，也就是看上面）。本地怎么解读 gpui 的 delta 看客户端系统，
+/// 见 [`wheel_notches`]。`row_height` 只用于把触控板的像素增量折算成"几行"。
 fn wheel_operations(delta: ScrollDelta, row_height: f32) -> Vec<Operation> {
     let (lines_x, lines_y) = match delta {
         ScrollDelta::Lines(delta) => (delta.x, delta.y),
@@ -675,28 +694,43 @@ fn wheel_operations(delta: ScrollDelta, row_height: f32) -> Vec<Operation> {
             (f32::from(delta.x) / height, f32::from(delta.y) / height)
         }
     };
-    let clicks = |lines: f32| -> i16 {
-        let click = match lines > 0. {
-            true => (lines + 0.5).floor(),
-            false => (lines - 0.5).ceil(),
-        };
-        (click as i16).clamp(-MAX_WHEEL_CLICKS, MAX_WHEEL_CLICKS)
-    };
-    let (clicks_x, clicks_y) = (clicks(lines_x), clicks(lines_y));
     let mut operations = Vec::new();
-    if clicks_y != 0 {
-        operations.push(Operation::WheelRotations(WheelRotations {
-            is_vertical: true,
-            rotation_units: -clicks_y * WHEEL_UNITS_PER_CLICK,
-        }));
-    }
-    if clicks_x != 0 {
-        operations.push(Operation::WheelRotations(WheelRotations {
-            is_vertical: false,
-            rotation_units: clicks_x * WHEEL_UNITS_PER_CLICK,
-        }));
-    }
+    push_rotations(&mut operations, true, wheel_notches(lines_y));
+    push_rotations(&mut operations, false, -wheel_notches(lines_x));
     operations
+}
+
+/// gpui 的行增量 → 远端该转几格（正数 = 内容往上走，也就是看上面）。
+///
+/// 方向由 [`INVERT_WHEEL`] 决定，幅度按 [`LINES_PER_NOTCH`] 折回"格"。
+/// 半格以上四舍五入，有位移就至少走一格：滚轮一格都滚不动比慢一点更难受。
+fn wheel_notches(lines: f32) -> i16 {
+    let inverted = match INVERT_WHEEL {
+        true => -lines,
+        false => lines,
+    };
+    let notches = inverted / LINES_PER_NOTCH;
+    let rounded = (notches.abs() + 0.5).floor() * notches.signum();
+    let clicks = rounded.clamp(-MAX_WHEEL_CLICKS as f32, MAX_WHEEL_CLICKS as f32) as i16;
+    match clicks == 0 && inverted != 0. {
+        true => inverted.signum() as i16,
+        false => clicks,
+    }
+}
+
+/// `clicks` 档滚轮拆成若干条旋转操作，每条不超过 [`MAX_CLICKS_PER_ROTATION`] 档。
+/// 符号由调用方定，零档什么都不发。
+fn push_rotations(operations: &mut Vec<Operation>, is_vertical: bool, clicks: i16) {
+    let sign = clicks.signum();
+    let mut left = clicks.abs();
+    while left > 0 {
+        let chunk = left.min(MAX_CLICKS_PER_ROTATION);
+        operations.push(Operation::WheelRotations(WheelRotations {
+            is_vertical,
+            rotation_units: sign * chunk * WHEEL_UNITS_PER_CLICK,
+        }));
+        left -= chunk;
+    }
 }
 
 /// 在远端按一次安全注意序列（Ctrl+Alt+Del）。三条扫描码按下、再倒序抬起；
@@ -1146,33 +1180,112 @@ mod tests {
             .collect()
     }
 
-    /// 往下滚（gpui 的 `delta.y` 为正）在 Windows 那边是负的旋转量；
-    /// 一格 = 120。水平方向正数向右，同源。
+    /// gpui 的一格正 `delta.y` 在该平台上对应远端的哪个方向：Windows 的滚轮
+    /// 往上滚是"看上面"（远端正数），macOS 与 Linux 报的是自然滚动（相反）。
+    /// 一格在 gpui 里又是几行，见 `LINES_PER_NOTCH`。
+    #[cfg(windows)]
+    const WHEEL_SIGN: i16 = 1;
+
+    #[cfg(not(windows))]
+    const WHEEL_SIGN: i16 = -1;
+
+    /// 一格滚轮在远端就是一格，方向跟着客户端系统：Windows 往上滚是看上面（正），
+    /// macOS 与 Linux 的 gpui 报的是自然滚动方向（负）。反方向对称。
     #[test]
-    fn wheel_signs_follow_windows_conventions() {
-        let down = wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., 1.)), 1.);
-        assert_eq!(rotations(&down), vec![(true, -120)]);
+    fn the_wheel_direction_follows_the_client_system() {
+        let notch =
+            wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., LINES_PER_NOTCH)), 1.);
+        let back =
+            wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., -LINES_PER_NOTCH)), 1.);
+        let one_notch = vec![(true, WHEEL_SIGN * WHEEL_UNITS_PER_CLICK)];
 
-        let up = wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., -1.)), 1.);
-        assert_eq!(rotations(&up), vec![(true, 120)]);
-
-        let right = wheel_operations(ScrollDelta::Lines(gpui_kit::point(1., 0.)), 1.);
-        assert_eq!(rotations(&right), vec![(false, 120)]);
+        assert_eq!(rotations(&notch), one_notch);
+        assert_eq!(
+            rotations(&back),
+            one_notch
+                .iter()
+                .map(|(is_vertical, units)| (*is_vertical, -units))
+                .collect::<Vec<_>>()
+        );
     }
 
-    /// 触控板的像素增量按行高折算成格，再乘 120。
+    /// Windows 的"一格三行"不能变成三格；细滚轮一次不到半格也不能原地不动。
+    #[test]
+    fn a_notch_is_neither_magnified_nor_lost() {
+        assert_eq!(wheel_notches(LINES_PER_NOTCH).abs(), 1);
+        assert_eq!(wheel_notches(-LINES_PER_NOTCH).abs(), 1);
+        assert_eq!(wheel_notches(LINES_PER_NOTCH / 4.).abs(), 1);
+        assert_eq!(wheel_notches(0.), 0);
+        assert_eq!(wheel_notches(3. * LINES_PER_NOTCH).abs(), 3);
+    }
+
+    /// 水平一格同样是一格，符号与垂直相反：gpui 的两根轴本身反向，
+    /// 翻过去才对得上远端的"正数向右滚"。
+    #[test]
+    fn the_horizontal_wheel_shares_the_vertical_rules() {
+        let vertical = wheel_operations(
+            ScrollDelta::Lines(gpui_kit::point(0., LINES_PER_NOTCH)),
+            1.,
+        );
+        let horizontal = wheel_operations(
+            ScrollDelta::Lines(gpui_kit::point(LINES_PER_NOTCH, 0.)),
+            1.,
+        );
+        assert_eq!(
+            rotations(&vertical),
+            vec![(true, WHEEL_SIGN * WHEEL_UNITS_PER_CLICK)]
+        );
+        assert_eq!(
+            rotations(&horizontal),
+            vec![(false, -WHEEL_SIGN * WHEEL_UNITS_PER_CLICK)]
+        );
+    }
+
+    /// 触控板的像素增量按行高折算成行，走的还是垂直滚轮那条路。
     #[test]
     fn pixel_deltas_are_converted_through_the_row_height() {
-        let operations =
+        let pixels =
             wheel_operations(ScrollDelta::Pixels(gpui_kit::point(px(0.), px(60.))), 20.);
-        assert_eq!(rotations(&operations), vec![(true, -360)]);
+        let rows = wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., 3.)), 1.);
+        assert_eq!(rotations(&pixels), rotations(&rows));
     }
 
-    /// 一挥手滑出去很远也只发 5 格。
+    /// 一挥手最多 5 格，且拆成的每一条都留在协议能装的范围内。
     #[test]
-    fn a_fling_is_capped() {
-        let operations = wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., 50.)), 1.);
-        assert_eq!(rotations(&operations), vec![(true, -600)]);
+    fn a_fling_is_capped_and_split() {
+        let many = 50. * LINES_PER_NOTCH;
+        let clicks = wheel_notches(many);
+        assert_eq!(clicks.abs(), MAX_WHEEL_CLICKS);
+
+        let sign = clicks.signum();
+        let operations = wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., many)), 1.);
+        assert_eq!(
+            rotations(&operations),
+            vec![
+                (true, sign * 2 * WHEEL_UNITS_PER_CLICK),
+                (true, sign * 2 * WHEEL_UNITS_PER_CLICK),
+                (true, sign * WHEEL_UNITS_PER_CLICK),
+            ]
+        );
+        let total: i16 = rotations(&operations).iter().map(|(_, units)| units).sum();
+        assert_eq!(total, sign * MAX_WHEEL_CLICKS * WHEEL_UNITS_PER_CLICK);
+    }
+
+    /// 没有任何一条旋转量能越过线上那个 9 位字段的范围 [-256, 255]，
+    /// 越界会让 ironrdp 在编码时 panic、直接断连。
+    #[test]
+    fn no_rotation_leaves_the_wire_range() {
+        for lines in [-50., -3., -1., 0., 1., 3., 50.] {
+            for row_height in [1., 20., 0.] {
+                for (is_vertical, units) in
+                    rotations(&wheel_operations(ScrollDelta::Lines(gpui_kit::point(
+                        lines, lines,
+                    )), row_height))
+                {
+                    assert!((-256..=255).contains(&units), "{is_vertical} {lines} → {units}");
+                }
+            }
+        }
     }
 
     /// Ctrl+Alt+Del 是三条扫描码按下、倒序抬起。
