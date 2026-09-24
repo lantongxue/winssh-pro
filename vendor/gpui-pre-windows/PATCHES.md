@@ -41,7 +41,7 @@
 
 | 文件 | 改了什么 |
 | --- | --- |
-| `src/cursor_image.rs` | 新文件：`CursorImageCache`（按图 id 缓存、按引用回收）、`NativeCursor`、`create_cursor`，以及单测（三种形式各自做出来的 `ICONINFO`、掩码按 WORD 对齐的打包、窗口还在用时不销毁）。 |
+| `src/cursor_image.rs` | 新文件：`CursorImageCache`（按图 id 缓存、按引用回收）、`NativeCursor`、`create_cursor`，以及单测（三种形式各自做出来的 `ICONINFO`、`DrawIconEx` 画到白底上实际得到的像素、掩码按 WORD 对齐的打包、窗口还在用时不销毁）。 |
 | `src/gpui_windows.rs` | `mod cursor_image` 与 `pub(crate) use`。 |
 | `src/platform.rs` | `WindowsPlatformState` 多一个 `cursor_images`；原 `set_cursor_style` 的函数体挪进 `apply_cursor`（外加回收），`set_cursor_style` 调它；实现 `set_cursor_image` 与 `supports_cursor_images`。 |
 | `src/events.rs` | `handle_set_cursor` 记下这次是不是本窗口定的光标；`handle_cursor_changed` 在上面说的条件下立刻 `SetCursor`。 |

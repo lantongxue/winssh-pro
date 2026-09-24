@@ -16,11 +16,13 @@
 //! “跟随窗口调整远端分辨率”是单独一档：按画布物理尺寸请求服务器调整，
 //! 始终 1:1 绘制。未协商、被拒绝或超时时保留滚动查看，不改成本地缩放。
 //!
-//! **光标只画本地那一枚**：会话层在 `SetEncodings` 里报了 `CursorPseudo`，
-//! 服务端从此不再把远程光标绘进 framebuffer；`SetCursor` 送过来的位图这边
-//! 也不叠到 [`FrameElement`] 上（gpui 的 `CursorStyle` 没有 `Hidden` 一档，
-//! 本地系统光标藏不掉，叠上去就是"两枚光标"）。代价是远程的形状变化（
-//! I-beam、resize、沙漏）看不到；取舍与上下文见 [`crate::vnc::session`] 模块文档。
+//! **远端光标就是本地系统光标**：会话层在 `SetEncodings` 里报了 `CursorPseudo`，
+//! 服务端从此不再把远程光标绘进 framebuffer，而是把形状单独发来
+//! （[`VncOutput::Cursor`]）；面板把它挂到 [`FrameElement`] 的 hitbox 上，平台
+//! 当真正的系统光标显示 —— 位置跟着本地鼠标，形状（I 形、改尺寸、沙漏）跟着
+//! 远端，和 RDP 面板同一条路。服务器给空白形状时显示本地箭头，不藏指针（见
+//! [`crate::vnc`] 的 `cursor`）。平台显示不了应用光标时只剩本地箭头：RFB 不报
+//! 光标位置，没法像 RDP 那样把形状画进画面。
 //!
 //! **输入没有本地语义**：这里不存在选区、搜索、滚动回卷 —— 每一次击键、
 //! 每一段指针移动都原样（翻成 keysym 和按钮掩码之后）送给对端。所以焦点
@@ -73,14 +75,15 @@ use gpui_kit::{
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
+    desktop::RemoteCursor,
     host::Host,
     netstats::LinkStats,
     ui::{
         Workspace,
         bars::link_stats_group,
         elements::{
-            DesktopScale, FrameElement, native_frame_size, remote_frame_point, replace_image,
-            scrollable_frame,
+            DesktopScale, FrameCursor, FrameElement, native_frame_size, remote_frame_point,
+            replace_image, scrollable_frame,
         },
         menus::{DesktopSessionAction, DesktopSessionKind, DesktopSessionMenu},
         panels::SessionEvent,
@@ -148,6 +151,8 @@ pub struct VncPanel {
     display: Rc<Cell<Option<gpui_kit::Bounds<Pixels>>>>,
     /// 实际 1:1 画面的本地视口位置，横纵滚动条共用。
     scroll: ScrollHandle,
+    /// 远端此刻的光标形状。位置是本地鼠标的，不记。
+    cursor: RemoteCursor,
     /// 此刻按着的 RFB 按钮掩码。松手事件丢了（拖出窗外）时会被下一次
     /// 按下前的一次移动校正。
     buttons: u8,
@@ -201,6 +206,7 @@ impl VncPanel {
                 resize_error: None,
                 display: Rc::new(Cell::new(None)),
                 scroll: ScrollHandle::new(),
+                cursor: RemoteCursor::Default,
                 buttons: 0,
                 control_click: false,
                 keyboard: VncKeyboard::new(),
@@ -248,6 +254,7 @@ impl VncPanel {
         self.resize_supported = false;
         self.resize_error = None;
         self.display.set(None);
+        self.cursor = RemoteCursor::Default;
         self.buttons = 0;
         self.control_click = false;
         self.keyboard.forget();
@@ -276,6 +283,14 @@ impl VncPanel {
                                     Some(VncOutput::Frame(frame)) => {
                                         if this
                                             .update(cx, |this, cx| this.set_frame(frame, cx))
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    Some(VncOutput::Cursor(cursor)) => {
+                                        if this
+                                            .update(cx, |this, cx| this.set_cursor(cursor, cx))
                                             .is_err()
                                         {
                                             break;
@@ -430,10 +445,22 @@ impl VncPanel {
         cx.notify();
     }
 
+    /// 远端光标变了。重画一次，画面的 hitbox 就把新形状登记给平台。
+    fn set_cursor(&mut self, cursor: RemoteCursor, cx: &mut Context<Self>) {
+        if !self.live() {
+            return;
+        }
+        self.cursor = cursor;
+        cx.notify();
+    }
+
     fn fail(&mut self, reason: SharedString, cx: &mut Context<Self>) {
         self.phase = VncPhase::Failed(reason);
         self.inputs = None;
         self.stats = None;
+        // 最后一帧还留在画布上，远端光标却不该跟着留：远端藏了光标时，
+        // 鼠标在断开的画面上会整个消失。
+        self.cursor = RemoteCursor::Default;
         self.set_alive(false, cx);
         cx.notify();
     }
@@ -843,6 +870,11 @@ impl VncPanel {
             );
         };
 
+        // 平台显示不了应用光标时，GPUI 自己退回箭头。
+        let cursor = match &self.cursor {
+            RemoteCursor::Default => FrameCursor::Arrow,
+            RemoteCursor::Shape(shape) => FrameCursor::Native(shape.clone()),
+        };
         let frame = div()
             .id("vnc-frame")
             .track_focus(&self.focus_handle)
@@ -858,7 +890,7 @@ impl VncPanel {
             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_scroll_wheel(cx.listener(Self::on_scroll))
-            .child(FrameElement::new(image, self.display.clone()));
+            .child(FrameElement::new(image, self.display.clone()).with_cursor(cursor));
 
         match self.scale {
             DesktopScale::Adaptive => viewport.child(frame.size_full()),
@@ -1058,6 +1090,7 @@ mod tests {
                 resize_error: None,
                 display: Rc::new(Cell::new(None)),
                 scroll: ScrollHandle::new(),
+                cursor: RemoteCursor::Default,
                 buttons: 0,
                 control_click: false,
                 keyboard: VncKeyboard::new(),

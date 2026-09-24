@@ -22,12 +22,10 @@
 //! 在增量里永远不会出现，它会一直黑在那儿。
 //!
 //! **光标**：`SetEncodings` 里报 `CursorPseudo`（`-239`），服务端从此**不再**
-//! 把远程光标绘进 framebuffer，改为把形状单独发一条 `SetCursor`。我们不叠加
-//! 那份位图（gpui 的 `CursorStyle` 没有 `Hidden` 一档，本地系统光标藏不掉；
-//! 再叠一层远程形状就是"两枚光标"），画面里因此只剩本地那一枚 —— 形状变化
-//! 看不到，换来的是无鬼影、零延迟。这是刻意的取舍，与
-//! [`crate::ui::panels::RdpPanel`] 那边"RDP 协议天生分离指针 → 必须自己叠加"
-//! 正好相反。
+//! 把远程光标绘进 framebuffer，改为把形状单独发一条 `SetCursor`。形状解成
+//! [`VncOutput::Cursor`]（见 [`super::cursor`]），面板交给平台当系统光标 ——
+//! 位置跟着本地鼠标，形状跟着远端，和 RDP 同一条路。空白形状显示本地箭头，
+//! 不藏指针（理由见 [`super::cursor`]）。
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -45,10 +43,11 @@ use vnc::{
 use super::{
     Canvas,
     clipboard::{ClipboardSync, MAX_CUT_TEXT},
+    cursor,
     resize::{DesktopResize, supports_resize},
     transport,
 };
-use crate::desktop::{FrameReceiver, FrameSender, frame_channel};
+use crate::desktop::{FrameReceiver, FrameSender, RemoteCursor, frame_channel};
 use crate::netstats::{self, LinkStats, TrafficCounters};
 use crate::{db, host::Host};
 
@@ -94,6 +93,8 @@ pub enum VncInput {
 pub enum VncOutput {
     /// 一帧完整的远端桌面。分辨率读图就行（`image.size(0)`），不单列。
     Frame(Arc<RenderImage>),
+    /// 远端光标换了形状，见 [`super::cursor`]。
+    Cursor(RemoteCursor),
     /// 对端复制了东西（ServerCutText）。前台该把它写回系统剪贴板，
     /// 并记下"两边此刻同步的是这一份"（见 [`crate::ui::panels::VncPanel`]）。
     CutText(String),
@@ -149,8 +150,17 @@ impl VncSession {
                 .set_version(settings.protocol_version.rfb_version())
                 // 颜色深度点名像素格式：线上字节怎么排布、画布怎么展开，
                 // 两头都由这一份格式说了算（见 [`Canvas`]）。
-                .set_pixel_format(settings.color_depth.pixel_format())
-                // 编码表按画质档排，表头就是我们对压缩的偏好。
+                .set_pixel_format(settings.color_depth.pixel_format());
+            // 编码表按画质档排，表头就是我们对压缩的偏好。
+            for encoding in chosen.encoding_order() {
+                connector = connector.add_encoding(*encoding);
+            }
+            // 伪编码一律排在真编码之后。RFC 6143 只要求按偏好排，对伪编码的
+            // 位置没有说法；但 UltraVNC 逐条处理 SetEncodings 时，排在真编码
+            // 之前的光标伪编码会被丢掉 —— 于是它只回 0×0 的空光标，又因为
+            // 我们报过自己画光标而不把光标画进画面，远端光标整个看不见
+            // （UltraVNC#24、TigerVNC#1335）。RealVNC、libvncclient 也是先真后伪。
+            connector = connector
                 .add_encoding(VncEncoding::DesktopSizePseudo)
                 .add_encoding(VncEncoding::ExtendedDesktopSizePseudo)
                 .add_encoding(VncEncoding::LastRectPseudo)
@@ -161,13 +171,9 @@ impl VncSession {
                 .add_encoding(VncEncoding::ExtendedClipboardPseudo)
                 // 光标形状从 framebuffer 里分出来送：报了它，服务端就**不再**
                 // 把远程光标绘进画面（否则用户会看到"远端鬼影 + 本地箭头"
-                // 两枚光标）。位图与热点走 `VncEvent::SetCursor` 单独来，我们
-                // 这一侧刻意不叠加，取舍见模块文档；`vnc-rs` 内置的
-                // `codec::cursor::Decoder` 负责解码，无需自己写。
+                // 两枚光标）。位图与热点走 `VncEvent::SetCursor` 单独来，
+                // 交给平台当系统光标，见模块文档。
                 .add_encoding(VncEncoding::CursorPseudo);
-            for encoding in chosen.encoding_order() {
-                connector = connector.add_encoding(*encoding);
-            }
             if !password.is_empty() {
                 connector = connector.set_auth_method(async move { Ok(password) });
             }
@@ -408,18 +414,14 @@ async fn run(
                         log::warn!("VNC: 一块 JPEG 矩形解不出来，丢给下一拍");
                     }
                 }
-                // 光标形状：我们已经在 `SetEncodings` 里报了 `CursorPseudo`，
-                // 服务端从此把光标位图从 framebuffer 里摘出来单独送 —— 画面里
-                // 不再有那枚远程光标。这边刻意不叠加，理由见模块文档；只记一行
-                // 日志，方便对着远程桌面形状变化调试时知道协议层收到的节奏。
-                Ok(VncEvent::SetCursor(rect, _)) => {
-                    log::debug!(
-                        "VNC: 收到光标形状 {}×{}（热点 {},{}），按本地光标渲染策略忽略",
-                        rect.width,
-                        rect.height,
-                        rect.x,
-                        rect.y,
-                    );
+                // 光标形状不属于画面，不等帧边界：到了就交给前台。
+                Ok(VncEvent::SetCursor(rect, bgra)) => {
+                    if events_tx
+                        .send(VncOutput::Cursor(cursor::remote_cursor(&rect, bgra)))
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
                 // 对端复制了东西，走经典正文。正文是字节：解成 UTF-8 还是 Latin-1
                 // 归 `clipboard` 那本账（见 [`super::clipboard`]）。原样转给前台
@@ -539,6 +541,7 @@ fn resize_error_message(error: &vnc::ResizeError) -> SharedString {
 
 #[cfg(test)]
 mod tests {
+    mod cursor;
     mod presentation;
     mod resize_tests;
 
@@ -955,6 +958,7 @@ mod tests {
                     VncOutput::Frame(_)
                     | VncOutput::ResizeSupported(_)
                     | VncOutput::ResizeResult(_)
+                    | VncOutput::Cursor(_)
                     | VncOutput::Stats(_) => {}
                     VncOutput::Disconnected(reason) => panic!("会话断了：{reason}"),
                 }
@@ -1070,6 +1074,7 @@ mod tests {
                         VncOutput::Frame(_)
                         | VncOutput::ResizeSupported(_)
                         | VncOutput::ResizeResult(_)
+                        | VncOutput::Cursor(_)
                         | VncOutput::Stats(_) => {}
                         VncOutput::Disconnected(reason) => panic!("会话断了：{reason}"),
                     }
@@ -1144,6 +1149,7 @@ mod tests {
                     VncOutput::Frame(_)
                     | VncOutput::ResizeSupported(_)
                     | VncOutput::ResizeResult(_)
+                    | VncOutput::Cursor(_)
                     | VncOutput::Stats(_) => {}
                     VncOutput::Disconnected(reason) => panic!("会话断了：{reason}"),
                 }
@@ -1352,7 +1358,7 @@ mod tests {
                 assert_eq!((format[6], format[7]), (0, 63), "绿 6 位满量程 63");
                 assert_eq!(format[10], 11, "红从第 11 位起");
                 assert_eq!(format[11], 5, "绿从第 5 位起");
-                // 编码表：伪编码在前（桌面尺寸 -223、LastRect -224），压缩表里不许有 Tight。
+                // 编码表：压缩表里不许有 Tight，伪编码跟在后面。
                 assert!(!observed.encodings.contains(&7), "16 位下不得递 Tight");
                 assert!(observed.encodings.contains(&16), "退化后要落在 Zrle");
                 assert!(observed.encodings.contains(&0), "Raw 永远在表尾兜底");
@@ -1381,21 +1387,22 @@ mod tests {
                 assert_eq!(observed.shared_flag, Some(1), "出厂是可共享");
                 let format = observed.pixel_format.as_ref().unwrap();
                 assert_eq!(format[0], 32, "真彩一档 32 位");
-                // 五个伪编码之后才是压缩档：Tight、Zrle……动态分辨率不改变压缩优先级。
+                // 真编码按偏好在前（Tight、Zrle、CopyRect、Raw），五个伪编码跟在
+                // 后面 —— 排在前面的光标伪编码会被 UltraVNC 丢掉（见 `connect`）。
                 assert_eq!(
-                    observed.encodings.get(..7),
-                    Some(
-                        &[
-                            0xffff_ff21u32,
-                            0xffff_fecc,
-                            0xffff_ff20,
-                            0xc0a1e5ce,
-                            0xffff_ff11,
-                            7,
-                            16
-                        ][..]
-                    ),
-                    "桌面尺寸、扩展桌面、LastRect、剪贴板和光标能力在前；Tight 优先，Zrle 跟随"
+                    observed.encodings,
+                    [
+                        7,
+                        16,
+                        1,
+                        0,
+                        0xffff_ff21u32,
+                        0xffff_fecc,
+                        0xffff_ff20,
+                        0xc0a1e5ce,
+                        0xffff_ff11,
+                    ],
+                    "Tight 优先、Zrle 跟随、Raw 兜底；桌面尺寸、扩展桌面、LastRect、剪贴板和光标能力在后"
                 );
             }
         });
@@ -1494,6 +1501,7 @@ mod tests {
                 VncOutput::CutText(_)
                 | VncOutput::ResizeSupported(_)
                 | VncOutput::ResizeResult(_)
+                | VncOutput::Cursor(_)
                 | VncOutput::Stats(_) => unreachable!(),
             }
         });
@@ -1538,6 +1546,7 @@ mod tests {
                 VncOutput::CutText(_)
                 | VncOutput::ResizeSupported(_)
                 | VncOutput::ResizeResult(_)
+                | VncOutput::Cursor(_)
                 | VncOutput::Stats(_) => unreachable!(),
             }
 

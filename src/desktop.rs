@@ -2,9 +2,25 @@
 //!
 //! 慢窗口最多挂一张待显示的帧；剪贴板、断开等控制事件仍按序可靠送达。
 //! 用一个通知占位而非给每帧排队，避免后台标签页积压数百 MB 的旧画面。
+//!
+//! 远端光标（[`RemoteCursor`]）也是两个协议共用的：RDP 与 VNC 都不把光标画进
+//! 桌面，而是把形状单独发来，面板交给平台当系统光标显示。
 
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{self, error::SendError};
+
+use gpui_kit::CursorImage;
+
+/// 画布上此刻该显示的远端光标。RDP 的来历见 [`crate::rdp`] 的 `pointer`，
+/// VNC 的见 [`crate::vnc`] 的 `cursor`。
+#[derive(Clone, Debug)]
+pub enum RemoteCursor {
+    /// 用客户端自己的默认箭头：服务器这么说了（RDP 的 `TS_SYSPTR_DEFAULT`），
+    /// 还没收到过形状、VNC 发来的是空白形状，或者它发来的形状我们解不了。
+    Default,
+    /// 服务器给的形状。隐藏也是一张图：见 [`CursorImage::hidden`]。
+    Shape(Arc<CursorImage>),
+}
 
 /// BGRX 桌面转为不可变的 BGRA 纹理。X 是协议填充字节，不能当成 alpha。
 /// 光标位图有真实透明度，不走这里。

@@ -20,6 +20,8 @@ use gpui_kit::{CursorImage, CursorPixels};
 use ironrdp::pdu::fast_path::{FastPathUpdate, UpdateCode};
 use ironrdp::pdu::pointer::PointerUpdateData;
 
+use crate::desktop::RemoteCursor;
+
 /// 光标缓存的槽数。和连接时报给服务器的 Pointer 能力集一致
 /// （`vendor/ironrdp-connector` 的 `DEFAULT_POINTER_CACHE_SIZE`，彩色与
 /// 普通两档都是 32），服务器不会用到更大的下标。
@@ -27,17 +29,6 @@ const CACHE_SLOTS: usize = 32;
 
 /// 光标最大边长。报了 `LargePointer` 能力（最大 384×384），再大就是坏包。
 const MAX_SIDE: u16 = 384;
-
-/// 画布上此刻该显示的远端光标。
-#[derive(Clone, Debug)]
-pub enum RemoteCursor {
-    /// 服务器让客户端用自己的默认箭头（`TS_SYSPTR_DEFAULT`），
-    /// 或者它发来的形状我们解不了。
-    Default,
-    /// 服务器给的形状。隐藏（`TS_SYSPTR_NULL`）也是一张图：
-    /// 见 [`CursorImage::hidden`]。
-    Shape(Arc<CursorImage>),
-}
 
 /// 一条指针更新解出来的结果。
 #[derive(Debug)]

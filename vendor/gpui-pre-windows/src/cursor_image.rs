@@ -280,6 +280,89 @@ mod tests {
         assert!(create_cursor(&CursorImage::hidden()).unwrap().is_none());
     }
 
+    /// What a cursor actually draws, not just that Windows accepted it:
+    /// `DrawIconEx` over a white 32-bit DIB, read back as B, G, R.
+    fn draw(cursor: HCURSOR, width: i32, height: i32) -> Vec<[u8; 3]> {
+        unsafe {
+            let dc = CreateCompatibleDC(None);
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width,
+                    biHeight: -height,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits = std::ptr::null_mut();
+            let bitmap =
+                CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
+            let previous = SelectObject(dc, bitmap.into());
+            let pixels =
+                std::slice::from_raw_parts_mut(bits.cast::<u32>(), (width * height) as usize);
+            pixels.fill(0x00ff_ffff);
+            DrawIconEx(dc, 0, 0, HICON(cursor.0), width, height, 0, None, DI_NORMAL).unwrap();
+            let _ = GdiFlush();
+            let drawn = pixels
+                .iter()
+                .map(|pixel| {
+                    let [b, g, r, _] = pixel.to_le_bytes();
+                    [b, g, r]
+                })
+                .collect();
+            SelectObject(dc, previous);
+            let _ = DeleteObject(bitmap.into());
+            let _ = DeleteDC(dc);
+            drawn
+        }
+    }
+
+    #[test]
+    fn each_pixel_form_draws_what_it_describes() {
+        let white = [0xff; 3];
+        let alpha = CursorImage::new(
+            2,
+            1,
+            (0, 0),
+            CursorPixels::Bgra([[0, 0, 0xff, 0xff], [9, 9, 9, 0]].concat()),
+        )
+        .unwrap();
+        // Black body, clear, inverting (white over white becomes black), white body.
+        let masked = CursorImage::new(
+            4,
+            1,
+            (0, 0),
+            CursorPixels::Masked {
+                and: vec![false, true, true, false],
+                xor: [[0, 0, 0, 0], [0, 0, 0, 0], [0xff; 4], [0xff; 4]].concat(),
+            },
+        )
+        .unwrap();
+        let colored = CursorImage::new(
+            2,
+            1,
+            (0, 0),
+            CursorPixels::Masked {
+                and: vec![false, true],
+                xor: [[0x20, 0x40, 0x60, 0], [0, 0, 0, 0]].concat(),
+            },
+        )
+        .unwrap();
+        for (image, expected) in [
+            (alpha, vec![[0, 0, 0xff], white]),
+            (masked, vec![[0; 3], white, [0; 3], white]),
+            (colored, vec![[0x20, 0x40, 0x60], white]),
+        ] {
+            let cursor = create_cursor(&image).unwrap().expect("a visible cursor");
+            let drawn = draw(cursor, image.width() as i32, image.height() as i32);
+            unsafe { DestroyCursor(cursor) }.unwrap();
+            assert_eq!(drawn, expected, "{image:?}");
+        }
+    }
+
     #[test]
     fn a_cursor_outlives_its_image_while_a_window_shows_it() {
         let cache = CursorImageCache::default();

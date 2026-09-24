@@ -37,6 +37,5 @@ mod settings;
 mod transport;
 
 pub use keyboard::RdpKeyboard;
-pub use pointer::RemoteCursor;
 pub use session::{RdpInput, RdpOutput, RdpSession};
 pub use settings::{RdpColorDepth, RdpPerformance, RdpSecurity, RdpSettings, decode, encode};

@@ -90,10 +90,10 @@ use tokio::sync::mpsc;
 
 use super::clipboard::{GpuiClipboard, LocalClipboard};
 use super::graphics::FastPathFrames;
-use super::pointer::{PointerDecoder, PointerEvent, RemoteCursor};
+use super::pointer::{PointerDecoder, PointerEvent};
 use super::settings::RdpSettings;
 use super::transport;
-use crate::desktop::{FrameReceiver, FrameSender, frame_channel};
+use crate::desktop::{FrameReceiver, FrameSender, RemoteCursor, frame_channel};
 use crate::host::Host;
 use crate::netstats::{self, LinkStats, TrafficCounters};
 

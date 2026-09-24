@@ -9,20 +9,16 @@
 //! 逻辑尺寸，并把这个矩形放进双向滚动容器。RDP 两档都用后者，自适应
 //! 通过请求远端改变分辨率实现。元素本身只负责按给定矩形画。
 //!
-//! 两个协议共用这一个元素：
-//!
-//! - **VNC** 只给它一帧画面：`SetEncodings` 报了 `CursorPseudo` 后，服务端不再
-//!   把光标绘进 framebuffer（见 [`crate::vnc::session`]），本地系统光标即用户
-//!   所见，因此不挂 [`FrameCursor`]。
-//! - **RDP** 挂一个 [`FrameCursor`]：远端光标的形状按画面这块 hitbox 登记给
-//!   GPUI，平台把它当真正的系统光标显示 —— 跟手、能隐藏、反色由系统完成，
-//!   和 mstsc 一样（见 [`crate::rdp::RemoteCursor`]）。移出画面、被菜单或
-//!   滚动条盖住时，GPUI 按 hitbox 自己换回那边的光标。
+//! 两个协议共用这一个元素，也都挂一个 [`FrameCursor`]：两边的服务器都不把
+//! 光标画进桌面，而是把形状单独发来（见 [`crate::desktop::RemoteCursor`]）。
+//! 形状按画面这块 hitbox 登记给 GPUI，平台把它当真正的系统光标显示 ——
+//! 跟手；RDP 的隐藏与反色也由系统完成，和 mstsc 一样。移出画面、被菜单或
+//! 滚动条盖住时，GPUI 按 hitbox 自己换回那边的光标。
 //!
 //! 平台显示不了应用给的光标时（[`gpui_kit::App::supports_cursor_images`]），
-//! 退回 [`FrameCursor::Overlay`]：按远端报的位置把形状画进画面，本地光标照常
-//! 显示。位置与热点都是**远端像素**，绘制时按画面在 X、Y 两轴的实际缩放
-//! 分别折算。
+//! RDP 退回 [`FrameCursor::Overlay`]：按远端报的位置把形状画进画面，本地光标
+//! 照常显示。位置与热点都是**远端像素**，绘制时按画面在 X、Y 两轴的实际缩放
+//! 分别折算。VNC 不报光标位置，没有这条退路，只剩本地箭头。
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -187,7 +183,7 @@ pub struct FrameElement {
     /// 这一帧真正落在窗口里的矩形。prepaint 写、面板的鼠标回调读 ——
     /// 同一线程，先后有序（渲染完才会派发下一轮事件），`Cell` 够用。
     display: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// 远端光标。VNC 没有这一层（光标由本地系统光标代表）。
+    /// 远端光标。没挂就不登记 hitbox，悬停时是父级的光标。
     cursor: Option<FrameCursor>,
 }
 
@@ -200,7 +196,7 @@ impl FrameElement {
         }
     }
 
-    /// 挂上远端光标（RDP）。
+    /// 挂上远端光标。
     pub fn with_cursor(mut self, cursor: FrameCursor) -> Self {
         self.cursor = Some(cursor);
         self
@@ -209,7 +205,7 @@ impl FrameElement {
 
 impl Element for FrameElement {
     type RequestLayoutState = ();
-    /// 登记光标用的 hitbox；画进画面的光标与 VNC 不需要。
+    /// 登记光标用的 hitbox；画进画面的光标与没挂光标时不需要。
     type PrepaintState = Option<Hitbox>;
 
     fn id(&self) -> Option<gpui_kit::ElementId> {

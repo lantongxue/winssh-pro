@@ -52,9 +52,10 @@ use ironrdp::input::{
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
+    desktop::RemoteCursor,
     host::Host,
     netstats::LinkStats,
-    rdp::{RdpInput, RdpKeyboard, RdpOutput, RdpSession, RemoteCursor},
+    rdp::{RdpInput, RdpKeyboard, RdpOutput, RdpSession},
     ui::{
         Workspace,
         bars::link_stats_group,
@@ -409,6 +410,10 @@ impl RdpPanel {
         self.phase = RdpPhase::Failed(reason);
         self.inputs = None;
         self.stats = None;
+        // 最后一帧还留在画布上，远端光标却不该跟着留：远端藏了光标时，
+        // 鼠标在断开的画面上会整个消失。
+        self.cursor = RemoteCursor::Default;
+        replace_image(&mut self.pointer_overlay, None, cx);
         self.set_alive(false, cx);
         cx.notify();
     }
