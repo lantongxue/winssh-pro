@@ -916,6 +916,12 @@ desktop_scale.actual:
 desktop_scale.actual_tooltip:
   en: Show one remote pixel per display pixel. Use the scrollbars when the desktop is larger than the panel.
   zh-CN: 一个远端像素对应一个显示像素；画面大于面板时可用滚动条查看。
+desktop.link_latency_tooltip:
+  en: Round-trip time to the server, measured by a TCP handshake probe every couple of seconds.
+  zh-CN: 到服务器的往返时延，每隔两秒用一次 TCP 握手探测量得。
+desktop.link_rate_tooltip:
+  en: This session's own send / receive throughput on the wire, not the whole remote NIC.
+  zh-CN: 这条会话自己在线上收发字节的速率，不是对端整块网卡的吞吐。
 vnc.redraw:
   en: Redraw
   zh-CN: 刷新画面

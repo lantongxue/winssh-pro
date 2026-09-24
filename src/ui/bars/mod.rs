@@ -17,3 +17,7 @@ pub use activity_bar::{ActivityAction, ActivityBar};
 pub use command_center::CommandCenterBar;
 pub use session_info::SessionInfoBar;
 pub use session_status::SessionStatusBar;
+
+// 桌面面板（RDP/VNC）信息栏复用终端状态栏那一套"标签 + 定宽值 + 配色"的格子，
+// 免得同一个数字在两处画成两副样子（见 [`session_status::link_stats_group`]）。
+pub(crate) use session_status::link_stats_group;

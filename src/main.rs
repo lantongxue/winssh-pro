@@ -11,6 +11,7 @@ mod forward;
 mod host;
 mod i18n;
 mod monitor;
+mod netstats;
 mod proxy;
 mod rdp;
 mod repository;

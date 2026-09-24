@@ -29,6 +29,7 @@
 //! [`crate::ui::panels::RdpPanel`] 那边"RDP 协议天生分离指针 → 必须自己叠加"
 //! 正好相反。
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -48,6 +49,7 @@ use super::{
     transport,
 };
 use crate::desktop::{FrameReceiver, FrameSender, frame_channel};
+use crate::netstats::{self, LinkStats, TrafficCounters};
 use crate::{db, host::Host};
 
 /// 握手上限。连到不是 VNC 的端口（SSH、HTTP）时，对面要么马上关连接、
@@ -99,6 +101,8 @@ pub enum VncOutput {
     ResizeSupported(bool),
     /// 调整结果独立于连接状态；失败不能断开桌面会话。
     ResizeResult(std::result::Result<(), SharedString>),
+    /// 链路读数：往返时延与本会话上/下行速率，信息栏每几秒刷一次。
+    Stats(LinkStats),
     /// 会话结束了：对端断的、错的、或这边关掉时那边报的。原因这一句话
     /// 会原样摆到界面上。
     Disconnected(SharedString),
@@ -123,9 +127,11 @@ impl VncSession {
         let (events_tx, events_rx) = frame_channel(|event| matches!(event, VncOutput::Frame(_)));
         let password = host.password.to_string();
         let settings = host.vnc;
+        let counters = Arc::new(TrafficCounters::default());
+        let dial_counters = counters.clone();
 
-        let client = db::run(async move {
-            let stream = transport::dial(&host).await?;
+        let (client, peer) = db::run(async move {
+            let (stream, peer) = transport::dial(&host, dial_counters).await?;
             let chosen = settings.effective_encoding();
             if chosen != settings.encoding {
                 log::info!(
@@ -179,11 +185,18 @@ impl VncSession {
                 })?
                 .map_err(rfb_error)?;
             let client = state.finish().map_err(rfb_error)?;
-            Ok::<_, anyhow::Error>(client)
+            Ok::<_, anyhow::Error>((client, peer))
         })
         .await?;
 
-        db::runtime().spawn(run(client, input_rx, events_tx, settings));
+        db::runtime().spawn(run(
+            client,
+            input_rx,
+            events_tx,
+            settings,
+            counters,
+            peer,
+        ));
         Ok(Self {
             input_tx,
             events_rx: Some(events_rx),
@@ -312,12 +325,18 @@ impl FullPaint {
 /// 协议循环：等事件、攒画布、按拍发帧；两边通道断了就收工。
 ///
 /// `settings` 在这里只用到两处：画布按点名的深度解像素，节拍按帧率上限走。
+/// 循环期间另起一条链路采样（[`netstats::spawn_pump`]）量本会话上/下行速率与
+/// 往返时延，推 [`VncOutput::Stats`]；会话一收工就停掉它。
+#[allow(clippy::too_many_arguments)]
 async fn run(
     client: VncClient,
     mut input_rx: UnboundedReceiver<VncInput>,
     events_tx: FrameSender<VncOutput>,
     settings: crate::vnc::VncSettings,
+    counters: Arc<TrafficCounters>,
+    peer: SocketAddr,
 ) {
+    let monitor = netstats::spawn_pump(counters, peer, events_tx.clone(), VncOutput::Stats);
     let mut canvas = Canvas::with_depth(settings.color_depth);
     let mut clipboard = ClipboardSync::new(settings.clipboard_charset);
     let mut full_paint = FullPaint::new(Instant::now());
@@ -500,6 +519,7 @@ async fn run(
         }
     }
 
+    monitor.abort();
     let _ = client.close().await;
     let _ = events_tx.send(VncOutput::Disconnected(SharedString::from(reason)));
 }
@@ -934,7 +954,8 @@ mod tests {
                     }
                     VncOutput::Frame(_)
                     | VncOutput::ResizeSupported(_)
-                    | VncOutput::ResizeResult(_) => {}
+                    | VncOutput::ResizeResult(_)
+                    | VncOutput::Stats(_) => {}
                     VncOutput::Disconnected(reason) => panic!("会话断了：{reason}"),
                 }
             }
@@ -1046,7 +1067,10 @@ mod tests {
                             saw = Some(text);
                             break;
                         }
-                        VncOutput::Frame(_) | VncOutput::ResizeSupported(_) | VncOutput::ResizeResult(_) => {}
+                        VncOutput::Frame(_)
+                        | VncOutput::ResizeSupported(_)
+                        | VncOutput::ResizeResult(_)
+                        | VncOutput::Stats(_) => {}
                         VncOutput::Disconnected(reason) => panic!("会话断了：{reason}"),
                     }
                 }
@@ -1119,7 +1143,8 @@ mod tests {
                     }
                     VncOutput::Frame(_)
                     | VncOutput::ResizeSupported(_)
-                    | VncOutput::ResizeResult(_) => {}
+                    | VncOutput::ResizeResult(_)
+                    | VncOutput::Stats(_) => {}
                     VncOutput::Disconnected(reason) => panic!("会话断了：{reason}"),
                 }
             }
@@ -1468,7 +1493,8 @@ mod tests {
                 VncOutput::Disconnected(reason) => panic!("经代理断了：{reason}"),
                 VncOutput::CutText(_)
                 | VncOutput::ResizeSupported(_)
-                | VncOutput::ResizeResult(_) => unreachable!(),
+                | VncOutput::ResizeResult(_)
+                | VncOutput::Stats(_) => unreachable!(),
             }
         });
     }
@@ -1511,7 +1537,8 @@ mod tests {
                 // 这座服务器不发剪贴板文本。
                 VncOutput::CutText(_)
                 | VncOutput::ResizeSupported(_)
-                | VncOutput::ResizeResult(_) => unreachable!(),
+                | VncOutput::ResizeResult(_)
+                | VncOutput::Stats(_) => unreachable!(),
             }
 
             // 丢掉会话：输入通道断了，后台循环收工并向这边道别。

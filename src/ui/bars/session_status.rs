@@ -34,8 +34,8 @@
 
 use gpui_kit::component::{ActiveTheme as _, h_flex, tooltip::Tooltip};
 use gpui_kit::{
-    App, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, RenderOnce,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    AnyElement, App, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
+    RenderOnce, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
     prelude::FluentBuilder as _, px,
 };
 
@@ -387,6 +387,65 @@ fn latency_color(latency_ms: u32, cx: &App) -> Hsla {
         latency if latency >= SLOW_MS => palette::coral(),
         _ => cx.theme().foreground,
     }
+}
+
+/// 桌面面板（RDP / VNC）信息栏上的三格链路读数：`RTT` + `↓` + `↑`，前面垫一道
+/// 竖线和它左边的身份信息分开。和终端 [`SessionStatusBar`] 共用同一套格子画法与
+/// 配色，但**口径不同**：这里的速率是这条会话自己上线的字节、时延是向对端做握手
+/// 探测量到的往返时间（见 [`crate::netstats`]），不是终端状态栏那对来自远端采集、
+/// 属于整台机器网卡的数。悬浮提示由调用方给，好让它说清是哪一路。
+///
+/// `stats` 还没采到时三格都是破折号 —— 数字要么是真的，要么明确说"还不知道"。
+pub(crate) fn link_stats_group(
+    stats: Option<crate::netstats::LinkStats>,
+    latency_tip: SharedString,
+    rate_tip: SharedString,
+    cx: &App,
+) -> AnyElement {
+    let latency = stats.and_then(|stats| stats.latency_ms);
+    let (latency_text, latency_tone) = match latency {
+        Some(ms) => (SharedString::from(format!("{ms}ms")), latency_color(ms, cx)),
+        None => (SharedString::from(UNKNOWN), palette::idle(cx)),
+    };
+    let (down, up) = match stats {
+        Some(stats) => (format_rate(stats.down_kbps()), format_rate(stats.up_kbps())),
+        None => (SharedString::from(UNKNOWN), SharedString::from(UNKNOWN)),
+    };
+
+    h_flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap_2()
+        .child(divider(cx))
+        .child(
+            div()
+                .id("link-latency")
+                .flex_shrink_0()
+                .child(cell("RTT", latency_text, latency_tone, LATENCY_WIDTH, cx))
+                .tooltip(move |window, cx| {
+                    Tooltip::new(latency_tip.clone()).build(window, cx)
+                }),
+        )
+        .child(
+            div()
+                .id("link-download")
+                .flex_shrink_0()
+                .child(cell("↓", down, cx.theme().foreground, RATE_WIDTH, cx))
+                .tooltip({
+                    let rate_tip = rate_tip.clone();
+                    move |window, cx| Tooltip::new(rate_tip.clone()).build(window, cx)
+                }),
+        )
+        .child(
+            div()
+                .id("link-upload")
+                .flex_shrink_0()
+                .child(cell("↑", up, cx.theme().foreground, RATE_WIDTH, cx))
+                .tooltip(move |window, cx| {
+                    Tooltip::new(rate_tip.clone()).build(window, cx)
+                }),
+        )
+        .into_any_element()
 }
 
 #[cfg(test)]

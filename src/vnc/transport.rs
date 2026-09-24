@@ -12,7 +12,9 @@
 //! 一条流，再往下喂。
 
 use std::io;
+use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -22,12 +24,17 @@ use tokio::net::TcpStream;
 use tokio_socks::tcp::Socks5Stream;
 
 use crate::host::Host;
+use crate::netstats::TrafficCounters;
 use crate::proxy::{self, ProxyConfig};
 
 /// 一条 VNC 会话底下的字节流：直连的 TCP，或代理打通的 TCP。
-pub enum VncStream {
-    Direct(TcpStream),
-    Socks5(TcpStream),
+///
+/// 包一层计数器，`poll_read` / `poll_write` 数到的就是这条连接上线上进出的字节
+/// （见 [`crate::netstats`]）。`vnc-rs` 的 [`vnc::VncConnector`] 要的具体类型
+/// 由这个结构满足：它是 `AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static`。
+pub struct VncStream {
+    socket: TcpStream,
+    counters: Arc<TrafficCounters>,
 }
 
 impl AsyncRead for VncStream {
@@ -36,10 +43,12 @@ impl AsyncRead for VncStream {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        match &mut *self {
-            Self::Direct(stream) => Pin::new(stream).poll_read(cx, buf),
-            Self::Socks5(stream) => Pin::new(stream).poll_read(cx, buf),
+        let before = buf.filled().len();
+        let ready = Pin::new(&mut self.socket).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &ready {
+            self.counters.add_rx(buf.filled().len() - before);
         }
+        ready
     }
 }
 
@@ -49,63 +58,64 @@ impl AsyncWrite for VncStream {
         cx: &mut Context<'_>,
         bytes: &[u8],
     ) -> Poll<io::Result<usize>> {
-        match &mut *self {
-            Self::Direct(stream) => Pin::new(stream).poll_write(cx, bytes),
-            Self::Socks5(stream) => Pin::new(stream).poll_write(cx, bytes),
+        let ready = Pin::new(&mut self.socket).poll_write(cx, bytes);
+        if let Poll::Ready(Ok(n)) = &ready {
+            self.counters.add_tx(*n);
         }
+        ready
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match &mut *self {
-            Self::Direct(stream) => Pin::new(stream).poll_flush(cx),
-            Self::Socks5(stream) => Pin::new(stream).poll_flush(cx),
-        }
+        Pin::new(&mut self.socket).poll_flush(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match &mut *self {
-            Self::Direct(stream) => Pin::new(stream).poll_shutdown(cx),
-            Self::Socks5(stream) => Pin::new(stream).poll_shutdown(cx),
-        }
+        Pin::new(&mut self.socket).poll_shutdown(cx)
     }
 }
 
-/// 照着一台主机的地址与代理设置连过去。返回的流已经能读能写。
-pub async fn dial(host: &Host) -> Result<VncStream> {
+/// 照着一台主机的地址与代理设置连过去。返回的流已经能读能写，
+/// 连同对端地址（给链路时延探测用）。`counters` 挂在这条流上数进出字节。
+pub async fn dial(host: &Host, counters: Arc<TrafficCounters>) -> Result<(VncStream, SocketAddr)> {
     let target = (host.hostname.as_ref(), host.port);
 
-    let Some(via) = proxy::resolve(&host.proxy).map_err(|reason| {
+    let socket = match proxy::resolve(&host.proxy).map_err(|reason| {
         anyhow!(
             "{}",
             t!("vnc.proxy_misconfigured", host => host.name, reason => reason)
         )
-    })?
-    else {
-        let socket = TcpStream::connect(target).await.with_context(|| {
-            t!(
-                "vnc.connect_failed",
-                host => host.hostname,
-                port => host.port,
-            )
-            .to_string()
-        })?;
-        // 更新请求和输入都是小包，避免 Nagle 与延迟 ACK 叠加。
-        socket.set_nodelay(true)?;
-        return Ok(VncStream::Direct(socket));
+    })? {
+        None => {
+            let socket = TcpStream::connect(target).await.with_context(|| {
+                t!(
+                    "vnc.connect_failed",
+                    host => host.hostname,
+                    port => host.port,
+                )
+                .to_string()
+            })?;
+            // 更新请求和输入都是小包，避免 Nagle 与延迟 ACK 叠加。
+            socket.set_nodelay(true)?;
+            socket
+        }
+        Some(via) => {
+            let stream = socks5(&via, target).await.with_context(|| {
+                t!(
+                    "vnc.proxy_connect_failed",
+                    proxy => via.address(),
+                    host => host.hostname,
+                    port => host.port,
+                )
+                .to_string()
+            })?;
+            let socket = stream.into_inner();
+            socket.set_nodelay(true)?;
+            socket
+        }
     };
 
-    let stream = socks5(&via, target).await.with_context(|| {
-        t!(
-            "vnc.proxy_connect_failed",
-            proxy => via.address(),
-            host => host.hostname,
-            port => host.port,
-        )
-        .to_string()
-    })?;
-    let socket = stream.into_inner();
-    socket.set_nodelay(true)?;
-    Ok(VncStream::Socks5(socket))
+    let peer = socket.peer_addr()?;
+    Ok((VncStream { socket, counters }, peer))
 }
 
 /// 经代理连到目标。用户名为空就是"这个代理不要认证"，见 [`ProxyConfig`]。

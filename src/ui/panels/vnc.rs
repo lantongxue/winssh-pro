@@ -74,8 +74,10 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     host::Host,
+    netstats::LinkStats,
     ui::{
         Workspace,
+        bars::link_stats_group,
         elements::{
             DesktopScale, FrameElement, native_frame_size, remote_frame_point, replace_image,
             scrollable_frame,
@@ -163,6 +165,8 @@ pub struct VncPanel {
     clipboard: Option<String>,
     /// 上次报出去的存活状态，[`Self::set_alive`] 拿它判断"翻面了没有"。
     alive: bool,
+    /// 最近一次链路读数（时延 + 本会话上/下行速率）。没测到是 `None`。
+    stats: Option<LinkStats>,
     /// 所在的 Dock。关掉标签页要经它把这块面板摘出去（[`Self::close`]），
     /// 弱引用 —— 面板不该反过来扣住整个工作区。
     dock_area: WeakEntity<DockArea>,
@@ -202,6 +206,7 @@ impl VncPanel {
                 keyboard: VncKeyboard::new(),
                 clipboard: None,
                 alive: false,
+                stats: None,
                 dock_area,
                 focus_handle: cx.focus_handle(),
                 _leaving: Vec::new(),
@@ -248,6 +253,7 @@ impl VncPanel {
         self.keyboard.forget();
         // 换一条会话就是换一个对端：上一台机器同步到哪份文本不作数了。
         self.clipboard = None;
+        self.stats = None;
         self.set_alive(false, cx);
         cx.notify();
 
@@ -301,6 +307,19 @@ impl VncPanel {
                                             .update(cx, |this, cx| {
                                                 this.resize_error = result.err();
                                                 cx.notify();
+                                            })
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    Some(VncOutput::Stats(stats)) => {
+                                        if this
+                                            .update(cx, |this, cx| {
+                                                if this.live() {
+                                                    this.stats = Some(stats);
+                                                    cx.notify();
+                                                }
                                             })
                                             .is_err()
                                         {
@@ -414,6 +433,7 @@ impl VncPanel {
     fn fail(&mut self, reason: SharedString, cx: &mut Context<Self>) {
         self.phase = VncPhase::Failed(reason);
         self.inputs = None;
+        self.stats = None;
         self.set_alive(false, cx);
         cx.notify();
     }
@@ -690,6 +710,16 @@ impl VncPanel {
             VncPhase::Failed(reason) => reason.to_string(),
         };
 
+        // 只有活着的时候才摆这三格：断了之后上一次测到的时延/速率都不作数了。
+        let stats = self.live().then(|| {
+            link_stats_group(
+                self.stats,
+                SharedString::from(t!("desktop.link_latency_tooltip")),
+                SharedString::from(t!("desktop.link_rate_tooltip")),
+                cx,
+            )
+        });
+
         h_flex()
             .flex_shrink_0()
             .h(BAR_HEIGHT)
@@ -729,6 +759,7 @@ impl VncPanel {
                             .child(SharedString::from(status)),
                     ),
             )
+            .children(stats)
             .when_some(self.resize_notice(), |bar, notice| {
                 bar.child(
                     Button::new("vnc-panel-resize-status")
@@ -739,6 +770,9 @@ impl VncPanel {
                         .tooltip(notice),
                 )
             })
+            // 一块会伸缩的空白把操作按钮推到最右：左侧的身份 / 分辨率 / 链路读数
+            // 靠在一起，右侧的菜单与重连固定贴右沿，条子再怎么变宽都只撑这段空白。
+            .child(div().flex_1().min_w_0())
             .child(DesktopSessionMenu::new(
                 "vnc-panel-menu",
                 DesktopSessionKind::Vnc,
@@ -1029,6 +1063,7 @@ mod tests {
                 keyboard: VncKeyboard::new(),
                 clipboard: None,
                 alive: true,
+                stats: None,
                 dock_area: dock.downgrade(),
                 focus_handle: cx.focus_handle(),
                 _leaving: Vec::new(),

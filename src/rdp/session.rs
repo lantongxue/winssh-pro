@@ -42,6 +42,7 @@
 //! 不支持的（有意）：声音（RDPSND）、驱动器/剪贴板文件重定向、智能卡、
 //! UDP 多传输、Kerberos（NTLM 够用，Kerberos 要 KDC 配置，走不到）。
 
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -95,6 +96,7 @@ use super::settings::RdpSettings;
 use super::transport;
 use crate::desktop::{FrameReceiver, FrameSender, frame_channel};
 use crate::host::Host;
+use crate::netstats::{self, LinkStats, TrafficCounters};
 
 /// 连接序列（含 TLS 与 CredSSP）最多等多久。
 ///
@@ -132,6 +134,8 @@ pub enum RdpOutput {
     PointerDefault,
     /// 对端复制了文本。
     Clipboard(String),
+    /// 链路读数：往返时延与本会话上/下行速率，信息栏每几秒刷一次。
+    Stats(LinkStats),
     /// 会话结束（正常或失败），界面据此显示原因。
     Disconnected(SharedString),
 }
@@ -159,6 +163,7 @@ impl RdpSession {
         let (clip_tx, clip_rx) = mpsc::unbounded_channel();
         let local: LocalClipboard = Arc::new(Mutex::new(String::new()));
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let counters = Arc::new(TrafficCounters::default());
 
         let thread_host = host.hostname.clone();
         let parts = SessionParts {
@@ -170,6 +175,7 @@ impl RdpSession {
             input_rx,
             events_tx,
             local,
+            counters,
             result_tx,
         };
         std::thread::Builder::new()
@@ -213,6 +219,7 @@ struct SessionParts {
     input_rx: mpsc::UnboundedReceiver<RdpInput>,
     events_tx: FrameSender<RdpOutput>,
     local: LocalClipboard,
+    counters: Arc<TrafficCounters>,
     result_tx: tokio::sync::oneshot::Sender<Result<()>>,
 }
 
@@ -230,6 +237,7 @@ fn session_thread(parts: SessionParts) {
         input_rx,
         events_tx,
         local,
+        counters,
         result_tx,
     } = parts;
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
@@ -248,6 +256,7 @@ fn session_thread(parts: SessionParts) {
                 clip_tx,
                 events_tx.clone(),
                 local.clone(),
+                counters.clone(),
             ),
         )
         .await;
@@ -261,7 +270,7 @@ fn session_thread(parts: SessionParts) {
             Ok(Err(error)) => {
                 let _ = result_tx.send(Err(error));
             }
-            Ok(Ok((framed, connection_result))) => {
+            Ok(Ok((framed, connection_result, peer))) => {
                 let _ = result_tx.send(Ok(()));
                 run(
                     framed,
@@ -270,6 +279,8 @@ fn session_thread(parts: SessionParts) {
                     clipboard_rx,
                     events_tx,
                     local,
+                    counters,
+                    peer,
                 )
                 .await;
             }
@@ -286,6 +297,9 @@ impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite {}
 type UpgradedFramed = TokioFramed<Box<dyn AsyncReadWrite + Unpin + Send + Sync>>;
 
 /// 拨号 + TLS + 连接序列。跑在 tokio runtime 上。
+///
+/// `counters` 挂到拨号得到的那条流上数进出字节；连同对端地址一起交回，
+/// 供 [`run`] 起链路时延探测（走代理时对端是代理）。
 async fn open(
     host: Host,
     desktop: (u16, u16),
@@ -293,8 +307,9 @@ async fn open(
     clip_tx: mpsc::UnboundedSender<ClipboardMessage>,
     events_tx: FrameSender<RdpOutput>,
     local: LocalClipboard,
-) -> Result<(UpgradedFramed, ConnectionResult)> {
-    let stream = transport::dial(&host).await?;
+    counters: Arc<TrafficCounters>,
+) -> Result<(UpgradedFramed, ConnectionResult, SocketAddr)> {
+    let (stream, peer) = transport::dial(&host, counters).await?;
     let client_addr = stream.local_addr().with_context(|| {
         t!("rdp.connect_failed", host => host.hostname, port => host.port).to_string()
     })?;
@@ -342,7 +357,7 @@ async fn open(
     .await
     .map_err(connect_error)?;
 
-    Ok((framed, connection_result))
+    Ok((framed, connection_result, peer))
 }
 
 /// 一台主机的 IronRDP 连接参数。
@@ -442,6 +457,11 @@ fn connect_error(error: ConnectorError) -> anyhow::Error {
 }
 
 /// 会话循环的外壳：把"为什么结束"翻成一句界面话，送到事件通道上。
+///
+/// 顺带起一条链路采样（[`netstats::spawn_pump`]）：它在这条会话活着期间每隔
+/// 几秒量一次本会话上/下行速率与往返时延，推 [`RdpOutput::Stats`]。会话一结束
+/// 就把它停掉 —— 断了还去探测那个对端地址没有意义。
+#[allow(clippy::too_many_arguments)]
 async fn run(
     framed: UpgradedFramed,
     connection_result: ConnectionResult,
@@ -449,7 +469,10 @@ async fn run(
     mut clipboard_rx: Option<mpsc::UnboundedReceiver<ClipboardMessage>>,
     events_tx: FrameSender<RdpOutput>,
     local: LocalClipboard,
+    counters: Arc<TrafficCounters>,
+    peer: SocketAddr,
 ) {
+    let monitor = netstats::spawn_pump(counters, peer, events_tx.clone(), RdpOutput::Stats);
     let reason = match session_loop(
         framed,
         connection_result,
@@ -466,6 +489,7 @@ async fn run(
             SharedString::from(format!("{error:#}"))
         }
     };
+    monitor.abort();
     let _ = events_tx.send(RdpOutput::Disconnected(reason));
 }
 

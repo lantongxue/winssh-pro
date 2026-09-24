@@ -8,12 +8,13 @@
 //!
 //! 与 VNC 那份唯一的差别：RDP 的连接序列要一个 `SocketAddr` 当
 //! `ClientConnector::new` 的入参（`TS_UD_CS_CORE` 里报的客户端地址），
-//! 所以这里的枚举多一个 [`RdpStream::local_addr`] —— 直连读 TCP，
-//! 代理读它底下那条 TCP（代理换的是出口，本机地址还是本机的）。
+//! 所以这里多一个 [`RdpStream::local_addr`] 读那条 TCP 的本机端点
+//! （代理换的是出口，本机地址还是本机的）。
 
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -23,21 +24,23 @@ use tokio::net::TcpStream;
 use tokio_socks::tcp::Socks5Stream;
 
 use crate::host::Host;
+use crate::netstats::TrafficCounters;
 use crate::proxy::{self, ProxyConfig};
 
 /// 一条 RDP 会话底下的字节流：直连的 TCP，或代理打通的 TCP。
-pub enum RdpStream {
-    Direct(TcpStream),
-    Socks5(TcpStream),
+///
+/// 包一层计数器：`poll_read` / `poll_write` 是 TCP 那一层的进出字节，RDP 之后
+/// 升级 TLS 时 TLS 记录仍从这条流上过，所以这里数到的就是真正上线的流量
+/// （见 [`crate::netstats`]）。
+pub struct RdpStream {
+    socket: TcpStream,
+    counters: Arc<TrafficCounters>,
 }
 
 impl RdpStream {
     /// 本机这条连接用的地址。连接序列的 `TS_UD_CS_CORE` 要报它。
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        match self {
-            Self::Direct(stream) => stream.local_addr(),
-            Self::Socks5(stream) => stream.local_addr(),
-        }
+        self.socket.local_addr()
     }
 }
 
@@ -47,10 +50,12 @@ impl AsyncRead for RdpStream {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        match &mut *self {
-            Self::Direct(stream) => Pin::new(stream).poll_read(cx, buf),
-            Self::Socks5(stream) => Pin::new(stream).poll_read(cx, buf),
+        let before = buf.filled().len();
+        let ready = Pin::new(&mut self.socket).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &ready {
+            self.counters.add_rx(buf.filled().len() - before);
         }
+        ready
     }
 }
 
@@ -60,65 +65,66 @@ impl AsyncWrite for RdpStream {
         cx: &mut Context<'_>,
         bytes: &[u8],
     ) -> Poll<io::Result<usize>> {
-        match &mut *self {
-            Self::Direct(stream) => Pin::new(stream).poll_write(cx, bytes),
-            Self::Socks5(stream) => Pin::new(stream).poll_write(cx, bytes),
+        let ready = Pin::new(&mut self.socket).poll_write(cx, bytes);
+        if let Poll::Ready(Ok(n)) = &ready {
+            self.counters.add_tx(*n);
         }
+        ready
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match &mut *self {
-            Self::Direct(stream) => Pin::new(stream).poll_flush(cx),
-            Self::Socks5(stream) => Pin::new(stream).poll_flush(cx),
-        }
+        Pin::new(&mut self.socket).poll_flush(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        match &mut *self {
-            Self::Direct(stream) => Pin::new(stream).poll_shutdown(cx),
-            Self::Socks5(stream) => Pin::new(stream).poll_shutdown(cx),
-        }
+        Pin::new(&mut self.socket).poll_shutdown(cx)
     }
 }
 
-/// 照着一台主机的地址与代理设置连过去。返回的流已经能读能写。
-pub async fn dial(host: &Host) -> Result<RdpStream> {
+/// 照着一台主机的地址与代理设置连过去。返回的流已经能读能写，
+/// 连同对端地址（给链路时延探测用）。`counters` 挂在这条流上数进出字节。
+pub async fn dial(host: &Host, counters: Arc<TrafficCounters>) -> Result<(RdpStream, SocketAddr)> {
     let target = (host.hostname.as_ref(), host.port);
 
-    let Some(via) = proxy::resolve(&host.proxy).map_err(|reason| {
+    let socket = match proxy::resolve(&host.proxy).map_err(|reason| {
         anyhow!(
             "{}",
             t!("rdp.proxy_misconfigured", host => host.name, reason => reason)
         )
-    })?
-    else {
-        let socket = TcpStream::connect((host.hostname.as_ref(), host.port))
-            .await
-            .with_context(|| {
+    })? {
+        None => {
+            let socket = TcpStream::connect((host.hostname.as_ref(), host.port))
+                .await
+                .with_context(|| {
+                    t!(
+                        "rdp.connect_failed",
+                        host => host.hostname,
+                        port => host.port,
+                    )
+                    .to_string()
+                })?;
+            // RDP 的控制 PDU 小且来回频繁，Nagle 攒包会直接变成操作延迟。
+            let _ = socket.set_nodelay(true);
+            socket
+        }
+        Some(via) => {
+            let stream = socks5(&via, target).await.with_context(|| {
                 t!(
-                    "rdp.connect_failed",
+                    "rdp.proxy_connect_failed",
+                    proxy => via.address(),
                     host => host.hostname,
                     port => host.port,
                 )
                 .to_string()
             })?;
-        // RDP 的控制 PDU 小且来回频繁，Nagle 攒包会直接变成操作延迟。
-        let _ = socket.set_nodelay(true);
-        return Ok(RdpStream::Direct(socket));
+            let socket = stream.into_inner();
+            socket.set_nodelay(true)?;
+            socket
+        }
     };
 
-    let stream = socks5(&via, target).await.with_context(|| {
-        t!(
-            "rdp.proxy_connect_failed",
-            proxy => via.address(),
-            host => host.hostname,
-            port => host.port,
-        )
-        .to_string()
-    })?;
-    let socket = stream.into_inner();
-    socket.set_nodelay(true)?;
-    Ok(RdpStream::Socks5(socket))
+    let peer = socket.peer_addr()?;
+    Ok((RdpStream { socket, counters }, peer))
 }
 
 /// 经代理连到目标。用户名为空就是"这个代理不要认证"，见 [`ProxyConfig`]。

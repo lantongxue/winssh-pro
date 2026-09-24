@@ -53,9 +53,11 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     host::Host,
+    netstats::LinkStats,
     rdp::{RdpInput, RdpKeyboard, RdpOutput, RdpSession, pointer_to_render_image},
     ui::{
         Workspace,
+        bars::link_stats_group,
         elements::{
             DesktopScale, FrameElement, PointerOverlay, native_frame_size, remote_frame_point,
             replace_image, scrollable_frame,
@@ -134,6 +136,8 @@ pub struct RdpPanel {
     clipboard: Option<String>,
     /// 上次报出去的存活状态。
     alive: bool,
+    /// 最近一次链路读数（时延 + 本会话上/下行速率）。没测到是 `None`。
+    stats: Option<LinkStats>,
     dock_area: WeakEntity<DockArea>,
     focus_handle: FocusHandle,
     _leaving: Vec<Subscription>,
@@ -170,6 +174,7 @@ impl RdpPanel {
                 control_click: false,
                 clipboard: None,
                 alive: false,
+                stats: None,
                 dock_area,
                 focus_handle: cx.focus_handle(),
                 _leaving: Vec::new(),
@@ -214,6 +219,7 @@ impl RdpPanel {
         self.keyboard.forget();
         self.control_click = false;
         self.clipboard = None;
+        self.stats = None;
         self.set_alive(false, cx);
         cx.notify();
 
@@ -289,6 +295,19 @@ impl RdpPanel {
                                         if this
                                             .update(cx, |this, cx| {
                                                 this.accept_remote_clipboard(text, cx)
+                                            })
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    Some(RdpOutput::Stats(stats)) => {
+                                        if this
+                                            .update(cx, |this, cx| {
+                                                if this.live() {
+                                                    this.stats = Some(stats);
+                                                    cx.notify();
+                                                }
                                             })
                                             .is_err()
                                         {
@@ -415,6 +434,7 @@ impl RdpPanel {
     fn fail(&mut self, reason: SharedString, cx: &mut Context<Self>) {
         self.phase = RdpPhase::Failed(reason);
         self.inputs = None;
+        self.stats = None;
         self.set_alive(false, cx);
         cx.notify();
     }
@@ -709,6 +729,16 @@ impl RdpPanel {
             RdpPhase::Failed(reason) => reason.to_string(),
         };
 
+        // 只有活着的时候才摆这三格：断了之后上一次测到的时延/速率都不作数了。
+        let stats = self.live().then(|| {
+            link_stats_group(
+                self.stats,
+                SharedString::from(t!("desktop.link_latency_tooltip")),
+                SharedString::from(t!("desktop.link_rate_tooltip")),
+                cx,
+            )
+        });
+
         h_flex()
             .flex_shrink_0()
             .h(BAR_HEIGHT)
@@ -748,6 +778,10 @@ impl RdpPanel {
                             .child(SharedString::from(status)),
                     ),
             )
+            .children(stats)
+            // 一块会伸缩的空白把操作按钮推到最右：左侧的身份 / 分辨率 / 链路读数
+            // 靠在一起，右侧的菜单与重连固定贴右沿，条子再怎么变宽都只撑这段空白。
+            .child(div().flex_1().min_w_0())
             .child(DesktopSessionMenu::new(
                 "rdp-panel-menu",
                 DesktopSessionKind::Rdp,
