@@ -1065,6 +1065,75 @@ rdp.resize_failed:
 rdp.clipboard_failed:
   en: "RDP clipboard error: %{detail}"
   zh-CN: RDP 剪贴板出错：%{detail}
+rdp.files_too_many:
+  en: "Too many files were copied (more than %{max} items); they were not offered to the remote side."
+  zh-CN: 复制的文件太多（超过 %{max} 项），没有发给远端。
+rdp.files_collect_failed:
+  en: "The copied files could not be offered to the remote side: %{error}"
+  zh-CN: 本地复制的文件没能发给远端：%{error}
+rdp.files_offer_one:
+  en: "Remote copied %{name} (%{size})"
+  zh-CN: 远端复制了 %{name}（%{size}）
+rdp.files_offer_many:
+  en: "Remote copied %{count} items including %{name} (%{size})"
+  zh-CN: 远端复制了 %{name} 等 %{count} 项（%{size}）
+rdp.files_unnamed:
+  en: unnamed
+  zh-CN: 未命名
+rdp.files_save:
+  en: Save
+  zh-CN: 保存
+rdp.files_save_tooltip:
+  en: "Save to %{dir}"
+  zh-CN: 保存到 %{dir}
+rdp.files_save_as:
+  en: Save to…
+  zh-CN: 另存到…
+rdp.files_save_prompt:
+  en: Save here
+  zh-CN: 保存到这里
+rdp.files_dismiss:
+  en: Dismiss
+  zh-CN: 忽略
+rdp.files_cancel:
+  en: Cancel
+  zh-CN: 取消
+rdp.files_saving:
+  en: preparing…
+  zh-CN: 准备中…
+rdp.files_saved_one:
+  en: "Saved %{name} (%{size}) → %{dir}"
+  zh-CN: 已保存 %{name}（%{size}）→ %{dir}
+rdp.files_saved_many:
+  en: "Saved %{files} files (%{size}) → %{dir}"
+  zh-CN: 已保存 %{files} 个文件（%{size}）→ %{dir}
+rdp.files_reveal:
+  en: Show
+  zh-CN: 显示
+rdp.files_cancelled:
+  en: Saving the remote files was cancelled.
+  zh-CN: 已取消保存远端文件。
+rdp.files_failed:
+  en: "Could not save the remote files: %{error}"
+  zh-CN: 保存远端文件失败：%{error}
+rdp.files_gone:
+  en: The remote clipboard has changed; copy the files again.
+  zh-CN: 远端剪贴板已经换了内容，请重新复制那些文件。
+rdp.files_dir_missing:
+  en: "The folder %{dir} does not exist."
+  zh-CN: 目录 %{dir} 不存在。
+rdp.files_too_large:
+  en: "%{name} is larger than 2 GiB, which this server cannot transfer through the clipboard."
+  zh-CN: "%{name} 超过 2 GiB，这台服务器不支持经剪贴板传这么大的文件。"
+rdp.files_remote_refused:
+  en: "The remote side did not provide the contents of %{name}."
+  zh-CN: 远端没有提供 %{name} 的内容。
+rdp.files_session_ended:
+  en: The RDP session ended before the files were saved.
+  zh-CN: 文件还没存完，RDP 会话就结束了。
+rdp.files_write_failed:
+  en: "Cannot write %{path}: %{error}"
+  zh-CN: 写不进 %{path}：%{error}
 rdp.reconnect:
   en: Reconnect
   zh-CN: 重连
@@ -1230,8 +1299,8 @@ host_form.field_rdp_performance:
   en: Experience
   zh-CN: 性能档
 host_form.field_rdp_clipboard:
-  en: Clipboard sync
-  zh-CN: 剪贴板同步
+  en: Clipboard sync (text & files)
+  zh-CN: 剪贴板同步（含文件）
 host_form.field_rdp_compression:
   en: Compression (MPPC)
   zh-CN: 压缩（MPPC）

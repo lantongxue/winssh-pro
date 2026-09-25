@@ -37,12 +37,16 @@
 //!
 //! 剪贴板：[`super::clipboard::GpuiClipboard`] 作为 CLIPRDR 的后端挂在静态
 //! 通道上，正文与 GPUI 剪贴板之间的来回在 [`RdpInput::Clipboard`] 与
-//! [`RdpOutput::Clipboard`] 上走。
+//! [`RdpOutput::Clipboard`] 上走；文件复制（见 [`super::file_copy`]）走
+//! [`RdpInput::ClipboardFiles`] / [`RdpInput::SaveRemoteFiles`] 与
+//! [`RdpOutput::Files`]。剪贴板这一路出的错一律只记日志、不断会话 ——
+//! 上游 `ironrdp-client` 在这里一路 `?`，一次不合规的文件请求就断线。
 //!
-//! 不支持的（有意）：声音（RDPSND）、驱动器/剪贴板文件重定向、智能卡、
+//! 不支持的（有意）：声音（RDPSND）、驱动器重定向、智能卡、
 //! UDP 多传输、Kerberos（NTLM 够用，Kerberos 要 KDC 配置，走不到）。
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -74,11 +78,12 @@ use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabi
 use ironrdp::pdu::rdp::client_info::{CompressionType, TimezoneInfo};
 use ironrdp::pdu::rdp::headers::{ShareControlHeader, ShareControlPdu, ShareDataPdu};
 use ironrdp::pdu::surface_commands::FrameAction;
-use ironrdp::pdu::{Action, mcs, x224::X224};
+use ironrdp::pdu::{Action, PduResult, mcs, x224::X224};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{
     ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason,
 };
+use ironrdp::svc::SvcProcessorMessages;
 use ironrdp_tls::upgrade as tls_upgrade;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{
@@ -89,6 +94,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
 use super::clipboard::{GpuiClipboard, LocalClipboard};
+use super::file_copy::FileCopyEvent;
+use super::file_copy::outgoing::LocalFileList;
 use super::graphics::FastPathFrames;
 use super::pointer::{PointerDecoder, PointerEvent};
 use super::settings::RdpSettings;
@@ -112,6 +119,16 @@ pub enum RdpInput {
     ReleaseAll,
     /// 本地方剪贴板变了，把文本报给对端。
     Clipboard(String),
+    /// 本地复制了一组文件（已经展开成文件表）。对端不认文件流时退回把
+    /// `text`（剪贴板里那份文字说法，通常是文件名）当文本报过去。
+    ClipboardFiles {
+        files: Arc<LocalFileList>,
+        text: Option<String>,
+    },
+    /// 把对端复制的那组文件存到这个目录。
+    SaveRemoteFiles(PathBuf),
+    /// 取消正在跑的那次保存。
+    CancelFileTransfer,
     /// 桌面改成这个尺寸（窗口拖大拖小）。对端不认动态分辨率时忽略。
     Resize { width: u16, height: u16 },
     /// 用户关掉面板：走一次优雅断开。
@@ -129,6 +146,8 @@ pub enum RdpOutput {
     PointerPosition { x: u16, y: u16 },
     /// 对端复制了文本。
     Clipboard(String),
+    /// 文件复制的动静：对端复制了文件、保存的进度与终局。
+    Files(FileCopyEvent),
     /// 链路读数：往返时延与本会话上/下行速率，信息栏每几秒刷一次。
     Stats(LinkStats),
     /// 会话结束（正常或失败），界面据此显示原因。
@@ -675,21 +694,21 @@ async fn session_loop(
                                 .map_err(|error| anyhow!("{}", t!("rdp.session_failed", detail => error)))?,
                         }
                     }
-                    RdpInput::Clipboard(text) => {
-                        if let Ok(mut current) = local.lock() {
-                            *current = text;
+                    RdpInput::Clipboard(text) => copy_text(&mut active_stage, &local, text),
+                    RdpInput::ClipboardFiles { files, text } => {
+                        copy_files(&mut active_stage, &local, files, text)
+                    }
+                    RdpInput::SaveRemoteFiles(dir) => {
+                        if let Some(backend) = clipboard_backend(&mut active_stage) {
+                            backend.start_download(dir);
                         }
-                        let formats = [ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)];
-                        match active_stage.get_svc_processor_mut::<CliprdrClient>() {
-                            Some(client) => {
-                                let messages = client.initiate_copy(&formats)
-                                    .map_err(|error| anyhow!("{}", t!("rdp.clipboard_failed", detail => error)))?;
-                                let frame = active_stage.process_svc_processor_messages(messages)
-                                    .map_err(|error| anyhow!("{}", t!("rdp.clipboard_failed", detail => error)))?;
-                                vec![ActiveStageOutput::ResponseFrame(frame)]
-                            }
-                            None => Vec::new(),
+                        Vec::new()
+                    }
+                    RdpInput::CancelFileTransfer => {
+                        if let Some(backend) = clipboard_backend(&mut active_stage) {
+                            backend.cancel_download();
                         }
+                        Vec::new()
                     }
                     RdpInput::Resize { width, height } => {
                         pending_resize = Some(MonitorLayoutEntry::adjust_display_size(
@@ -706,60 +725,15 @@ async fn session_loop(
                     clipboard_open.store(false, Ordering::Relaxed);
                     continue;
                 };
-                if let Some(client) = active_stage.get_svc_processor_mut::<CliprdrClient>() {
-                    if let Some(svc_messages) = match message {
-                        ClipboardMessage::SendInitiateCopy(formats) => Some(
-                            client.initiate_copy(&formats)
-                                .map_err(|error| anyhow!("{}", t!("rdp.clipboard_failed", detail => error)))?,
-                        ),
-                        ClipboardMessage::SendInitiatePaste(format) => Some(
-                            client.initiate_paste(format)
-                                .map_err(|error| anyhow!("{}", t!("rdp.clipboard_failed", detail => error)))?,
-                        ),
-                        ClipboardMessage::SendFormatData(response) => Some(
-                            client.submit_format_data(response)
-                                .map_err(|error| anyhow!("{}", t!("rdp.clipboard_failed", detail => error)))?,
-                        ),
-                        // 文件重定向没实现：请求原样丢掉，会话不因此中断。
-                        ClipboardMessage::SendInitiateFileCopy(_)
-                        | ClipboardMessage::SendFileContentsRequest(_)
-                        | ClipboardMessage::SendFileContentsResponse(_) => None,
-                        ClipboardMessage::Error(error) => {
-                            log::warn!("RDP 剪贴板后端报错：{error}");
-                            None
-                        }
-                    } {
-                        let frame = active_stage.process_svc_processor_messages(svc_messages)
-                            .map_err(|error| anyhow!("{}", t!("rdp.clipboard_failed", detail => error)))?;
-                        vec![ActiveStageOutput::ResponseFrame(frame)]
-                    } else {
-                        Vec::new()
-                    }
-                } else {
-                    Vec::new()
-                }
+                clipboard_message_frame(&mut active_stage, message)
             }
             _ = cleanup_interval.tick(), if activation.is_none() => {
-                // 让 CLIPRDR 把过期的锁收掉。
+                // 让 CLIPRDR 把过期的锁收掉、把超时的文件请求判成失败。
                 match active_stage.get_svc_processor_mut::<CliprdrClient>() {
-                    Some(client) => match client.drive_timeouts() {
-                        Ok(messages) => {
-                            let messages: Vec<ironrdp::svc::SvcMessage> = messages.into();
-                            match messages.is_empty() {
-                                true => Vec::new(),
-                                false => {
-                                    let frame = active_stage
-                                        .process_svc_processor_messages::<CliprdrClient>(messages.into())
-                                        .map_err(|error| anyhow!("{}", t!("rdp.clipboard_failed", detail => error)))?;
-                                    vec![ActiveStageOutput::ResponseFrame(frame)]
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            log::warn!("RDP 剪贴板锁超时清理失败：{error}");
-                            Vec::new()
-                        }
-                    },
+                    Some(client) => {
+                        let messages = client.drive_timeouts();
+                        clipboard_frame(&active_stage, messages)
+                    }
                     None => Vec::new(),
                 }
             }
@@ -798,6 +772,126 @@ async fn session_loop(
 
     presentation.publish(&image, events_tx);
     Ok(reason)
+}
+
+/// 挂在 CLIPRDR 上的那个后端。主机关了剪贴板时没有这条通道。
+fn clipboard_backend(active_stage: &mut ActiveStage) -> Option<&mut GpuiClipboard> {
+    active_stage
+        .get_svc_processor_mut::<CliprdrClient>()?
+        .downcast_backend_mut::<GpuiClipboard>()
+}
+
+/// 本地复制了文本：写进与后端共享的那一格，报给对端。之前报过的文件表作废。
+fn copy_text(
+    active_stage: &mut ActiveStage,
+    local: &LocalClipboard,
+    text: String,
+) -> Vec<ActiveStageOutput> {
+    if let Ok(mut current) = local.lock() {
+        *current = text;
+    }
+    let Some(client) = active_stage.get_svc_processor_mut::<CliprdrClient>() else {
+        return Vec::new();
+    };
+    if let Some(backend) = client.downcast_backend_mut::<GpuiClipboard>() {
+        backend.forget_local_files();
+    }
+    let formats = [ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)];
+    let messages = client.initiate_copy(&formats);
+    clipboard_frame(active_stage, messages)
+}
+
+/// 本地复制了一组文件：表交给后端（对端来要内容时照它读），同一张表报给
+/// 对端。对端不认文件流就退回成文本。
+fn copy_files(
+    active_stage: &mut ActiveStage,
+    local: &LocalClipboard,
+    files: Arc<LocalFileList>,
+    text: Option<String>,
+) -> Vec<ActiveStageOutput> {
+    let Some(client) = active_stage.get_svc_processor_mut::<CliprdrClient>() else {
+        return Vec::new();
+    };
+    let Some(backend) = client.downcast_backend_mut::<GpuiClipboard>() else {
+        return Vec::new();
+    };
+    if !backend.files_enabled() {
+        return match text {
+            Some(text) => copy_text(active_stage, local, text),
+            None => Vec::new(),
+        };
+    }
+    let descriptors = backend.offer_local_files(files);
+    // 文件表那一份格式表里没有文本；对端真来要文本，回"没有"。
+    if let Ok(mut current) = local.lock() {
+        current.clear();
+    }
+    let messages = client.initiate_file_copy(descriptors);
+    clipboard_frame(active_stage, messages)
+}
+
+/// 后端的一条回程消息 → 线上要发的帧。没发出去的粘贴请求与文件内容请求
+/// 要回头告诉后端，它才收得了自己的在途状态（排着的下一个请求、正在跑的下载）。
+fn clipboard_message_frame(
+    active_stage: &mut ActiveStage,
+    message: ClipboardMessage,
+) -> Vec<ActiveStageOutput> {
+    let Some(client) = active_stage.get_svc_processor_mut::<CliprdrClient>() else {
+        return Vec::new();
+    };
+    let messages = match message {
+        ClipboardMessage::SendInitiateCopy(formats) => client.initiate_copy(&formats),
+        ClipboardMessage::SendInitiatePaste(format) => {
+            let messages = client.initiate_paste(format);
+            if messages.is_err()
+                && let Some(backend) = client.downcast_backend_mut::<GpuiClipboard>()
+            {
+                backend.paste_failed();
+            }
+            messages
+        }
+        ClipboardMessage::SendFormatData(response) => client.submit_format_data(response),
+        ClipboardMessage::SendInitiateFileCopy(files) => client.initiate_file_copy(files),
+        ClipboardMessage::SendFileContentsRequest(request) => {
+            let stream_id = request.stream_id;
+            let messages = client.request_file_contents(request);
+            if messages.is_err()
+                && let Some(backend) = client.downcast_backend_mut::<GpuiClipboard>()
+            {
+                backend.file_request_failed(stream_id);
+            }
+            messages
+        }
+        ClipboardMessage::SendFileContentsResponse(response) => {
+            client.submit_file_contents(response)
+        }
+        ClipboardMessage::Error(error) => {
+            log::warn!("RDP 剪贴板后端报错：{error}");
+            return Vec::new();
+        }
+    };
+    clipboard_frame(active_stage, messages)
+}
+
+/// 剪贴板这一路的消息编成帧。出什么错都只记一笔，不带走会话。
+fn clipboard_frame(
+    active_stage: &ActiveStage,
+    messages: PduResult<SvcProcessorMessages<CliprdrClient>>,
+) -> Vec<ActiveStageOutput> {
+    let frame = match messages {
+        Ok(messages) => active_stage
+            .process_svc_processor_messages(messages)
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    match frame {
+        Ok(frame) if frame.is_empty() => Vec::new(),
+        Ok(frame) => vec![ActiveStageOutput::ResponseFrame(frame)],
+        Err(error) => {
+            log::warn!("{}", t!("rdp.clipboard_failed", detail => error));
+            Vec::new()
+        }
+    }
 }
 
 #[derive(Default)]

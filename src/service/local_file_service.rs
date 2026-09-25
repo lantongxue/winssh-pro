@@ -262,8 +262,16 @@ fn uid_of(_: &std::fs::Metadata) -> Option<u32> {
 /// 给一个下载目标挑最终落盘的名字：目录里已经有同名文件就加 `(2)`、`(3)`……
 /// 直到没有为止。覆盖本地文件这种事，不该在没人要求的时候发生。
 pub fn unique_local_path(dir: &Path, name: &str) -> PathBuf {
+    unique_local_path_with(dir, name, |_| false)
+}
+
+/// 同 [`unique_local_path`]，另外让开 `taken` 认领过的名字：一批下载各自挑
+/// 名字的那一刻都还没落盘，彼此在磁盘上看不见（RDP 剪贴板一次粘来几个顶层项
+/// 就是这样）。
+pub fn unique_local_path_with(dir: &Path, name: &str, taken: impl Fn(&Path) -> bool) -> PathBuf {
+    let free = |path: &Path| !path.exists() && !taken(path);
     let first = dir.join(name);
-    if !first.exists() {
+    if free(&first) {
         return first;
     }
     let (stem, extension) = match name.rsplit_once('.') {
@@ -278,7 +286,7 @@ pub fn unique_local_path(dir: &Path, name: &str) -> PathBuf {
             None => format!("{stem} ({index})"),
         };
         let path = dir.join(candidate);
-        if !path.exists() {
+        if free(&path) {
             return path;
         }
     }

@@ -14,6 +14,9 @@
 //!   输入事件，外加修饰键那本"此刻哪几颗按着"的账。
 //! - **剪贴板**（[`clipboard`]）：CLIPRDR 通道与 GPUI 剪贴板之间的桥。
 //!   正文就是 UTF-16LE（CF_UNICODETEXT），没有 VNC 经典正文那种字符集问题。
+//! - **文件复制**（[`file_copy`]）：剪贴板里的文件两个方向都走 ——
+//!   本地复制的文件在远端资源管理器里直接粘贴；远端复制的文件由面板
+//!   提示，保存到本地的一个目录（GPUI 的剪贴板写不进文件）。
 //! - **光标**（[`pointer`]）：服务器发来的光标位图原样解成 GPUI 的
 //!   `CursorImage`，由平台当真正的系统光标显示（和 mstsc 一样跟手、反色）。
 //! - **连接配置**（[`settings`]）：安全档、色深、性能档、剪贴板、压缩、域，
@@ -23,12 +26,13 @@
 //!
 //! 支持的档：直连 / SOCKS5、TLS + CredSSP(NLA) / 仅 TLS / NLA 强制、
 //! 用户名密码（可带域）、32/16 位色深、RemoteFX 与 MPPC 64K 压缩、
-//! 动态改分辨率（DisplayControl DVC）、双向文本剪贴板。
-//! 不支持的（有意，见 [`session`] 的模块文档）：声音、驱动器/文件重定向、
+//! 动态改分辨率（DisplayControl DVC）、双向文本剪贴板、剪贴板文件复制。
+//! 不支持的（有意，见 [`session`] 的模块文档）：声音、驱动器重定向、
 //! 智能卡、UDP 多传输、Kerberos。
 
 mod bitmap;
 mod clipboard;
+mod file_copy;
 mod graphics;
 mod keyboard;
 mod pointer;
@@ -36,6 +40,8 @@ mod session;
 mod settings;
 mod transport;
 
+pub use file_copy::outgoing::LocalFileList;
+pub use file_copy::{FileCopyEvent, FileTransferOutcome, FileTransferProgress, RemoteFileOffer};
 pub use keyboard::RdpKeyboard;
 pub use session::{RdpInput, RdpOutput, RdpSession};
 pub use settings::{RdpColorDepth, RdpPerformance, RdpSecurity, RdpSettings, decode, encode};

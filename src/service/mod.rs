@@ -26,7 +26,7 @@ pub use command_history_service::CommandHistoryService;
 pub use credential_service::CredentialService;
 pub use forward_service::ForwardService;
 pub use host_service::HostService;
-pub use local_file_service::{LocalFileService, unique_local_path};
+pub use local_file_service::{LocalFileService, unique_local_path, unique_local_path_with};
 pub use monitor_service::MonitorService;
 pub use serial_service::SerialService;
 pub use setting_service::SettingService;

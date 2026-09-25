@@ -7,7 +7,7 @@
 //! | [`RdpSecurity`] | 协商的 `PROTOCOL_*` 旗 | 古董服务器不认 NLA 时点"仅 TLS"；要求必须 NLA 的域点"NLA 强制" |
 //! | [`RdpColorDepth`] | 位图能力的色深 | 带宽紧的链路降到 16 位，画面省一半 |
 //! | [`RdpPerformance`] | `INFO_PERF_FLAGS`（关壁纸/动画/主题那组） | 慢链路点"窄带"；本地点"局域网"把动效留着 |
-//! | `clipboard` | CLIPRDR 静态通道挂不挂 | 不想让两边剪贴板互通时关掉 |
+//! | `clipboard` | CLIPRDR 静态通道挂不挂（文本与文件复制都走它） | 不想让两边剪贴板互通时关掉 |
 //! | `compression` | `INFO_COMPRESSION`（MPPC 64K） | 对端是古董实现、报压缩错时才关 |
 //! | `domain` | CredSSP/NTLM 的域（`DOMAIN\user`） | 域账号填域；本地账号留空 |
 //!
@@ -192,7 +192,7 @@ pub struct RdpSettings {
     pub security: RdpSecurity,
     pub color_depth: RdpColorDepth,
     pub performance: RdpPerformance,
-    /// 挂不挂 CLIPRDR 静态通道。关掉之后两边剪贴板互不相干，
+    /// 挂不挂 CLIPRDR 静态通道。关掉之后两边剪贴板（文本与文件）互不相干，
     /// 面板也不会去盯本地剪贴板。
     pub clipboard: bool,
     /// 要不要协商 MPPC 64K 快路径压缩（`INFO_COMPRESSION`）。

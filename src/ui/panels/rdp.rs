@@ -23,27 +23,35 @@
 //! 4. **剪贴板是 UTF-16**。没有 VNC 那种字符集猜测（见
 //!    [`crate::rdp::clipboard`]），所以面板这一层和 VNC 一模一样：轮询本地、
 //!    写回对端来的文本、用一份镜像收住回声。
+//! 5. **剪贴板里还能是文件**（见 [`crate::rdp::file_copy`]）。本地复制的文件
+//!    在后台展开成文件表交给会话，远端资源管理器里直接粘贴；远端复制的文件
+//!    GPUI 写不进本地剪贴板，于是画面左上角浮一条提示（[`FileStrip`]），
+//!    点"保存"落到下载目录、"另存到…"自己挑，存的时候同一条变成进度条。
 //!
 //! 重连和 VNC 一样是一档手动动作：RDP 断线多半是服务器重启或网络抖动，
 //! 自动重连会在没人看着的时候反复撞认证失败。
 
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::{
     ActiveTheme as _, ElementExt as _, Icon, IconName, Sizable as _, StyledExt as _,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, DockArea, Panel, PanelEvent, TabGroup},
     h_flex,
+    notification::Notification,
+    progress::Progress,
 };
 use gpui_kit::{
-    App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, Modifiers,
-    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Size, Styled as _, Subscription, WeakEntity, Window, black,
-    div, px,
+    AnyElement, App, AppContext as _, ClipboardEntry, ClipboardItem, Context, Entity, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent,
+    Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement as _, PathPromptOptions, Pixels, Point, Render, RenderImage, ScrollDelta,
+    ScrollHandle, ScrollWheelEvent, SharedString, Size, Styled as _, Subscription, WeakEntity,
+    Window, black, div, px,
 };
 use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp::input::{
@@ -55,7 +63,12 @@ use crate::{
     desktop::{RemoteCursor, strip_source_locations},
     host::Host,
     netstats::LinkStats,
-    rdp::{RdpInput, RdpKeyboard, RdpOutput, RdpSession},
+    rdp::{
+        FileCopyEvent, FileTransferOutcome, FileTransferProgress, LocalFileList, RdpInput,
+        RdpKeyboard, RdpOutput, RdpSession, RemoteFileOffer,
+    },
+    service::LocalFileService,
+    sftp::human_size,
     ui::{
         Workspace,
         bars::link_stats_group,
@@ -94,6 +107,66 @@ const CLIPBOARD_POLL_MS: u64 = 500;
 
 /// macOS 会在应用收到事件前把 Control+左键改报成右键。
 const CONTROL_CLICK_IS_RIGHT_CLICK: bool = cfg!(target_os = "macos");
+
+/// 文件提示条最宽到这儿；画布再窄就跟着收，文字截断。
+const FILE_STRIP_MAX_WIDTH: Pixels = px(480.);
+/// 文件提示条的高度，与 ZMODEM 那条同高。
+const FILE_STRIP_HEIGHT: Pixels = px(32.);
+
+/// 本地剪贴板此刻是什么，只认两边会同步的那两种。防回声的镜子记的就是它。
+#[derive(Clone, Debug, PartialEq)]
+enum ClipboardMirror {
+    Text(String),
+    /// 一组文件，连着剪贴板里那份文字说法（对端不认文件流时退回报它）。
+    Files {
+        paths: Vec<PathBuf>,
+        text: Option<String>,
+    },
+}
+
+/// 读本地剪贴板。文件优先：Finder 复制文件时剪贴板里同时有文件名文本，
+/// 那只是给文本编辑器粘贴用的说法。
+fn read_local_clipboard(cx: &App) -> Option<ClipboardMirror> {
+    let item = cx.read_from_clipboard()?;
+    let mut paths = Vec::new();
+    let mut text = String::new();
+    for entry in item.entries() {
+        match entry {
+            ClipboardEntry::ExternalPaths(external) => {
+                paths.extend(external.paths().iter().cloned())
+            }
+            ClipboardEntry::String(string) => text.push_str(string.text()),
+            ClipboardEntry::Image(_) => {}
+        }
+    }
+    if !paths.is_empty() {
+        if text.is_empty() {
+            text = paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        return Some(ClipboardMirror::Files {
+            paths,
+            text: Some(text),
+        });
+    }
+    (!text.is_empty()).then_some(ClipboardMirror::Text(text))
+}
+
+/// 画面左上角那条文件提示此刻的样子。
+#[derive(Clone, Debug)]
+enum FileStrip {
+    /// 对端复制了文件，等用户说存不存、存哪儿。`dir` 是"保存"的落点
+    /// （系统下载目录），提示出来的那一刻定下 —— 每帧去问系统要不起。
+    Offer {
+        offer: RemoteFileOffer,
+        dir: PathBuf,
+    },
+    /// 正在存。进度来之前是 `None`。
+    Saving(Option<FileTransferProgress>),
+}
 
 /// 这条会话此刻走到哪一步了。
 #[derive(Clone, Debug)]
@@ -136,8 +209,10 @@ pub struct RdpPanel {
     keyboard: RdpKeyboard,
     /// 按下时这颗右键是否由 macOS 的 Control+左键转换而来；抬起沿用同一映射。
     control_click: bool,
-    /// 两边此刻同步的是哪一份文本，防回声的镜子（和 VNC 同一套）。
-    clipboard: Option<String>,
+    /// 两边此刻同步的是哪一份内容，防回声的镜子（和 VNC 同一套，多一档文件）。
+    clipboard: Option<ClipboardMirror>,
+    /// 文件提示条。没有要说的就是 `None`。
+    file_strip: Option<FileStrip>,
     /// 上次报出去的存活状态。
     alive: bool,
     /// 最近一次链路读数（时延 + 本会话上/下行速率）。没测到是 `None`。
@@ -176,6 +251,7 @@ impl RdpPanel {
                 keyboard: RdpKeyboard::new(),
                 control_click: false,
                 clipboard: None,
+                file_strip: None,
                 alive: false,
                 stats: None,
                 dock_area,
@@ -200,7 +276,7 @@ impl RdpPanel {
                 replace_image(&mut this.pointer_overlay, None, cx);
             })
             .detach();
-            this.watch_clipboard(cx);
+            this.watch_clipboard(window, cx);
             this
         })
     }
@@ -222,6 +298,7 @@ impl RdpPanel {
         self.keyboard.forget();
         self.control_click = false;
         self.clipboard = None;
+        self.file_strip = None;
         self.stats = None;
         self.set_alive(false, cx);
         cx.notify();
@@ -237,9 +314,9 @@ impl RdpPanel {
                     this.inputs = Some(inputs);
                     this.phase = RdpPhase::Live;
                     // 基线：开连接不把手里原有的剪贴板内容顺手送出去。
-                    this.clipboard = cx.read_from_clipboard().and_then(|item| item.text());
+                    this.clipboard = read_local_clipboard(cx);
                     if let Some(mut events) = session.take_events() {
-                        cx.spawn(async move |this, cx| {
+                        cx.spawn_in(window, async move |this, cx| {
                             loop {
                                 match events.recv().await {
                                     Some(RdpOutput::Frame(frame)) => {
@@ -277,6 +354,16 @@ impl RdpPanel {
                                         if this
                                             .update(cx, |this, cx| {
                                                 this.accept_remote_clipboard(text, cx)
+                                            })
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    Some(RdpOutput::Files(event)) => {
+                                        if this
+                                            .update_in(cx, |this, window, cx| {
+                                                this.on_file_event(event, window, cx)
                                             })
                                             .is_err()
                                         {
@@ -322,18 +409,18 @@ impl RdpPanel {
     }
 
     /// 本地剪贴板的盯梢循环（和 VNC 面板同一份逻辑）。剪贴板关着的主机
-    /// 连读都不读 —— 那条通道根本没挂上。
-    fn watch_clipboard(&self, cx: &mut Context<Self>) {
+    /// 连读都不读 —— 那条通道根本没挂上。带着窗口跑：文件展开失败要弹通知。
+    fn watch_clipboard(&self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.host.rdp.clipboard {
             return;
         }
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(CLIPBOARD_POLL_MS))
                     .await;
                 if this
-                    .update(cx, |this, cx| this.sync_local_clipboard(cx))
+                    .update_in(cx, |this, window, cx| this.sync_local_clipboard(window, cx))
                     .is_err()
                 {
                     break;
@@ -343,18 +430,69 @@ impl RdpPanel {
         .detach();
     }
 
-    fn sync_local_clipboard(&mut self, cx: &mut Context<Self>) {
+    fn sync_local_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.live() || !self.host.rdp.clipboard {
             return;
         }
-        let Some(current) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+        let Some(current) = read_local_clipboard(cx) else {
             return;
         };
-        if current.is_empty() || Some(&current) == self.clipboard.as_ref() {
+        if Some(&current) == self.clipboard.as_ref() {
             return;
         }
         self.clipboard = Some(current.clone());
-        self.send(RdpInput::Clipboard(current));
+        match current {
+            ClipboardMirror::Text(text) => self.send(RdpInput::Clipboard(text)),
+            ClipboardMirror::Files { paths, text } => {
+                self.offer_local_files(paths, text, window, cx)
+            }
+        }
+    }
+
+    /// 本地复制了文件：在后台展开成文件表（一个大目录要走好一会儿磁盘），
+    /// 展开好了交给会话。展开期间剪贴板又换了，这一份就作废 —— 晚到的旧表
+    /// 不能盖掉新内容。
+    fn offer_local_files(
+        &mut self,
+        paths: Vec<PathBuf>,
+        text: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let roots = paths.clone();
+        let collect = cx.background_spawn(async move { LocalFileList::collect(&roots) });
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = collect.await;
+            _ = this.update_in(cx, |this, window, cx| {
+                let still_current = matches!(
+                    &this.clipboard,
+                    Some(ClipboardMirror::Files { paths: current, .. }) if *current == paths
+                );
+                if !this.live() || !still_current {
+                    return;
+                }
+                match outcome {
+                    // 一个能报的都没有（全是套接字之类）：退回老样子报文字。
+                    Ok(files) if files.is_empty() => {
+                        if let Some(text) = text {
+                            this.send(RdpInput::Clipboard(text));
+                        }
+                    }
+                    Ok(files) => this.send(RdpInput::ClipboardFiles {
+                        files: Arc::new(files),
+                        text,
+                    }),
+                    Err(error) => window.push_notification(
+                        Notification::warning(t!(
+                            "rdp.files_collect_failed",
+                            error => format!("{error:#}")
+                        )),
+                        cx,
+                    ),
+                }
+            });
+        })
+        .detach();
     }
 
     fn accept_remote_clipboard(&mut self, text: String, cx: &mut Context<Self>) {
@@ -365,7 +503,80 @@ impl RdpPanel {
         if current.as_deref() != Some(text.as_str()) {
             cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
         }
-        self.clipboard = Some(text);
+        self.clipboard = Some(ClipboardMirror::Text(text));
+    }
+
+    /// 文件复制那一路的动静。提示条一次只说一件事：正在存的时候，对端
+    /// 新复制的文件等这次存完再提示（会话那边也是存完才去要新表）。
+    fn on_file_event(&mut self, event: FileCopyEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.live() {
+            return;
+        }
+        let saving = matches!(self.file_strip, Some(FileStrip::Saving(_)));
+        match event {
+            FileCopyEvent::Offered(offer) if !saving => {
+                self.file_strip = Some(FileStrip::Offer {
+                    offer,
+                    dir: LocalFileService::start_dir(),
+                });
+            }
+            FileCopyEvent::Withdrawn if !saving => self.file_strip = None,
+            FileCopyEvent::Progress(progress) => {
+                if let Some(FileStrip::Saving(current)) = &mut self.file_strip {
+                    *current = Some(progress);
+                }
+            }
+            FileCopyEvent::Finished(outcome) => {
+                if saving {
+                    self.file_strip = None;
+                }
+                notify_file_outcome(outcome, window, cx);
+            }
+            FileCopyEvent::Offered(_) | FileCopyEvent::Withdrawn => return,
+        }
+        cx.notify();
+    }
+
+    /// 把对端复制的那组文件存进 `dir`。
+    fn save_remote_files(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.file_strip, Some(FileStrip::Offer { .. })) {
+            return;
+        }
+        self.file_strip = Some(FileStrip::Saving(None));
+        self.send(RdpInput::SaveRemoteFiles(dir));
+        cx.focus_self(window);
+        cx.notify();
+    }
+
+    /// "另存到…"：先挑目录，挑完再存。取消文件框就什么都不做，提示条还在。
+    fn save_remote_files_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(t!("rdp.files_save_prompt").into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(dir) = paths.into_iter().next() else {
+                return;
+            };
+            _ = this.update_in(cx, |this, window, cx| {
+                this.save_remote_files(dir, window, cx)
+            });
+        })
+        .detach();
+    }
+
+    fn dismiss_file_strip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.file_strip {
+            Some(FileStrip::Saving(_)) => self.send(RdpInput::CancelFileTransfer),
+            _ => self.file_strip = None,
+        }
+        cx.focus_self(window);
+        cx.notify();
     }
 
     /// 送一条输入给对端。没连着就吞掉。
@@ -412,6 +623,7 @@ impl RdpPanel {
         self.phase = RdpPhase::Failed(strip_source_locations(&reason).into());
         self.inputs = None;
         self.stats = None;
+        self.file_strip = None;
         // 最后一帧还留在画布上，远端光标却不该跟着留：远端藏了光标时，
         // 鼠标在断开的画面上会整个消失。
         self.cursor = RemoteCursor::Default;
@@ -725,6 +937,60 @@ fn secure_attention_operations() -> Vec<Operation> {
     ]
 }
 
+/// 提示条上那句"对端复制了什么"。
+fn offer_label(offer: &RemoteFileOffer) -> String {
+    let name = offer
+        .names
+        .first()
+        .cloned()
+        .unwrap_or_else(|| t!("rdp.files_unnamed").to_string());
+    let size = human_size(offer.bytes);
+    match offer.names.len() {
+        0 | 1 => t!("rdp.files_offer_one", name => name, size => size),
+        count => t!("rdp.files_offer_many", name => name, count => count, size => size),
+    }
+    .to_string()
+}
+
+/// 一次保存收场之后说给用户的那句话。存成了带一颗"显示"，点了在系统的
+/// 文件管理器里指出存下的第一项（有这颗按钮的通知不会自己消失）。
+fn notify_file_outcome(outcome: FileTransferOutcome, window: &mut Window, cx: &mut App) {
+    let notification = match outcome {
+        FileTransferOutcome::Completed {
+            files,
+            bytes,
+            dir,
+            first,
+        } => {
+            let size = human_size(bytes);
+            let shown = dir.display().to_string();
+            let message = match (files, &first) {
+                (1, Some(first)) => {
+                    let name = first
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    t!("rdp.files_saved_one", name => name, size => size, dir => shown)
+                }
+                _ => t!("rdp.files_saved_many", files => files, size => size, dir => shown),
+            };
+            let reveal = first.unwrap_or(dir);
+            Notification::success(message).action(move |_, _, _| {
+                let reveal = reveal.clone();
+                Button::new("rdp-files-reveal")
+                    .xsmall()
+                    .label(t!("rdp.files_reveal"))
+                    .on_click(move |_, _, cx| cx.reveal_path(&reveal))
+            })
+        }
+        FileTransferOutcome::Cancelled => Notification::info(t!("rdp.files_cancelled")),
+        FileTransferOutcome::Failed(reason) => {
+            Notification::error(t!("rdp.files_failed", error => reason))
+        }
+    };
+    window.push_notification(notification, cx);
+}
+
 /// 信息栏。和 VNC 面板一样不复用 `SessionInfoBar`：那一栏的动作都是 SSH 的事。
 impl RdpPanel {
     fn render_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -895,6 +1161,130 @@ impl RdpPanel {
             "rdp-frame-scroll",
             "rdp-frame-scrollbar",
         )
+        .children(self.render_file_strip(cx))
+    }
+
+    /// 画面左上角那条文件提示（[`FileStrip`]）。
+    ///
+    /// 浮在画面**之上**（`absolute`）：顶下去会让画布变矮，远端分辨率跟着
+    /// 改一次。`occlude` 让盖住的那一小块鼠标不漏给远端 —— 点"保存"不能
+    /// 顺带在远端桌面上点一下。
+    fn render_file_strip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let strip = self.file_strip.as_ref()?;
+        let accent = palette::sky();
+        let id = cx.entity_id();
+        let base = h_flex()
+            .absolute()
+            .top_2()
+            .left_2()
+            .right_2()
+            .max_w(FILE_STRIP_MAX_WIDTH)
+            .h(FILE_STRIP_HEIGHT)
+            .occlude()
+            .items_center()
+            .gap_2()
+            .pl_3()
+            .pr_1()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .shadow_md()
+            .child(
+                Icon::new(AppIcon::Download)
+                    .with_size(px(14.))
+                    .text_color(accent),
+            );
+        let label = |text: String| div().flex_1().min_w_0().truncate().text_xs().child(text);
+
+        let strip = match strip {
+            FileStrip::Offer { offer, dir } => {
+                let target = dir.clone();
+                base.child(label(offer_label(offer)))
+                    .child(
+                        Button::new(("rdp-files-save", id))
+                            .primary()
+                            .xsmall()
+                            .label(t!("rdp.files_save"))
+                            .tooltip(t!("rdp.files_save_tooltip", dir => dir.display()))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.save_remote_files(target.clone(), window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new(("rdp-files-save-as", id))
+                            .ghost()
+                            .xsmall()
+                            .label(t!("rdp.files_save_as"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.save_remote_files_as(window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new(("rdp-files-dismiss", id))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .tooltip(t!("rdp.files_dismiss"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.dismiss_file_strip(window, cx)
+                            })),
+                    )
+            }
+            FileStrip::Saving(progress) => {
+                let fraction = progress
+                    .as_ref()
+                    .filter(|progress| progress.total > 0)
+                    .map(|progress| (progress.done as f32 / progress.total as f32).min(1.));
+                let name = match progress {
+                    Some(progress) if progress.file_count > 1 => format!(
+                        "{}/{} {}",
+                        progress.file_index, progress.file_count, progress.name
+                    ),
+                    Some(progress) => progress.name.clone(),
+                    None => t!("rdp.files_saving").to_string(),
+                };
+                let percent =
+                    fraction.map(|fraction| format!("{}%", (fraction * 100.).round() as u32));
+                let speed = progress
+                    .as_ref()
+                    .filter(|progress| progress.bytes_per_sec > 0)
+                    .map(|progress| format!("{}/s", human_size(progress.bytes_per_sec)));
+                base.child(label(name))
+                    .child(
+                        Progress::new(("rdp-files-progress", id))
+                            .xsmall()
+                            .w(px(120.))
+                            .value(fraction.unwrap_or(0.) * 100.)
+                            .loading(fraction.is_none())
+                            .color(accent),
+                    )
+                    .children(percent.map(|percent| {
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(palette::idle(cx))
+                            .child(percent)
+                    }))
+                    .children(speed.map(|speed| {
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(speed)
+                    }))
+                    .child(
+                        Button::new(("rdp-files-cancel", id))
+                            .ghost()
+                            .xsmall()
+                            .label(t!("rdp.files_cancel"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.dismiss_file_strip(window, cx)
+                            })),
+                    )
+            }
+        };
+        Some(strip.into_any_element())
     }
 }
 
@@ -1020,6 +1410,36 @@ mod tests {
         width: Pixels,
     }
 
+    /// 测试用的主机：剪贴板关着，面板不去盯本地剪贴板（测试机的剪贴板
+    /// 里有什么是没准的）。
+    fn test_host() -> Host {
+        Host {
+            id: "test".into(),
+            name: "test".into(),
+            kind: crate::host::HostKind::Rdp,
+            user: "test".into(),
+            hostname: "localhost".into(),
+            port: 3389,
+            platform: "".into(),
+            auth_method: crate::host::AuthMethod::Password,
+            password: "".into(),
+            key_content: "".into(),
+            key_passphrase: "".into(),
+            jump_host_id: None,
+            monitor_intervals: Default::default(),
+            forwards: Vec::new(),
+            tags: Vec::new(),
+            proxy: Default::default(),
+            vnc: Default::default(),
+            rdp: crate::rdp::RdpSettings {
+                clipboard: false,
+                ..Default::default()
+            },
+            serial: Default::default(),
+            shell_integration: false,
+        }
+    }
+
     impl Render for ViewportHarness {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div().w(self.width).h(px(650.)).child(self.panel.clone())
@@ -1035,32 +1455,7 @@ mod tests {
         let (inputs, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
         let (harness, cx) = cx.add_window_view(|window, cx| {
             let (dock, _skin) = DockSkin::dock_area("rdp-test-dock", Some(1), window, cx);
-            let host = Host {
-                id: "test".into(),
-                name: "test".into(),
-                kind: crate::host::HostKind::Rdp,
-                user: "test".into(),
-                hostname: "localhost".into(),
-                port: 3389,
-                platform: "".into(),
-                auth_method: crate::host::AuthMethod::Password,
-                password: "".into(),
-                key_content: "".into(),
-                key_passphrase: "".into(),
-                jump_host_id: None,
-                monitor_intervals: Default::default(),
-                forwards: Vec::new(),
-                tags: Vec::new(),
-                proxy: Default::default(),
-                vnc: Default::default(),
-                rdp: crate::rdp::RdpSettings {
-                    clipboard: false,
-                    ..Default::default()
-                },
-                serial: Default::default(),
-                shell_integration: false,
-            };
-            let panel = RdpPanel::new(host, dock.downgrade(), window, cx);
+            let panel = RdpPanel::new(test_host(), dock.downgrade(), window, cx);
             panel.update(cx, |panel, _| {
                 // 构造阶段没有拿整扇窗口的尺寸拨号。测试改接假输入通道，不连接网络。
                 assert!(panel.requested.is_none());
@@ -1175,10 +1570,11 @@ mod tests {
     /// macOS 与 Linux 的 gpui 报的是自然滚动方向（负）。反方向对称。
     #[test]
     fn the_wheel_direction_follows_the_client_system() {
-        let notch =
-            wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., LINES_PER_NOTCH)), 1.);
-        let back =
-            wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., -LINES_PER_NOTCH)), 1.);
+        let notch = wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., LINES_PER_NOTCH)), 1.);
+        let back = wheel_operations(
+            ScrollDelta::Lines(gpui_kit::point(0., -LINES_PER_NOTCH)),
+            1.,
+        );
         let one_notch = vec![(true, WHEEL_SIGN * WHEEL_UNITS_PER_CLICK)];
 
         assert_eq!(rotations(&notch), one_notch);
@@ -1205,14 +1601,10 @@ mod tests {
     /// 翻过去才对得上远端的"正数向右滚"。
     #[test]
     fn the_horizontal_wheel_shares_the_vertical_rules() {
-        let vertical = wheel_operations(
-            ScrollDelta::Lines(gpui_kit::point(0., LINES_PER_NOTCH)),
-            1.,
-        );
-        let horizontal = wheel_operations(
-            ScrollDelta::Lines(gpui_kit::point(LINES_PER_NOTCH, 0.)),
-            1.,
-        );
+        let vertical =
+            wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., LINES_PER_NOTCH)), 1.);
+        let horizontal =
+            wheel_operations(ScrollDelta::Lines(gpui_kit::point(LINES_PER_NOTCH, 0.)), 1.);
         assert_eq!(
             rotations(&vertical),
             vec![(true, WHEEL_SIGN * WHEEL_UNITS_PER_CLICK)]
@@ -1226,8 +1618,7 @@ mod tests {
     /// 触控板的像素增量按行高折算成行，走的还是垂直滚轮那条路。
     #[test]
     fn pixel_deltas_are_converted_through_the_row_height() {
-        let pixels =
-            wheel_operations(ScrollDelta::Pixels(gpui_kit::point(px(0.), px(60.))), 20.);
+        let pixels = wheel_operations(ScrollDelta::Pixels(gpui_kit::point(px(0.), px(60.))), 20.);
         let rows = wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., 3.)), 1.);
         assert_eq!(rotations(&pixels), rotations(&rows));
     }
@@ -1259,12 +1650,14 @@ mod tests {
     fn no_rotation_leaves_the_wire_range() {
         for lines in [-50., -3., -1., 0., 1., 3., 50.] {
             for row_height in [1., 20., 0.] {
-                for (is_vertical, units) in
-                    rotations(&wheel_operations(ScrollDelta::Lines(gpui_kit::point(
-                        lines, lines,
-                    )), row_height))
-                {
-                    assert!((-256..=255).contains(&units), "{is_vertical} {lines} → {units}");
+                for (is_vertical, units) in rotations(&wheel_operations(
+                    ScrollDelta::Lines(gpui_kit::point(lines, lines)),
+                    row_height,
+                )) {
+                    assert!(
+                        (-256..=255).contains(&units),
+                        "{is_vertical} {lines} → {units}"
+                    );
                 }
             }
         }
@@ -1370,5 +1763,119 @@ mod tests {
             remote_button(MouseButton::Right, false),
             Some(RdpMouseButton::Right)
         );
+    }
+
+    /// 文件提示条的一整圈：提示 → 保存 → 进度 → 完成（弹通知）→ 再提示 → 撤回。
+    /// 每一步都真的画一帧；提示条浮在画面之上，画布尺寸不变，不会因此向
+    /// 远端要一次新分辨率。外面套一层 `Root`：完成时要弹通知。
+    #[gpui_kit::test]
+    fn the_file_strip_walks_offer_save_progress_and_finish(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::component::Root;
+        use gpui_kit::component::dock::DockSkin;
+        use image::{Frame, RgbaImage};
+
+        cx.update(gpui_kit::init);
+        let (inputs, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut panel = None;
+        let (_root, cx) = cx.add_window_view(|window, cx| {
+            let (dock, _skin) = DockSkin::dock_area("rdp-strip-test-dock", Some(1), window, cx);
+            let rdp = RdpPanel::new(test_host(), dock.downgrade(), window, cx);
+            rdp.update(cx, |rdp, cx| {
+                rdp.phase = RdpPhase::Live;
+                rdp.inputs = Some(inputs);
+                rdp.requested = Some((640, 480));
+                rdp.set_frame(
+                    Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(64, 48))])),
+                    cx,
+                );
+            });
+            panel = Some(rdp.clone());
+            let harness = cx.new(|_| ViewportHarness {
+                panel: rdp,
+                width: px(900.),
+            });
+            Root::new(harness, window, cx)
+        });
+        let panel = panel.expect("面板刚建出来");
+        let draw = |cx: &mut gpui_kit::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.run_until_parked();
+        };
+        let event = |cx: &mut gpui_kit::VisualTestContext, event: FileCopyEvent| {
+            cx.update(|window, cx| {
+                panel.update(cx, |panel, cx| panel.on_file_event(event, window, cx))
+            });
+        };
+        let drain = |input_rx: &mut tokio::sync::mpsc::UnboundedReceiver<RdpInput>| {
+            std::iter::from_fn(|| input_rx.try_recv().ok()).collect::<Vec<_>>()
+        };
+        draw(cx);
+        drain(&mut input_rx);
+
+        let offer = RemoteFileOffer {
+            names: vec!["报告.pdf".into(), "图".into()],
+            files: 5,
+            bytes: 3 << 20,
+        };
+        event(cx, FileCopyEvent::Offered(offer.clone()));
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| matches!(
+            &panel.file_strip,
+            Some(FileStrip::Offer { offer: shown, .. }) if *shown == offer
+        )));
+        assert!(
+            !drain(&mut input_rx)
+                .iter()
+                .any(|input| matches!(input, RdpInput::Resize { .. })),
+            "提示条浮在画面之上，不该改变画布尺寸"
+        );
+
+        let dir = std::env::temp_dir();
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.save_remote_files(dir.clone(), window, cx)
+            })
+        });
+        draw(cx);
+        assert!(matches!(
+            drain(&mut input_rx).as_slice(),
+            [RdpInput::SaveRemoteFiles(target)] if *target == dir
+        ));
+
+        event(
+            cx,
+            FileCopyEvent::Progress(FileTransferProgress {
+                name: "图/1.png".into(),
+                file_index: 2,
+                file_count: 5,
+                done: 1 << 20,
+                total: 3 << 20,
+                bytes_per_sec: 512 << 10,
+            }),
+        );
+        draw(cx);
+        // 存的时候对端又复制了东西：这次存完之前不换提示。
+        event(cx, FileCopyEvent::Withdrawn);
+        assert!(panel.read_with(cx, |panel, _| matches!(
+            panel.file_strip,
+            Some(FileStrip::Saving(Some(_)))
+        )));
+
+        event(
+            cx,
+            FileCopyEvent::Finished(FileTransferOutcome::Completed {
+                files: 5,
+                bytes: 3 << 20,
+                dir: dir.clone(),
+                first: Some(dir.join("报告.pdf")),
+            }),
+        );
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.file_strip.is_none()));
+
+        event(cx, FileCopyEvent::Offered(offer));
+        event(cx, FileCopyEvent::Withdrawn);
+        draw(cx);
+        assert!(panel.read_with(cx, |panel, _| panel.file_strip.is_none()));
     }
 }

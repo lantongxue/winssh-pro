@@ -222,7 +222,9 @@ encoding_rs = "0.8"
 # 它的剪贴板在 Windows 上用 Win32 剪贴板、其余平台是 Stub，接不到 GPUI 的
 # 剪贴板；而且它每帧把整张图再转一遍 u32。我们自己驱动状态机（照
 # `src/rdp/session.rs` 的模块文档），剪贴板走 `CliprdrBackend` 桥到 GPUI，
-# 和 VNC 那条路是一个形状。
+# 和 VNC 那条路是一个形状。剪贴板里的文件复制（`FileGroupDescriptorW` 文件
+# 流、锁与超时、路径消毒）用的是 `ironrdp-cliprdr` 0.7 自带的那套状态机 ——
+# lamco-rdp 贡献给上游的实现；我们只接本地落盘与读文件，见 `src/rdp/file_copy.rs`。
 #
 # 不开任何 feature 时门面连 pdu/core 都没有，所以 core 与 pdu 要点名带上；
 # `displaycontrol` 是动态改分辨率那条 DVC（窗口拖大拖小用）。
