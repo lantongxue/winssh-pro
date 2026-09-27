@@ -155,6 +155,7 @@ mod tests {
                     vnc: Default::default(),
                     rdp: Default::default(),
                     serial: Default::default(),
+                    easytier: Default::default(),
                     kind: crate::host::HostKind::Ssh,
                     name: "测试机".into(),
                     user: "root".into(),

@@ -51,6 +51,7 @@ const SCHEMA: [&str; 10] = [
         vnc_settings TEXT    NOT NULL DEFAULT '',
         rdp_settings TEXT    NOT NULL DEFAULT '',
         serial_settings TEXT NOT NULL DEFAULT '',
+        easytier_settings TEXT NOT NULL DEFAULT '',
         shell_integration INTEGER NOT NULL DEFAULT 0
     )",
     // 保险箱。和 hosts 之间没有外键：主机存的是凭据的内容本身，不是一个指向
@@ -153,7 +154,7 @@ const SCHEMA: [&str; 10] = [
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 15] = [
+const MIGRATIONS: [&str; 16] = [
     // 连接类型（见 [`crate::host::HostKind`]）。老库补出来的是 `ssh` ——
     // 这一列出现之前存的每一台主机都是 SSH，出厂值不改变任何人的行为。
     "ALTER TABLE hosts ADD COLUMN kind TEXT NOT NULL DEFAULT 'ssh'",
@@ -197,6 +198,10 @@ const MIGRATIONS: [&str; 15] = [
     // 115200 8N1、无流控、DTR/RTS 不动、不回显，这一列出现之前根本没有
     // 串口主机，老库补出来不影响任何一台主机现在的连法。
     "ALTER TABLE hosts ADD COLUMN serial_settings TEXT NOT NULL DEFAULT ''",
+    // 组网配置（见 [`crate::easytier::EasyTierSettings`]）。空串就是出厂档 ——
+    // 用户态 SOCKS5、DHCP、不监听、加密开，这一列出现之前根本没有组网主机，
+    // 老库补出来不影响任何一台主机现在的连法。
+    "ALTER TABLE hosts ADD COLUMN easytier_settings TEXT NOT NULL DEFAULT ''",
 ];
 
 /// 数据层专用的 tokio runtime，进程生命周期内只建一次。

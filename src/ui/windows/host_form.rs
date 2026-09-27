@@ -23,7 +23,8 @@
 //! 记录还不存在，改不了即存，所以底部留一个显式的保存按钮。
 
 use gpui_kit::component::{
-    ActiveTheme as _, Colorize as _, Icon, IndexPath, Sizable as _, StyledExt as _, WindowExt as _,
+    ActiveTheme as _, Colorize as _, Icon, IconName, IndexPath, Sizable as _, StyledExt as _,
+    WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     group_box::GroupBoxVariant,
     h_flex,
@@ -41,6 +42,9 @@ use gpui_kit::{
 
 use crate::{
     credential::{Credential, CredentialKind},
+    easytier::{
+        DEFAULT_LISTEN_PORT, DEFAULT_SOCKS5_PORT, EasyTierAccess, EasyTierSettings, split_peers,
+    },
     host::{AuthMethod, Host, HostDraft, HostGroup, HostKind},
     proxy::{self, HostProxy, ProxyConfig, ProxyMode},
     rdp::{RdpColorDepth, RdpPerformance, RdpSecurity, RdpSettings},
@@ -60,8 +64,9 @@ use crate::{
 };
 use rust_i18n::t;
 
-/// 连接类型在下拉里的五档，顺序即 [`crate::host::HostKind`] 的编号顺序：
-/// 0 SSH、1 VNC、2 RDP、3 Telnet、4 Serial。和认证方式一样按**下标**判断，不比文案。
+/// 连接类型在下拉里的六档，顺序即 [`crate::host::HostKind`] 的编号顺序：
+/// 0 SSH、1 VNC、2 RDP、3 Telnet、4 Serial、5 EasyTier。和认证方式一样按**下标**
+/// 判断，不比文案。
 fn host_kinds() -> Vec<SharedString> {
     HostKind::ALL.map(|kind| kind.label()).to_vec()
 }
@@ -145,6 +150,21 @@ fn serial_port_picks(ports: &[SharedString]) -> Vec<SharedString> {
     let mut items = vec![SharedString::from(t!("host_form.serial_pick_none"))];
     items.extend(ports.iter().cloned());
     items
+}
+
+/// EasyTier 接入方式的两档，顺序即 [`EasyTierAccess::ALL`]：用户态 SOCKS5 / 虚拟网卡。
+fn easytier_access_choices() -> Vec<SharedString> {
+    EasyTierAccess::ALL.map(|access| access.label()).to_vec()
+}
+
+/// 端口那一格读回来：空着就是这一档的出厂端口，敲了个非数字就是 0 ——
+/// 0 会被 [`EasyTierSettings::check`] 拦下来说清楚，不替用户猜一个数。
+fn port_or(input: &Entity<InputState>, default: u16, cx: &App) -> u16 {
+    let text = input.read(cx).value().trim().to_string();
+    match text.is_empty() {
+        true => default,
+        false => text.parse::<u16>().unwrap_or_default(),
+    }
 }
 
 /// 开/关两格（RDP 的剪贴板与压缩用）。0 是开，1 是关 —— 和共享档同一个
@@ -251,7 +271,7 @@ type EditedHost = (Host, SharedString);
 pub struct HostForm {
     name: Entity<InputState>,
     group: Entity<InputState>,
-    /// 连接类型：SSH / VNC / RDP / Telnet / 串口。它决定这一台主机怎么连、
+    /// 连接类型：SSH / VNC / RDP / Telnet / 串口 / EasyTier。它决定这一台主机怎么连、
     /// 表单认哪几格，以及落库后 [`crate::ui::views::HostExplorerView::open_host`]
     /// 开哪种面板。
     kind: Entity<SelectState<Vec<SharedString>>>,
@@ -311,6 +331,20 @@ pub struct HostForm {
     /// 「检测到的串口」下拉：选中即把设备路径写进「串口设备」那格
     ///（[`Self::apply_serial_port_pick`]）。
     serial_port_pick: Entity<SelectState<Vec<SharedString>>>,
+    /// EasyTier 那一页：节点地址（一行一个）、虚拟地址、节点名、接入方式与
+    /// SOCKS5 端口、监听开关与端口、选路、加密。网络名称复用上面那格
+    /// `hostname`、网络密钥复用 `password`（标签跟着连接类型换）。只有连接
+    /// 类型是 EasyTier 才画出来 —— 状态常驻，换走再换回来不丢。
+    easytier_peers: Entity<TextareaState>,
+    easytier_ipv4: Entity<InputState>,
+    easytier_node_name: Entity<InputState>,
+    easytier_access: Entity<SelectState<Vec<SharedString>>>,
+    easytier_socks5_port: Entity<InputState>,
+    /// 开/关两格（0 开 1 关），下同。
+    easytier_listen: Entity<SelectState<Vec<SharedString>>>,
+    easytier_listen_port: Entity<InputState>,
+    easytier_latency_first: Entity<SelectState<Vec<SharedString>>>,
+    easytier_encryption: Entity<SelectState<Vec<SharedString>>>,
     proxy_jump: Entity<SelectState<Vec<SharedString>>>,
     /// 走不走 SOCKS5 代理：不使用 / 跟随全局 / 配置代理，见 [`proxy_modes`]。
     ///
@@ -683,6 +717,71 @@ impl HostForm {
             },
         )
         .detach();
+        let initial_easytier = match editing {
+            Some((host, _)) => host.easytier.clone(),
+            None => EasyTierSettings::default(),
+        };
+        let easytier_peers = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .soft_wrap(false)
+                .placeholder(t!("host_form.easytier_peers_placeholder"))
+                .default_value(initial_easytier.peers.join("\n"))
+        });
+        let easytier_ipv4 = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("host_form.easytier_ipv4_placeholder"))
+                .default_value(initial_easytier.ipv4.clone())
+        });
+        let easytier_node_name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("host_form.easytier_node_name_placeholder"))
+                .default_value(initial_easytier.node_name.clone())
+        });
+        let easytier_access = cx.new(|cx| {
+            SelectState::new(
+                easytier_access_choices(),
+                Some(IndexPath::new(initial_easytier.access.index())),
+                window,
+                cx,
+            )
+        });
+        let easytier_socks5_port = cx.new(|cx| {
+            InputState::new(window, cx).default_value(initial_easytier.socks5_port.to_string())
+        });
+        // 开/关档：0 开、1 关，所以取反。
+        let easytier_listen = cx.new(|cx| {
+            SelectState::new(
+                toggle_choices(),
+                Some(IndexPath::new(usize::from(!initial_easytier.listen))),
+                window,
+                cx,
+            )
+        });
+        let easytier_listen_port = cx.new(|cx| {
+            InputState::new(window, cx).default_value(initial_easytier.listen_port.to_string())
+        });
+        let easytier_latency_first = cx.new(|cx| {
+            SelectState::new(
+                toggle_choices(),
+                Some(IndexPath::new(usize::from(!initial_easytier.latency_first))),
+                window,
+                cx,
+            )
+        });
+        let easytier_encryption = cx.new(|cx| {
+            SelectState::new(
+                toggle_choices(),
+                Some(IndexPath::new(usize::from(!initial_easytier.encryption))),
+                window,
+                cx,
+            )
+        });
+        // 接入方式与监听开关一换，端口那一格露不露出来得重新算 —— 交给下一次渲染。
+        for select in [&easytier_access, &easytier_listen] {
+            cx.subscribe(select, |_, _, _: &SelectEvent<Vec<SharedString>>, cx| cx.notify())
+                .detach();
+        }
+
         let kind = cx.new(|cx| {
             SelectState::new(
                 host_kinds(),
@@ -817,6 +916,15 @@ impl HostForm {
             serial_local_echo,
             serial_ports,
             serial_port_pick,
+            easytier_peers,
+            easytier_ipv4,
+            easytier_node_name,
+            easytier_access,
+            easytier_socks5_port,
+            easytier_listen,
+            easytier_listen_port,
+            easytier_latency_first,
+            easytier_encryption,
             proxy_jump,
             proxy_mode,
             proxy_host,
@@ -957,7 +1065,7 @@ impl HostForm {
 
     /// 新建主机在各档连接类型下的出厂标签。
     ///
-    /// 只放操作系统这类分类标签；协议（SSH / VNC / RDP / Telnet / 串口）
+    /// 只放操作系统这类分类标签；协议（SSH / VNC / RDP / Telnet / 串口 / EasyTier）
     /// 不再当标签存 ——
     /// 卡片直接从 `kind` 画成一枚徽标，跟着换型走，不会因为复制、改档而对不上。
     fn default_tags(kind: HostKind) -> Vec<SharedString> {
@@ -971,6 +1079,8 @@ impl HostForm {
             // 串口连的可能是任何东西（开发板、交换机 console、PLC），
             // 不给默认标签。
             HostKind::Serial => vec![],
+            // 一张网里什么机器都有，不给默认标签。
+            HostKind::EasyTier => vec![],
         }
     }
 
@@ -1019,6 +1129,30 @@ impl HostForm {
         }
     }
 
+    /// EasyTier 那一页现在的样子折回一份 [`EasyTierSettings`]。下拉按下标判断，
+    /// 不比文案；节点地址按行切开、剪掉空行，校验留给 [`EasyTierSettings::check`]。
+    fn selected_easytier(&self, cx: &App) -> EasyTierSettings {
+        let row = |select: &Entity<SelectState<Vec<SharedString>>>| {
+            select
+                .read(cx)
+                .selected_index(cx)
+                .map(|index| index.row)
+                .unwrap_or_default()
+        };
+        EasyTierSettings {
+            peers: split_peers(&self.easytier_peers.read(cx).value()),
+            ipv4: self.easytier_ipv4.read(cx).value().trim().to_string(),
+            node_name: self.easytier_node_name.read(cx).value().trim().to_string(),
+            access: EasyTierAccess::from_index(row(&self.easytier_access)),
+            socks5_port: port_or(&self.easytier_socks5_port, DEFAULT_SOCKS5_PORT, cx),
+            // 开/关两格，0 就是开 —— 和 RDP 的剪贴板同一个写法。
+            listen: row(&self.easytier_listen) == 0,
+            listen_port: port_or(&self.easytier_listen_port, DEFAULT_LISTEN_PORT, cx),
+            latency_first: row(&self.easytier_latency_first) == 0,
+            encryption: row(&self.easytier_encryption) == 0,
+        }
+    }
+
     /// 换连接类型之后跟进几处出厂值：
     ///
     /// - 「主机名」/「串口设备」两格的提示语跟着类型换 —— 它说的是"这一格
@@ -1036,6 +1170,7 @@ impl HostForm {
         // `/dev/cu.usbserial-0001` 长什么样时，这一行就是说明书。
         let placeholder = match kind {
             HostKind::Serial => t!("host_form.serial_device_placeholder"),
+            HostKind::EasyTier => t!("host_form.easytier_network_placeholder"),
             _ => t!("host_form.hostname_placeholder"),
         };
         self.hostname.update(cx, |state, cx| {
@@ -1114,13 +1249,18 @@ impl HostForm {
             group
         };
 
-        let port = self
-            .port
-            .read(cx)
-            .value()
-            .trim()
-            .parse::<u16>()
-            .unwrap_or_else(|_| kind.default_port());
+        // 组网主机没有端口这一格（监听端口在「组网」页里），存 0 —— 不管
+        // 那格隐藏起来的输入框里还留着换档前的什么数。
+        let port = match kind {
+            HostKind::EasyTier => 0,
+            _ => self
+                .port
+                .read(cx)
+                .value()
+                .trim()
+                .parse::<u16>()
+                .unwrap_or_else(|_| kind.default_port()),
+        };
 
         let platform = self
             .platform
@@ -1136,9 +1276,9 @@ impl HostForm {
         // Telnet 也没有协议级认证：账号密码都是对端 shell 里现打的，这里
         // 存下来只当"备忘"，落库走 Password 那一档即可，界面不画下拉。
         // 串口更没有认证这一层：设备那头若弹 login，那是它自己的 shell 在
-        // 说话，账号密码同样只是备忘。
+        // 说话，账号密码同样只是备忘。EasyTier 的"密码"是网络密钥，同一格落库。
         let auth_method = if kind.is_remote_desktop()
-            || matches!(kind, HostKind::Telnet | HostKind::Serial)
+            || matches!(kind, HostKind::Telnet | HostKind::Serial | HostKind::EasyTier)
         {
             AuthMethod::Password
         } else {
@@ -1177,6 +1317,13 @@ impl HostForm {
             proxy.config.check()?;
         }
 
+        // 组网那一页同理：节点地址认不得、端口不是端口，存下来也进不了网。
+        // 只在连接类型是 EasyTier 时校验 —— 别的类型不看这一页。
+        let easytier = self.selected_easytier(cx);
+        if kind == HostKind::EasyTier {
+            easytier.check()?;
+        }
+
         Ok((
             group.into(),
             HostDraft {
@@ -1196,6 +1343,7 @@ impl HostForm {
                 vnc: self.selected_vnc(cx),
                 rdp: self.selected_rdp(cx),
                 serial: self.selected_serial(cx),
+                easytier,
             },
         ))
     }
@@ -1312,13 +1460,25 @@ impl HostForm {
     /// [`crate::host::Host::address`]），下面再接一行设备枚举下拉
     ///（[`Self::render_serial_pick_row`]）。
     fn render_address_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.selected_kind(cx) == HostKind::Serial {
-            return field(
-                t!("host_form.field_serial_device").into(),
-                Input::new(&self.hostname).font_family("monospace").w_full(),
-                cx,
-            )
-            .into_any_element();
+        match self.selected_kind(cx) {
+            HostKind::Serial => {
+                return field(
+                    t!("host_form.field_serial_device").into(),
+                    Input::new(&self.hostname).font_family("monospace").w_full(),
+                    cx,
+                )
+                .into_any_element();
+            }
+            // 组网主机的"地址"是网络名称：一张网没有主机名也没有端口。
+            HostKind::EasyTier => {
+                return field(
+                    t!("host_form.field_easytier_network").into(),
+                    Input::new(&self.hostname).font_family("monospace").w_full(),
+                    cx,
+                )
+                .into_any_element();
+            }
+            _ => {}
         }
         two_field_row(
             field(
@@ -1831,6 +1991,159 @@ impl HostForm {
             )
     }
 
+    /// 网络密钥那一段：保险箱取用下拉（有才画）＋一个打码的输入框。落在
+    /// `hosts.password` 那一格，和别的协议的登录密码同一列 —— 保险箱、备份都
+    /// 照旧认它。
+    fn render_network_secret(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_3()
+            .w_full()
+            .children(self.render_vault_picker(CredentialKind::Password, cx))
+            .child(field(
+                t!("host_form.field_easytier_secret").into(),
+                Input::new(&self.password)
+                    .font_family("monospace")
+                    .content_type(InputContentType::Password)
+                    .mask_toggle()
+                    .w_full(),
+                cx,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(t!("host_form.easytier_secret_hint"))),
+            )
+    }
+
+    /// 「组网」页的第一段：去哪儿找这张网。一行一个节点地址。
+    fn render_easytier_peers(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_1()
+            .w_full()
+            .child(field_label(t!("host_form.field_easytier_peers").into(), cx))
+            .child(
+                Textarea::new(&self.easytier_peers)
+                    .h(px(96.))
+                    .font_family("monospace")
+                    .text_size(px(11.))
+                    .w_full(),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(t!("host_form.easytier_peers_hint"))),
+            )
+    }
+
+    /// 「组网」页的第二段：本机在网里叫什么、用什么地址、怎么接进来、开不开
+    /// 监听。端口那两格跟着各自的开关露出来 —— 用不上的格子不摆。
+    fn render_easytier_local(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let settings = self.selected_easytier(cx);
+        v_flex()
+            .gap_3()
+            .w_full()
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_easytier_ipv4").into(),
+                    Input::new(&self.easytier_ipv4).font_family("monospace").w_full(),
+                    cx,
+                ),
+                1.,
+                field(
+                    t!("host_form.field_easytier_node_name").into(),
+                    Input::new(&self.easytier_node_name).w_full(),
+                    cx,
+                ),
+                1.,
+            ))
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_easytier_access").into(),
+                    Select::new(&self.easytier_access).w_full(),
+                    cx,
+                ),
+                1.,
+                match settings.access {
+                    EasyTierAccess::Socks5 => field(
+                        t!("host_form.field_easytier_socks5_port").into(),
+                        Input::new(&self.easytier_socks5_port)
+                            .font_family("monospace")
+                            .w_full(),
+                        cx,
+                    )
+                    .into_any_element(),
+                    EasyTierAccess::Tun => div().into_any_element(),
+                },
+                1.,
+            ))
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_easytier_listen").into(),
+                    Select::new(&self.easytier_listen).w_full(),
+                    cx,
+                ),
+                1.,
+                match settings.listen {
+                    true => field(
+                        t!("host_form.field_easytier_listen_port").into(),
+                        Input::new(&self.easytier_listen_port)
+                            .font_family("monospace")
+                            .w_full(),
+                        cx,
+                    )
+                    .into_any_element(),
+                    false => div().into_any_element(),
+                },
+                1.,
+            ))
+            .when(settings.listen, |el| {
+                el.child(
+                    div()
+                        .text_xs()
+                        .text_color(palette::idle(cx))
+                        .child(SharedString::from(t!("host_form.easytier_listen_hint"))),
+                )
+            })
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(match settings.access {
+                        EasyTierAccess::Socks5 => t!("host_form.easytier_access_socks5_hint"),
+                        EasyTierAccess::Tun => t!("host_form.easytier_access_tun_hint"),
+                    })),
+            )
+    }
+
+    /// 「组网」页的第三段：选路与加密。两格都得和网里别的节点谈得拢。
+    fn render_easytier_routing(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_3()
+            .w_full()
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_easytier_latency_first").into(),
+                    Select::new(&self.easytier_latency_first).w_full(),
+                    cx,
+                ),
+                1.,
+                field(
+                    t!("host_form.field_easytier_encryption").into(),
+                    Select::new(&self.easytier_encryption).w_full(),
+                    cx,
+                ),
+                1.,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(t!("host_form.easytier_routing_hint"))),
+            )
+    }
+
     fn render_tag_chip(
         &self,
         ix: usize,
@@ -1909,6 +2222,10 @@ impl Render for HostForm {
             .child(self.render_proxy_section(cx))
             .child(self.render_vnc_section(cx))
             .child(self.render_serial_section(cx))
+            .child(self.render_network_secret(cx))
+            .child(self.render_easytier_peers(cx))
+            .child(self.render_easytier_local(cx))
+            .child(self.render_easytier_routing(cx))
             .child(self.render_tags_row(cx))
     }
 }
@@ -2101,11 +2418,12 @@ impl HostFormWindow {
                 group_ix: None,
             })
             .page(self.connection_page(kind))
-            .page(self.auth_page());
+            .page(self.auth_page(kind));
         // 串口是本机设备：没有跳板机也没有 SOCKS5 代理（那是网络协议才有的
-        // 两个概念），「高级」页整个不挂；别的类型照旧。
+        // 两个概念），「高级」页整个不挂；EasyTier 也不挂 —— 它自己就是去连
+        // 别的节点的那一层，不经跳板机，也不经上游代理。别的类型照旧。
         let settings = match kind {
-            HostKind::Serial => settings,
+            HostKind::Serial | HostKind::EasyTier => settings,
             _ => settings.page(self.advanced_page()),
         };
         // 协议专属配置是一级类目，插在「高级」与「标签」之间：
@@ -2114,6 +2432,7 @@ impl HostFormWindow {
             HostKind::Vnc => settings.page(self.vnc_page()),
             HostKind::Rdp => settings.page(self.rdp_page()),
             HostKind::Serial => settings.page(self.serial_page()),
+            HostKind::EasyTier => settings.page(self.easytier_page()),
             // Telnet 没有独立的"协议参数"页 —— 协商是 [`crate::telnet`] 内部
             // 固定的那几档（ECHO / SGA / NAWS / TTYPE），不给用户调；
             // 未来要接 `NEW-ENVIRON` 或 LINEMODE 时在这里加一页。
@@ -2145,20 +2464,24 @@ impl HostFormWindow {
             )
     }
 
-    fn auth_page(&self) -> SettingPage {
+    fn auth_page(&self, kind: HostKind) -> SettingPage {
+        let group = SettingGroup::new().title(t!("host_form.group_auth"));
+        // 组网主机的"认证"就是一把网络密钥：没有账号、也没有密钥/Agent 那几档。
+        let group = match kind {
+            HostKind::EasyTier => group
+                .item(self.row(|this, cx| this.render_network_secret(cx).into_any_element())),
+            _ => group
+                .item(self.row(|this, cx| this.render_auth_row(cx).into_any_element()))
+                .item(self.row(|this, cx| {
+                    this.render_auth_detail(cx)
+                        .unwrap_or_else(|| div().into_any_element())
+                })),
+        };
         SettingPage::new(t!("host_form.page_auth"))
             .icon(AppIcon::KeyRound)
             .default_open(true)
             .resettable(false)
-            .group(
-                SettingGroup::new()
-                    .title(t!("host_form.group_auth"))
-                    .item(self.row(|this, cx| this.render_auth_row(cx).into_any_element()))
-                    .item(self.row(|this, cx| {
-                        this.render_auth_detail(cx)
-                            .unwrap_or_else(|| div().into_any_element())
-                    })),
-            )
+            .group(group)
     }
 
     fn advanced_page(&self) -> SettingPage {
@@ -2212,6 +2535,32 @@ impl HostFormWindow {
             .group(
                 SettingGroup::new()
                     .item(self.row(|this, cx| this.render_serial_section(cx).into_any_element())),
+            )
+    }
+
+    /// EasyTier 专属配置页：一级类目，三组 —— 去哪儿找网、本机怎么进、
+    /// 选路与加密。和串口页不同，它字段多到值得在侧栏里分出二级条目。
+    fn easytier_page(&self) -> SettingPage {
+        SettingPage::new(t!("host_form.page_easytier"))
+            .icon(IconName::Network)
+            .default_open(true)
+            .resettable(false)
+            .group(
+                SettingGroup::new()
+                    .title(t!("host_form.group_easytier_peers"))
+                    .item(self.row(|this, cx| this.render_easytier_peers(cx).into_any_element())),
+            )
+            .group(
+                SettingGroup::new()
+                    .title(t!("host_form.group_easytier_local"))
+                    .item(self.row(|this, cx| this.render_easytier_local(cx).into_any_element())),
+            )
+            .group(
+                SettingGroup::new()
+                    .title(t!("host_form.group_easytier_routing"))
+                    .item(
+                        self.row(|this, cx| this.render_easytier_routing(cx).into_any_element()),
+                    ),
             )
     }
 
@@ -2327,6 +2676,7 @@ impl HostFormWindow {
                         updated_host.proxy = draft.proxy.clone();
                         updated_host.vnc = draft.vnc;
                 updated_host.rdp = draft.rdp.clone();
+                        updated_host.easytier = draft.easytier.clone();
                         service
                             .update_host(&host.id, &group, draft)
                             .await
@@ -2410,6 +2760,7 @@ mod tests {
                 vnc: VncSettings::default(),
                 rdp: RdpSettings::default(),
                 serial: SerialSettings::default(),
+                easytier: crate::easytier::EasyTierSettings::default(),
                 shell_integration: false,
             },
             "生产环境".into(),
@@ -2448,10 +2799,38 @@ mod tests {
                     rts: SerialLineState::Assert,
                     local_echo: true,
                 },
+                easytier: EasyTierSettings::default(),
                 shell_integration: false,
             },
             "生产环境".into(),
         )
+    }
+
+    /// 一台 EasyTier 主机：网络名称在 `hostname`、密钥在 `password`，
+    /// 组网那一页是拧过的一份。
+    fn easytier_host() -> EditedHost {
+        let (mut host, group) = serial_host();
+        host.id = "home-net".into();
+        host.name = "家里".into();
+        host.kind = HostKind::EasyTier;
+        host.hostname = "home-net".into();
+        host.password = " s3cret ".into();
+        host.serial = SerialSettings::default();
+        host.easytier = EasyTierSettings {
+            peers: vec![
+                "tcp://public.easytier.cn:11010".into(),
+                "udp://10.0.0.1:11010".into(),
+            ],
+            ipv4: "10.144.144.10/24".into(),
+            node_name: "laptop".into(),
+            access: EasyTierAccess::Tun,
+            socks5_port: 7891,
+            listen: true,
+            listen_port: 11020,
+            latency_first: true,
+            encryption: false,
+        };
+        (host, group)
     }
 
     /// 保险箱里的一条凭据，用来喂"从保险箱选取"那个下拉。
@@ -2576,6 +2955,92 @@ mod tests {
         assert_eq!(draft.port, 0, "串口没有端口这一说");
         assert_eq!(draft.auth_method, AuthMethod::Password);
         assert_eq!(draft.serial, expected);
+    }
+
+    /// 组网主机走表单这一趟：网络名称落在 `hostname`、密钥原样落在 `password`
+    /// （不 trim），组网那一页原样折回；没有端口这一说，认证固定压到密码档。
+    #[gpui_kit::test]
+    fn an_easytier_host_drafts_its_network(cx: &mut gpui_kit::TestAppContext) {
+        let (edited, _) = easytier_host();
+        let expected = edited.easytier.clone();
+        let (form, cx) = draw_form(cx, Some(easytier_host()));
+
+        let (_, draft) = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect("这张表填得是全的");
+        assert_eq!(draft.kind, HostKind::EasyTier);
+        assert_eq!(draft.hostname, "home-net");
+        assert_eq!(draft.password, " s3cret ", "密钥里的空格是密钥的一部分");
+        assert_eq!(draft.port, 0, "组网没有端口这一格");
+        assert_eq!(draft.auth_method, AuthMethod::Password);
+        assert!(draft.user.is_empty(), "组网不要账号");
+        assert_eq!(draft.easytier, expected);
+    }
+
+    /// 组网那一页填得不对（EasyTier 不认的协议、端口不是端口），表单就该拦下来；
+    /// EasyTier 认的协议（ws / wss / quic / wg / txt……）一条都不该被拦。
+    #[gpui_kit::test]
+    fn a_broken_easytier_page_is_refused(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form(cx, Some(easytier_host()));
+
+        form.update_in(cx, |this, window, cx| {
+            this.easytier_peers.update(cx, |state, cx| {
+                state.set_value(
+                    "wss://example.com\nquic://example.com:11012\nwg://10.0.0.1:11011\ntxt://et.example.com",
+                    window,
+                    cx,
+                )
+            });
+        });
+        let (_, draft) = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect("EasyTier 认的协议都能存");
+        assert_eq!(draft.easytier.peers.len(), 4);
+
+        form.update_in(cx, |this, window, cx| {
+            this.easytier_peers.update(cx, |state, cx| {
+                state.set_value("faketcp://example.com:11013", window, cx)
+            });
+        });
+        let error = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect_err("faketcp 这一版没编进来");
+        assert!(
+            error.contains("faketcp://example.com:11013"),
+            "要把哪一条不对说出来：{error}"
+        );
+
+        form.update_in(cx, |this, window, cx| {
+            this.easytier_peers.update(cx, |state, cx| {
+                state.set_value("tcp://10.0.0.1:11010", window, cx)
+            });
+            this.easytier_listen_port
+                .update(cx, |state, cx| state.set_value("不是端口", window, cx));
+        });
+        assert!(
+            form.read_with(cx, |this, cx| this.build_draft(cx)).is_err(),
+            "监听开着，端口却不是端口"
+        );
+    }
+
+    /// 组网那一页两种接入方式、监听开关都画一遍：端口格跟着开关露出来，
+    /// 深 builder 链上的错只有真的走一趟才掉得出来。
+    #[gpui_kit::test]
+    fn every_easytier_layout_draws_all_the_way_through(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form(cx, Some(easytier_host()));
+
+        for (access, listen) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+            form.update_in(cx, |this, window, cx| {
+                this.easytier_access.update(cx, |state, cx| {
+                    state.set_selected_index(Some(IndexPath::new(access)), window, cx)
+                });
+                this.easytier_listen.update(cx, |state, cx| {
+                    state.set_selected_index(Some(IndexPath::new(listen)), window, cx)
+                });
+            });
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
     }
 
     /// 保险箱里一条都没有时那个下拉整个不画 —— 一个永远只有"还没挑"

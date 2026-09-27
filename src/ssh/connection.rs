@@ -415,6 +415,7 @@ mod tests {
             vnc: Default::default(),
             rdp: Default::default(),
             serial: Default::default(),
+            easytier: Default::default(),
             kind: crate::host::HostKind::Ssh,
             id: "test-unreachable".into(),
             name: "unreachable".into(),

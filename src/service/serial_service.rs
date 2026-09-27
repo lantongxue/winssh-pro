@@ -71,6 +71,7 @@ mod tests {
     fn missing_host() -> Host {
         Host {
             serial: Default::default(),
+            easytier: Default::default(),
             kind: HostKind::Serial,
             id: "test-serial-missing".into(),
             name: "serial-missing".into(),

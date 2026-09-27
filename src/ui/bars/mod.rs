@@ -20,4 +20,5 @@ pub use session_status::SessionStatusBar;
 
 // 桌面面板（RDP/VNC）信息栏复用终端状态栏那一套"标签 + 定宽值 + 配色"的格子，
 // 免得同一个数字在两处画成两副样子（见 [`session_status::link_stats_group`]）。
-pub(crate) use session_status::link_stats_group;
+// 组网面板的节点表同理：速率的换算与时延的配色都借这边那一份。
+pub(crate) use session_status::{format_rate, latency_color, link_stats_group};

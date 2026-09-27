@@ -116,6 +116,7 @@ impl HostService {
                         vnc_settings: Set(crate::vnc::encode(&draft.vnc)),
                         rdp_settings: Set(crate::rdp::encode(&draft.rdp)),
                         serial_settings: Set(crate::serial::encode(&draft.serial)),
+                        easytier_settings: Set(crate::easytier::encode(&draft.easytier)),
                         // shell 集成同理不在表单里，新主机一律不装 ——
                         // 往对端打字这件事只能由用户自己在命令历史那扇窗里开
                         // （[`Self::update_shell_integration`]）。
@@ -145,6 +146,7 @@ impl HostService {
                 vnc: draft.vnc,
                 rdp: draft.rdp,
                 serial: draft.serial,
+                easytier: draft.easytier,
                 shell_integration: false,
             })
         })
@@ -190,6 +192,7 @@ impl HostService {
                         vnc_settings: Set(crate::vnc::encode(&draft.vnc)),
                         rdp_settings: Set(crate::rdp::encode(&draft.rdp)),
                         serial_settings: Set(crate::serial::encode(&draft.serial)),
+                        easytier_settings: Set(crate::easytier::encode(&draft.easytier)),
                     },
                 )
                 .await;
@@ -289,6 +292,7 @@ impl HostService {
                         vnc_settings: Set(source.vnc_settings.clone()),
                         rdp_settings: Set(source.rdp_settings.clone()),
                         serial_settings: Set(source.serial_settings.clone()),
+                        easytier_settings: Set(source.easytier_settings.clone()),
                         shell_integration: Set(source.shell_integration),
                     },
                 )
@@ -319,6 +323,7 @@ impl HostService {
                 vnc: crate::vnc::decode(&source.vnc_settings),
                 rdp: crate::rdp::decode(&source.rdp_settings),
                 serial: crate::serial::decode(&source.serial_settings),
+                easytier: crate::easytier::decode(&source.easytier_settings),
                 shell_integration: source.shell_integration,
             })
         })
@@ -480,6 +485,7 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                     vnc: crate::vnc::decode(&host.vnc_settings),
                     rdp: crate::rdp::decode(&host.rdp_settings),
                     serial: crate::serial::decode(&host.serial_settings),
+                    easytier: crate::easytier::decode(&host.easytier_settings),
                     shell_integration: host.shell_integration,
                 })
                 .collect(),
@@ -535,6 +541,7 @@ proxy: Default::default(),
             vnc: Default::default(),
             rdp: Default::default(),
             serial: Default::default(),
+            easytier: Default::default(),
         }
     }
 
@@ -566,6 +573,7 @@ proxy: Default::default(),
             vnc: Default::default(),
             rdp: Default::default(),
             serial: Default::default(),
+            easytier: Default::default(),
         }
     }
 
@@ -1364,6 +1372,48 @@ proxy: Default::default(),
 
             let copy = service.duplicate_host(&host.id).await.unwrap();
             assert_eq!(copy.serial, tuned, "副本连串口参数一并照抄");
+        });
+    }
+
+    /// 组网配置走的也是同一套；网络名称跟在 `hostname`、密钥跟在 `password`
+    /// 那两列里，和别的协议共用。
+    #[test]
+    fn easytier_settings_round_trip() {
+        use crate::easytier::{EasyTierAccess, EasyTierSettings};
+
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("home-net")).await.unwrap();
+            assert_eq!(host.easytier, EasyTierSettings::default(), "新主机拿出厂档");
+
+            let tuned = EasyTierSettings {
+                peers: vec!["tcp://public.easytier.cn:11010".into()],
+                ipv4: "10.144.144.10/24".into(),
+                node_name: "laptop".into(),
+                access: EasyTierAccess::Tun,
+                socks5_port: 7891,
+                listen: true,
+                listen_port: 11020,
+                latency_first: true,
+                encryption: false,
+            };
+            let mut edited = draft("home-net");
+            edited.kind = crate::host::HostKind::EasyTier;
+            edited.hostname = "home-net".into();
+            edited.password = "s3cret".into();
+            edited.port = 0;
+            edited.easytier = tuned.clone();
+            service.update_host(&host.id, "分组", edited).await.unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            let loaded = &groups[0].hosts[0];
+            assert_eq!(loaded.kind, crate::host::HostKind::EasyTier);
+            assert_eq!(loaded.hostname, "home-net");
+            assert_eq!(loaded.password, "s3cret");
+            assert_eq!(loaded.easytier, tuned);
+
+            let copy = service.duplicate_host(&host.id).await.unwrap();
+            assert_eq!(copy.easytier, tuned, "副本连组网配置一并照抄");
         });
     }
 

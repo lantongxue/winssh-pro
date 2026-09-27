@@ -7,6 +7,7 @@ mod command_history;
 mod credential;
 mod db;
 mod desktop;
+mod easytier;
 mod forward;
 mod host;
 mod i18n;
@@ -23,6 +24,7 @@ mod snippet;
 mod ssh;
 mod telnet;
 mod terminal;
+mod tls;
 mod trusted_host;
 mod ui;
 mod vnc;
@@ -51,6 +53,9 @@ fn main() {
     // 而不是在启动的第一行 panic 掉整个应用。
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .try_init();
+    // 在任何一条 TLS 连接之前：rustls 的两个后端都在图上，不先定一个默认的，
+    // 不指名后端的 `ClientConfig::builder()` 会 panic（见 `src/tls.rs`）。
+    tls::install_default_provider();
 
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         // 语言要在组件库之前定下来：组件库初始化的时候已经在读自己的文案了。

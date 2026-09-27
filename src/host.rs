@@ -8,8 +8,9 @@ use gpui_kit::SharedString;
 use rust_i18n::t;
 
 /// 连接类型。一台主机要么是一条 SSH，要么是一个 VNC 桌面，要么是一个 RDP
-/// 远程桌面，要么是一条 Telnet，要么是一条本机串口，落库时存为字符串
-/// （`ssh` / `vnc` / `rdp` / `telnet` / `serial`），读回时按小写匹配。
+/// 远程桌面，要么是一条 Telnet，要么是一条本机串口，要么是一张 EasyTier 虚拟网，
+/// 落库时存为字符串（`ssh` / `vnc` / `rdp` / `telnet` / `serial` / `easytier`），
+/// 读回时按小写匹配。
 ///
 /// 和 [`AuthMethod`] 一样：界面上的下拉按下标折回枚举，不拿那行字反查。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -22,10 +23,21 @@ pub enum HostKind {
     /// 本机串口（见 [`crate::serial`]）。设备路径存在 [`Host::hostname`] 里，
     /// [`Host::address`] 对它整份返回那个路径。
     Serial,
+    /// EasyTier 组网（见 [`crate::easytier`]）。网络名称存在 [`Host::hostname`]
+    /// 里、网络密钥存在 [`Host::password`] 里，其余在 [`Host::easytier`]。
+    /// 它不是"连到一台机器"，是"把本机接进一张网"。
+    EasyTier,
 }
 
 impl HostKind {
-    pub const ALL: [Self; 5] = [Self::Ssh, Self::Vnc, Self::Rdp, Self::Telnet, Self::Serial];
+    pub const ALL: [Self; 6] = [
+        Self::Ssh,
+        Self::Vnc,
+        Self::Rdp,
+        Self::Telnet,
+        Self::Serial,
+        Self::EasyTier,
+    ];
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -34,6 +46,7 @@ impl HostKind {
             Self::Rdp => "rdp",
             Self::Telnet => "telnet",
             Self::Serial => "serial",
+            Self::EasyTier => "easytier",
         }
     }
 
@@ -45,6 +58,7 @@ impl HostKind {
             Self::Rdp => "RDP".into(),
             Self::Telnet => "Telnet".into(),
             Self::Serial => "Serial".into(),
+            Self::EasyTier => "EasyTier".into(),
         }
     }
 
@@ -55,13 +69,15 @@ impl HostKind {
     /// 串口没有端口这一说，给 0 —— 它永远不会出现在地址里（`address()`
     /// 对串口整份返回设备路径），表单换档时把隐藏的端口格归 0，
     /// 之后再换回别的协议也认得出来那是"没填过"、该换回惯例端口。
+    /// EasyTier 同理：它连的是一张网，不是一个端口（监听端口另在
+    /// [`crate::easytier::EasyTierSettings`] 里）。
     pub fn default_port(&self) -> u16 {
         match self {
             Self::Ssh => 22,
             Self::Vnc => 5900,
             Self::Rdp => 3389,
             Self::Telnet => 23,
-            Self::Serial => 0,
+            Self::Serial | Self::EasyTier => 0,
         }
     }
 
@@ -84,6 +100,7 @@ impl HostKind {
             "rdp" => Self::Rdp,
             "telnet" => Self::Telnet,
             "serial" => Self::Serial,
+            "easytier" => Self::EasyTier,
             _ => Self::Ssh,
         }
     }
@@ -214,7 +231,7 @@ pub struct Host {
     /// 显示名，例如 `web-01`。
     pub name: SharedString,
     /// 连接类型，见 [`HostKind`]。界面按它分派会话窗（SSH / Telnet / 串口
-    /// 进终端面板，VNC / RDP 各进自己的远程桌面），见
+    /// 进终端面板，VNC / RDP 各进自己的远程桌面，EasyTier 进组网状态面板），见
     /// [`crate::ui::views::HostExplorerView::open_host`]。
     pub kind: HostKind,
     pub user: SharedString,
@@ -277,6 +294,12 @@ pub struct Host {
     /// （设备路径在 [`Self::hostname`] 里）；别的协议主机这一份原样存着
     /// 但没人读。
     pub serial: crate::serial::SerialSettings,
+    /// 组网配置。见 [`crate::easytier::EasyTierSettings`]。
+    ///
+    /// 同样进 [`HostDraft`]：它只在 [`HostKind::EasyTier`] 里有意义（网络名称
+    /// 在 [`Self::hostname`]、密钥在 [`Self::password`]）；别的协议主机这一份
+    /// 原样存着但没人读。
+    pub easytier: crate::easytier::EasyTierSettings,
     /// 每次连上这台机器，要不要往对端 shell 里装一份 OSC 133 标记。
     ///
     /// 不进 [`HostDraft`]：和采集节奏、转发规则一样，它是连上之后在命令历史
@@ -289,11 +312,21 @@ pub struct Host {
 impl Host {
     /// `user@hostname:port` 形式的地址，端口为该连接类型的惯例端口时省略端口。
     ///
-    /// 串口主机是唯一整份改写的：它没有 user 也没有 TCP 端口，"地址"就是
-    /// 设备路径本身（存在 `hostname` 列里），直接原样返回。
+    /// 串口主机整份改写：它没有 user 也没有 TCP 端口，"地址"就是设备路径
+    /// 本身（存在 `hostname` 列里），直接原样返回。
+    ///
+    /// EasyTier 主机也整份改写：`网络名称 · 第一个节点`，节点不止一个时
+    /// 补一个 `+N`。卡片上那一行要回答的是"这是哪张网、从哪儿进"。
     pub fn address(&self) -> String {
         if self.kind == HostKind::Serial {
             return self.hostname.to_string();
+        }
+        if self.kind == HostKind::EasyTier {
+            return match self.easytier.peers.as_slice() {
+                [] => self.hostname.to_string(),
+                [first] => format!("{} · {first}", self.hostname),
+                [first, rest @ ..] => format!("{} · {first} +{}", self.hostname, rest.len()),
+            };
         }
         if self.port == self.kind.default_port() {
             format!("{}@{}", self.user, self.hostname)
@@ -349,6 +382,8 @@ pub struct HostDraft {
     pub rdp: crate::rdp::RdpSettings,
     /// 串口参数，见 [`Host::serial`]。
     pub serial: crate::serial::SerialSettings,
+    /// 组网配置，见 [`Host::easytier`]。
+    pub easytier: crate::easytier::EasyTierSettings,
 }
 
 /// 一台主机的运行时状态。
@@ -412,6 +447,7 @@ mod tests {
         assert_eq!(HostKind::from_str_or_default("Telnet"), HostKind::Telnet);
         assert_eq!(HostKind::from_str_or_default("serial"), HostKind::Serial);
         assert_eq!(HostKind::from_str_or_default("Serial "), HostKind::Serial);
+        assert_eq!(HostKind::from_str_or_default("EasyTier"), HostKind::EasyTier);
     }
 
     /// 远程桌面那一档（VNC / RDP）与 SSH 的分叉点：界面拿它决定
@@ -423,6 +459,7 @@ mod tests {
         assert!(HostKind::Rdp.is_remote_desktop());
         assert!(!HostKind::Telnet.is_remote_desktop());
         assert!(!HostKind::Serial.is_remote_desktop());
+        assert!(!HostKind::EasyTier.is_remote_desktop());
     }
 
     #[test]
@@ -447,6 +484,7 @@ mod tests {
             vnc: crate::vnc::VncSettings::default(),
             rdp: crate::rdp::RdpSettings::default(),
             serial: crate::serial::SerialSettings::default(),
+            easytier: crate::easytier::EasyTierSettings::default(),
             shell_integration: false,
         };
         assert_eq!(host.address(), "root@10.0.0.1");
@@ -476,6 +514,20 @@ mod tests {
         assert_eq!(host.address(), "/dev/cu.usbserial-0001");
         host.port = 22;
         assert_eq!(host.address(), "/dev/cu.usbserial-0001");
+
+        // EasyTier：网络名称加第一个节点，多出来的记个数。
+        host.kind = HostKind::EasyTier;
+        host.hostname = "home-net".into();
+        host.port = 0;
+        assert_eq!(host.address(), "home-net");
+        host.easytier.peers = vec!["tcp://public.easytier.cn:11010".into()];
+        assert_eq!(host.address(), "home-net · tcp://public.easytier.cn:11010");
+        host.easytier.peers.push("udp://1.2.3.4:11010".into());
+        host.easytier.peers.push("udp://5.6.7.8:11010".into());
+        assert_eq!(
+            host.address(),
+            "home-net · tcp://public.easytier.cn:11010 +2"
+        );
     }
 
     #[test]

@@ -1012,6 +1012,7 @@ mod tests {
             vnc: Default::default(),
             rdp: Default::default(),
             serial: Default::default(),
+            easytier: Default::default(),
             id: "desk".into(),
             name: "desk".into(),
             kind: HostKind::Vnc,

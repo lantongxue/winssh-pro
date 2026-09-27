@@ -263,6 +263,7 @@ impl TerminalPanel {
             vnc: Default::default(),
             rdp: Default::default(),
             serial: Default::default(),
+            easytier: Default::default(),
             shell_integration: false,
         };
         Self::build(host, Source::Local, None, dock_area, window, cx)
@@ -299,6 +300,7 @@ impl TerminalPanel {
             vnc: Default::default(),
             rdp: Default::default(),
             serial: Default::default(),
+            easytier: Default::default(),
             shell_integration: false,
         };
         Self::build(host, Source::Detached, None, dock_area, window, cx)

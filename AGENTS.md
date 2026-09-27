@@ -11,6 +11,10 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
   gpui 本体是 `gpui_kit::*`，带样式的组件是 `gpui_kit::component`，
   图标资源是 `gpui_kit::assets`，平台层是 `gpui_kit::platform`
 - SSH+SFTP 核心库：russh
+- 组网（EasyTier 主机）：`easytier` 库嵌进进程里跑（git 依赖，钉 rev，见
+  `Cargo.toml` 那一段注释与 `src/easytier/`）。它的 protobuf 在构建时现编，
+  **本机要有 `protoc`**：macOS `brew install protobuf`，Debian/Ubuntu
+  `apt install protobuf-compiler`，Windows 由构建脚本自己下载
 
 ## 开发规则
 
@@ -99,7 +103,8 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 界面之外的领域层直接放在 `src/` 下，不进 `src/ui/`：
 `host.rs`（主机配置）、`credential.rs`（凭据保险箱）、`session.rs`（会话读数）、
 `command_history.rs`（主机上跑过的命令）、`terminal/`（终端内核）、
-`monitor/`（对端资源采集：采集脚本、解析、速率累加）。
+`monitor/`（对端资源采集：采集脚本、解析、速率累加）、
+`easytier/`（组网：实例配置、进程内实例的起停与运行快照）。
 
 数据访问走三层，UI 只认最上面那层：
 

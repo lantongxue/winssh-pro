@@ -146,6 +146,7 @@ mod tests {
             vnc: Default::default(),
             rdp: Default::default(),
             serial: Default::default(),
+            easytier: Default::default(),
             shell_integration: false,
         }
     }

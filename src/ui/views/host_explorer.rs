@@ -23,7 +23,7 @@ use gpui_kit::component::{
     VirtualListScrollHandle, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariant, ButtonVariants as _},
     dialog::DialogButtonProps,
-    dock::{DockArea, DockPlacement, panel_handle},
+    dock::{DockArea, DockPlacement, PanelId, panel_handle},
     h_flex,
     input::{Input, InputEvent, InputState},
     list::ListItem,
@@ -46,7 +46,7 @@ use crate::{
     ui::{
         cards::{HOST_CARD_HEIGHT, HostCard},
         menus::HostAction,
-        panels::{RdpPanel, SessionEvent, TerminalPanel, VncPanel},
+        panels::{EasyTierPanel, RdpPanel, SessionEvent, TerminalPanel, VncPanel},
         theme::{AppIcon, palette},
         windows::HostFormWindow,
     },
@@ -142,12 +142,13 @@ struct TrackedSession {
     panel: TrackedPanel,
 }
 
-/// 名册能数得出来的那三种会话窗。一台主机是什么类型，开出来的就是哪一种
+/// 名册能数得出来的那几种会话窗。一台主机是什么类型，开出来的就是哪一种
 /// （见 [`HostExplorerView::open_host`]）。
 enum TrackedPanel {
     Terminal(WeakEntity<TerminalPanel>),
     Vnc(WeakEntity<VncPanel>),
     Rdp(WeakEntity<RdpPanel>),
+    EasyTier(WeakEntity<EasyTierPanel>),
 }
 
 impl TrackedPanel {
@@ -158,6 +159,7 @@ impl TrackedPanel {
             Self::Terminal(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive(cx)),
             Self::Vnc(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
             Self::Rdp(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
+            Self::EasyTier(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
         }
     }
 
@@ -167,6 +169,7 @@ impl TrackedPanel {
             Self::Terminal(panel) => panel.upgrade().is_some(),
             Self::Vnc(panel) => panel.upgrade().is_some(),
             Self::Rdp(panel) => panel.upgrade().is_some(),
+            Self::EasyTier(panel) => panel.upgrade().is_some(),
         }
     }
 
@@ -175,6 +178,7 @@ impl TrackedPanel {
             Self::Terminal(panel) => panel.entity_id(),
             Self::Vnc(panel) => panel.entity_id(),
             Self::Rdp(panel) => panel.entity_id(),
+            Self::EasyTier(panel) => panel.entity_id(),
         }
     }
 }
@@ -442,7 +446,20 @@ impl HostExplorerView {
 
         // 主机的类型决定开哪一扇会话窗：SSH / Telnet / 串口都进终端面板
         //（字节流同一套），底下协议在 [`crate::ui::panels::TerminalPane::dial`]
-        // 里分派；VNC / RDP 各进自己的远端桌面。
+        // 里分派；VNC / RDP 各进自己的远端桌面；EasyTier 进组网状态面板。
+        //
+        // 组网主机只开一扇：它说的是"本机在不在这张网里"，第二扇只会是一个
+        // 同名实例去抢同一个 SOCKS5 端口。已经开着就翻到前面，退出了的顺手
+        // 重新加入（[`EasyTierPanel::reopen`]）。
+        if host.kind == HostKind::EasyTier
+            && let Some(existing) = self.easytier_panel(&host.id)
+        {
+            existing.update(cx, |panel, cx| panel.reopen(host.clone(), window, cx));
+            let id = PanelId::from(existing.entity_id());
+            _ = self.dock_area.update(cx, |area, cx| area.select_panel(id, window, cx));
+            self.rebuild_rows(cx);
+            return;
+        }
         let panel = match host.kind {
             HostKind::Ssh | HostKind::Telnet | HostKind::Serial => {
                 let panel = TerminalPanel::new(
@@ -467,12 +484,25 @@ impl HostExplorerView {
                 self.track_panel(host.id.clone(), &panel, TrackedPanel::Rdp, window, cx);
                 panel_handle(panel)
             }
+            HostKind::EasyTier => {
+                let panel = EasyTierPanel::new(host.clone(), self.dock_area.clone(), window, cx);
+                self.track_panel(host.id.clone(), &panel, TrackedPanel::EasyTier, window, cx);
+                panel_handle(panel)
+            }
         };
         _ = self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel, DockPlacement::Center, None, window, cx);
         });
 
         self.rebuild_rows(cx);
+    }
+
+    /// 名册上这台组网主机还开着的那一扇（关掉了、被回收了的不算）。
+    fn easytier_panel(&self, host: &SharedString) -> Option<Entity<EasyTierPanel>> {
+        self.sessions.iter().find_map(|session| match &session.panel {
+            TrackedPanel::EasyTier(panel) if &session.host == host => panel.upgrade(),
+            _ => None,
+        })
     }
 
     /// 把一扇会话窗记进名册，并盯着它的存亡。
@@ -486,8 +516,8 @@ impl HostExplorerView {
     /// [`SessionEvent::HostChanged`] 就得回库里重读一份，不然下次从列表里
     /// 开会话，带过去的还是开关扳之前的那份主机。
     ///
-    /// `wrap` 是"这扇窗在名册上算哪一种"：终端、VNC、RDP 三个实体类型都在
-    /// 这里落成 [`TrackedPanel`]，订阅与清理只写一遍。
+    /// `wrap` 是"这扇窗在名册上算哪一种"：终端、VNC、RDP、EasyTier 几个实体
+    /// 类型都在这里落成 [`TrackedPanel`]，订阅与清理只写一遍。
     fn track_panel<P>(
         &mut self,
         host: SharedString,
@@ -513,7 +543,7 @@ impl HostExplorerView {
         .detach();
     }
 
-    /// 名册上的一条会话报上来的那件事怎么处置。三种会话窗共用这一份。
+    /// 名册上的一条会话报上来的那件事怎么处置。几种会话窗共用这一份。
     fn on_session_event(
         &mut self,
         closed: gpui_kit::EntityId,
@@ -1446,6 +1476,7 @@ mod tests {
             vnc: Default::default(),
             rdp: Default::default(),
             serial: Default::default(),
+            easytier: Default::default(),
             id: name.into(),
             name: name.into(),
             kind: HostKind::Ssh,

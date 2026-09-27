@@ -354,7 +354,7 @@ fn percent(value: Option<f32>, bands: (f32, f32), cx: &App) -> (SharedString, Hs
 /// `0`–`1023` 之间，所以最长就是 `1023 KB/s` 九个字符 —— [`RATE_WIDTH`]
 /// 是照这个宽度留的。不这么压的话，`1023.9 KB/s` 跳到 `1.0 MB/s` 会让这一格
 /// 的字忽长忽短，正是这条状态栏要避免的事。
-fn format_rate(kbps: f32) -> SharedString {
+pub(crate) fn format_rate(kbps: f32) -> SharedString {
     let kbps = kbps.max(0.);
     let (value, unit) = match kbps {
         kbps if kbps >= 1024. * 1024. => (kbps / (1024. * 1024.), "GB/s"),
@@ -381,7 +381,7 @@ fn usage_color(percent: f32, (busy, critical): (f32, f32), cx: &App) -> Hsla {
 }
 
 /// 时延的配色。分档和占用率是同一套语义，只是阈值换成毫秒。
-fn latency_color(latency_ms: u32, cx: &App) -> Hsla {
+pub(crate) fn latency_color(latency_ms: u32, cx: &App) -> Hsla {
     match latency_ms {
         latency if latency >= BAD_MS => cx.theme().danger,
         latency if latency >= SLOW_MS => palette::coral(),

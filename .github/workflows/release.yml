@@ -97,6 +97,9 @@ jobs:
           fetch-depth: 1
           submodules: recursive
 
+      # `protobuf-compiler` 给 EasyTier 组网（`easytier-proto` 的构建脚本用
+      # prost-build 现编 protobuf，要 `protoc`）。Windows 上那个构建脚本自己
+      # 会下一份 protoc，不用在这里装；macOS 走下面那一步的 brew。
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -107,7 +110,12 @@ jobs:
             libx11-xcb-dev \
             libxkbcommon-dev \
             libxkbcommon-x11-dev \
-            pkg-config
+            pkg-config \
+            protobuf-compiler
+
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: brew install protobuf
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

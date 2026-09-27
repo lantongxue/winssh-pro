@@ -237,6 +237,64 @@ ironrdp-tls = { version = "0.2", features = ["rustls"] }
 # FastPath 帧边界适配使用同一份解压器，避免为识别帧标记重复解压。
 ironrdp-bulk = "0.1.1"
 
+# EasyTier 组网（见 `src/easytier/`）。EasyTier 是一个去中心化的 P2P 组网工具，
+# 同样用 Rust 写成；这里不起 `easytier-core` 子进程，而是把它的库嵌进来 ——
+# 一台"主机"就是一个进程内的实例，状态直接读实例的运行快照。
+#
+# 走 git 并钉 rev，因为 crates.io 上那一份停在 2.0.3（2024 年），和现在的
+# 上游隔着一整次重构（2.7 把控制面拆成了 `easytier-core`）。钉的是 main 上
+# 一个具体提交，不跟分支漂：升级就是换这两行的 rev，再跑一遍
+# `cargo test easytier`（`src/easytier/` 里有进程内两个实例互连的用例）。
+# 两行必须同一个 rev —— `easytier` 自己也依赖 `easytier-core`，rev 不一致就是
+# 两份不同的 `CoreInstance` 类型。许可证是 LGPL-3.0。
+#
+# 特性全部手点（`default-features = false`）：默认那一整套里有命令行、UPnP、
+# 魔法 DNS、KCP 这些嵌进桌面应用用不上的东西（KCP 还要 bindgen + libclang）。
+# 点了的：
+# - `web-client`：`network_instance_running_info` 那份运行快照（节点、路由、
+#   连接统计）在这一档后面，状态面板就靠它；
+# - 隧道 `websocket`（ws / wss）、`quic`、`wireguard`（wg），加上始终在的
+#   tcp / udp —— `easytier-core -p` 认得的协议这里都认（表单用 EasyTier 自己的
+#   `TunnelScheme` 校验）；`endpoint-discovery` 是 `txt://` / `srv://` /
+#   `http(s)://` 那几种"去这儿查节点地址"的节点发现；
+# - `smoltcp` + `socks5`：用户态 TCP/IP 栈与 SOCKS5 入口 —— 不建虚拟网卡时
+#   经它访问虚拟 IP，出厂档就是这一种，不要管理员权限；
+# - `tun`：虚拟网卡那一档（要管理员权限，Windows 上还要 `wintun.dll`）；
+# - `dhcp-ipv4`：由网络分配虚拟地址（`-d`），不点亮它只能手填地址；
+# - `tcp-hole-punch`：TCP 打洞，和 UDP 打洞一起决定两台节点能不能直连；
+# - `ring-crypto`：数据加密的后端（aes-gcm / aes-256-gcm / chacha20 都在里面）。
+#   不点它，出厂的 aes-gcm 在这一版里"不可用"、实例直接起不来（`wireguard`
+#   其实也顺带点亮它，写明是为了不靠这层巧合）。
+#
+# 唯一没开的隧道是 `faketcp`：它要原始套接字（管理员权限），而且拖进来的
+# `pnet_datalink` 在 Windows 上静态链接 WinPcap 的 `Packet.lib` —— exe 链接要
+# 那个 .lib，启动要 `Packet.dll`，没装 Npcap 的机器上整个应用都起不来。
+#
+# websocket / quic / 节点发现会把 rustls 的 `ring` 后端也点亮，和我们一直用的
+# `aws-lc-rs` 同时在图上；这时不指名后端的 `ClientConfig::builder()`（IronRDP、
+# hyper-rustls、EasyTier 自己的 wss 都走它）会 panic，所以 `main` 开头先把
+# `aws-lc-rs` 装成进程默认，见 `src/tls.rs`。
+#
+# 构建要 `protoc`：`easytier-proto` 的构建脚本用 prost-build 现编 protobuf。
+# macOS `brew install protobuf`、Debian/Ubuntu `apt install protobuf-compiler`；
+# Windows 上那个构建脚本自己会下一份。x86_64 Windows 上 `easytier` 的构建脚本
+# 还会用 curl + 7z 下载 VC-LTL（它为 Win7 兼容做的 CRT 替换，经 link-search
+# 作用到最终的 exe 上）—— GitHub 的 Windows runner 两样都有。
+easytier = { git = "https://github.com/EasyTier/EasyTier", rev = "ff3921ce6842f9660d629eafac499498026c6784", default-features = false, features = ["web-client", "smoltcp", "socks5", "tun", "dhcp-ipv4", "tcp-hole-punch", "ring-crypto", "websocket", "quic", "wireguard", "endpoint-discovery"] }
+easytier-core = { git = "https://github.com/EasyTier/EasyTier", rev = "ff3921ce6842f9660d629eafac499498026c6784", default-features = false }
+# 进程级 rustls 后端的开关（`src/tls.rs`）。EasyTier 的 WebSocket / QUIC 隧道把
+# rustls 的 `ring` 后端也点亮了，两个后端同在时不指名后端的入口会 panic，
+# 开进程时要先把 `aws-lc-rs` 装成默认 —— 要调它就得直接依赖 rustls。版本就是
+# 图上已有的那一份，不多编译一份东西。
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+# EasyTier 的配置模型里，节点地址是 `url::Url`、虚拟地址是 `cidr::Ipv4Inet`；
+# 编进来了哪几种隧道协议由它的 `IpScheme` 枚举说了算，列举那张表要 strum 的
+# `VariantArray`。三个都本来就在依赖树里（EasyTier 用它们），变成直接依赖不多
+# 编译一份东西。
+url = "2"
+cidr = "0.3"
+strum = "0.28"
+
 # russh 的默认加密后端 aws-lc-rs 会用 C + 汇编编译 aws-lc-sys；在 x86_64 Windows 上
 # 它的汇编要靠 NASM 汇编，本机没有 nasm.exe 时 build 脚本直接 panic。开启
 # `prebuilt-nasm` 让 aws-lc-sys 使用 crate 里随附的预汇编 .obj，构建机就不必再装 NASM。

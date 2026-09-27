@@ -1174,6 +1174,275 @@ rdp.perf_wan:
   en: Narrow band (no wallpaper/themes)
   zh-CN: 窄带（关壁纸/主题）
 
+# ── EasyTier 组网（协议层与中心区那块状态面板，见 src/easytier/） ─────────
+easytier.access_socks5:
+  en: "User space (SOCKS5 proxy)"
+  zh-CN: "用户态（SOCKS5 代理）"
+easytier.access_tun:
+  en: "Virtual NIC (TUN)"
+  zh-CN: "虚拟网卡（TUN）"
+easytier.access_tun_device:
+  en: "Virtual NIC %{device}"
+  zh-CN: "虚拟网卡 %{device}"
+easytier.check_no_peer:
+  en: "Add at least one peer address, or accept incoming peers so other nodes can connect in."
+  zh-CN: "至少填一个节点地址，或者开启监听让别的节点连进来。"
+easytier.check_socks5_port:
+  en: "The SOCKS5 port must be between 1 and 65535."
+  zh-CN: "SOCKS5 端口要在 1 到 65535 之间。"
+easytier.check_listen_port:
+  en: "The listening port must be between 1 and 65535."
+  zh-CN: "监听端口要在 1 到 65535 之间。"
+easytier.check_port_clash:
+  en: "The SOCKS5 port %{port} is one of the ports opened by listening on %{listen} (tcp/udp use it as is, wg/ws +1, quic/wss +2); pick another SOCKS5 port."
+  zh-CN: "SOCKS5 端口 %{port} 和监听端口 %{listen} 展开出来的某个口撞了（tcp / udp 用原号，wg / ws +1，quic / wss +2），换一个 SOCKS5 端口。"
+easytier.check_peer_invalid:
+  en: "Not a peer address: %{peer} (expected something like tcp://public.easytier.cn:11010)"
+  zh-CN: "这不是节点地址：%{peer}（应形如 tcp://public.easytier.cn:11010）"
+easytier.check_peer_scheme:
+  en: "%{peer}: unsupported protocol; use one of %{schemes}"
+  zh-CN: "%{peer}：不认得这个协议，可用的有 %{schemes}"
+easytier.check_peer_host:
+  en: "%{peer}: a host is required"
+  zh-CN: "%{peer}：要写明主机"
+easytier.check_ipv4:
+  en: "Not a virtual IPv4 address: %{ipv4} (e.g. 10.144.144.10 or 10.144.144.10/24; leave it empty to get one from the network)"
+  zh-CN: "虚拟地址不对：%{ipv4}（应形如 10.144.144.10 或 10.144.144.10/24；留空由网络分配）"
+easytier.check_network_name:
+  en: "Enter the network name."
+  zh-CN: "请填写网络名称。"
+easytier.nat_unknown:
+  en: "Unknown"
+  zh-CN: "未知"
+easytier.nat_open:
+  en: "Open internet"
+  zh-CN: "公网直连"
+easytier.nat_no_pat:
+  en: "No port translation"
+  zh-CN: "无端口转换"
+easytier.nat_full_cone:
+  en: "Full cone"
+  zh-CN: "全锥形"
+easytier.nat_restricted:
+  en: "Restricted cone"
+  zh-CN: "受限锥形"
+easytier.nat_port_restricted:
+  en: "Port restricted cone"
+  zh-CN: "端口受限锥形"
+easytier.nat_symmetric:
+  en: "Symmetric"
+  zh-CN: "对称型"
+easytier.nat_symmetric_firewall:
+  en: "Symmetric firewall"
+  zh-CN: "对称型防火墙"
+easytier.nat_symmetric_easy:
+  en: "Symmetric (predictable)"
+  zh-CN: "对称型（可预测）"
+easytier.path_direct:
+  en: "Direct"
+  zh-CN: "直连"
+easytier.path_relay:
+  en: "Relay ×%{hops}"
+  zh-CN: "中继 ×%{hops}"
+easytier.event_tun_ready:
+  en: "Virtual NIC %{device} is up"
+  zh-CN: "虚拟网卡 %{device} 已就绪"
+easytier.event_tun_error:
+  en: "Virtual NIC error: %{error}"
+  zh-CN: "虚拟网卡出错：%{error}"
+easytier.event_peer_added:
+  en: "Node %{peer} joined"
+  zh-CN: "节点 %{peer} 加入"
+easytier.event_peer_removed:
+  en: "Node %{peer} left"
+  zh-CN: "节点 %{peer} 离开"
+easytier.event_conn_added:
+  en: "Connected to node %{peer} (%{tunnel})"
+  zh-CN: "与节点 %{peer} 建立连接（%{tunnel}）"
+easytier.event_conn_removed:
+  en: "Connection to node %{peer} closed (%{tunnel})"
+  zh-CN: "与节点 %{peer} 的连接断开（%{tunnel}）"
+easytier.event_listening:
+  en: "Listening on %{url}"
+  zh-CN: "开始监听 %{url}"
+easytier.event_listen_failed:
+  en: "Cannot listen on %{url}: %{error}"
+  zh-CN: "监听 %{url} 失败：%{error}"
+easytier.event_accepted:
+  en: "Accepted a connection from %{remote}"
+  zh-CN: "接受来自 %{remote} 的连接"
+easytier.event_accept_failed:
+  en: "Connection from %{remote} failed: %{error}"
+  zh-CN: "来自 %{remote} 的连接出错：%{error}"
+easytier.event_connecting:
+  en: "Connecting to %{url}"
+  zh-CN: "正在连接 %{url}"
+easytier.event_connect_failed:
+  en: "Cannot connect to %{url}: %{error}"
+  zh-CN: "连接 %{url} 失败：%{error}"
+easytier.event_ipv4_assigned:
+  en: "Virtual address assigned: %{ipv4}"
+  zh-CN: "分到虚拟地址 %{ipv4}"
+easytier.event_ipv4_released:
+  en: "Virtual address %{ipv4} released"
+  zh-CN: "虚拟地址 %{ipv4} 已释放"
+easytier.event_ipv4_conflict:
+  en: "Virtual address %{ipv4} is taken, picking another"
+  zh-CN: "虚拟地址 %{ipv4} 冲突，重新分配"
+easytier.log_starting_socks5:
+  en: "Joining the network (user space, SOCKS5 entry %{address})…"
+  zh-CN: "正在加入网络（用户态，SOCKS5 入口 %{address}）…"
+easytier.log_starting_tun:
+  en: "Joining the network (virtual NIC)…"
+  zh-CN: "正在加入网络（虚拟网卡）…"
+easytier.log_started:
+  en: "Node started, looking for peers"
+  zh-CN: "节点已启动，正在寻找其他节点"
+easytier.log_stopped:
+  en: "Left the network"
+  zh-CN: "已退出网络"
+easytier.runtime_failed:
+  en: "Could not start the network runtime: %{error}"
+  zh-CN: "起不来组网运行时：%{error}"
+easytier.start_failed:
+  en: "Could not join the network: %{error}"
+  zh-CN: "加入网络失败：%{error}"
+easytier.start_failed_tun:
+  en: "Could not join the network: %{error}. The virtual NIC mode needs WinSSH Pro to run as administrator (root), and wintun.dll next to the program on Windows; if that is not possible, switch the host to user space (SOCKS5 proxy)."
+  zh-CN: "加入网络失败：%{error}。虚拟网卡模式要以管理员（root）身份运行 WinSSH Pro，Windows 上还要 wintun.dll 在程序旁边；做不到的话，在主机设置里换成「用户态（SOCKS5 代理）」。"
+easytier.start_timeout:
+  en: "The node did not start within %{secs} seconds"
+  zh-CN: "%{secs} 秒内节点没能启动"
+easytier.stopped_unexpectedly:
+  en: "The node stopped unexpectedly"
+  zh-CN: "节点意外停止"
+easytier.thread_crashed:
+  en: "The network session ended unexpectedly"
+  zh-CN: "组网会话意外结束"
+easytier.status_starting:
+  en: "Joining…"
+  zh-CN: "正在加入…"
+easytier.status_searching:
+  en: "Started, looking for peers…"
+  zh-CN: "已启动，正在寻找节点…"
+easytier.status_running:
+  en: "Joined · %{count} nodes online"
+  zh-CN: "已加入 · %{count} 个节点在线"
+easytier.status_stopping:
+  en: "Leaving…"
+  zh-CN: "正在退出…"
+easytier.status_stopped:
+  en: "Left the network"
+  zh-CN: "已退出"
+easytier.disconnect:
+  en: "Leave"
+  zh-CN: "断开"
+easytier.disconnect_tooltip:
+  en: "Leave this network and stop the local node"
+  zh-CN: "退出这张网，停掉本机节点"
+easytier.reconnect:
+  en: "Rejoin"
+  zh-CN: "重新连接"
+easytier.reconnect_tooltip:
+  en: "Join this network again"
+  zh-CN: "重新加入这张网"
+easytier.rate_tooltip:
+  en: "Traffic between this node and all of its direct peers"
+  zh-CN: "本机与所有直连节点之间的流量"
+easytier.close_session:
+  en: "Leave and close"
+  zh-CN: "退出并关闭"
+easytier.copy_socks5:
+  en: "Copy proxy"
+  zh-CN: "复制代理地址"
+easytier.copy_socks5_tooltip:
+  en: "Copy the SOCKS5 entry address"
+  zh-CN: "复制 SOCKS5 入口地址"
+easytier.socks5_copied:
+  en: "Copied %{address}"
+  zh-CN: "已复制 %{address}"
+easytier.socks5_hint:
+  en: "Other hosts reach this network through the SOCKS5 entry %{address}: in their settings choose Advanced → Proxy → Custom proxy, enter this address, and use a virtual IP as the hostname. The machine on the other end must join with a virtual NIC (or share a subnet proxy); a node in user space can reach others but cannot be reached by its virtual IP."
+  zh-CN: "别的主机经 SOCKS5 入口 %{address} 就能进这张网：在它的「高级 → 代理」里选「配置代理」，填上这个地址，主机名直接写对方的虚拟 IP。对方要以虚拟网卡接入（或开了子网代理）—— 用户态的节点能访问别人，自己却不能经虚拟 IP 被访问。"
+easytier.local_title:
+  en: "This node"
+  zh-CN: "本机节点"
+easytier.local_ipv4:
+  en: "Virtual IP"
+  zh-CN: "虚拟地址"
+easytier.local_access:
+  en: "Access"
+  zh-CN: "接入方式"
+easytier.local_hostname:
+  en: "Node name"
+  zh-CN: "节点名"
+easytier.local_nat:
+  en: "NAT type"
+  zh-CN: "NAT 类型"
+easytier.local_peer_id:
+  en: "Node ID"
+  zh-CN: "节点 ID"
+easytier.local_public_ip:
+  en: "Public IP"
+  zh-CN: "公网地址"
+easytier.local_version:
+  en: "Version"
+  zh-CN: "版本"
+easytier.local_listeners:
+  en: "Listening"
+  zh-CN: "监听"
+easytier.local_not_listening:
+  en: "Off"
+  zh-CN: "未开启"
+easytier.peers_title:
+  en: "Nodes"
+  zh-CN: "网络节点"
+easytier.peers_count:
+  en: "%{count}"
+  zh-CN: "%{count} 个"
+easytier.peers_empty:
+  en: "No other node yet. Make sure the network name and secret match the other nodes."
+  zh-CN: "还没有找到别的节点。确认网络名称与密钥和其他节点一致。"
+easytier.peers_offline:
+  en: "Not in the network."
+  zh-CN: "不在网络里。"
+easytier.public_server:
+  en: "Public server"
+  zh-CN: "公共服务器"
+easytier.col_host:
+  en: "Node"
+  zh-CN: "节点"
+easytier.col_ipv4:
+  en: "Virtual IP"
+  zh-CN: "虚拟地址"
+easytier.col_path:
+  en: "Path"
+  zh-CN: "路径"
+easytier.col_latency:
+  en: "Latency"
+  zh-CN: "延迟"
+easytier.col_loss:
+  en: "Loss"
+  zh-CN: "丢包"
+easytier.col_rx:
+  en: "Received"
+  zh-CN: "已收"
+easytier.col_tx:
+  en: "Sent"
+  zh-CN: "已发"
+easytier.col_tunnel:
+  en: "Tunnel"
+  zh-CN: "隧道"
+easytier.col_nat:
+  en: "NAT"
+  zh-CN: "NAT"
+easytier.log_title:
+  en: "Events"
+  zh-CN: "事件"
+easytier.log_empty:
+  en: "Nothing yet."
+  zh-CN: "暂无事件。"
+
 # ── 主机表单（新建 / 编辑主机的对话框） ──────────────────────────────────
 host_form.title_new:
   en: New host
@@ -1202,6 +1471,18 @@ host_form.page_rdp:
 host_form.page_serial:
   en: Serial connection
   zh-CN: 串口连接
+host_form.page_easytier:
+  en: "EasyTier network"
+  zh-CN: "EasyTier 组网"
+host_form.group_easytier_peers:
+  en: "Peers"
+  zh-CN: "对等节点"
+host_form.group_easytier_local:
+  en: "This node"
+  zh-CN: "本机"
+host_form.group_easytier_routing:
+  en: "Routing & encryption"
+  zh-CN: "选路与加密"
 host_form.group_basic:
   en: Basic info
   zh-CN: 基本信息
@@ -1361,6 +1642,69 @@ host_form.field_serial_local_echo:
 host_form.serial_hint:
   en: "Leave DTR and RTS at their default unless the device needs them driven: asserting DTR can reset some boards, and clearing RTS can stop some devices from sending at all. Local echo is for devices that never echo your typing back."
   zh-CN: "DTR / RTS 除非设备需要，否则留在默认档：拉高 DTR 会把某些开发板复位，拉低 RTS 会让某些设备不再回数据。本地回显给的是“对端不回显你敲的字”的裸设备。"
+host_form.field_easytier_network:
+  en: "Network name *"
+  zh-CN: "网络名称 *"
+host_form.easytier_network_placeholder:
+  en: "e.g. my-network"
+  zh-CN: "例如 my-network"
+host_form.field_easytier_secret:
+  en: "Network secret"
+  zh-CN: "网络密钥"
+host_form.easytier_secret_hint:
+  en: "Every node in the network uses the same name and secret; leave it empty only if the network has none."
+  zh-CN: "网里每个节点的网络名称与密钥都要一致；网络没设密钥才留空。"
+host_form.field_easytier_peers:
+  en: "Peer addresses"
+  zh-CN: "节点地址"
+host_form.easytier_peers_placeholder:
+  en: "tcp://public.easytier.cn:11010"
+  zh-CN: "tcp://public.easytier.cn:11010"
+host_form.easytier_peers_hint:
+  en: "One per line: a public server or any node that listens, e.g. tcp://public.easytier.cn:11010. Every EasyTier tunnel works (tcp, udp, ws, wss, quic, wg), as do discovery addresses (txt://, srv://, http(s)://); the port may be left out. faketcp is not built in: it needs raw sockets and, on Windows, Npcap."
+  zh-CN: "一行一个：公共服务器，或者任何一台开着监听的节点，如 tcp://public.easytier.cn:11010。EasyTier 的隧道都能用（tcp、udp、ws、wss、quic、wg），节点发现地址（txt://、srv://、http(s)://）也行；端口可以不写。faketcp 没有编进来：它要原始套接字权限，Windows 上还要装 Npcap。"
+host_form.field_easytier_ipv4:
+  en: "Virtual IPv4"
+  zh-CN: "虚拟地址"
+host_form.easytier_ipv4_placeholder:
+  en: "Leave empty to get one from the network"
+  zh-CN: "留空由网络分配"
+host_form.field_easytier_node_name:
+  en: "Node name"
+  zh-CN: "节点名"
+host_form.easytier_node_name_placeholder:
+  en: "Leave empty to use this computer's name"
+  zh-CN: "留空用本机主机名"
+host_form.field_easytier_access:
+  en: "Access mode"
+  zh-CN: "接入方式"
+host_form.field_easytier_socks5_port:
+  en: "SOCKS5 port"
+  zh-CN: "SOCKS5 端口"
+host_form.field_easytier_listen:
+  en: "Accept incoming peers"
+  zh-CN: "监听连入"
+host_form.field_easytier_listen_port:
+  en: "Listening port"
+  zh-CN: "监听端口"
+host_form.easytier_listen_hint:
+  en: "Expanded the same way as easytier-core -l: tcp and udp use this port, wg and ws use +1, quic and wss use +2."
+  zh-CN: "和 easytier-core -l 一样展开：tcp、udp 用这个端口，wg、ws 用 +1，quic、wss 用 +2。"
+host_form.easytier_access_socks5_hint:
+  en: "User space needs no administrator rights: the node opens a SOCKS5 entry on 127.0.0.1, and hosts in this app reach the network by using it as their proxy. Other nodes cannot reach this computer by its virtual IP in this mode."
+  zh-CN: "用户态不要管理员权限：本机在 127.0.0.1 上开一个 SOCKS5 入口，本应用里的主机把代理指到它就能进这张网。这一档别的节点访问不到本机的虚拟 IP。"
+host_form.easytier_access_tun_hint:
+  en: "A virtual NIC lets every program on this computer reach the network, but WinSSH Pro must run as administrator (root), and on Windows wintun.dll must sit next to the program."
+  zh-CN: "虚拟网卡让本机所有程序都能直接访问这张网，但 WinSSH Pro 要以管理员（root）身份运行，Windows 上还要 wintun.dll 在程序旁边。"
+host_form.field_easytier_latency_first:
+  en: "Latency-first routing"
+  zh-CN: "延迟优先选路"
+host_form.field_easytier_encryption:
+  en: "Encryption"
+  zh-CN: "加密"
+host_form.easytier_routing_hint:
+  en: "Latency-first picks the fastest relay path instead of the fewest hops. Encryption must match across the whole network: a node with it off cannot talk to one with it on."
+  zh-CN: "延迟优先按时延而不是跳数挑中继路径。加密要全网一致 —— 关了加密的节点和开着的谈不拢。"
 serial.parity_none:
   en: None
   zh-CN: 无
