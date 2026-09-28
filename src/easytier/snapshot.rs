@@ -364,6 +364,29 @@ impl LogLine {
                     ipv4 => ip.map(|ip| ip.to_string()).unwrap_or_default(),
                 ),
             ),
+            // 别的节点代理出来的子网（`-n`）。虚拟网卡那一档照这份增减给网卡加减
+            // 路由，所以这一行也是"那个子网现在走不走得到"的凭据。
+            GlobalCtxEvent::ProxyCidrsUpdated(added, removed) => {
+                match (added.is_empty(), removed.is_empty()) {
+                    (false, true) => (
+                        LogTone::Info,
+                        t!("easytier.event_subnets_added", cidrs => joined(added)),
+                    ),
+                    (true, false) => (
+                        LogTone::Warn,
+                        t!("easytier.event_subnets_removed", cidrs => joined(removed)),
+                    ),
+                    (false, false) => (
+                        LogTone::Info,
+                        t!(
+                            "easytier.event_subnets_changed",
+                            added => joined(added),
+                            removed => joined(removed),
+                        ),
+                    ),
+                    (true, true) => return None,
+                }
+            }
             _ => return None,
         };
         Some(Self::now(tone, text))
@@ -376,6 +399,15 @@ fn tunnel_of(conn: &easytier::proto::api::instance::PeerConnInfo) -> String {
         .as_ref()
         .map(|tunnel| tunnel.display_tunnel_type())
         .unwrap_or_else(|| "?".to_string())
+}
+
+/// `10.1.0.0/24, 10.2.0.0/16` 那样的一串。
+fn joined(items: &[impl std::fmt::Display]) -> String {
+    items
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// 事件日志：最新的在前，最多 [`LOG_LIMIT`] 行，同一句话连着来就叠成一行。
@@ -593,5 +625,31 @@ mod tests {
         .expect("连不上是要让人看到的");
         assert_eq!(line.tone, LogTone::Warn);
         assert!(line.text.contains("tcp://1.2.3.4:11010"));
+    }
+
+    #[test]
+    fn subnets_proxied_by_peers_reach_the_log() {
+        let subnets = |cidrs: &[&str]| -> Vec<cidr::Ipv4Cidr> {
+            cidrs.iter().map(|cidr| cidr.parse().unwrap()).collect()
+        };
+        let event = |added: &[&str], removed: &[&str]| {
+            LogLine::from_event(&GlobalCtxEvent::ProxyCidrsUpdated(
+                subnets(added),
+                subnets(removed),
+            ))
+        };
+
+        let added = event(&["192.168.10.0/24", "10.20.0.0/16"], &[]).expect("新子网要让人看到");
+        assert_eq!(added.tone, LogTone::Info);
+        assert!(added.text.contains("192.168.10.0/24, 10.20.0.0/16"));
+
+        let removed = event(&[], &["192.168.10.0/24"]).expect("子网没了也要让人看到");
+        assert_eq!(removed.tone, LogTone::Warn);
+        assert!(removed.text.contains("192.168.10.0/24"));
+
+        let changed = event(&["10.30.0.0/24"], &["192.168.10.0/24"]).expect("一增一减");
+        assert!(changed.text.contains("10.30.0.0/24") && changed.text.contains("192.168.10.0/24"));
+
+        assert!(event(&[], &[]).is_none());
     }
 }

@@ -39,7 +39,12 @@
 //! 是 faketcp（要原始套接字，Windows 上还要 Npcap，理由见 `Cargo.toml`）。
 //! 另有 UDP / TCP 打洞、DHCP 分配地址、SOCKS5 入口与虚拟网卡。
 //!
-//! 子网代理、端口转发、魔法 DNS、出口节点、KCP / QUIC 代理这几样 EasyTier 有、
+//! 子网代理两头都通：别的节点代理出来的网段，虚拟网卡那一档加路由、用户态
+//! 那一档经 SOCKS5 入口都到得了；本机也能把自己这一侧的网段代理给这张网
+//! （`-n`，[`settings`] 的 `proxy_networks`）。两种接入方式都能当子网网关，
+//! 只是替别人转发 ping 要原始套接字，得以管理员身份运行。
+//!
+//! 端口转发、魔法 DNS、出口节点、KCP / QUIC 代理这几样 EasyTier 有、
 //! 这里暂时没接 —— 要的时候往 [`settings`] 里加旋钮、在 [`config`] 里接一行
 //! setter，再在 `Cargo.toml` 里点亮对应的特性。
 
@@ -51,6 +56,6 @@ mod snapshot;
 pub use session::{EasyTierInput, EasyTierOutput, EasyTierSession};
 pub use settings::{
     DEFAULT_LISTEN_PORT, DEFAULT_SOCKS5_PORT, EasyTierAccess, EasyTierSettings, decode, encode,
-    split_peers,
+    split_lines,
 };
 pub use snapshot::{LogLine, LogTone, NetworkLog, NetworkSnapshot, PeerNode, PeerPath};

@@ -16,7 +16,9 @@
 use anyhow::{Context as _, Result};
 use easytier::common::config::{ConfigLoader as _, NetworkIdentity, PeerConfig, TomlConfig};
 
-use super::settings::{EasyTierAccess, listener_urls, parse_ipv4, parse_peer};
+use super::settings::{
+    EasyTierAccess, listener_urls, parse_ipv4, parse_peer, parse_proxy_network,
+};
 use crate::host::Host;
 
 /// 实例名的前缀。EasyTier 用实例名区分同一进程里的几张网（日志、RPC 选择器
@@ -69,6 +71,12 @@ pub fn build(host: &Host) -> Result<TomlConfig> {
         })
         .collect::<Result<Vec<_>>>()?;
     config.set_peers(peers);
+
+    for network in &settings.proxy_networks {
+        let (real, mapped) =
+            parse_proxy_network(network).map_err(|message| anyhow::anyhow!("{message}"))?;
+        config.add_proxy_cidr(real, mapped)?;
+    }
 
     let listeners = match settings.listen {
         true => listener_urls(settings.listen_port).context("监听端口加上协议偏移越界")?,
@@ -181,6 +189,10 @@ mod tests {
         let settings = EasyTierSettings {
             ipv4: "10.144.144.10".into(),
             node_name: " laptop ".into(),
+            proxy_networks: vec![
+                "192.168.1.0/24".into(),
+                "192.168.2.0/24->10.1.2.0/24".into(),
+            ],
             access: EasyTierAccess::Tun,
             listen: true,
             listen_port: 11020,
@@ -202,6 +214,21 @@ mod tests {
             "照 `-l 11020` 展开，每种协议一个"
         );
         assert_eq!(config.get_socks5_portal(), None, "虚拟网卡那一档不开入口");
+        assert_eq!(
+            config
+                .get_proxy_cidrs()
+                .iter()
+                .map(|network| (
+                    network.cidr.to_string(),
+                    network.mapped_cidr.map(|mapped| mapped.to_string())
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("192.168.1.0/24".to_string(), None),
+                ("192.168.2.0/24".to_string(), Some("10.1.2.0/24".to_string())),
+            ],
+            "照 `-n` 一条一条加进去"
+        );
         let flags = config.get_flags();
         assert!(!flags.no_tun);
         assert!(flags.bind_device, "虚拟网卡那一档照 EasyTier 出厂档");
@@ -220,5 +247,11 @@ mod tests {
             ..EasyTierSettings::default()
         });
         assert!(build(&host).is_err(), "没编进来的协议");
+
+        let host = network_host(EasyTierSettings {
+            proxy_networks: vec!["192.168.1.1/24".into()],
+            ..with_peer()
+        });
+        assert!(build(&host).is_err(), "主机位不为零的网段");
     }
 }

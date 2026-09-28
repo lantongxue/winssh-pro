@@ -1208,6 +1208,15 @@ easytier.check_peer_host:
 easytier.check_ipv4:
   en: "Not a virtual IPv4 address: %{ipv4} (e.g. 10.144.144.10 or 10.144.144.10/24; leave it empty to get one from the network)"
   zh-CN: "虚拟地址不对：%{ipv4}（应形如 10.144.144.10 或 10.144.144.10/24；留空由网络分配）"
+easytier.check_subnet_invalid:
+  en: "Not a subnet: %{subnet} (e.g. 192.168.1.0/24, or 192.168.1.0/24->10.1.1.0/24 to map it)"
+  zh-CN: "子网写得不对：%{subnet}（应形如 192.168.1.0/24，要映射就写 192.168.1.0/24->10.1.1.0/24）"
+easytier.check_subnet_host_bits:
+  en: "%{subnet} is a host address, not a subnet. Did you mean %{network}?"
+  zh-CN: "%{subnet} 是一台主机的地址，不是网段 —— 是不是想写 %{network}？"
+easytier.check_subnet_mapped_len:
+  en: "%{subnet}: both sides of the mapping must be the same size (same prefix length)"
+  zh-CN: "%{subnet}：映射前后的网段得一样大（前缀长度相同）"
 easytier.check_network_name:
   en: "Enter the network name."
   zh-CN: "请填写网络名称。"
@@ -1289,6 +1298,15 @@ easytier.event_ipv4_released:
 easytier.event_ipv4_conflict:
   en: "Virtual address %{ipv4} is taken, picking another"
   zh-CN: "虚拟地址 %{ipv4} 冲突，重新分配"
+easytier.event_subnets_added:
+  en: "Subnets proxied by peers: %{cidrs}"
+  zh-CN: "节点代理的子网：%{cidrs}"
+easytier.event_subnets_removed:
+  en: "Subnets no longer proxied: %{cidrs}"
+  zh-CN: "不再代理的子网：%{cidrs}"
+easytier.event_subnets_changed:
+  en: "Subnets proxied by peers changed: added %{added}, removed %{removed}"
+  zh-CN: "节点代理的子网有变：新增 %{added}，移除 %{removed}"
 easytier.log_starting_socks5:
   en: "Joining the network (user space, SOCKS5 entry %{address})…"
   zh-CN: "正在加入网络（用户态，SOCKS5 入口 %{address}）…"
@@ -1480,6 +1498,9 @@ host_form.group_easytier_peers:
 host_form.group_easytier_local:
   en: "This node"
   zh-CN: "本机"
+host_form.group_easytier_proxy_networks:
+  en: "Subnet proxy"
+  zh-CN: "子网代理"
 host_form.group_easytier_routing:
   en: "Routing & encryption"
   zh-CN: "选路与加密"
@@ -1660,6 +1681,15 @@ host_form.field_easytier_peers:
 host_form.easytier_peers_placeholder:
   en: "tcp://public.easytier.cn:11010"
   zh-CN: "tcp://public.easytier.cn:11010"
+host_form.field_easytier_proxy_networks:
+  en: "Subnets to share"
+  zh-CN: "代理给网络的子网"
+host_form.easytier_proxy_networks_placeholder:
+  en: "192.168.1.0/24"
+  zh-CN: "192.168.1.0/24"
+host_form.easytier_proxy_networks_hint:
+  en: "One per line, like easytier-core -n: other nodes reach these subnets (usually the LAN this computer is on) through this node, e.g. 192.168.1.0/24. If a subnet clashes with someone else's, map it, e.g. 192.168.1.0/24->10.1.1.0/24, and the others use the latter. Either access mode can act as the gateway, but forwarding ping for others needs WinSSH Pro to run as administrator (TCP and UDP are not affected). Leave it empty to share nothing."
+  zh-CN: "一行一个，写法同 easytier-core -n：别的节点经本机访问这些网段（多半是本机所在的局域网），如 192.168.1.0/24。和别人的网段重名时加映射，如 192.168.1.0/24->10.1.1.0/24，别人用后者访问。两种接入方式都能当网关，但替别人转发 ping 要以管理员身份运行 WinSSH Pro（TCP / UDP 不受影响）。留空就不代理。"
 host_form.easytier_peers_hint:
   en: "One per line: a public server or any node that listens, e.g. tcp://public.easytier.cn:11010. Every EasyTier tunnel works (tcp, udp, ws, wss, quic, wg), as do discovery addresses (txt://, srv://, http(s)://); the port may be left out. faketcp is not built in: it needs raw sockets and, on Windows, Npcap."
   zh-CN: "一行一个：公共服务器，或者任何一台开着监听的节点，如 tcp://public.easytier.cn:11010。EasyTier 的隧道都能用（tcp、udp、ws、wss、quic、wg），节点发现地址（txt://、srv://、http(s)://）也行；端口可以不写。faketcp 没有编进来：它要原始套接字权限，Windows 上还要装 Npcap。"

@@ -259,8 +259,21 @@ ironrdp-bulk = "0.1.1"
 #   `http(s)://` 那几种"去这儿查节点地址"的节点发现；
 # - `smoltcp` + `socks5`：用户态 TCP/IP 栈与 SOCKS5 入口 —— 不建虚拟网卡时
 #   经它访问虚拟 IP，出厂档就是这一种，不要管理员权限；
-# - `tun`：虚拟网卡那一档（要管理员权限，Windows 上还要 `wintun.dll`）；
+# - `tun`：虚拟网卡那一档（要管理员权限，Windows 上还要 `wintun.dll` 在 exe
+#   旁边 —— 它放在 `third_party/<架构>/`，`build.rs` 构建时拷过去，发版一起打包）；
 # - `dhcp-ipv4`：由网络分配虚拟地址（`-d`），不点亮它只能手填地址；
+# - `proxy-cidr-monitor`：盯着别的节点宣告的代理子网（它们的 `-n 192.168.1.0/24`），
+#   有增减就发事件，虚拟网卡那一档靠这个事件把子网路由加到网卡上。不点它，
+#   虚拟 IP 照样通（网卡自己那段地址是系统直接挂的路由），代理出来的子网却
+#   一个都到不了，而且不报错 —— 上游只打一行 error 日志就收手了。它和
+#   `dhcp-ipv4` 在上游同属默认开着的 `extended-services` 那一组，手点特性时
+#   最容易漏；那一组剩下的 `public-ipv6-provider` 是分配公网 IPv6 那一档，没接；
+#   `vpn-portal` / `wrapped-transport` 已由 `wireguard` / `quic` 带上。
+# - `icmp-proxy`：本机把自己这一侧的网段代理给网（主机表单里的「子网代理」）时，
+#   替别的节点转发 ping。TCP / UDP 的子网代理不靠它（`quic` 已带上 `proxy-packet`），
+#   但少了它，别人 ping 那个网段一个回包都没有，头一步就当成代理不通。它要原始
+#   套接字，也就是管理员权限：虚拟网卡那一档本来就有；用户态那一档没权限时上游只
+#   打一行 warn、照常起，少的只是 ping。
 # - `tcp-hole-punch`：TCP 打洞，和 UDP 打洞一起决定两台节点能不能直连；
 # - `ring-crypto`：数据加密的后端（aes-gcm / aes-256-gcm / chacha20 都在里面）。
 #   不点它，出厂的 aes-gcm 在这一版里"不可用"、实例直接起不来（`wireguard`
@@ -280,7 +293,7 @@ ironrdp-bulk = "0.1.1"
 # Windows 上那个构建脚本自己会下一份。x86_64 Windows 上 `easytier` 的构建脚本
 # 还会用 curl + 7z 下载 VC-LTL（它为 Win7 兼容做的 CRT 替换，经 link-search
 # 作用到最终的 exe 上）—— GitHub 的 Windows runner 两样都有。
-easytier = { git = "https://github.com/EasyTier/EasyTier", rev = "ff3921ce6842f9660d629eafac499498026c6784", default-features = false, features = ["web-client", "smoltcp", "socks5", "tun", "dhcp-ipv4", "tcp-hole-punch", "ring-crypto", "websocket", "quic", "wireguard", "endpoint-discovery"] }
+easytier = { git = "https://github.com/EasyTier/EasyTier", rev = "ff3921ce6842f9660d629eafac499498026c6784", default-features = false, features = ["web-client", "smoltcp", "socks5", "tun", "dhcp-ipv4", "proxy-cidr-monitor", "icmp-proxy", "tcp-hole-punch", "ring-crypto", "websocket", "quic", "wireguard", "endpoint-discovery"] }
 easytier-core = { git = "https://github.com/EasyTier/EasyTier", rev = "ff3921ce6842f9660d629eafac499498026c6784", default-features = false }
 # 进程级 rustls 后端的开关（`src/tls.rs`）。EasyTier 的 WebSocket / QUIC 隧道把
 # rustls 的 `ring` 后端也点亮了，两个后端同在时不指名后端的入口会 panic，

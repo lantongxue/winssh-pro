@@ -14,7 +14,10 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 - 组网（EasyTier 主机）：`easytier` 库嵌进进程里跑（git 依赖，钉 rev，见
   `Cargo.toml` 那一段注释与 `src/easytier/`）。它的 protobuf 在构建时现编，
   **本机要有 `protoc`**：macOS `brew install protobuf`，Debian/Ubuntu
-  `apt install protobuf-compiler`，Windows 由构建脚本自己下载
+  `apt install protobuf-compiler`，Windows 由构建脚本自己下载。
+  虚拟网卡那一档在 Windows 上要 `wintun.dll`：放在 `third_party/<架构>/`，
+  `build.rs` 按目标架构拷到 exe 旁边（`cargo run` / `cargo test` 都找得到），
+  发版 workflow 把它和 exe 一起打包
 
 ## 开发规则
 

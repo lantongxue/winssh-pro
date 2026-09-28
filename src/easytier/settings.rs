@@ -11,6 +11,7 @@
 //! | `peers` | `[[peer]]` 列表（`-p`） | 填公共服务器或自建节点的地址；一条都不填就只能等别人连进来 |
 //! | `ipv4` | `ipv4`（`-i`）/ `dhcp`（`-d`） | 空着由网络分配；要固定地址时填 `10.144.144.10/24` 这样的 |
 //! | `node_name` | `hostname` | 别人在节点列表里看到的名字；空着用本机主机名 |
+//! | `proxy_networks` | `[[proxy_network]]` 列表（`-n`） | 要让网里别的节点经本机访问本机那一侧的网段（多半是本机所在的局域网）时填，写法见 [`parse_proxy_network`] |
 //! | [`EasyTierAccess`] | `flags.no_tun` + `socks5_proxy` | 默认走用户态 SOCKS5，不要管理员权限；要全局访问才换虚拟网卡 |
 //! | `socks5_port` | `socks5_proxy` 的端口（`--socks5`） | 和本机别的代理撞端口时换一个 |
 //! | `listen` / `listen_port` | `listeners`（`-l <端口>`） | 想让别的节点直接连进本机时开；出厂关，不在本机开端口。一个端口照命令行的规矩展开成每种协议一个（[`listener_urls`]） |
@@ -20,7 +21,7 @@
 //! 出厂档：用户态 SOCKS5（`127.0.0.1:11080`）、DHCP 分配地址、不监听、
 //! 按跳数选路、加密开 —— 不要任何权限、不在本机开任何对外端口的那一档。
 
-use cidr::Ipv4Inet;
+use cidr::{Ipv4Cidr, Ipv4Inet};
 use easytier::tunnel::{IpScheme, TunnelScheme};
 use gpui_kit::SharedString;
 use rust_i18n::t;
@@ -105,6 +106,10 @@ pub struct EasyTierSettings {
     pub ipv4: String,
     /// 在网里报给别的节点的名字。空串 = 本机主机名。
     pub node_name: String,
+    /// 本机代理给这张网的网段，一条一个（`192.168.1.0/24`，或带映射的
+    /// `192.168.1.0/24->10.1.1.0/24`）。和 `peers` 一样存原文，解析规则见
+    /// [`parse_proxy_network`]。
+    pub proxy_networks: Vec<String>,
     pub access: EasyTierAccess,
     /// 用户态那一档的 SOCKS5 入口端口，只绑 `127.0.0.1`。虚拟网卡那一档不开入口。
     pub socks5_port: u16,
@@ -125,6 +130,7 @@ impl Default for EasyTierSettings {
             peers: Vec::new(),
             ipv4: String::new(),
             node_name: String::new(),
+            proxy_networks: Vec::new(),
             access: EasyTierAccess::default(),
             socks5_port: DEFAULT_SOCKS5_PORT,
             listen: false,
@@ -148,6 +154,9 @@ impl EasyTierSettings {
             parse_peer(peer)?;
         }
         parse_ipv4(&self.ipv4)?;
+        for network in &self.proxy_networks {
+            parse_proxy_network(network)?;
+        }
         if self.peers.is_empty() && !self.listen {
             return Err(t!("easytier.check_no_peer").into());
         }
@@ -218,10 +227,10 @@ pub fn listener_urls(port: u16) -> Option<Vec<url::Url>> {
         .collect()
 }
 
-/// 把表单里那一大段"一行一个"的文本切成节点列表：空行跳过，每行剪掉前后
-/// 空白。不在这里校验 —— 校验归 [`EasyTierSettings::check`]，那边要把哪一条
-/// 不对原样说出来。
-pub fn split_peers(text: &str) -> Vec<String> {
+/// 把表单里那一大段"一行一个"的文本（节点地址、代理子网）切成列表：空行
+/// 跳过，每行剪掉前后空白。不在这里校验 —— 校验归 [`EasyTierSettings::check`]，
+/// 那边要把哪一条不对原样说出来。
+pub fn split_lines(text: &str) -> Vec<String> {
     text.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
@@ -243,6 +252,41 @@ pub fn parse_ipv4(raw: &str) -> Result<Option<Ipv4Inet>, SharedString> {
     text.parse::<Ipv4Inet>()
         .map(Some)
         .map_err(|_| t!("easytier.check_ipv4", ipv4 => raw).into())
+}
+
+/// 解析一条代理子网，写法照 `easytier-core -n`：`192.168.1.0/24`，或者
+/// `192.168.1.0/24->10.1.1.0/24` —— 箭头右边是映射，别的节点用它访问左边
+/// 那个真实网段（两边网段重名时用），两边前缀长度得一样。只写一个 IP 是
+/// 单台主机（/32）。
+///
+/// 和 EasyTier 一样不收主机位不为零的写法（`192.168.1.1/24`），但把它多半
+/// 想写的那个网段念出来 —— 上游那句 "host part of address was not zero"
+/// 不说该怎么改。
+pub fn parse_proxy_network(raw: &str) -> Result<(Ipv4Cidr, Option<Ipv4Cidr>), SharedString> {
+    let raw = raw.trim();
+    let cidr = |text: &str| -> Result<Ipv4Cidr, SharedString> {
+        let text = text.trim();
+        text.parse::<Ipv4Cidr>()
+            .map_err(|_| match text.parse::<Ipv4Inet>() {
+                Ok(inet) => t!(
+                    "easytier.check_subnet_host_bits",
+                    subnet => text,
+                    network => inet.network(),
+                ),
+                Err(_) => t!("easytier.check_subnet_invalid", subnet => raw),
+            })
+            .map_err(SharedString::from)
+    };
+    let (real, mapped) = match raw.split_once("->") {
+        Some((real, mapped)) => (cidr(real)?, Some(cidr(mapped)?)),
+        None => (cidr(raw)?, None),
+    };
+    if let Some(mapped) = mapped
+        && mapped.network_length() != real.network_length()
+    {
+        return Err(t!("easytier.check_subnet_mapped_len", subnet => raw).into());
+    }
+    Ok((real, mapped))
 }
 
 /// 把设置写成 `hosts.easytier_settings` 那一列。
@@ -310,6 +354,10 @@ mod tests {
             ],
             ipv4: "10.144.144.10/24".into(),
             node_name: "laptop".into(),
+            proxy_networks: vec![
+                "192.168.1.0/24".into(),
+                "192.168.2.0/24->10.1.2.0/24".into(),
+            ],
             access: EasyTierAccess::Tun,
             socks5_port: 7891,
             listen: true,
@@ -329,6 +377,7 @@ mod tests {
         assert_eq!(settings.peers, vec!["tcp://10.0.0.1:11010".to_string()]);
         assert_eq!(settings.socks5_port, DEFAULT_SOCKS5_PORT);
         assert!(settings.encryption);
+        assert!(settings.proxy_networks.is_empty(), "老库那一行不代理任何子网");
     }
 
     /// `easytier-core -p` 认的，这里都认：每种隧道、节点发现、不写端口。
@@ -399,13 +448,67 @@ mod tests {
     }
 
     #[test]
-    fn the_peer_textarea_splits_into_trimmed_lines() {
+    fn a_textarea_splits_into_trimmed_lines() {
         let text = "\n  tcp://a:1  \n\n udp://b:2\n   \n";
         assert_eq!(
-            split_peers(text),
+            split_lines(text),
             vec!["tcp://a:1".to_string(), "udp://b:2".to_string()]
         );
-        assert!(split_peers("  \n ").is_empty());
+        assert!(split_lines("  \n ").is_empty());
+    }
+
+    /// `easytier-core -n` 认的写法这里都认：网段、单台主机、带映射。
+    #[test]
+    fn a_proxy_network_reads_like_the_cli_flag() {
+        let parsed = |raw: &str| {
+            parse_proxy_network(raw).map(|(real, mapped)| {
+                (real.to_string(), mapped.map(|mapped| mapped.to_string()))
+            })
+        };
+        assert_eq!(
+            parsed(" 192.168.1.0/24 "),
+            Ok(("192.168.1.0/24".to_string(), None))
+        );
+        assert_eq!(
+            parsed("192.168.1.0/24 -> 10.1.1.0/24"),
+            Ok(("192.168.1.0/24".to_string(), Some("10.1.1.0/24".to_string()))),
+            "箭头两边的空格不算"
+        );
+        let (host, mapped) = parse_proxy_network("192.168.1.5").expect("只写 IP 也认");
+        assert_eq!(
+            (host.first_address().to_string(), host.network_length(), mapped),
+            ("192.168.1.5".to_string(), 32, None),
+            "只写 IP 是单台主机"
+        );
+    }
+
+    #[test]
+    fn a_broken_proxy_network_says_how_to_fix_it() {
+        let error = parse_proxy_network("192.168.1.1/24").expect_err("主机位不为零");
+        assert!(
+            error.contains("192.168.1.0/24"),
+            "要把它多半想写的那个网段念出来：{error}"
+        );
+        let error = parse_proxy_network("192.168.1.0/24->10.1.0.0/16").expect_err("前缀不一样长");
+        assert!(error.contains("192.168.1.0/24->10.1.0.0/16"), "{error}");
+        for raw in [
+            "局域网",
+            "192.168.1.0/33",
+            "192.168.1.0/24->",
+            "192.168.1.0/24->10.1.1.0/24->10.2.1.0/24",
+            "fd00::/64",
+        ] {
+            assert!(parse_proxy_network(raw).is_err(), "{raw} 不该认");
+        }
+
+        let mut settings = EasyTierSettings {
+            peers: vec!["tcp://10.0.0.1:11010".into()],
+            proxy_networks: vec!["192.168.1.0/24".into()],
+            ..EasyTierSettings::default()
+        };
+        assert!(settings.check().is_ok());
+        settings.proxy_networks.push("192.168.1.1/24".into());
+        assert!(settings.check().is_err(), "一条不对就拦下来");
     }
 
     #[test]

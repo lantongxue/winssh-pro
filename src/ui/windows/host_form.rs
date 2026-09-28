@@ -43,7 +43,7 @@ use gpui_kit::{
 use crate::{
     credential::{Credential, CredentialKind},
     easytier::{
-        DEFAULT_LISTEN_PORT, DEFAULT_SOCKS5_PORT, EasyTierAccess, EasyTierSettings, split_peers,
+        DEFAULT_LISTEN_PORT, DEFAULT_SOCKS5_PORT, EasyTierAccess, EasyTierSettings, split_lines,
     },
     host::{AuthMethod, Host, HostDraft, HostGroup, HostKind},
     proxy::{self, HostProxy, ProxyConfig, ProxyMode},
@@ -332,12 +332,13 @@ pub struct HostForm {
     ///（[`Self::apply_serial_port_pick`]）。
     serial_port_pick: Entity<SelectState<Vec<SharedString>>>,
     /// EasyTier 那一页：节点地址（一行一个）、虚拟地址、节点名、接入方式与
-    /// SOCKS5 端口、监听开关与端口、选路、加密。网络名称复用上面那格
-    /// `hostname`、网络密钥复用 `password`（标签跟着连接类型换）。只有连接
-    /// 类型是 EasyTier 才画出来 —— 状态常驻，换走再换回来不丢。
+    /// SOCKS5 端口、监听开关与端口、代理子网（一行一个）、选路、加密。网络名称
+    /// 复用上面那格 `hostname`、网络密钥复用 `password`（标签跟着连接类型换）。
+    /// 只有连接类型是 EasyTier 才画出来 —— 状态常驻，换走再换回来不丢。
     easytier_peers: Entity<TextareaState>,
     easytier_ipv4: Entity<InputState>,
     easytier_node_name: Entity<InputState>,
+    easytier_proxy_networks: Entity<TextareaState>,
     easytier_access: Entity<SelectState<Vec<SharedString>>>,
     easytier_socks5_port: Entity<InputState>,
     /// 开/关两格（0 开 1 关），下同。
@@ -737,6 +738,12 @@ impl HostForm {
                 .placeholder(t!("host_form.easytier_node_name_placeholder"))
                 .default_value(initial_easytier.node_name.clone())
         });
+        let easytier_proxy_networks = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .soft_wrap(false)
+                .placeholder(t!("host_form.easytier_proxy_networks_placeholder"))
+                .default_value(initial_easytier.proxy_networks.join("\n"))
+        });
         let easytier_access = cx.new(|cx| {
             SelectState::new(
                 easytier_access_choices(),
@@ -919,6 +926,7 @@ impl HostForm {
             easytier_peers,
             easytier_ipv4,
             easytier_node_name,
+            easytier_proxy_networks,
             easytier_access,
             easytier_socks5_port,
             easytier_listen,
@@ -1130,7 +1138,8 @@ impl HostForm {
     }
 
     /// EasyTier 那一页现在的样子折回一份 [`EasyTierSettings`]。下拉按下标判断，
-    /// 不比文案；节点地址按行切开、剪掉空行，校验留给 [`EasyTierSettings::check`]。
+    /// 不比文案；节点地址与代理子网按行切开、剪掉空行，校验留给
+    /// [`EasyTierSettings::check`]。
     fn selected_easytier(&self, cx: &App) -> EasyTierSettings {
         let row = |select: &Entity<SelectState<Vec<SharedString>>>| {
             select
@@ -1140,9 +1149,10 @@ impl HostForm {
                 .unwrap_or_default()
         };
         EasyTierSettings {
-            peers: split_peers(&self.easytier_peers.read(cx).value()),
+            peers: split_lines(&self.easytier_peers.read(cx).value()),
             ipv4: self.easytier_ipv4.read(cx).value().trim().to_string(),
             node_name: self.easytier_node_name.read(cx).value().trim().to_string(),
+            proxy_networks: split_lines(&self.easytier_proxy_networks.read(cx).value()),
             access: EasyTierAccess::from_index(row(&self.easytier_access)),
             socks5_port: port_or(&self.easytier_socks5_port, DEFAULT_SOCKS5_PORT, cx),
             // 开/关两格，0 就是开 —— 和 RDP 的剪贴板同一个写法。
@@ -2117,7 +2127,34 @@ impl HostForm {
             )
     }
 
-    /// 「组网」页的第三段：选路与加密。两格都得和网里别的节点谈得拢。
+    /// 「组网」页的第三段：本机把哪些网段代理给这张网（`-n`）。一行一个，
+    /// 和节点地址那一格同一个样子。
+    fn render_easytier_proxy_networks(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_1()
+            .w_full()
+            .child(field_label(
+                t!("host_form.field_easytier_proxy_networks").into(),
+                cx,
+            ))
+            .child(
+                Textarea::new(&self.easytier_proxy_networks)
+                    .h(px(72.))
+                    .font_family("monospace")
+                    .text_size(px(11.))
+                    .w_full(),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(t!(
+                        "host_form.easytier_proxy_networks_hint"
+                    ))),
+            )
+    }
+
+    /// 「组网」页的第四段：选路与加密。两格都得和网里别的节点谈得拢。
     fn render_easytier_routing(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_3()
@@ -2225,6 +2262,7 @@ impl Render for HostForm {
             .child(self.render_network_secret(cx))
             .child(self.render_easytier_peers(cx))
             .child(self.render_easytier_local(cx))
+            .child(self.render_easytier_proxy_networks(cx))
             .child(self.render_easytier_routing(cx))
             .child(self.render_tags_row(cx))
     }
@@ -2538,8 +2576,9 @@ impl HostFormWindow {
             )
     }
 
-    /// EasyTier 专属配置页：一级类目，三组 —— 去哪儿找网、本机怎么进、
-    /// 选路与加密。和串口页不同，它字段多到值得在侧栏里分出二级条目。
+    /// EasyTier 专属配置页：一级类目，四组 —— 去哪儿找网、本机怎么进、
+    /// 本机代理哪些子网、选路与加密。和串口页不同，它字段多到值得在侧栏里
+    /// 分出二级条目。
     fn easytier_page(&self) -> SettingPage {
         SettingPage::new(t!("host_form.page_easytier"))
             .icon(IconName::Network)
@@ -2554,6 +2593,13 @@ impl HostFormWindow {
                 SettingGroup::new()
                     .title(t!("host_form.group_easytier_local"))
                     .item(self.row(|this, cx| this.render_easytier_local(cx).into_any_element())),
+            )
+            .group(
+                SettingGroup::new()
+                    .title(t!("host_form.group_easytier_proxy_networks"))
+                    .item(self.row(|this, cx| {
+                        this.render_easytier_proxy_networks(cx).into_any_element()
+                    })),
             )
             .group(
                 SettingGroup::new()
@@ -2823,6 +2869,10 @@ mod tests {
             ],
             ipv4: "10.144.144.10/24".into(),
             node_name: "laptop".into(),
+            proxy_networks: vec![
+                "192.168.1.0/24".into(),
+                "192.168.2.0/24->10.1.2.0/24".into(),
+            ],
             access: EasyTierAccess::Tun,
             socks5_port: 7891,
             listen: true,
@@ -3014,6 +3064,21 @@ mod tests {
             this.easytier_peers.update(cx, |state, cx| {
                 state.set_value("tcp://10.0.0.1:11010", window, cx)
             });
+            this.easytier_proxy_networks.update(cx, |state, cx| {
+                state.set_value("192.168.1.0/24\n192.168.2.1/24", window, cx)
+            });
+        });
+        let error = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect_err("主机位不为零的网段");
+        assert!(
+            error.contains("192.168.2.0/24"),
+            "要把它多半想写的那个网段念出来：{error}"
+        );
+
+        form.update_in(cx, |this, window, cx| {
+            this.easytier_proxy_networks
+                .update(cx, |state, cx| state.set_value("", window, cx));
             this.easytier_listen_port
                 .update(cx, |state, cx| state.set_value("不是端口", window, cx));
         });
