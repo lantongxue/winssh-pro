@@ -16,13 +16,17 @@
 //! - **读数**（[`snapshot`]）：把 EasyTier 的 protobuf 快照换成我们自己的类型，
 //!   界面不认识上游的任何一个类型。
 //!
+//! - **入口**（[`portal`]）：此刻有哪几张网在跑、各自从哪儿进。别的主机把代理
+//!   选成"经 EasyTier 组网"时，拨号在这里等那张网就绪（没进来就托界面加入）。
+//!
 //! 界面上那扇窗是 [`crate::ui::panels::EasyTierPanel`]，这里只到"会话"为止。
 //!
 //! ## 两种接入方式
 //!
 //! 出厂是**用户态**：不建虚拟网卡（EasyTier 的 `no_tun`），在 `127.0.0.1` 上开一个
-//! SOCKS5 入口，经它访问网里的虚拟 IP —— 不要管理员权限，本应用里的 SSH / RDP /
-//! VNC 主机把代理指到这个入口就能直接连网里的机器。代价是单向的：用户态节点
+//! SOCKS5 入口，经它访问网里的虚拟 IP —— 不要管理员权限，本应用里的 SSH / Telnet /
+//! RDP / VNC 主机把代理选成"经 EasyTier 组网"、指着这台组网主机，就能直接连网里的
+//! 机器（网没连上时先自动加入，见 [`portal`]）。代价是单向的：用户态节点
 //! 访问得到别人，别人却访问不到它的虚拟 IP（实测过：两个用户态节点之间经
 //! SOCKS5 连对方的虚拟 IP 是连不通的，连自己的才通），所以要连的那一头得是
 //! 以虚拟网卡接入的机器（服务器上装 EasyTier 的常规做法）。**虚拟网卡**那一档建一块
@@ -49,6 +53,7 @@
 //! setter，再在 `Cargo.toml` 里点亮对应的特性。
 
 mod config;
+pub mod portal;
 mod session;
 mod settings;
 mod snapshot;
@@ -58,4 +63,4 @@ pub use settings::{
     DEFAULT_LISTEN_PORT, DEFAULT_SOCKS5_PORT, EasyTierAccess, EasyTierSettings, decode, encode,
     split_lines,
 };
-pub use snapshot::{LogLine, LogTone, NetworkLog, NetworkSnapshot, PeerNode, PeerPath};
+pub use snapshot::{LogLine, LogTone, NetworkLog, NetworkSnapshot, PeerNode, PeerPath, Reach};

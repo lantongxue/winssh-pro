@@ -1229,6 +1229,7 @@ proxy: Default::default(),
                     username: "deploy".into(),
                     password: " spaces matter ".into(),
                 },
+                ..Default::default()
             };
             let mut edited = draft("web-01");
             edited.proxy = configured.clone();

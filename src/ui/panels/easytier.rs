@@ -25,7 +25,11 @@
 //!
 //! 同一台组网主机只开一扇：它是"本机在不在这张网里"，开两份就是两个同名实例
 //! 抢同一个 SOCKS5 端口。再从列表里打开时，主机视图把已有这一扇翻到前面
-//! （[`Self::reopen`]），退出了的顺手重新加入。
+//! （[`Self::reopen`]），退出了的顺手重新加入，正在退出的等退完再进。
+//!
+//! 别的主机把代理选成"经这张网"时，主机视图也走 [`Self::reopen`]（或者新开
+//! 一扇）替它加入 —— 先开这一扇、再连那台主机。那边的拨号在
+//! [`crate::easytier::portal`] 等这张网就绪。
 //!
 //! 断线不自动重连：EasyTier 自己就会一直重试节点，实例还活着就不算断；
 //! 真正停下来（用户点了、或致命错误）之后要不要再进，由人决定。
@@ -136,6 +140,8 @@ pub struct EasyTierPanel {
     host: Host,
     /// 在网里时从列表里又打开、带来的新配置（表单里刚改过），下一次连接时换上。
     pending_host: Option<Host>,
+    /// 正在退出时又被要求加入（[`Self::reopen`]）：退完了立刻重新进。
+    rejoin: bool,
     phase: NetworkPhase,
     /// 指令通道的前台把手。实例收完尾之后是 `None` —— 这时候才能再连。
     inputs: Option<UnboundedSender<EasyTierInput>>,
@@ -179,6 +185,7 @@ impl EasyTierPanel {
             let mut this = Self {
                 host,
                 pending_host: None,
+                rejoin: false,
                 phase: NetworkPhase::Starting,
                 inputs: None,
                 snapshot: None,
@@ -191,26 +198,30 @@ impl EasyTierPanel {
                 dock_area,
                 focus_handle: cx.focus_handle(),
             };
-            this.connect(window, cx);
+            this.connect(cx);
             this
         })
     }
 
-    /// 主机视图又要打开这台主机：带来的是最新的配置（表单里可能刚改过）。
-    /// 已经退出的就换上它重新加入；还在网里的不打扰，新配置下次连接时生效。
-    pub(crate) fn reopen(&mut self, host: Host, window: &mut Window, cx: &mut Context<Self>) {
+    /// 主机视图又要打开这台主机（或者别的主机要经这张网去连）：带来的是最新的
+    /// 配置（表单里可能刚改过）。已经退出的就换上它重新加入；正在退出的等退完
+    /// 再进；还在网里的不打扰，新配置下次连接时生效。
+    pub(crate) fn reopen(&mut self, host: Host, cx: &mut Context<Self>) {
         self.pending_host = Some(host);
-        if matches!(self.phase, NetworkPhase::Stopped | NetworkPhase::Failed(_)) {
-            self.connect(window, cx);
+        match self.phase {
+            NetworkPhase::Stopped | NetworkPhase::Failed(_) => self.connect(cx),
+            NetworkPhase::Stopping => self.rejoin = true,
+            NetworkPhase::Starting | NetworkPhase::Running => {}
         }
     }
 
     /// 加入网络。上一条会话还没收完尾（`inputs` 还在）时不动：两个实例会抢
     /// 同一个 SOCKS5 端口，按钮在那段时间里也是按不下去的。
-    fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn connect(&mut self, cx: &mut Context<Self>) {
         if self.inputs.is_some() {
             return;
         }
+        self.rejoin = false;
         if let Some(host) = self.pending_host.take() {
             self.host = host;
         }
@@ -235,7 +246,7 @@ impl EasyTierPanel {
         let Some(mut events) = session.take_events() else {
             return;
         };
-        cx.spawn_in(window, async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             loop {
                 let output = events.recv().await;
                 let finished = !matches!(
@@ -291,6 +302,10 @@ impl EasyTierPanel {
                 self.log.push(LogLine::now(LogTone::Error, reason.clone()));
                 self.fail(reason, cx);
             }
+        }
+        // 退的时候又被要求加入：上一个实例这时候才真的松开了端口，接着进。
+        if self.rejoin && self.inputs.is_none() {
+            self.connect(cx);
         }
         cx.notify();
     }
@@ -514,7 +529,7 @@ impl EasyTierPanel {
                 )
                 .label(t!("easytier.reconnect"))
                 .tooltip(t!("easytier.reconnect_tooltip"))
-                .on_click(cx.listener(|this, _, window, cx| this.connect(window, cx))),
+                .on_click(cx.listener(|this, _, _, cx| this.connect(cx))),
         }
     }
 }
@@ -1227,6 +1242,7 @@ mod tests {
             nat: Default::default(),
             version: "2.7.0".into(),
             public_server: ipv4.is_none(),
+            subnets: Vec::new(),
         };
         NetworkSnapshot {
             peers: vec![
@@ -1318,6 +1334,7 @@ mod tests {
                 nat: Default::default(),
                 version: "2.7.0".into(),
                 public_server: ix == 0,
+                subnets: Vec::new(),
             })
             .collect();
         NetworkSnapshot {
@@ -1497,23 +1514,49 @@ mod tests {
     #[gpui_kit::test]
     fn a_reopened_host_waits_for_the_next_connection(cx: &mut gpui_kit::TestAppContext) {
         let (panel, cx) = open_panel(cx);
-        panel.update_in(cx, |panel, window, cx| {
+        panel.update(cx, |panel, cx| {
             let (inputs, _receiver) = tokio::sync::mpsc::unbounded_channel();
             panel.phase = NetworkPhase::Running;
             panel.inputs = Some(inputs);
 
             let mut edited = test_host();
             edited.hostname = "renamed-net".into();
-            panel.reopen(edited, window, cx);
+            panel.reopen(edited, cx);
             assert_eq!(panel.host.hostname, "winssh-panel-test", "在网里不换配置");
             assert_eq!(panel.phase, NetworkPhase::Running, "也不打断");
 
             // 退出之后再连：换上新配置（它照样没有节点，校验会拦下来）。
             panel.inputs = None;
             panel.phase = NetworkPhase::Stopped;
-            panel.connect(window, cx);
+            panel.connect(cx);
             assert_eq!(panel.host.hostname, "renamed-net");
             assert!(panel.pending_host.is_none());
+        });
+    }
+
+    /// 正在退出时被要求加入（别的主机要经这张网去连）：不打断收尾，退完了
+    /// 立刻重新进 —— 而不是停在"已退出"上让那边的拨号干等到超时。
+    #[gpui_kit::test]
+    fn a_rejoin_during_a_stop_waits_for_the_stop_then_joins(cx: &mut gpui_kit::TestAppContext) {
+        let (panel, cx) = open_panel(cx);
+        panel.update(cx, |panel, cx| {
+            let (inputs, _receiver) = tokio::sync::mpsc::unbounded_channel();
+            panel.phase = NetworkPhase::Stopping;
+            panel.inputs = Some(inputs);
+            let current = panel.generation;
+
+            panel.reopen(test_host(), cx);
+            assert_eq!(panel.phase, NetworkPhase::Stopping, "收尾不打断");
+            assert!(panel.rejoin);
+
+            panel.on_output(current, EasyTierOutput::Stopped(None), cx);
+            assert_eq!(panel.generation, current + 1, "退完了接着又连了一次");
+            assert!(!panel.rejoin);
+            // 测试主机一个节点都没有，这一次在校验那一步就被拦下来。
+            assert_eq!(
+                panel.phase,
+                NetworkPhase::Failed(t!("easytier.check_no_peer").into())
+            );
         });
     }
 }

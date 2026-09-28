@@ -18,10 +18,9 @@ use russh::keys::{Error as KeyError, PrivateKey, PrivateKeyWithHashAlg, decode_s
 use russh::{Channel, Disconnect, Pty};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tokio_socks::tcp::Socks5Stream;
 
 use crate::host::Host;
-use crate::proxy::{self, ProxyConfig};
+use crate::proxy;
 use crate::trusted_host::TrustPolicy;
 
 use super::client::SshHandler;
@@ -230,7 +229,7 @@ async fn shell_channel(
 /// SSH 跑得起来的那种字节流。
 ///
 /// 存在的理由只有一个：直连拿到的是 [`TcpStream`]，走代理拿到的是
-/// [`Socks5Stream`]，而 [`client::connect_stream`] 是泛型的 —— 一个函数
+/// [`tokio_socks::tcp::Socks5Stream`]，而 [`client::connect_stream`] 是泛型的 —— 一个函数
 /// 返回不了两种类型。装箱成同一个 trait 对象，握手之后的每一步就都不必
 /// 再关心这条流是怎么来的了。
 ///
@@ -245,16 +244,16 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Transport for T {}
 /// 走代理时目标地址**原样交给代理去解析**（`(域名, 端口)` 而不是先在本机
 /// 解成 IP）：本机未必解得动对端那个内网域名，而那恰恰是用代理的理由。
 ///
-/// 代理没配全时 [`proxy::resolve`] 会报错，这里原样抛出去，不退回直连 ——
-/// 用户选了走代理，悄悄直连是替他做了一个相反的决定。
+/// 代理没配全时 [`proxy::route`] 会报错，这里原样抛出去，不退回直连 ——
+/// 用户选了走代理，悄悄直连是替他做了一个相反的决定。经组网的那一档在这一步
+/// 等那张网就绪（见那个函数的文档）。
 async fn dial(host: &Host, nodelay: bool) -> Result<Box<dyn Transport>> {
     let target = (&*host.hostname, host.port);
 
-    let Some(via) = proxy::resolve(&host.proxy).map_err(|reason| {
-        anyhow!(
-            "{}",
-            t!("ssh.proxy_misconfigured", host => host.name, reason => reason)
-        )
+    let Some(via) = proxy::route(host).await.map_err(|error| {
+        error.into_error(|reason| {
+            t!("ssh.proxy_misconfigured", host => host.name, reason => reason).to_string()
+        })
     })?
     else {
         let socket = TcpStream::connect(target).await.with_context(|| {
@@ -269,7 +268,7 @@ async fn dial(host: &Host, nodelay: bool) -> Result<Box<dyn Transport>> {
         return Ok(Box::new(socket));
     };
 
-    let stream = socks5(&via, target).await.with_context(|| {
+    let stream = proxy::socks5(&via, target).await.with_context(|| {
         t!(
             "ssh.proxy_connect_failed",
             proxy => via.address(),
@@ -281,21 +280,6 @@ async fn dial(host: &Host, nodelay: bool) -> Result<Box<dyn Transport>> {
     // `Socks5Stream` 解引用到它裹着的那条 TCP，所以这里设的就是真正那个 socket。
     set_nodelay(&stream, nodelay);
     Ok(Box::new(stream))
-}
-
-/// 经代理连到目标。用户名为空就是"这个代理不要认证"，见 [`ProxyConfig`]。
-async fn socks5(
-    proxy: &ProxyConfig,
-    target: (&str, u16),
-) -> Result<Socks5Stream<TcpStream>, tokio_socks::Error> {
-    let server = (&*proxy.host, proxy.port);
-    match proxy.username.is_empty() {
-        true => Socks5Stream::connect(server, target).await,
-        false => {
-            Socks5Stream::connect_with_password(server, target, &proxy.username, &proxy.password)
-                .await
-        }
-    }
 }
 
 /// 关掉 Nagle。设不上只记一行日志：那只影响小包的时延，不该让一条已经
@@ -474,6 +458,7 @@ mod tests {
                     port: 1080,
                     ..Default::default()
                 },
+                ..Default::default()
             };
 
             let error = match SshConnection::connect(&host, WindowSize::new(80, 24, 640, 384)).await
@@ -550,6 +535,7 @@ mod tests {
                     port: proxy_port,
                     ..Default::default()
                 },
+                ..Default::default()
             };
 
             let outcome = SshConnection::connect(&host, WindowSize::new(80, 24, 640, 384)).await;
@@ -558,6 +544,25 @@ mod tests {
             let (target_host, target_port) = proxy.await.unwrap().unwrap();
             assert_eq!(target_host, "internal.example");
             assert_eq!(target_port, 2222);
+
+            // 经组网：拨的是那张网此刻的 SOCKS5 入口，目标同样原样交过去。
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let portal_address = listener.local_addr().unwrap();
+            let portal = tokio::spawn(accept_one(listener));
+            let network =
+                crate::easytier::portal::open("ssh-test-network".into(), "家里".into());
+            network.running(Some(portal_address));
+            host.proxy = crate::proxy::HostProxy {
+                mode: crate::proxy::ProxyMode::EasyTier,
+                network: "ssh-test-network".into(),
+                ..Default::default()
+            };
+
+            let outcome = SshConnection::connect(&host, WindowSize::new(80, 24, 640, 384)).await;
+            assert!(outcome.is_err(), "假入口不会说 SSH，握手必然失败");
+            let (target_host, target_port) = portal.await.unwrap().unwrap();
+            assert_eq!((target_host.as_str(), target_port), ("internal.example", 2222));
+            network.finish(None);
         });
     }
 

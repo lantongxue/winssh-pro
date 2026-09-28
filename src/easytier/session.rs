@@ -19,7 +19,11 @@
 //!
 //! 实例自己死了（虚拟网卡被拔、监听口被抢这类致命错）也在采样那一拍发现：
 //! 状态落到 `Stopped`，带着它最后一句错误报 [`EasyTierOutput::Stopped`]。
+//!
+//! 同样的几件事也一路报给入口登记处（[`super::portal`]）：起来了、每一拍走得到
+//! 哪些地址、要停了、怎么结束的 —— 经这张网去连的别的主机在那边等它。
 
+use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
@@ -34,6 +38,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 
 use super::config;
+use super::portal::{self, Ticket};
 use super::settings::EasyTierAccess;
 use super::snapshot::{LogLine, LogTone, NetworkSnapshot};
 use crate::host::Host;
@@ -89,7 +94,19 @@ impl EasyTierSession {
     pub fn start(host: &Host) -> Result<Self> {
         // wss 隧道与 https / txt 节点发现要建 TLS；测试里不经 `main`，这里再兜一次。
         crate::tls::install_default_provider();
-        let config = config::build(host)?;
+        // 先登记再校验：配置不对也要让等着这张网的拨号当场知道，别干等到超时。
+        let ticket = portal::open(host.id.clone(), host.name.clone());
+        let config = match config::build(host) {
+            Ok(config) => config,
+            Err(error) => {
+                ticket.finish(Some(format!("{error:#}").into()));
+                return Err(error);
+            }
+        };
+        let socks5 = host
+            .easytier
+            .socks5_address()
+            .and_then(|address| address.parse::<SocketAddr>().ok());
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (events_tx, events_rx) = mpsc::unbounded_channel();
 
@@ -103,9 +120,10 @@ impl EasyTierSession {
 
         let thread_name = format!("easytier-{}", host.id);
         let access = host.easytier.access;
+        // 线程起不来的话闭包连同登记那一格一起掉在地上，登记处当它出了事。
         std::thread::Builder::new()
             .name(thread_name)
-            .spawn(move || session_thread(config, access, input_rx, events_tx))
+            .spawn(move || session_thread(config, access, socks5, ticket, input_rx, events_tx))
             .map_err(|error| anyhow!("启动组网会话线程失败：{error}"))?;
 
         Ok(Self {
@@ -128,6 +146,8 @@ impl EasyTierSession {
 fn session_thread(
     config: TomlConfig,
     access: EasyTierAccess,
+    socks5: Option<SocketAddr>,
+    ticket: Ticket,
     input_rx: mpsc::UnboundedReceiver<EasyTierInput>,
     events_tx: mpsc::UnboundedSender<EasyTierOutput>,
 ) {
@@ -139,23 +159,27 @@ fn session_thread(
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            let _ = events_tx.send(EasyTierOutput::Stopped(Some(
-                t!("easytier.runtime_failed", error => error).into(),
-            )));
+            let reason = SharedString::from(t!("easytier.runtime_failed", error => error));
+            ticket.finish(Some(reason.clone()));
+            let _ = events_tx.send(EasyTierOutput::Stopped(Some(reason)));
             return;
         }
     };
-    let outcome = runtime.block_on(run(config, access, input_rx, &events_tx));
+    let outcome = runtime.block_on(run(config, access, socks5, &ticket, input_rx, &events_tx));
     // `Stopped` 等 runtime 拆完才报：监听口、SOCKS5 入口这时候才真的放掉，
     // 界面收到它就能立刻重新连接，不会撞上自己上一次还没松手的端口。
     runtime.shutdown_timeout(SHUTDOWN_GRACE);
+    ticket.finish(outcome.clone());
     let _ = events_tx.send(EasyTierOutput::Stopped(outcome));
 }
 
 /// 这张网的一生。返回的是它怎么结束的：`None` 是要它停的，`Some` 是出了事。
+/// 一路的状态同时报给入口登记处（`ticket`）。
 async fn run(
     config: TomlConfig,
     access: EasyTierAccess,
+    socks5: Option<SocketAddr>,
+    ticket: &Ticket,
     mut input_rx: mpsc::UnboundedReceiver<EasyTierInput>,
     events_tx: &mpsc::UnboundedSender<EasyTierOutput>,
 ) -> Option<SharedString> {
@@ -175,12 +199,16 @@ async fn run(
         started = tokio::time::timeout(START_TIMEOUT, instance.start()) => started,
         // 启动期间用户就点了停（或者面板关了）：不等它起完。
         _ = input_rx.recv() => {
+            ticket.stopping();
             stop(&instance).await;
             return None;
         }
     };
     match started {
-        Ok(Ok(())) => send(EasyTierOutput::Started),
+        Ok(Ok(())) => {
+            ticket.running(socks5);
+            send(EasyTierOutput::Started);
+        }
         Ok(Err(error)) => {
             stop(&instance).await;
             return Some(failure(&error, access));
@@ -218,6 +246,7 @@ async fn run(
                 match network_instance_running_info(instance.as_ref()).await {
                     Ok(info) => {
                         let mut snapshot = NetworkSnapshot::from_running_info(&info);
+                        ticket.reach(snapshot.reach());
                         let totals = snapshot.total_bytes();
                         let now = Instant::now();
                         snapshot.rate_kbps = previous.map(|(before, at)| rates(before, totals, now - at));
@@ -230,6 +259,10 @@ async fn run(
         }
     };
 
+    // 要它停的：先从登记处拿掉，收尾那几秒里别再有拨号往里走。
+    if outcome.is_none() {
+        ticket.stopping();
+    }
     stop(&instance).await;
     outcome
 }
@@ -616,8 +649,22 @@ mod tests {
             })
             .await;
 
-            // 路由刚到的那一下 hub 那边未必已经就绪，到点之前连不上就再来。
             let proxy = std::net::SocketAddr::from(([127, 0, 0, 1], leaf_socks5));
+            // 别的主机经这张网去连之前走的那一步：映射出来的子网进了 leaf 的
+            // 路由，入口登记处就放行，给回 leaf 的 SOCKS5 入口。这一步读的是
+            // 真实例的采样，不是手搓的。
+            let via = match announced {
+                Ok(Ok(())) => Some(
+                    tokio::time::timeout(
+                        Duration::from_secs(30),
+                        portal::wait("leaf", "10.250.0.1"),
+                    )
+                    .await,
+                ),
+                _ => None,
+            };
+
+            // 路由刚到的那一下 hub 那边未必已经就绪，到点之前连不上就再来。
             let target = std::net::SocketAddr::from(([10, 250, 0, 1], echo_port));
             let mut last_error = None;
             let echoed = match announced {
@@ -662,6 +709,11 @@ mod tests {
                     "45 秒内没收到 hub 代理的子网 {SUBNET}；日志 {logs:?}；hub {hub_stopped:?}"
                 ),
             }
+            assert_eq!(
+                via,
+                Some(Ok(Ok(Some(proxy)))),
+                "子网的路由到了，经这张网的拨号该拿到 leaf 的入口"
+            );
             assert_eq!(
                 echoed,
                 Some(*b"winssh"),

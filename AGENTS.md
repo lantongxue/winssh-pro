@@ -107,7 +107,8 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 `host.rs`（主机配置）、`credential.rs`（凭据保险箱）、`session.rs`（会话读数）、
 `command_history.rs`（主机上跑过的命令）、`terminal/`（终端内核）、
 `monitor/`（对端资源采集：采集脚本、解析、速率累加）、
-`easytier/`（组网：实例配置、进程内实例的起停与运行快照）。
+`easytier/`（组网：实例配置、进程内实例的起停与运行快照，以及别的主机
+"经组网"连接时等它就绪的入口登记处 `easytier::portal`）。
 
 数据访问走三层，UI 只认最上面那层：
 

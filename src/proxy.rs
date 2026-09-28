@@ -4,13 +4,19 @@
 //! 先连上代理服务器，让它替我们连到目标主机，之后的 SSH 握手、认证、通道
 //! 都在那条已经打通的字节流上跑（见 [`crate::ssh::connection`] 的拨号那一段）。
 //!
-//! 一台主机有三档可选（[`ProxyMode`]），全局只有两档：
+//! 一台主机有四档可选（[`ProxyMode`]），全局只有两档：
 //!
 //! | 主机上的选择 | 实际用谁 |
 //! | --- | --- |
 //! | [`Disabled`](ProxyMode::Disabled) | 直连，不管全局配了什么 |
 //! | [`Global`](ProxyMode::Global) | 设置里那份全局代理（[`GlobalProxy`]），它没开就是直连 |
 //! | [`Custom`](ProxyMode::Custom) | 这台主机自己那份 [`ProxyConfig`] |
+//! | [`EasyTier`](ProxyMode::EasyTier) | 本应用里的一台组网主机：用户态那一档是它的 SOCKS5 入口，虚拟网卡那一档直连（系统路由走网卡） |
+//!
+//! "经组网"那一档是**引用**不是取用：存的是那台组网主机的 id（[`HostProxy::network`]），
+//! 拨号时才去问那张网此刻从哪儿进 —— 入口端口是它自己的配置，改了这边跟着走；
+//! 网没连上时还要先把它加入（见 [`crate::easytier::portal`]）。所以这一档要等，
+//! 拨号前走的是异步的 [`route`]。
 //!
 //! **出厂档是跟随全局**，老库里补出来的那一列也是它。这不改变任何人现在的
 //! 行为：全局的出厂档是"不使用代理"，两者叠起来仍旧是直连；而一旦有人在设置
@@ -27,6 +33,8 @@ use std::sync::{LazyLock, RwLock};
 use gpui_kit::SharedString;
 use rust_i18n::t;
 use serde::{Deserialize, Serialize};
+
+use crate::host::Host;
 
 /// SOCKS5 的惯例端口。表单里那一格的出厂值。
 pub const DEFAULT_PORT: u16 = 1080;
@@ -79,11 +87,14 @@ pub enum ProxyMode {
     Global,
     /// 配置代理：用这台主机自己的那份 [`ProxyConfig`]。
     Custom,
+    /// 经 EasyTier 组网：本应用里的一台组网主机（[`HostProxy::network`]）。
+    EasyTier,
 }
 
 impl ProxyMode {
     /// 下拉里自上而下的顺序。[`Self::from_index`] 按的就是这个顺序。
-    pub const ALL: [Self; 3] = [Self::Disabled, Self::Global, Self::Custom];
+    /// 新的一档只往后加：下标是界面上的事，但老的几档别挪位置。
+    pub const ALL: [Self; 4] = [Self::Disabled, Self::Global, Self::Custom, Self::EasyTier];
 
     /// 界面上的名字。
     pub fn label(&self) -> SharedString {
@@ -91,6 +102,7 @@ impl ProxyMode {
             Self::Disabled => t!("proxy.mode_disabled"),
             Self::Global => t!("proxy.mode_global"),
             Self::Custom => t!("proxy.mode_custom"),
+            Self::EasyTier => t!("proxy.mode_easytier"),
         }
         .into()
     }
@@ -109,16 +121,32 @@ impl ProxyMode {
     }
 }
 
-/// 一台主机的代理设置：选了哪一档，以及"配置代理"那一档的内容。
+/// 一台主机的代理设置：选了哪一档，以及"配置代理"与"经组网"那两档的内容。
 ///
 /// 换档不清空内容：从"配置代理"切到"不使用代理"再切回来，刚才填的那几格
-/// 还在。落库时两样一起存（见 [`encode`]），所以来回切一趟不会丢东西。
+/// 还在。落库时几样一起存（见 [`encode`]），所以来回切一趟不会丢东西。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HostProxy {
     pub mode: ProxyMode,
     /// `mode == Custom` 时用的那台代理。
     pub config: ProxyConfig,
+    /// `mode == EasyTier` 时经哪一张网：那台组网主机的 id。空串是还没挑。
+    pub network: SharedString,
+}
+
+impl HostProxy {
+    /// 这份设置能不能存下来。拨号时的校验在 [`route`] 里；这里只拦表单上就
+    /// 看得出来的那几样，好在表单关掉之前说清楚。
+    pub fn check(&self) -> Result<(), SharedString> {
+        match self.mode {
+            ProxyMode::Custom => self.config.check(),
+            ProxyMode::EasyTier if self.network.trim().is_empty() => {
+                Err(t!("proxy.check_network").into())
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 /// 设置里那份全局代理：开没开，以及开着时用哪台。
@@ -174,12 +202,79 @@ pub fn exclusive_for_test() -> impl Drop {
     Restore(SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
 }
 
-/// 这台主机这一次要经过谁。`None` 是直连。
+/// 拨号前为什么定不下来要经过谁。两种说法不一样，所以分开：
+#[derive(Debug, PartialEq)]
+pub enum RouteError {
+    /// 代理那几格没配全（地址空着、端口是 0）。说给人听时要带上是哪台主机，
+    /// 各协议有自己的那句话（`ssh.proxy_misconfigured` 那一类）。
+    Misconfigured(SharedString),
+    /// 选的那张组网进不去：没连上、起不来、目标不在网里。这一句已经是完整的人话。
+    Network(SharedString),
+}
+
+impl RouteError {
+    /// 换成一个能往上抛的错误。没配全那一种交给 `misconfigured` 套上协议自己的说法。
+    pub fn into_error(self, misconfigured: impl FnOnce(SharedString) -> String) -> anyhow::Error {
+        match self {
+            Self::Misconfigured(reason) => anyhow::anyhow!("{}", misconfigured(reason)),
+            Self::Network(reason) => anyhow::anyhow!("{reason}"),
+        }
+    }
+}
+
+/// 这台主机这一次要经过谁。`None` 是直连。拨号前都走这里。
+///
+/// "经组网"那一档要等：那张网没连上就托界面去加入，连上了再等目标出现在它的
+/// 路由里（见 [`crate::easytier::portal::wait`]），等不到就报错。用户态那一档
+/// 给回它的 SOCKS5 入口；虚拟网卡那一档是直连 —— 系统路由自己会走网卡。
+///
+/// 别的几档同 [`resolve`]，不等。
+pub async fn route(host: &Host) -> Result<Option<ProxyConfig>, RouteError> {
+    if host.proxy.mode != ProxyMode::EasyTier {
+        return resolve(&host.proxy).map_err(RouteError::Misconfigured);
+    }
+    if host.proxy.network.trim().is_empty() {
+        return Err(RouteError::Misconfigured(t!("proxy.check_network").into()));
+    }
+    let portal = crate::easytier::portal::wait(&host.proxy.network, &host.hostname)
+        .await
+        .map_err(RouteError::Network)?;
+    Ok(portal.map(|address| ProxyConfig {
+        host: address.ip().to_string().into(),
+        port: address.port(),
+        // 入口只绑回环，不要认证。
+        username: SharedString::default(),
+        password: SharedString::default(),
+    }))
+}
+
+/// 经 `proxy` 连到 `target`。用户名为空就是"这个代理不要认证"，见 [`ProxyConfig`]。
+///
+/// 目标地址**原样交给代理去解析**（`(域名, 端口)` 而不是先在本机解成 IP）：
+/// 本机未必解得动对端那个内网域名，而那恰恰是用代理的理由。各协议的拨号都走
+/// 这一份，错误各自套上自己的说法。
+pub async fn socks5(
+    proxy: &ProxyConfig,
+    target: (&str, u16),
+) -> Result<tokio_socks::tcp::Socks5Stream<tokio::net::TcpStream>, tokio_socks::Error> {
+    use tokio_socks::tcp::Socks5Stream;
+
+    let server = (&*proxy.host, proxy.port);
+    match proxy.username.is_empty() {
+        true => Socks5Stream::connect(server, target).await,
+        false => {
+            Socks5Stream::connect_with_password(server, target, &proxy.username, &proxy.password)
+                .await
+        }
+    }
+}
+
+/// 不必等的那几档：这台主机这一次要经过谁。`None` 是直连。
 ///
 /// 配置不完整时**报错而不是退回直连**：用户选了走代理，说明他不想让这条
 /// 连接直接出去；少填一格就悄悄直连，等于替他做了一个相反的决定，而且他
 /// 从界面上看不出来。
-pub fn resolve(proxy: &HostProxy) -> Result<Option<ProxyConfig>, SharedString> {
+fn resolve(proxy: &HostProxy) -> Result<Option<ProxyConfig>, SharedString> {
     match proxy.mode {
         ProxyMode::Disabled => Ok(None),
         ProxyMode::Custom => {
@@ -194,6 +289,8 @@ pub fn resolve(proxy: &HostProxy) -> Result<Option<ProxyConfig>, SharedString> {
             global.config.check()?;
             Ok(Some(global.config))
         }
+        // 要等那张网，走 [`route`]。到这里是调用方走错了路，照"没挑网"报。
+        ProxyMode::EasyTier => Err(t!("proxy.check_network").into()),
     }
 }
 
@@ -270,8 +367,111 @@ mod tests {
                 username: "deploy".into(),
                 password: " spaces matter ".into(),
             },
+            network: "home-net-id".into(),
         };
         assert_eq!(decode(&encode(&proxy)), proxy);
+
+        let via_network = HostProxy {
+            mode: ProxyMode::EasyTier,
+            network: "home-net-id".into(),
+            ..Default::default()
+        };
+        assert_eq!(decode(&encode(&via_network)), via_network);
+        assert!(encode(&via_network).contains(r#""mode":"easytier""#));
+    }
+
+    /// 加"经组网"这一档之前存下来的那一行没有 `network` 这个键：照样读得回来，
+    /// 那一格落成"还没挑"。
+    #[test]
+    fn an_older_row_without_a_network_still_reads() {
+        let older = r#"{"mode":"custom","config":{"host":"10.0.0.9","port":1080,"username":"","password":""}}"#;
+        let proxy = decode(older);
+        assert_eq!(proxy.mode, ProxyMode::Custom);
+        assert_eq!(proxy.config, config());
+        assert!(proxy.network.is_empty());
+    }
+
+    /// 选了"经组网"却没挑哪一张：存不下来，拨号也不去等。
+    #[test]
+    fn a_network_proxy_needs_a_network() {
+        let mut proxy = HostProxy {
+            mode: ProxyMode::EasyTier,
+            ..Default::default()
+        };
+        assert_eq!(proxy.check(), Err(t!("proxy.check_network").into()));
+        proxy.network = "home-net-id".into();
+        assert_eq!(proxy.check(), Ok(()));
+        // 别的档不看这一格。
+        proxy.mode = ProxyMode::Disabled;
+        proxy.network = "".into();
+        assert_eq!(proxy.check(), Ok(()));
+    }
+
+    fn host_via(proxy: HostProxy, hostname: &str) -> Host {
+        Host {
+            id: "proxied".into(),
+            name: "proxied".into(),
+            kind: crate::host::HostKind::Ssh,
+            user: "root".into(),
+            hostname: hostname.to_string().into(),
+            port: 22,
+            platform: "".into(),
+            auth_method: crate::host::AuthMethod::Password,
+            password: "".into(),
+            key_content: "".into(),
+            key_passphrase: "".into(),
+            jump_host_id: None,
+            monitor_intervals: Default::default(),
+            forwards: Vec::new(),
+            tags: Vec::new(),
+            proxy,
+            vnc: Default::default(),
+            rdp: Default::default(),
+            serial: Default::default(),
+            easytier: Default::default(),
+            shell_integration: false,
+        }
+    }
+
+    /// 经组网：用户态那张网给回它的 SOCKS5 入口（只绑回环、不认证），虚拟网卡
+    /// 那张网是直连；没挑网是"没配好"，不是"网没连上"。
+    #[test]
+    fn a_network_proxy_routes_through_the_running_network() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let via = |network: &str| HostProxy {
+            mode: ProxyMode::EasyTier,
+            network: network.to_string().into(),
+            ..Default::default()
+        };
+
+        let socks5 = crate::easytier::portal::open("proxy-test-socks5".into(), "家里".into());
+        socks5.running(Some("127.0.0.1:11080".parse().unwrap()));
+        let route_of = |host: Host| runtime.block_on(async move { route(&host).await });
+        assert_eq!(
+            route_of(host_via(via("proxy-test-socks5"), "db.internal")),
+            Ok(Some(ProxyConfig {
+                host: "127.0.0.1".into(),
+                port: 11080,
+                ..Default::default()
+            }))
+        );
+
+        let tun = crate::easytier::portal::open("proxy-test-tun".into(), "机房".into());
+        tun.running(None);
+        assert_eq!(
+            route_of(host_via(via("proxy-test-tun"), "db.internal")),
+            Ok(None)
+        );
+
+        assert_eq!(
+            route_of(host_via(via(" "), "db.internal")),
+            Err(RouteError::Misconfigured(t!("proxy.check_network").into()))
+        );
+        socks5.finish(None);
+        tun.finish(None);
     }
 
     /// 出厂档存空串，空串也读得回出厂档 —— 老库补出来的那一列就是空串。
@@ -334,6 +534,7 @@ mod tests {
                 port: 1080,
                 ..Default::default()
             },
+            ..Default::default()
         };
         assert!(resolve(&proxy).is_err(), "地址没填");
 
@@ -344,6 +545,7 @@ mod tests {
                 port: 0,
                 ..Default::default()
             },
+            ..Default::default()
         };
         assert!(resolve(&proxy).is_err(), "端口是 0");
 

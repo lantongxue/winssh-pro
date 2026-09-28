@@ -185,10 +185,27 @@ fn auth_types() -> Vec<SharedString> {
     AuthMethod::ALL.map(|method| method.label()).to_vec()
 }
 
-/// 代理那一档的三个选项，顺序即 [`crate::proxy::ProxyMode`] 的编号顺序：
-/// 0 不使用代理、1 跟随全局、2 配置代理。和认证方式一样按**下标**判断。
+/// 代理那一档的四个选项，顺序即 [`crate::proxy::ProxyMode`] 的编号顺序：
+/// 0 不使用代理、1 跟随全局、2 配置代理、3 经 EasyTier 组网。和认证方式一样按
+/// **下标**判断。
 fn proxy_modes() -> Vec<SharedString> {
     ProxyMode::ALL.map(|mode| mode.label()).to_vec()
+}
+
+/// "经组网"那个下拉的候选：每台组网主机一行，名字后面跟它的网络名称 ——
+/// 两台主机进同一张网（比如一台用户态、一台虚拟网卡）时靠名字分辨。
+fn network_labels(networks: &[Host]) -> Vec<SharedString> {
+    networks
+        .iter()
+        .map(|network| {
+            t!(
+                "host_form.proxy_network_item",
+                name => network.name,
+                network => network.hostname,
+            )
+            .into()
+        })
+        .collect()
 }
 
 /// 目标操作系统。名字沿用发行版本身的名称，不译——`platform_tag()` 取的是这里的
@@ -358,6 +375,13 @@ pub struct HostForm {
     proxy_port: Entity<InputState>,
     proxy_username: Entity<InputState>,
     proxy_password: Entity<InputState>,
+    /// 本应用里的组网主机，按列表里的先后 —— "经 EasyTier 组网"那一档从这里挑。
+    /// 表单打开那一刻从分组里捡出来，和跳板机候选同一个来处。
+    networks: Vec<Host>,
+    /// 挑哪一张网，下标对着 [`Self::networks`]。存的是那台组网主机的 id
+    /// （[`crate::proxy::HostProxy::network`]），不是它的内容：入口端口是那边的配置，
+    /// 改了这边跟着走。
+    proxy_network: Entity<SelectState<Vec<SharedString>>>,
     tag_input: Entity<InputState>,
     tags: Vec<SharedString>,
     /// 保险箱里的账号密码那一档，连同挑它们的那个下拉。
@@ -508,14 +532,32 @@ impl HostForm {
                 cx,
             )
         });
-        cx.subscribe(
-            &proxy_mode,
-            |_, _, _: &SelectEvent<Vec<SharedString>>, cx| {
-                // 换了档，下面那四格要不要露出来得重新算 —— 交给下一次渲染。
-                cx.notify();
-            },
-        )
-        .detach();
+        // 正在编辑的这一台不算：它要是从组网改成了别的类型，自己指着自己就是
+        // 一张不存在的网。
+        let networks: Vec<Host> = groups
+            .iter()
+            .flat_map(|group| &group.hosts)
+            .filter(|host| host.kind == HostKind::EasyTier)
+            .filter(|host| editing.is_none_or(|(edited, _)| edited.id != host.id))
+            .cloned()
+            .collect();
+        let proxy_network = cx.new(|cx| {
+            SelectState::new(
+                network_labels(&networks),
+                networks
+                    .iter()
+                    .position(|network| network.id == initial_proxy.network)
+                    .map(IndexPath::new),
+                window,
+                cx,
+            )
+        });
+        // 换了档，下面那几格要不要露出来得重新算；换了网，底下那句提示跟着换 ——
+        // 都交给下一次渲染。
+        for select in [&proxy_mode, &proxy_network] {
+            cx.subscribe(select, |_, _, _: &SelectEvent<Vec<SharedString>>, cx| cx.notify())
+                .detach();
+        }
 
         let auth_type =
             cx.new(|cx| SelectState::new(auth_types(), Some(IndexPath::new(auth_ix)), window, cx));
@@ -939,6 +981,8 @@ impl HostForm {
             proxy_port,
             proxy_username,
             proxy_password,
+            networks,
+            proxy_network,
             tag_input,
             tags: initial_tags,
             vault_passwords,
@@ -1321,10 +1365,12 @@ impl HostForm {
         let jump_host_id: Option<String> = None;
 
         let proxy = self.build_proxy(cx);
-        // 选了"配置代理"却没填全，存下来的那份配置一开会话就会被
-        // [`crate::proxy::resolve`] 挡回来 —— 那时候这张表已经关掉了。
-        if proxy.mode == ProxyMode::Custom {
-            proxy.config.check()?;
+        // 选了"配置代理"却没填全、选了"经组网"却没挑哪张网，存下来的那份配置
+        // 一开会话就会被 [`crate::proxy::route`] 挡回来 —— 那时候这张表已经关掉了。
+        // 只在代理那一段露出来的类型上校验：串口、组网主机不画它，一格看不见的
+        // 东西不该拦着保存。
+        if !matches!(kind, HostKind::Serial | HostKind::EasyTier) {
+            proxy.check()?;
         }
 
         // 组网那一页同理：节点地址认不得、端口不是端口，存下来也进不了网。
@@ -1391,7 +1437,19 @@ impl HostForm {
                 username: self.proxy_username.read(cx).value().to_string().into(),
                 password: self.proxy_password.read(cx).value().to_string().into(),
             },
+            // 没挑（或者原来指着的那台组网主机已经删了）就是空串，
+            // [`HostProxy::check`] 会在"经组网"那一档把它说清楚。
+            network: self
+                .selected_network(cx)
+                .map(|network| network.id.clone())
+                .unwrap_or_default(),
         }
+    }
+
+    /// "经组网"那个下拉现在挑中的那台组网主机。
+    fn selected_network(&self, cx: &App) -> Option<&Host> {
+        let row = self.proxy_network.read(cx).selected_index(cx)?.row;
+        self.networks.get(row)
     }
 
     /// 从系统文件对话框里挑一个私钥文件，把**内容**读进框里。
@@ -1745,6 +1803,7 @@ impl HostForm {
     /// - **不使用代理**：什么也不必再说。
     /// - **跟随全局**：把现在的全局代理摆出来。
     /// - **配置代理**：露出地址、端口、用户名、密码四格。
+    /// - **经 EasyTier 组网**：挑一台组网主机，底下说一句连接时会怎么走。
     fn render_proxy_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = ProxyMode::from_index(
             self.proxy_mode
@@ -1816,6 +1875,40 @@ impl HostForm {
                         .child(SharedString::from(t!("host_form.proxy_auth_hint"))),
                 )
             })
+            .when(mode == ProxyMode::EasyTier, |el| {
+                el.child(field(
+                    t!("host_form.field_proxy_network").into(),
+                    Select::new(&self.proxy_network)
+                        .placeholder(t!("host_form.proxy_network_placeholder"))
+                        .disabled(self.networks.is_empty())
+                        .w_full(),
+                    cx,
+                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(palette::idle(cx))
+                        .child(self.proxy_network_hint(cx)),
+                )
+            })
+    }
+
+    /// "经组网"底下那一句：挑中的那张网连接时怎么走。用户态说入口地址，虚拟网卡
+    /// 说直连；两种都提一句"没连上会先自动加入"—— 那是这一档最要紧的行为。
+    fn proxy_network_hint(&self, cx: &App) -> SharedString {
+        match self.selected_network(cx) {
+            Some(network) => match network.easytier.socks5_address() {
+                Some(address) => t!(
+                    "host_form.proxy_network_socks5_hint",
+                    name => network.name,
+                    address => address,
+                ),
+                None => t!("host_form.proxy_network_tun_hint", name => network.name),
+            },
+            None if self.networks.is_empty() => t!("host_form.proxy_network_none"),
+            None => t!("host_form.proxy_network_pick"),
+        }
+        .into()
     }
 
     /// VNC 那一段：六档下拉，只在连接类型是 VNC 时画
@@ -2917,12 +3010,42 @@ mod tests {
         editing: Option<EditedHost>,
         vault: Vec<Credential>,
     ) -> (Entity<HostForm>, &mut gpui_kit::VisualTestContext) {
+        draw_form_in(cx, Vec::new(), editing, vault)
+    }
+
+    fn draw_form_in(
+        cx: &mut gpui_kit::TestAppContext,
+        groups: Vec<HostGroup>,
+        editing: Option<EditedHost>,
+        vault: Vec<Credential>,
+    ) -> (Entity<HostForm>, &mut gpui_kit::VisualTestContext) {
         cx.update(gpui_kit::init);
         let (form, cx) = cx.add_window_view(|window, cx| {
-            HostForm::new(&[], editing.as_ref(), &vault, window, cx)
+            HostForm::new(&groups, editing.as_ref(), &vault, window, cx)
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         (form, cx)
+    }
+
+    /// 一个分组，里面两台组网主机（一台用户态、一台虚拟网卡）和一台 SSH 主机 ——
+    /// 后者不该出现在"经组网"的候选里。
+    fn groups_with_networks() -> Vec<HostGroup> {
+        let network = |id: &str, name: &str, access: EasyTierAccess| {
+            let (mut host, _) = easytier_host();
+            host.id = id.to_string().into();
+            host.name = name.to_string().into();
+            host.easytier.access = access;
+            host.easytier.socks5_port = 11080;
+            host
+        };
+        vec![HostGroup {
+            name: "组网".into(),
+            hosts: vec![
+                network("net-home", "家里", EasyTierAccess::Socks5),
+                keyed_host(KEY_TEXT, "").0,
+                network("net-lab", "机房", EasyTierAccess::Tun),
+            ],
+        }]
     }
 
     /// 编辑一台密钥主机时，两格都要预填成库里的值 —— 不填的话，用户改一次
@@ -3239,6 +3362,7 @@ mod tests {
                 username: "deploy".into(),
                 password: " spaces matter ".into(),
             },
+            ..Default::default()
         };
         let expected = host.proxy.clone();
         let (form, cx) = draw_form(cx, Some((host, group)));
@@ -3286,8 +3410,9 @@ mod tests {
         assert_eq!(error, SharedString::from(t!("proxy.check_host")));
     }
 
-    /// 三档各画一遍：露出来的东西不一样，深 builder 链上的错只有真的走一趟
-    /// 才掉得出来。
+    /// 每一档各画一遍：露出来的东西不一样，深 builder 链上的错只有真的走一趟
+    /// 才掉得出来。这里一张网都没有（"经组网"那个下拉是灰的），有网可挑的那一屏
+    /// 在 [`a_host_via_a_network_keeps_its_reference`] 里画。
     #[gpui_kit::test]
     fn every_proxy_mode_draws_all_the_way_through(cx: &mut gpui_kit::TestAppContext) {
         let (form, cx) = draw_form(cx, None);
@@ -3301,6 +3426,72 @@ mod tests {
             cx.update(|window, cx| window.draw(cx).clear(cx));
             cx.update(|window, cx| window.draw(cx).clear(cx));
         }
+    }
+
+    /// "经组网"的候选只有组网主机，按列表里的先后；编辑一台指着某张网的主机，
+    /// 下拉落在那一张上，存回去的还是那台组网主机的 id。
+    #[gpui_kit::test]
+    fn a_host_via_a_network_keeps_its_reference(cx: &mut gpui_kit::TestAppContext) {
+        let (mut host, group) = keyed_host(KEY_TEXT, "");
+        host.proxy = HostProxy {
+            mode: ProxyMode::EasyTier,
+            network: "net-lab".into(),
+            ..Default::default()
+        };
+        let (form, cx) = draw_form_in(cx, groups_with_networks(), Some((host, group)), Vec::new());
+
+        form.read_with(cx, |this, cx| {
+            let ids: Vec<&str> = this.networks.iter().map(|host| host.id.as_ref()).collect();
+            assert_eq!(ids, vec!["net-home", "net-lab"], "SSH 主机不是一张网");
+            assert_eq!(
+                this.proxy_network_hint(cx),
+                SharedString::from(t!("host_form.proxy_network_tun_hint", name => "机房"))
+            );
+        });
+        let (_, draft) = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect("这张表填得是全的");
+        assert_eq!(draft.proxy.mode, ProxyMode::EasyTier);
+        assert_eq!(draft.proxy.network, "net-lab");
+
+        // 换一张：用户态那张，提示里说的是它的 SOCKS5 入口。
+        form.update_in(cx, |this, window, cx| {
+            this.proxy_network.update(cx, |state, cx| {
+                state.set_selected_index(Some(IndexPath::new(0)), window, cx)
+            });
+        });
+        form.read_with(cx, |this, cx| {
+            assert!(this.proxy_network_hint(cx).contains("127.0.0.1:11080"));
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let (_, draft) = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect("这张表填得是全的");
+        assert_eq!(draft.proxy.network, "net-home");
+    }
+
+    /// 选了"经组网"却没挑网（一张都没有，或者原来那张已经删了）：拦下来。
+    #[gpui_kit::test]
+    fn a_network_proxy_without_a_network_is_refused(cx: &mut gpui_kit::TestAppContext) {
+        let (mut host, group) = keyed_host(KEY_TEXT, "");
+        host.proxy = HostProxy {
+            mode: ProxyMode::EasyTier,
+            network: "已经删掉的那一台".into(),
+            ..Default::default()
+        };
+        let (form, cx) = draw_form_in(cx, groups_with_networks(), Some((host, group)), Vec::new());
+
+        form.read_with(cx, |this, cx| {
+            assert_eq!(
+                this.proxy_network_hint(cx),
+                SharedString::from(t!("host_form.proxy_network_pick"))
+            );
+        });
+        let error = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect_err("指着的网不在了");
+        assert_eq!(error, SharedString::from(t!("proxy.check_network")));
     }
 
     /// 编辑主机时标签正确预填，并在 build_draft 时保存。

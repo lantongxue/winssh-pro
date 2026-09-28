@@ -325,7 +325,7 @@ impl ProxyInputs {
             host: self.host.read(cx).value().trim().to_string().into(),
             // 空着或者不是数字就是 0。不替用户补一个惯例端口：连到 1080 而他
             // 填的是别的数字，那是更难查的一种错；0 会被
-            // [`crate::proxy::resolve`] 在开会话时说清楚。
+            // [`crate::proxy::route`] 在开会话时说清楚。
             port: self
                 .port
                 .read(cx)

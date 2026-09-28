@@ -42,6 +42,7 @@ use gpui_kit::{
 use super::{GUTTER, ICON_SIZE, SidebarView, collapse_button, view_header};
 use crate::{
     host::{Host, HostGroup, HostKind, HostStatus},
+    proxy::ProxyMode,
     service::{CredentialService, HostService},
     ui::{
         cards::{HOST_CARD_HEIGHT, HostCard},
@@ -338,7 +339,40 @@ impl HostExplorerView {
         };
         this.rebuild_rows(cx);
         this.load_initially(window, cx);
+        this.serve_network_joins(window, cx);
         this
+    }
+
+    /// 接下"替我加入那张网"的请求（见 [`crate::easytier::portal`]）。
+    ///
+    /// 经组网的主机第一次打开时，[`Self::open_host`] 自己先把网加入了；这条
+    /// 通道兜的是之后的每一次重新拨号 —— 会话标签页上点"重新连接"、分屏再拨
+    /// 一条 —— 那时候网可能已经退了，而拨号那一侧开不了标签页。
+    fn serve_network_joins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use futures::StreamExt as _;
+
+        let (launcher, mut requests) = futures::channel::mpsc::unbounded();
+        crate::easytier::portal::set_launcher(launcher);
+        cx.spawn_in(window, async move |this, cx| {
+            while let Some(network) = requests.next().await {
+                let served = this.update_in(cx, |this, window, cx| {
+                    match this.network_host(&network) {
+                        Some(host) => {
+                            this.join_network(&host, window, cx);
+                            this.rebuild_rows(cx);
+                        }
+                        None => crate::easytier::portal::fail(
+                            network,
+                            t!("easytier.portal_missing").into(),
+                        ),
+                    }
+                });
+                if served.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     /// 当前的分组列表，供新建主机对话框读取（跳板机候选、分组归属）。
@@ -450,15 +484,20 @@ impl HostExplorerView {
         //
         // 组网主机只开一扇：它说的是"本机在不在这张网里"，第二扇只会是一个
         // 同名实例去抢同一个 SOCKS5 端口。已经开着就翻到前面，退出了的顺手
-        // 重新加入（[`EasyTierPanel::reopen`]）。
-        if host.kind == HostKind::EasyTier
-            && let Some(existing) = self.easytier_panel(&host.id)
-        {
-            existing.update(cx, |panel, cx| panel.reopen(host.clone(), window, cx));
-            let id = PanelId::from(existing.entity_id());
+        // 重新加入（[`Self::join_network`]）。
+        if host.kind == HostKind::EasyTier {
+            let panel = self.join_network(host, window, cx);
+            let id = PanelId::from(panel.entity_id());
             _ = self.dock_area.update(cx, |area, cx| area.select_panel(id, window, cx));
             self.rebuild_rows(cx);
             return;
+        }
+        // 代理选了"经组网"的主机：先把那张网加入（没开就开它的标签页），再开
+        // 这台主机自己的会话 —— 后开的在前面，用户看到的是他点的那一台。会话
+        // 那边的拨号在 [`crate::easytier::portal`] 等网就绪。那台组网主机已经
+        // 删掉了的话这里什么也不做，拨号那一步会把话说清楚。
+        if let Some(network) = self.network_of(host) {
+            self.join_network(&network, window, cx);
         }
         let panel = match host.kind {
             HostKind::Ssh | HostKind::Telnet | HostKind::Serial => {
@@ -484,17 +523,53 @@ impl HostExplorerView {
                 self.track_panel(host.id.clone(), &panel, TrackedPanel::Rdp, window, cx);
                 panel_handle(panel)
             }
-            HostKind::EasyTier => {
-                let panel = EasyTierPanel::new(host.clone(), self.dock_area.clone(), window, cx);
-                self.track_panel(host.id.clone(), &panel, TrackedPanel::EasyTier, window, cx);
-                panel_handle(panel)
-            }
+            // 上面已经由 [`Self::join_network`] 开过、返回了。
+            HostKind::EasyTier => return,
         };
         _ = self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel, DockPlacement::Center, None, window, cx);
         });
 
         self.rebuild_rows(cx);
+    }
+
+    /// 把本机接进一张网：那台组网主机已经开着一扇就交给它（退出了的重新加入、
+    /// 正在退出的退完再进，见 [`EasyTierPanel::reopen`]），没开就新开一扇。
+    /// 不动选中、不记"最近" —— 替别的主机加入时，用户要看的不是它。
+    fn join_network(
+        &mut self,
+        network: &Host,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<EasyTierPanel> {
+        if let Some(existing) = self.easytier_panel(&network.id) {
+            existing.update(cx, |panel, cx| panel.reopen(network.clone(), cx));
+            return existing;
+        }
+        let panel = EasyTierPanel::new(network.clone(), self.dock_area.clone(), window, cx);
+        self.track_panel(network.id.clone(), &panel, TrackedPanel::EasyTier, window, cx);
+        let handle = panel_handle(panel.clone());
+        _ = self.dock_area.update(cx, |area, cx| {
+            area.add_panel_view(handle, DockPlacement::Center, None, window, cx);
+        });
+        panel
+    }
+
+    /// 这台主机经哪一张网去连（代理选了"经组网"、那台组网主机还在）。
+    fn network_of(&self, host: &Host) -> Option<Host> {
+        match host.proxy.mode {
+            ProxyMode::EasyTier => self.network_host(&host.proxy.network),
+            _ => None,
+        }
+    }
+
+    /// 这个 id 的那台组网主机。不是组网主机的不算 —— 一台主机换了连接类型，
+    /// 指着它的那些"经组网"就指空了。
+    fn network_host(&self, id: &SharedString) -> Option<Host> {
+        self.host(id)
+            .map(|(_, host)| host)
+            .filter(|host| host.kind == HostKind::EasyTier)
+            .cloned()
     }
 
     /// 名册上这台组网主机还开着的那一扇（关掉了、被回收了的不算）。

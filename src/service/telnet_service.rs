@@ -27,17 +27,20 @@ impl TelnetService {
 
     /// 按 [`Host`] 建立一条已经协商完毕的 Telnet 会话。
     ///
-    /// 与 SSH 那边同一条规矩：底层 [`TelnetConnection::connect_blocking`] 是
-    /// **同步阻塞**的（telnet crate 不吃 tokio），必须派到 `spawn_blocking`
-    /// 上跑，否则 gpui 线程会被握手的几百毫秒卡住。用
-    /// [`crate::db::run`] + `tokio::task::spawn_blocking` 桥接：`db::run`
-    /// 让代码进应用级 tokio runtime、`spawn_blocking` 再把它踢到 blocking
-    /// 池，两条链路都不占 worker。
+    /// 两步，都不在 gpui 线程上：[`crate::db::run`] 让代码进应用级 tokio
+    /// runtime，先在那里异步拨号（[`TelnetConnection::dial`]：直连或经代理，
+    /// 经组网的主机还要等那张网）；拨通之后的初始协商是**同步阻塞**的（telnet
+    /// crate 不吃 tokio），再用 `spawn_blocking` 踢到 blocking 池
+    /// （[`TelnetConnection::start_blocking`]），不占 worker。
     pub async fn connect(&self, host: &Host, window: WindowSize) -> Result<TelnetConnection> {
         let host = host.clone();
         crate::db::run(async move {
-            tokio::task::spawn_blocking(move || TelnetConnection::connect_blocking(&host, window))
-                .await?
+            let stream = TelnetConnection::dial(&host).await?;
+            let connection = tokio::task::spawn_blocking(move || {
+                TelnetConnection::start_blocking(stream, window)
+            })
+            .await?;
+            Ok(connection)
         })
         .await
     }

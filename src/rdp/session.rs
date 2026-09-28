@@ -103,6 +103,7 @@ use super::transport;
 use crate::desktop::{FrameReceiver, FrameSender, RemoteCursor, frame_channel};
 use crate::host::Host;
 use crate::netstats::{self, LinkStats, TrafficCounters};
+use crate::proxy::ProxyConfig;
 
 /// 连接序列（含 TLS 与 CredSSP）最多等多久。
 ///
@@ -237,8 +238,9 @@ struct SessionParts {
     result_tx: tokio::sync::oneshot::Sender<Result<()>>,
 }
 
-/// 一条会话的线程本体：一个 current-thread runtime，`block_on` 先跑带超时的
-/// 连接序列、把成败回报给 [`RdpSession::connect`]，成了就接着跑会话循环。
+/// 一条会话的线程本体：一个 current-thread runtime，`block_on` 先选路、再跑带
+/// 超时的连接序列、把成败回报给 [`RdpSession::connect`]，成了就接着跑会话循环。
+/// 选路不算进超时：经组网的主机在那一步等那张网加入（见 [`transport`] 的模块文档）。
 /// runtime 建不起来（系统资源等）就静默 drop `result_tx`，由 `connect` 报
 /// "线程意外停止"。
 fn session_thread(parts: SessionParts) {
@@ -261,10 +263,18 @@ fn session_thread(parts: SessionParts) {
         return;
     };
     runtime.block_on(async move {
+        let via = match transport::route(&host).await {
+            Ok(via) => via,
+            Err(error) => {
+                let _ = result_tx.send(Err(error));
+                return;
+            }
+        };
         let outcome = tokio::time::timeout(
             CONNECT_TIMEOUT,
             open(
                 host.clone(),
+                via,
                 desktop,
                 settings,
                 clip_tx,
@@ -314,8 +324,10 @@ type UpgradedFramed = TokioFramed<Box<dyn AsyncReadWrite + Unpin + Send + Sync>>
 ///
 /// `counters` 挂到拨号得到的那条流上数进出字节；连同对端地址一起交回，
 /// 供 [`run`] 起链路时延探测（走代理时对端是代理）。
+#[allow(clippy::too_many_arguments)]
 async fn open(
     host: Host,
+    via: Option<ProxyConfig>,
     desktop: (u16, u16),
     settings: RdpSettings,
     clip_tx: mpsc::UnboundedSender<ClipboardMessage>,
@@ -323,7 +335,7 @@ async fn open(
     local: LocalClipboard,
     counters: Arc<TrafficCounters>,
 ) -> Result<(UpgradedFramed, ConnectionResult, SocketAddr)> {
-    let (stream, peer) = transport::dial(&host, counters).await?;
+    let (stream, peer) = transport::dial(&host, via, counters).await?;
     let client_addr = stream.local_addr().with_context(|| {
         t!("rdp.connect_failed", host => host.hostname, port => host.port).to_string()
     })?;

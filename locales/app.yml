@@ -1337,6 +1337,28 @@ easytier.stopped_unexpectedly:
 easytier.thread_crashed:
   en: "The network session ended unexpectedly"
   zh-CN: "组网会话意外结束"
+# 经组网连别的主机（src/easytier/portal.rs）：拨号前等那张网就绪时的几种说法。
+easytier.portal_not_joined:
+  en: "The EasyTier network this host goes through is not joined, and there is nothing here to join it."
+  zh-CN: "这台主机经的组网没连上，也没有地方替它加入。"
+easytier.portal_failed:
+  en: "The EasyTier network %{name} did not come up: %{reason}"
+  zh-CN: "组网「%{name}」没连上：%{reason}"
+easytier.portal_left:
+  en: "The EasyTier network %{name} was left while this host was connecting through it."
+  zh-CN: "组网「%{name}」在这台主机连接途中退出了。"
+easytier.portal_join_timeout:
+  en: "Waited %{secs} seconds, and the EasyTier network %{name} is still not joined."
+  zh-CN: "等了 %{secs} 秒，组网「%{name}」还没连上。"
+easytier.portal_join_timeout_unnamed:
+  en: "Waited %{secs} seconds, and the EasyTier network this host goes through is still not joined."
+  zh-CN: "等了 %{secs} 秒，这台主机经的组网还没连上。"
+easytier.portal_no_route:
+  en: "Waited %{secs} seconds, and the EasyTier network %{name} still has no route to %{target}: that machine is probably offline, or not in this network (and no node proxies its subnet)."
+  zh-CN: "组网「%{name}」里等了 %{secs} 秒也没有到 %{target} 的路由：那台机器多半不在线，或者不在这张网里（也没有节点代理它所在的网段）。"
+easytier.portal_missing:
+  en: "The EasyTier network this host goes through is no longer in the host list (deleted, or changed to another connection type). Pick one again under Advanced in the host's settings."
+  zh-CN: "这台主机经的组网已经不在主机列表里了（删掉了，或者改成了别的连接类型）。去主机配置的「高级」页重新选一张。"
 easytier.status_starting:
   en: "Joining…"
   zh-CN: "正在加入…"
@@ -1380,8 +1402,8 @@ easytier.socks5_copied:
   en: "Copied %{address}"
   zh-CN: "已复制 %{address}"
 easytier.socks5_hint:
-  en: "Other hosts reach this network through the SOCKS5 entry %{address}: in their settings choose Advanced → Proxy → Custom proxy, enter this address, and use a virtual IP as the hostname. The machine on the other end must join with a virtual NIC (or share a subnet proxy); a node in user space can reach others but cannot be reached by its virtual IP."
-  zh-CN: "别的主机经 SOCKS5 入口 %{address} 就能进这张网：在它的「高级 → 代理」里选「配置代理」，填上这个地址，主机名直接写对方的虚拟 IP。对方要以虚拟网卡接入（或开了子网代理）—— 用户态的节点能访问别人，自己却不能经虚拟 IP 被访问。"
+  en: "Other hosts reach this network through the SOCKS5 entry %{address}: in their settings choose Advanced → Proxy → Via EasyTier network and pick this one (it is joined automatically when they connect), and use a virtual IP as the hostname. The machine on the other end must join with a virtual NIC (or share a subnet proxy); a node in user space can reach others but cannot be reached by its virtual IP."
+  zh-CN: "别的主机经 SOCKS5 入口 %{address} 就能进这张网：在它的「高级 → 代理」里选「经 EasyTier 组网」、挑这一张（连接时它没连上会自动加入），主机名直接写对方的虚拟 IP。对方要以虚拟网卡接入（或开了子网代理）—— 用户态的节点能访问别人，自己却不能经虚拟 IP 被访问。"
 easytier.local_title:
   en: "This node"
   zh-CN: "本机节点"
@@ -1721,8 +1743,8 @@ host_form.easytier_listen_hint:
   en: "Expanded the same way as easytier-core -l: tcp and udp use this port, wg and ws use +1, quic and wss use +2."
   zh-CN: "和 easytier-core -l 一样展开：tcp、udp 用这个端口，wg、ws 用 +1，quic、wss 用 +2。"
 host_form.easytier_access_socks5_hint:
-  en: "User space needs no administrator rights: the node opens a SOCKS5 entry on 127.0.0.1, and hosts in this app reach the network by using it as their proxy. Other nodes cannot reach this computer by its virtual IP in this mode."
-  zh-CN: "用户态不要管理员权限：本机在 127.0.0.1 上开一个 SOCKS5 入口，本应用里的主机把代理指到它就能进这张网。这一档别的节点访问不到本机的虚拟 IP。"
+  en: "User space needs no administrator rights: the node opens a SOCKS5 entry on 127.0.0.1, and hosts in this app reach the network by choosing Via EasyTier network as their proxy. Other nodes cannot reach this computer by its virtual IP in this mode."
+  zh-CN: "用户态不要管理员权限：本机在 127.0.0.1 上开一个 SOCKS5 入口，本应用里的主机把代理选成「经 EasyTier 组网」就能进这张网。这一档别的节点访问不到本机的虚拟 IP。"
 host_form.easytier_access_tun_hint:
   en: "A virtual NIC lets every program on this computer reach the network, but WinSSH Pro must run as administrator (root), and on Windows wintun.dll must sit next to the program."
   zh-CN: "虚拟网卡让本机所有程序都能直接访问这张网，但 WinSSH Pro 要以管理员（root）身份运行，Windows 上还要 wintun.dll 在程序旁边。"
@@ -1879,6 +1901,27 @@ host_form.proxy_global_on:
 host_form.proxy_global_off:
   en: No global proxy is set up yet, so this host connects directly. Configure one under Preferences → Network Proxy.
   zh-CN: 还没配全局代理，这台主机会直连。要配的话去偏好设置 → 网络代理。
+host_form.field_proxy_network:
+  en: Network
+  zh-CN: 组网
+host_form.proxy_network_item:
+  en: "%{name} (%{network})"
+  zh-CN: "%{name}（%{network}）"
+host_form.proxy_network_placeholder:
+  en: Pick a network
+  zh-CN: 选一张组网
+host_form.proxy_network_socks5_hint:
+  en: "Connects through the SOCKS5 entry %{address} of %{name}. If that network is not joined yet, its tab opens and joins it first, then this host connects."
+  zh-CN: "连接时经「%{name}」的 SOCKS5 入口 %{address}。这张网没连上时，会先打开它的标签页加入，再连这台主机。"
+host_form.proxy_network_tun_hint:
+  en: "%{name} joins with a virtual NIC, so this host connects directly and the system routes it into the network. If that network is not joined yet, its tab opens and joins it first, then this host connects."
+  zh-CN: "「%{name}」以虚拟网卡接入：连接时直连，系统路由经网卡进网。这张网没连上时，会先打开它的标签页加入，再连这台主机。"
+host_form.proxy_network_none:
+  en: There is no EasyTier host yet. Create a host whose connection type is EasyTier first, then pick it here.
+  zh-CN: 还没有组网主机。先新建一台连接类型为 EasyTier 的主机，再回来选它。
+host_form.proxy_network_pick:
+  en: Pick a network to connect through. If it is not joined yet, it is joined automatically first.
+  zh-CN: 选一张组网：连接时经它进网，它没连上时会先自动加入。
 
 # ── 代理模型（src/proxy.rs） ─────────────────────────────────────────────
 proxy.mode_disabled:
@@ -1896,6 +1939,12 @@ proxy.check_host:
 proxy.check_port:
   en: The proxy port is not a valid port number.
   zh-CN: 代理端口不是一个有效的端口号。
+proxy.mode_easytier:
+  en: Via EasyTier network
+  zh-CN: 经 EasyTier 组网
+proxy.check_network:
+  en: No EasyTier network is picked to connect through.
+  zh-CN: 没选经哪张 EasyTier 组网。
 
 # ── 凭据模型（src/credential.rs） ────────────────────────────────────────
 credential.kind_password:
@@ -3778,6 +3827,12 @@ ssh.auth_agent_failed:
 telnet.connect_failed:
   en: "Connecting to %{host}:%{port} failed"
   zh-CN: "连接到 %{host}:%{port} 失败"
+telnet.proxy_connect_failed:
+  en: "Reaching %{host}:%{port} through the proxy %{proxy} failed"
+  zh-CN: "经代理 %{proxy} 连接到 %{host}:%{port} 失败"
+telnet.proxy_misconfigured:
+  en: "The proxy for %{host} is not set up: %{reason}"
+  zh-CN: "%{host} 的代理没配好：%{reason}"
 
 # ── SSH 端口转发 ─────────────────────────────────────────────────────────
 ssh_forward.bind_failed:

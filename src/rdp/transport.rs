@@ -3,8 +3,12 @@
 //! 和 SSH 的 [`crate::ssh::connection::dial`]、VNC 的
 //! [`crate::vnc::transport::dial`] 同一条规矩：代理换掉的只是 RDP 下面那条
 //! 字节流，协议本身对"有没有代理"一无所知。选哪条路由
-//! [`crate::proxy::resolve`] 决定 —— 不使用代理 / 跟随全局 / 这台自己的那台，
-//! 三档的语义（包括"配置不完整就报错、绝不悄悄直连"）都定义在那里。
+//! [`crate::proxy::route`] 决定 —— 不使用代理 / 跟随全局 / 这台自己的那台 /
+//! 经组网，几档的语义（包括"配置不完整就报错、绝不悄悄直连"）都定义在那里。
+//!
+//! 和 VNC 不同，选路（[`route`]）与拨号（[`dial`]）是分开的两步：RDP 的连接序列
+//! 整段套着一个超时（见 [`super::session`]），而经组网的主机选路那一步要等那张网
+//! 加入、等路由过来，几十秒是正常的 —— 那段时间不该算进"连接序列太慢"里。
 //!
 //! 与 VNC 那份唯一的差别：RDP 的连接序列要一个 `SocketAddr` 当
 //! `ClientConnector::new` 的入参（`TS_UD_CS_CORE` 里报的客户端地址），
@@ -17,11 +21,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use anyhow::{Context as _, Result, anyhow};
+use anyhow::{Context as _, Result};
 use rust_i18n::t;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
-use tokio_socks::tcp::Socks5Stream;
 
 use crate::host::Host;
 use crate::netstats::TrafficCounters;
@@ -81,17 +84,26 @@ impl AsyncWrite for RdpStream {
     }
 }
 
-/// 照着一台主机的地址与代理设置连过去。返回的流已经能读能写，
-/// 连同对端地址（给链路时延探测用）。`counters` 挂在这条流上数进出字节。
-pub async fn dial(host: &Host, counters: Arc<TrafficCounters>) -> Result<(RdpStream, SocketAddr)> {
+/// 这一次经过谁：`None` 是直连。经组网的主机在这一步等那张网就绪。
+pub async fn route(host: &Host) -> Result<Option<ProxyConfig>> {
+    proxy::route(host).await.map_err(|error| {
+        error.into_error(|reason| {
+            t!("rdp.proxy_misconfigured", host => host.name, reason => reason).to_string()
+        })
+    })
+}
+
+/// 照着一台主机的地址连过去，经 `via`（[`route`] 选好的那一台，`None` 是直连）。
+/// 返回的流已经能读能写，连同对端地址（给链路时延探测用）。`counters` 挂在
+/// 这条流上数进出字节。
+pub async fn dial(
+    host: &Host,
+    via: Option<ProxyConfig>,
+    counters: Arc<TrafficCounters>,
+) -> Result<(RdpStream, SocketAddr)> {
     let target = (host.hostname.as_ref(), host.port);
 
-    let socket = match proxy::resolve(&host.proxy).map_err(|reason| {
-        anyhow!(
-            "{}",
-            t!("rdp.proxy_misconfigured", host => host.name, reason => reason)
-        )
-    })? {
+    let socket = match via {
         None => {
             let socket = TcpStream::connect((host.hostname.as_ref(), host.port))
                 .await
@@ -108,7 +120,7 @@ pub async fn dial(host: &Host, counters: Arc<TrafficCounters>) -> Result<(RdpStr
             socket
         }
         Some(via) => {
-            let stream = socks5(&via, target).await.with_context(|| {
+            let stream = proxy::socks5(&via, target).await.with_context(|| {
                 t!(
                     "rdp.proxy_connect_failed",
                     proxy => via.address(),
@@ -125,19 +137,4 @@ pub async fn dial(host: &Host, counters: Arc<TrafficCounters>) -> Result<(RdpStr
 
     let peer = socket.peer_addr()?;
     Ok((RdpStream { socket, counters }, peer))
-}
-
-/// 经代理连到目标。用户名为空就是"这个代理不要认证"，见 [`ProxyConfig`]。
-async fn socks5(
-    proxy: &ProxyConfig,
-    target: (&str, u16),
-) -> Result<Socks5Stream<TcpStream>, tokio_socks::Error> {
-    let server = (&*proxy.host, proxy.port);
-    match proxy.username.is_empty() {
-        true => Socks5Stream::connect(server, target).await,
-        false => {
-            Socks5Stream::connect_with_password(server, target, &proxy.username, &proxy.password)
-                .await
-        }
-    }
 }

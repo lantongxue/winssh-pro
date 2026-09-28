@@ -7,8 +7,10 @@
 //! 同一台节点在我们这儿和在命令行里看到的是同一组数。
 
 use std::collections::VecDeque;
+use std::net::Ipv4Addr;
 
 use chrono::Local;
+use cidr::{Ipv4Cidr, Ipv4Inet};
 use easytier::common::global_ctx::GlobalCtxEvent;
 use easytier::proto::api::instance::PeerRoutePair;
 use easytier::proto::api::manage::NetworkInstanceRunningInfo;
@@ -130,6 +132,26 @@ pub struct PeerNode {
     pub version: SharedString,
     /// 它是不是一台公共服务器（只转发、不在虚拟网里有地址）。
     pub public_server: bool,
+    /// 它代理给这张网的子网（它那边的 `-n`）。带映射的那种是映射后的那一段
+    /// —— 别的节点用来访问的是它。
+    pub subnets: Vec<Ipv4Cidr>,
+}
+
+/// 此刻经这张网走得到的地址：本机与各节点的虚拟地址，加上各节点代理出来的
+/// 子网。别的主机经这张网去连之前，先等目标出现在这里面（见 [`super::portal`]）。
+///
+/// 和 EasyTier 自己挑路时问的是同一件事（`get_msg_dst_peer`：目标落在哪台
+/// 节点上）：落在这里面，SOCKS5 入口就走网里；不在，它会退回本机路由直连。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Reach {
+    hosts: Vec<Ipv4Addr>,
+    subnets: Vec<Ipv4Cidr>,
+}
+
+impl Reach {
+    pub fn contains(&self, ip: Ipv4Addr) -> bool {
+        self.hosts.contains(&ip) || self.subnets.iter().any(|subnet| subnet.contains(&ip))
+    }
 }
 
 /// 一次采样：整张网此刻的样子。
@@ -202,6 +224,28 @@ impl NetworkSnapshot {
     pub fn member_count(&self) -> usize {
         self.peers.iter().filter(|peer| !peer.public_server).count()
     }
+
+    /// 此刻经这张网走得到哪些地址。
+    pub fn reach(&self) -> Reach {
+        let local = self
+            .local
+            .ipv4
+            .as_deref()
+            .and_then(|inet| inet.parse::<Ipv4Inet>().ok())
+            .map(|inet| inet.address());
+        let peers = self
+            .peers
+            .iter()
+            .filter_map(|peer| peer.ipv4.as_deref()?.parse::<Ipv4Addr>().ok());
+        Reach {
+            hosts: local.into_iter().chain(peers).collect(),
+            subnets: self
+                .peers
+                .iter()
+                .flat_map(|peer| peer.subnets.iter().copied())
+                .collect(),
+        }
+    }
 }
 
 /// 排序用的虚拟地址：没有地址的（公共服务器）排到后面。
@@ -258,6 +302,11 @@ fn peer_from_pair(pair: &PeerRoutePair) -> PeerNode {
             .feature_flag
             .as_ref()
             .is_some_and(|flags| flags.is_public_server),
+        subnets: route
+            .proxy_cidrs
+            .iter()
+            .filter_map(|cidr| cidr.parse().ok())
+            .collect(),
     }
 }
 
@@ -506,6 +555,7 @@ mod tests {
         });
         let mut relayed = route(3, "far", Some("10.144.144.3/24"), 2);
         relayed.path_latency_latency_first = Some(42);
+        relayed.proxy_cidrs = vec!["10.1.2.0/24".into(), "认不得".into()];
         NetworkInstanceRunningInfo {
             dev_name: "".into(),
             my_node_info: Some(MyNodeInfo {
@@ -576,6 +626,31 @@ mod tests {
         assert_eq!((far.rx_bytes, far.tx_bytes), (0, 0));
 
         assert_eq!(snapshot.total_bytes(), (2148, 1074));
+    }
+
+    /// 走得到的地址：本机、每台节点的虚拟地址、节点代理出来的子网（认不得的
+    /// 那一条跳过）；网里没有的地址不算。
+    #[test]
+    fn reach_covers_members_and_their_subnets() {
+        let snapshot = NetworkSnapshot::from_running_info(&running_info());
+        assert_eq!(
+            snapshot.peers[2].subnets,
+            vec!["10.1.2.0/24".parse::<Ipv4Cidr>().unwrap()]
+        );
+
+        let reach = snapshot.reach();
+        for ip in ["10.144.144.1", "10.144.144.2", "10.144.144.3", "10.1.2.7"] {
+            assert!(reach.contains(ip.parse().unwrap()), "{ip} 走得到");
+        }
+        for ip in ["10.144.144.9", "10.1.3.1", "192.168.1.1"] {
+            assert!(!reach.contains(ip.parse().unwrap()), "{ip} 网里没有");
+        }
+        assert!(
+            !NetworkSnapshot::default()
+                .reach()
+                .contains("10.144.144.1".parse().unwrap()),
+            "还没分到地址的时候什么都走不到"
+        );
     }
 
     #[test]

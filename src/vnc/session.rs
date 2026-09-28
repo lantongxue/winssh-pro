@@ -1412,7 +1412,7 @@ mod tests {
 
     /// 最小 SOCKS5 服务端（[`crate::proxy`] 那一档的对面）：无认证 + CONNECT，
     /// 谈完就双向中继。测的是"主机设了自定义代理时，VNC 真能从代理穿出去" ——
-    /// `proxy::resolve`、`tokio-socks` 的握手、`VncStream` 的枚举包装，
+    /// `proxy::route`、`tokio-socks` 的握手、`VncStream` 的枚举包装，
     /// 这一段生产代码全在断言底下走。
     async fn fake_socks5(target: SocketAddr) -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1486,6 +1486,7 @@ mod tests {
                     username: "".into(),
                     password: "".into(),
                 },
+                ..Default::default()
             };
 
             let mut session = VncSession::connect(host).await.expect("代理那一档该握得通");
