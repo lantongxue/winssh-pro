@@ -1,17 +1,20 @@
 //! 智能助手的领域层：模型供应商配置、对话模型与 Agent 运行。
 //!
-//! 分两半：[`config`] 是"用哪家模型、要不要全自动"这份配置连同对话的
-//! 领域模型（消息、会话、命令卡片）；[`agent`] 是 rig 那一侧 —— 装配
-//! Agent、工具与审核门，把一次提问跑成一场多轮运行。
+//! 分三块：[`config`] 是"用哪家模型、看不看得了图、要不要全自动"这份配置
+//! 连同对话的领域模型（消息、会话、命令卡片）；[`image`] 把剪贴板里贴进来的
+//! 图规整成模型吃得下的样子；[`agent`] 是 rig 那一侧 —— 装配 Agent、工具与
+//! 审核门，把一次提问跑成一场多轮运行。
 //!
-//! 界面（[`crate::ui::drawers`] 的助手抽屉）只认这里的类型和
+//! 界面（[`crate::ui::panels`] 的助手面板）只认这里的类型和
 //! [`crate::service::AssistantService`]，不直接碰 rig。
 
 pub mod agent;
 pub mod config;
+pub mod image;
 
-pub use agent::{AgentEvent, CurrentSession, RunInput, SessionTarget, run};
+pub use agent::{AgentEvent, CurrentSession, RunInput, SessionTarget, Turn, run};
 pub use config::{
     AssistantConfig, ChatMessage, ChatRole, CommandStatus, Conversation, MessageBody, PRESETS,
     ProviderProtocol, matching_preset, preset,
 };
+pub use image::ChatImage;

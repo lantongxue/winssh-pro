@@ -1,10 +1,11 @@
-//! `ai_conversations` 与 `ai_messages` 两张表的纯数据访问。
+//! `ai_conversations`、`ai_messages` 与 `ai_images` 三张表的纯数据访问。
 
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, QueryOrder, sea_query::Expr,
+    ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, QueryOrder, QuerySelect as _,
+    QueryTrait as _, sea_query::Expr,
 };
 
-use crate::db::entities::{ai_conversation, ai_message};
+use crate::db::entities::{ai_conversation, ai_image, ai_message};
 
 /// 智能助手对话的数据操作。无状态，廉价克隆。
 #[derive(Clone, Default)]
@@ -82,6 +83,42 @@ impl AssistantRepository {
         message: ai_message::ActiveModel,
     ) -> Result<(), DbErr> {
         ai_message::Entity::insert(message).exec(conn).await?;
+        Ok(())
+    }
+
+    /// 一段对话里所有消息贴着的图，按消息、再按消息内的先后排。
+    ///
+    /// 一条查询把整段对话的图都读出来（子查询按 `conversation_id` 圈消息），
+    /// 不按消息一条条查 —— 翻开一段聊了几十轮的对话不该打几十次库。
+    pub async fn load_images(
+        &self,
+        conn: &impl ConnectionTrait,
+        conversation_id: &str,
+    ) -> Result<Vec<ai_image::Model>, DbErr> {
+        let messages = ai_message::Entity::find()
+            .select_only()
+            .column(ai_message::Column::Id)
+            .filter(ai_message::Column::ConversationId.eq(conversation_id))
+            .into_query();
+        ai_image::Entity::find()
+            .filter(ai_image::Column::MessageId.in_subquery(messages))
+            .order_by_asc(ai_image::Column::MessageId)
+            .order_by_asc(ai_image::Column::Position)
+            .all(conn)
+            .await
+    }
+
+    /// 追加一批图，主键与 `message_id` 必须已经填好。空的一批什么都不做
+    /// （`insert_many` 收到空列表会报错）。
+    pub async fn insert_images(
+        &self,
+        conn: &impl ConnectionTrait,
+        images: Vec<ai_image::ActiveModel>,
+    ) -> Result<(), DbErr> {
+        if images.is_empty() {
+            return Ok(());
+        }
+        ai_image::Entity::insert_many(images).exec(conn).await?;
         Ok(())
     }
 }

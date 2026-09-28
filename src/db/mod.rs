@@ -22,7 +22,7 @@ use tokio::runtime::Runtime;
 
 /// 建表语句。`CREATE TABLE IF NOT EXISTS` 是幂等的，每次启动都跑一遍；
 /// 老用户的库文件已存在时原样保留，新字段通过 [`MIGRATIONS`] 补齐。
-const SCHEMA: [&str; 10] = [
+const SCHEMA: [&str; 12] = [
     "CREATE TABLE IF NOT EXISTS host_groups (
         id         INTEGER PRIMARY KEY,
         name       TEXT    NOT NULL UNIQUE,
@@ -110,6 +110,23 @@ const SCHEMA: [&str; 10] = [
         status          TEXT    NOT NULL DEFAULT '',
         created_at      TEXT    NOT NULL DEFAULT ''
     )",
+    // 消息上贴着的图（用户发的截图）。挂在消息上而不是对话上：一张图属于那一次
+    // 提问。删对话 → 删消息 → 删图，两层级联，不留孤儿。字节是规整过的 PNG /
+    // JPEG（长边不过 1568），一张几百 KB，所以单开一张表 —— 列对话、翻消息
+    // 这些查询都不必把图的字节一起读出来。这张表出现之前没有图可存，老库在
+    // 这里补出一张空表就是全部的迁移。
+    "CREATE TABLE IF NOT EXISTS ai_images (
+        id          TEXT    PRIMARY KEY,
+        message_id  TEXT    NOT NULL REFERENCES ai_messages(id) ON DELETE CASCADE,
+        position    INTEGER NOT NULL DEFAULT 0,
+        media_type  TEXT    NOT NULL DEFAULT 'image/png',
+        width       INTEGER NOT NULL DEFAULT 0,
+        height      INTEGER NOT NULL DEFAULT 0,
+        data        BLOB    NOT NULL
+    )",
+    // 读一段对话的图、删一条消息时的级联，都按 `message_id` 走。
+    "CREATE INDEX IF NOT EXISTS idx_ai_images_message
+        ON ai_images (message_id, position)",
     // 命令历史。和上面几张表相反，这一张**是**挂在主机上的：一条历史的意思是
     // "在这台机器上跑过这条命令"，换一台机器就不是同一件事了。所以外键指向
     // `hosts`，删掉一台主机，它的历史跟着一起走（见 `crate::command_history`）。

@@ -18,6 +18,16 @@
 //! 那颗圆键在它右下角，边框、底色与聚焦光环归卡片。回车发送、Shift+回车
 //! 换行 —— 见 [`AssistantPanel::render_composer`]。
 //!
+//! **图片跟着提问一起发。** 模型开了看图
+//! （[`AssistantConfig::vision`](crate::assistant::AssistantConfig::vision)）时，
+//! 输入行左下角多出一颗粘贴图片的键；在输入框里 Ctrl+V 一张图也一样。图从哪儿
+//! 来归用户自己（系统截图、别的截图工具、浏览器里复制的图、资源管理器里复制的
+//! 图片文件），这里只认剪贴板。贴上的图先排在输入框上方
+//! （[`AssistantPanel::drafts`]），后台规整成模型收的尺寸与格式
+//! （[`ChatImage::prepare`]），按发送时随这一条提问一起走、一起落库。没开看图
+//! 时那颗键不画，Ctrl+V 一张图只换来一句"去设置里打开"——往纯文本模型发图
+//! 换来的只是一条 400。
+//!
 //! **命令卡片默认是收起的**：一条 `cat /etc/os-release; free -h; df -hT`
 //! 的输出能有几十行，摊开来会把对话本身顶出屏幕。收着的时候留一行截断的
 //! 命令（跑了什么得看得见），点一下卡片头才展开全文与输出。哪几张是开着的
@@ -54,6 +64,7 @@
 //! 当时屏上看到的是同一份。
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -63,10 +74,14 @@ use futures::channel::{mpsc, oneshot};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
     ThemeStyled as _, WindowExt as _,
+    attachment::{
+        Attachment, AttachmentActions, AttachmentGroup, AttachmentMedia, AttachmentStatus,
+    },
     bubble::{Bubble, BubbleVariant},
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, DockArea, DockEvent, Panel, PanelEvent},
     h_flex,
+    hover_card::HoverCard,
     input::{InputEvent, Textarea, TextareaState},
     menu::{DropdownMenu as _, PopupMenuItem},
     message::{Message, MessageAlignment, MessageContent, MessageFooter},
@@ -76,15 +91,16 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter,
-    FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-    WeakEntity, Window, div, prelude::FluentBuilder as _, px,
+    Anchor, AnyElement, App, AppContext as _, Axis, ClipboardEntry, ClipboardItem, Context,
+    ElementId, Entity, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement as _,
+    IntoElement, ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Task, WeakEntity, Window, div, img, prelude::FluentBuilder as _, px,
 };
 
 use crate::assistant::{
-    self, AgentEvent, ChatMessage, ChatRole, CommandStatus, Conversation, CurrentSession,
-    MessageBody, RunInput, config as assistant_config,
+    self, AgentEvent, ChatImage, ChatMessage, ChatRole, CommandStatus, Conversation,
+    CurrentSession, MessageBody, RunInput, Turn, config as assistant_config,
+    image::looks_like_image,
 };
 use crate::service::AssistantService;
 use crate::ui::panels::{SessionEvent, TerminalPanel};
@@ -142,12 +158,46 @@ const SEND_BUTTON_SIZE: Pixels = px(28.);
 /// 反过来给它一个小一号的按钮尺寸，让那 0.75 倍落在合适的地方。
 const STOP_ICON_BOX: Pixels = px(21.);
 
+/// 一条提问最多贴几张图。每张图每一轮都要随整段上下文重发一遍，五张已经是
+/// 七八千个 token；真要对照更多截图，分几次问比一次塞进去答得好。
+const MAX_DRAFTS: usize = 5;
+
+/// 输入行上那排缩略图的边长。比消息流里的小一号：它只是"待发的有哪几张"，
+/// 看清内容靠悬停预览。
+const DRAFT_THUMB: Pixels = px(64.);
+
+/// 消息流里缩略图的边长。定死是给虚拟列表的：行高要能量得准，图是后台解码
+/// 的，解完之前和之后必须一样高。
+const MESSAGE_THUMB: Pixels = px(96.);
+
+/// 悬停预览里那张图最长边画多大。
+const PREVIEW_EDGE: f32 = 360.;
+
+/// 输入行上缩略图那颗移除键的调试名。每张一个同名的，测试只摆一张（同复制键）。
+const DRAFT_REMOVE_SELECTOR: &str = "assistant-draft-remove";
+
 /// 一条等着用户答复的命令。`respond` 送回 `true`（批准）或 `false`（拒绝）；
 /// 直接丢掉它（停止运行时）等于让运行收口。
 struct PendingApproval {
     session: SharedString,
     command: SharedString,
     respond: Option<oneshot::Sender<bool>>,
+}
+
+/// 输入行上一张等着随下一条提问发出去的图。
+struct Draft {
+    /// 界面本地的编号：移除键与悬停预览的元素 id 靠它，规整完回来也按它认。
+    id: SharedString,
+    /// `None`：还在后台规整（解码、缩放、转码），画成一块转圈的占位。
+    image: Option<ChatImage>,
+}
+
+/// 一张要贴上来的图从哪儿来。
+enum Incoming {
+    /// 已经在内存里的编码字节：剪贴板里的图、截到的图。
+    Bytes(Vec<u8>),
+    /// 一个图片文件：剪贴板里复制的是文件（资源管理器里 Ctrl+C 一张截图）。
+    File(PathBuf),
 }
 
 /// 正在一个字一个字往外写的那条助手消息。
@@ -181,6 +231,9 @@ pub struct AssistantPanel {
     expanded: HashSet<SharedString>,
     scroller: Entity<MessageScrollerState>,
     composer: Entity<TextareaState>,
+    /// 输入行上等着随下一条提问发出去的图，按贴进来的先后。换对话不清空 ——
+    /// 和输入框里打了一半的字一样，是用户还没发出去的东西。
+    drafts: Vec<Draft>,
     /// 一场运行正在进行。进行中不许发第二条、不许切换或删除对话。
     running: bool,
     /// 正在流式写入的那条消息，没有就是这一轮还没开口（或者已经说完了）。
@@ -285,6 +338,7 @@ impl AssistantPanel {
             expanded: HashSet::new(),
             scroller,
             composer,
+            drafts: Vec::new(),
             running: false,
             streaming: None,
             pending: None,
@@ -407,7 +461,7 @@ impl AssistantPanel {
                 ChatMessage {
                     id: Self::local_id(),
                     role: ChatRole::Assistant,
-                    body: MessageBody::Text(delta.into()),
+                    body: MessageBody::text(delta.to_owned()),
                 },
                 cx,
             );
@@ -424,7 +478,7 @@ impl AssistantPanel {
         let Some(message) = self.messages.get_mut(index) else {
             return;
         };
-        message.body = MessageBody::Text(text);
+        message.body = MessageBody::text(text);
         self.remeasure(index, cx);
     }
 
@@ -513,14 +567,127 @@ impl AssistantPanel {
         .detach();
     }
 
+    // ─── 贴图 ───────────────────────────────────────────────────────────────
+
+    /// 往输入行上贴几张图。规整在后台做：先占一块转圈的位子，规整完换成
+    /// 缩略图，规整不了的撤掉并说一声。
+    ///
+    /// 模型没开看图就一张都不收 —— 输入行上那两颗键这时本来就不画，走到这里的
+    /// 只会是 Ctrl+V。超出 [`MAX_DRAFTS`] 的那几张不收，也说一声。
+    fn attach(&mut self, incoming: Vec<Incoming>, window: &mut Window, cx: &mut Context<Self>) {
+        if incoming.is_empty() {
+            return;
+        }
+        if !assistant_config::global().vision {
+            window.push_notification(t!("assistant.vision_off"), cx);
+            return;
+        }
+        let room = MAX_DRAFTS.saturating_sub(self.drafts.len());
+        if incoming.len() > room {
+            window.push_notification(t!("assistant.too_many_images", count => MAX_DRAFTS), cx);
+        }
+
+        for source in incoming.into_iter().take(room) {
+            let id = Self::local_id();
+            self.drafts.push(Draft {
+                id: id.clone(),
+                image: None,
+            });
+            // 一张 4K 截图解码、缩放、再编码要上百毫秒，不能在 gpui 线程上做。
+            let prepare = cx.background_spawn(async move {
+                match source {
+                    Incoming::Bytes(bytes) => ChatImage::prepare(&bytes),
+                    Incoming::File(path) => ChatImage::open(&path),
+                }
+            });
+            cx.spawn_in(window, async move |this, cx| {
+                let result = prepare.await;
+                _ = this.update_in(cx, |this, window, cx| {
+                    this.prepared(&id, result, window, cx);
+                });
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    /// 后台规整完一张。这期间用户可能已经把它移除了，那就什么都不做。
+    fn prepared(
+        &mut self,
+        id: &SharedString,
+        result: anyhow::Result<ChatImage>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.drafts.iter().position(|draft| &draft.id == id) else {
+            return;
+        };
+        match result {
+            Ok(image) => self.drafts[index].image = Some(image),
+            Err(error) => {
+                self.drafts.remove(index);
+                window.push_notification(
+                    t!("assistant.image_failed", error => format!("{error:#}")),
+                    cx,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    fn remove_draft(&mut self, id: &SharedString, cx: &mut Context<Self>) {
+        self.drafts.retain(|draft| &draft.id != id);
+        cx.notify();
+    }
+
+    /// 输入框里按了粘贴（Ctrl+V / 右键菜单）：剪贴板里是图就接过来，
+    /// 返回 `true` 让输入框别再插字。
+    ///
+    /// **剪贴板里有字就按字贴。** 从 Excel、Word、网页复制出来的东西常常字和
+    /// 一张渲染图一起带着，这时候用户要的是字；截图工具放进剪贴板的只有图。
+    /// 真想要那张图，输入行左下角的粘贴键只认图。
+    fn paste_into_composer(
+        &mut self,
+        item: &ClipboardItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let has_text = item.entries().iter().any(
+            |entry| matches!(entry, ClipboardEntry::String(string) if !string.text.is_empty()),
+        );
+        if has_text {
+            return false;
+        }
+        let images = clipboard_images(item);
+        if images.is_empty() {
+            return false;
+        }
+        self.attach(images, window, cx);
+        true
+    }
+
+    /// 输入行上那颗粘贴键：剪贴板里有图（或图片文件）就贴上来，字不管。
+    fn paste_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let images = cx
+            .read_from_clipboard()
+            .map(|item| clipboard_images(&item))
+            .unwrap_or_default();
+        if images.is_empty() {
+            window.push_notification(t!("assistant.no_clipboard_image"), cx);
+            return;
+        }
+        self.attach(images, window, cx);
+    }
+
     // ─── 发送与运行 ─────────────────────────────────────────────────────────
 
+    /// 发出去：输入框里的字连同输入行上的图。只贴了图、一个字没写也能发。
     fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.running {
             return;
         }
         let prompt = self.composer.read(cx).value().trim().to_string();
-        if prompt.is_empty() {
+        if prompt.is_empty() && self.drafts.is_empty() {
             return;
         }
         let config = assistant_config::global();
@@ -528,6 +695,23 @@ impl AssistantPanel {
             window.push_notification(t!("assistant.not_configured"), cx);
             return;
         }
+        if !self.drafts.is_empty() {
+            // 图贴上之后又去设置里关了看图：不替用户做主把图扔掉 —— 是移除这几张图，
+            // 还是回设置里打开，由用户自己挑。
+            if !config.vision {
+                window.push_notification(t!("assistant.vision_off"), cx);
+                return;
+            }
+            if self.drafts.iter().any(|draft| draft.image.is_none()) {
+                window.push_notification(t!("assistant.image_preparing"), cx);
+                return;
+            }
+        }
+        let images: Vec<ChatImage> = self
+            .drafts
+            .drain(..)
+            .filter_map(|draft| draft.image)
+            .collect();
         self.composer
             .update(cx, |input, cx| input.set_value("", window, cx));
 
@@ -537,22 +721,30 @@ impl AssistantPanel {
         self.refresh_session(window, cx);
 
         // 对话历史在这一刻定格；当前会话不定格，它跟着标签页走。
-        let text_history: Vec<(ChatRole, String)> = self
+        let turns: Vec<Turn> = self
             .messages
             .iter()
             .filter_map(|message| match &message.body {
-                MessageBody::Text(text) => Some((message.role, text.to_string())),
+                MessageBody::Text { text, images } => Some(Turn {
+                    role: message.role,
+                    text: text.to_string(),
+                    images: images.clone(),
+                }),
                 MessageBody::Command { .. } => None,
             })
             .collect();
-        let start = text_history.len().saturating_sub(HISTORY_LIMIT);
-        let history = text_history[start..].to_vec();
+        let start = turns.len().saturating_sub(HISTORY_LIMIT);
+        let history = turns[start..].to_vec();
 
+        let body = MessageBody::Text {
+            text: prompt.clone().into(),
+            images: images.clone(),
+        };
         self.push_message(
             ChatMessage {
                 id: Self::local_id(),
                 role: ChatRole::User,
-                body: MessageBody::Text(prompt.clone().into()),
+                body: body.clone(),
             },
             cx,
         );
@@ -586,9 +778,7 @@ impl AssistantPanel {
                 },
             };
             if let Some(id) = &conversation
-                && let Err(error) = service
-                    .append_message(id, ChatRole::User, MessageBody::Text(prompt.clone().into()))
-                    .await
+                && let Err(error) = service.append_message(id, ChatRole::User, body).await
             {
                 log::warn!("用户消息存不下去：{error:#}");
             }
@@ -602,6 +792,7 @@ impl AssistantPanel {
                 session,
                 history,
                 prompt,
+                images,
                 events: events_tx,
                 cancel,
             }));
@@ -618,7 +809,7 @@ impl AssistantPanel {
                     }
                     // 这一轮说完了：屏上那条换成规范全文，然后落库。
                     AgentEvent::Text(text) => {
-                        let body = MessageBody::Text(text.into());
+                        let body = MessageBody::text(text);
                         let alive =
                             this.update(cx, |this, cx| this.commit_stream(body.clone(), cx));
                         if alive.is_err() {
@@ -694,11 +885,7 @@ impl AssistantPanel {
                 .filter(|streaming| !streaming.text.trim().is_empty());
             if let (Some(id), Some(streaming)) = (&conversation, leftover)
                 && let Err(error) = service
-                    .append_message(
-                        id,
-                        ChatRole::Assistant,
-                        MessageBody::Text(streaming.text.into()),
-                    )
+                    .append_message(id, ChatRole::Assistant, MessageBody::text(streaming.text))
                     .await
             {
                 log::warn!("说到一半那条存不下去：{error:#}");
@@ -719,9 +906,7 @@ impl AssistantPanel {
                         ChatMessage {
                             id: Self::local_id(),
                             role: ChatRole::Assistant,
-                            body: MessageBody::Text(
-                                t!("assistant.run_failed", error => reason).into(),
-                            ),
+                            body: MessageBody::text(t!("assistant.run_failed", error => reason)),
                         },
                         cx,
                     );
@@ -1027,8 +1212,13 @@ impl AssistantPanel {
     /// 点进去的是整块卡片，亮起来的就该是整块卡片。
     ///
     /// 运行中输入框还在（可以先打下一句），发送键换成停止键。
+    ///
+    /// 贴上的图排在输入框上方（[`Self::render_drafts`]）；粘贴图片那颗键在
+    /// 左下角，和发送键同一行 —— 只在模型开了看图时才画。
     fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.composer.focus_handle(cx).is_focused(window);
+        let vision = assistant_config::global().vision;
+        let this = cx.entity().downgrade();
 
         div().flex_shrink_0().px_3().pb_3().child(
             v_flex()
@@ -1040,27 +1230,100 @@ impl AssistantPanel {
                 .border_color(cx.theme().border)
                 .bg(palette::surface(cx))
                 .when(focused, |this| this.focus_ring_style(window, cx))
-                .child(Textarea::new(&self.composer).appearance(false).w_full())
-                .child(h_flex().justify_end().child(if self.running {
-                    Button::new("assistant-stop")
-                        .outline()
-                        // 图标按这一档算（见 [`STOP_ICON_BOX`]），圆按下一行。
-                        .with_size(STOP_ICON_BOX)
-                        .size(SEND_BUTTON_SIZE)
-                        .rounded(SEND_BUTTON_SIZE / 2.)
-                        .icon(AppIcon::Squircle)
-                        .tooltip(t!("assistant.stop"))
-                        .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
-                } else {
-                    Button::new("assistant-send")
-                        .primary()
-                        .with_size(SEND_BUTTON_SIZE)
-                        .rounded(SEND_BUTTON_SIZE / 2.)
-                        .icon(IconName::ArrowUp)
-                        .tooltip(t!("assistant.send"))
-                        .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
-                })),
+                .when(!self.drafts.is_empty(), |this| {
+                    this.child(self.render_drafts(cx))
+                })
+                .child(
+                    Textarea::new(&self.composer)
+                        .appearance(false)
+                        .w_full()
+                        .on_paste(move |item, window, cx| {
+                            this.update(cx, |this, cx| this.paste_into_composer(item, window, cx))
+                                .unwrap_or(false)
+                        }),
+                )
+                .child(
+                    h_flex()
+                        .when(vision, |this| {
+                            this.child(
+                                Button::new("assistant-paste-image")
+                                    .ghost()
+                                    .small()
+                                    .icon(AppIcon::ClipboardPaste)
+                                    .tooltip(t!("assistant.paste_image"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.paste_image(window, cx)
+                                    })),
+                            )
+                        })
+                        .child(self.render_send_button(cx).ml_auto()),
+                ),
         )
+    }
+
+    /// 发送键，运行中换成停止键。
+    fn render_send_button(&self, cx: &mut Context<Self>) -> Button {
+        if self.running {
+            Button::new("assistant-stop")
+                .outline()
+                // 图标按这一档算（见 [`STOP_ICON_BOX`]），圆按下一行。
+                .with_size(STOP_ICON_BOX)
+                .size(SEND_BUTTON_SIZE)
+                .rounded(SEND_BUTTON_SIZE / 2.)
+                .icon(AppIcon::Squircle)
+                .tooltip(t!("assistant.stop"))
+                .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
+        } else {
+            Button::new("assistant-send")
+                .primary()
+                .with_size(SEND_BUTTON_SIZE)
+                .rounded(SEND_BUTTON_SIZE / 2.)
+                .icon(IconName::ArrowUp)
+                .tooltip(t!("assistant.send"))
+                .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
+        }
+    }
+
+    /// 输入框上方那一排贴上的图（规整完之前是一块转圈的占位）。每张图右上角
+    /// 一颗移除键，停在缩略图上看整张。
+    fn render_drafts(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        AttachmentGroup::new("assistant-drafts")
+            .gap_2()
+            .children(self.drafts.iter().map(|draft| {
+                let remove = {
+                    let id = draft.id.clone();
+                    Button::new(SharedString::from(format!(
+                        "assistant-draft-remove-{}",
+                        draft.id
+                    )))
+                    .xsmall()
+                    .icon(IconName::Close)
+                    .tooltip(t!("assistant.remove_image"))
+                    .debug_selector(|| DRAFT_REMOVE_SELECTOR.to_string())
+                    .on_click(cx.listener(move |this, _, _, cx| this.remove_draft(&id, cx)))
+                };
+                let card = Attachment::new()
+                    .axis(Axis::Vertical)
+                    .small()
+                    .w(DRAFT_THUMB)
+                    .status(match draft.image {
+                        Some(_) => AttachmentStatus::Complete,
+                        None => AttachmentStatus::Processing,
+                    })
+                    .media(match &draft.image {
+                        Some(image) => AttachmentMedia::new().src(image.image()),
+                        None => AttachmentMedia::new().overlay(Spinner::new().small()),
+                    })
+                    .actions(AttachmentActions::new().child(remove));
+                match &draft.image {
+                    Some(image) => preview_on_hover(
+                        SharedString::from(format!("assistant-draft-preview-{}", draft.id)),
+                        image,
+                        card,
+                    ),
+                    None => card.into_any_element(),
+                }
+            }))
     }
 }
 
@@ -1194,30 +1457,42 @@ struct Disclosure {
 /// 脚注里那颗复制键两边都有。Ghost 那档 [`MessageFooter`] 会自己去掉横向
 /// 内边距（`MessageContent::bubble` 把"这是个没有面的气泡"往外传），所以
 /// 按钮和正文左边缘对得齐，实底气泡那边则跟着气泡的内边距缩进。
+///
+/// 贴着图的提问，图排在气泡上方（[`render_message_images`]）；只贴了图、没写
+/// 字的那条不画气泡，也就没有复制键 —— 没有字可复制。
 fn render_message(message: &ChatMessage, disclosure: Disclosure, cx: &App) -> AnyElement {
     match &message.body {
-        MessageBody::Text(text) => {
+        MessageBody::Text { text, images } => {
             let from_user = message.role == ChatRole::User;
+            let has_text = !text.is_empty();
             Message::new()
                 .alignment(match from_user {
                     true => MessageAlignment::End,
                     false => MessageAlignment::Start,
                 })
                 .content(
-                    MessageContent::new().bubble(match from_user {
-                        true => Bubble::new()
-                            .with_variant(BubbleVariant::Muted)
-                            .child(text.clone()),
-                        // Markdown 自己排版，气泡只负责不挡路。
-                        false => Bubble::new().with_variant(BubbleVariant::Ghost).child(
-                            div()
-                                .w_full()
-                                .min_w_0()
-                                .child(TextView::markdown(message.id.clone(), text.clone())),
-                        ),
-                    }),
+                    MessageContent::new()
+                        .when(!images.is_empty(), |this| {
+                            this.child(render_message_images(&message.id, images))
+                        })
+                        .when(has_text, |this| {
+                            this.bubble(match from_user {
+                                true => Bubble::new()
+                                    .with_variant(BubbleVariant::Muted)
+                                    .child(text.clone()),
+                                // Markdown 自己排版，气泡只负责不挡路。
+                                false => Bubble::new().with_variant(BubbleVariant::Ghost).child(
+                                    div().w_full().min_w_0().child(TextView::markdown(
+                                        message.id.clone(),
+                                        text.clone(),
+                                    )),
+                                ),
+                            })
+                        }),
                 )
-                .footer(MessageFooter::new().child(render_copy_button(&message.id, text)))
+                .when(has_text, |this| {
+                    this.footer(MessageFooter::new().child(render_copy_button(&message.id, text)))
+                })
                 .into_any_element()
         }
         MessageBody::Command {
@@ -1227,6 +1502,88 @@ fn render_message(message: &ChatMessage, disclosure: Disclosure, cx: &App) -> An
             status,
         } => render_command_card(message, command, session, output, *status, disclosure, cx),
     }
+}
+
+/// 一条提问贴着的那几张图：定死边长的方形缩略图，靠右排、放不下就折行，
+/// 停上去看整张。
+///
+/// 边长定死（[`MESSAGE_THUMB`]）是给虚拟列表的：图在后台解码，解完之前和
+/// 之后这一行必须一样高，不然量出来的行高会跟着跳。
+fn render_message_images(message_id: &SharedString, images: &[ChatImage]) -> impl IntoElement {
+    h_flex()
+        .max_w_full()
+        .flex_wrap()
+        .justify_end()
+        .gap_1p5()
+        .children(images.iter().enumerate().map(|(index, image)| {
+            preview_on_hover(
+                SharedString::from(format!("assistant-image-{message_id}-{index}")),
+                image,
+                Attachment::new()
+                    .axis(Axis::Vertical)
+                    .w(MESSAGE_THUMB)
+                    .media(AttachmentMedia::new().src(image.image())),
+            )
+        }))
+}
+
+/// 给一块缩略图套上悬停预览：整张图按比例缩进 [`PREVIEW_EDGE`] 见方，下面
+/// 一行写着尺寸与格式 —— 发出去的就是这一张，用户该看得见模型会看到什么。
+fn preview_on_hover(
+    id: impl Into<ElementId>,
+    image: &ChatImage,
+    trigger: impl IntoElement + 'static,
+) -> AnyElement {
+    let scale = (PREVIEW_EDGE / image.width().max(image.height()).max(1) as f32).min(1.);
+    let (width, height) = (
+        (image.width() as f32 * scale).max(1.),
+        (image.height() as f32 * scale).max(1.),
+    );
+    let source = image.image();
+    let caption: SharedString = format!(
+        "{} × {} · {}",
+        image.width(),
+        image.height(),
+        match image.is_png() {
+            true => "PNG",
+            false => "JPEG",
+        }
+    )
+    .into();
+
+    HoverCard::new(id)
+        .anchor(Anchor::BottomCenter)
+        .trigger(trigger)
+        .content(move |_, _, cx| {
+            v_flex()
+                .gap_1p5()
+                .child(img(source.clone()).w(px(width)).h(px(height)).rounded_md())
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(caption.clone()),
+                )
+        })
+        .into_any_element()
+}
+
+/// 剪贴板里能当图贴上来的东西：嵌在剪贴板里的图本身（截图工具、浏览器
+/// "复制图片"），以及复制下来的图片文件（资源管理器里 Ctrl+C）。字不算。
+fn clipboard_images(item: &ClipboardItem) -> Vec<Incoming> {
+    item.entries()
+        .iter()
+        .flat_map(|entry| match entry {
+            ClipboardEntry::Image(image) => vec![Incoming::Bytes(image.bytes().to_vec())],
+            ClipboardEntry::ExternalPaths(paths) => paths
+                .paths()
+                .iter()
+                .filter(|path| looks_like_image(path))
+                .map(|path| Incoming::File(path.clone()))
+                .collect(),
+            ClipboardEntry::String(_) => Vec::new(),
+        })
+        .collect()
 }
 
 /// 把这条消息的原文复制走。
@@ -1382,12 +1739,42 @@ mod tests {
         DockLayout, DockPlacement, DockSkin, PanelStyle, panel_handle,
     };
 
+    /// 一张编码好的 PNG（渐变，免得像纯色块那样被压得过分小）。
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        ::image::DynamicImage::ImageRgb8(::image::RgbImage::from_fn(width, height, |x, y| {
+            ::image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        }))
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            ::image::ImageFormat::Png,
+        )
+        .unwrap();
+        bytes
+    }
+
+    fn sample_image() -> ChatImage {
+        ChatImage::prepare(&png_bytes(160, 90)).unwrap()
+    }
+
     fn sample_messages() -> Vec<ChatMessage> {
         vec![
             ChatMessage {
                 id: "m1".into(),
                 role: ChatRole::User,
-                body: MessageBody::Text("看看 web-01 磁盘还剩多少".into()),
+                body: MessageBody::Text {
+                    text: "看看 web-01 磁盘还剩多少，报错截图在这".into(),
+                    images: vec![sample_image(), sample_image()],
+                },
+            },
+            // 只贴了图、没写字的提问：不画气泡，也没有复制键。
+            ChatMessage {
+                id: "m0".into(),
+                role: ChatRole::User,
+                body: MessageBody::Text {
+                    text: "".into(),
+                    images: vec![sample_image()],
+                },
             },
             ChatMessage {
                 id: "m2".into(),
@@ -1412,31 +1799,50 @@ mod tests {
             ChatMessage {
                 id: "m4".into(),
                 role: ChatRole::Assistant,
-                body: MessageBody::Text("根分区还有 **28G** 可用。".into()),
+                body: MessageBody::text("根分区还有 **28G** 可用。"),
             },
         ]
     }
 
-    /// 三种消息画法齐上阵地画一整帧：气泡、Markdown、三种状态的命令卡片，
-    /// 外加标签条上那三样（对话菜单、警示牌、两颗按钮）。深 builder 链上的
-    /// 错只有真的画一遍才掉得出来。
+    /// 三种消息画法齐上阵地画一整帧：气泡、Markdown、带图的提问、三种状态的
+    /// 命令卡片，外加标签条上那三样（对话菜单、警示牌、两颗按钮）和输入行上
+    /// 的图片排（规整完的、还在规整的）。深 builder 链上的错只有真的画一遍才
+    /// 掉得出来。
     ///
-    /// 全自动开着画：[`Panel::title_suffix`] 那块警示牌只有这一档才画。
+    /// 全自动与看图都开着画：[`Panel::title_suffix`] 那块警示牌、输入行上的
+    /// 贴图键只有这一档才画。
     #[gpui_kit::test]
     fn the_panel_draws_every_message_shape(cx: &mut gpui_kit::TestAppContext) {
         let _exclusive = assistant_config::exclusive_for_test();
         assistant_config::set_global(assistant_config::AssistantConfig {
+            vision: true,
             auto_execute: true,
             ..Default::default()
         });
 
         let (harness, cx) = dock_harness(cx, sample_messages());
+        harness.update(cx, |harness, cx| {
+            harness.assistant.update(cx, |panel, cx| {
+                panel.drafts = vec![
+                    Draft {
+                        id: "d1".into(),
+                        image: Some(sample_image()),
+                    },
+                    Draft {
+                        id: "d2".into(),
+                        image: None,
+                    },
+                ];
+                cx.notify();
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         // 第二帧走的不是同一条路：虚拟列表的量测只有这一帧才读得到。
         cx.update(|window, cx| window.draw(cx).clear(cx));
 
         harness.read_with(cx, |harness, cx| {
             let panel = harness.assistant.read(cx);
-            assert_eq!(panel.messages.len(), 4);
+            assert_eq!(panel.messages.len(), 5);
             assert!(!panel.running);
         });
     }
@@ -1509,7 +1915,7 @@ mod tests {
     fn streaming_appends_within_a_turn_and_replaces_at_the_end(cx: &mut gpui_kit::TestAppContext) {
         fn text_of(message: &ChatMessage) -> &str {
             match &message.body {
-                MessageBody::Text(text) => text.as_ref(),
+                MessageBody::Text { text, .. } => text.as_ref(),
                 MessageBody::Command { .. } => panic!("这条该是文字消息"),
             }
         }
@@ -1531,7 +1937,7 @@ mod tests {
         });
 
         panel.update(cx, |panel, cx| {
-            panel.commit_stream(MessageBody::Text("根分区还有 **28G** 可用。".into()), cx);
+            panel.commit_stream(MessageBody::text("根分区还有 **28G** 可用。"), cx);
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         panel.read_with(cx, |panel, _| {
@@ -1568,7 +1974,7 @@ mod tests {
             vec![ChatMessage {
                 id: "m1".into(),
                 role: ChatRole::Assistant,
-                body: MessageBody::Text(TEXT.into()),
+                body: MessageBody::text(TEXT),
             }],
         );
 
@@ -1629,6 +2035,136 @@ mod tests {
             assert!(panel.running);
             panel._run = None;
         });
+    }
+
+    /// 在输入框里粘贴一张图（Ctrl+V 与右键菜单走的是同一个 `Paste` 动作）：
+    /// 它该变成输入框上方的一张缩略图，规整到模型收的尺寸，而**不是**一串字
+    /// 插进输入框；按缩略图上的移除键，它就没了。
+    ///
+    /// 走的是真的那条路：往剪贴板里放图、焦点放进输入框、派发 `Paste`，由组件库
+    /// 的 `on_paste` 钩子交到面板手上 —— 钩子没接上的话，这里什么都收不到。
+    #[gpui_kit::test]
+    fn pasting_an_image_attaches_it_instead_of_typing(cx: &mut gpui_kit::TestAppContext) {
+        let _exclusive = assistant_config::exclusive_for_test();
+        assistant_config::set_global(assistant_config::AssistantConfig {
+            vision: true,
+            ..Default::default()
+        });
+
+        let (_root, panel, cx) = root_harness(cx, Vec::new());
+        paste_image(cx, &panel, png_bytes(3136, 100));
+
+        panel.read_with(cx, |panel, cx| {
+            assert_eq!(panel.drafts.len(), 1, "贴上的图该排到输入框上方");
+            let image = panel.drafts[0].image.as_ref().expect("后台规整完该有图");
+            assert_eq!(
+                (image.width(), image.height()),
+                (assistant::image::MAX_EDGE, 50),
+                "该缩到模型收的尺寸"
+            );
+            assert!(
+                panel.composer.read(cx).value().is_empty(),
+                "图不该变成一串字插进输入框"
+            );
+        });
+
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let remove = cx
+            .debug_bounds(DRAFT_REMOVE_SELECTOR)
+            .expect("缩略图上没有移除键");
+        cx.simulate_click(remove.center(), gpui_kit::Modifiers::none());
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.drafts.is_empty(), "按了移除键图还在");
+        });
+    }
+
+    /// 模型没开看图：贴图一张都不收（只说一声去设置里打开），输入框里也不会
+    /// 多出一串字。
+    #[gpui_kit::test]
+    fn a_text_only_model_takes_no_images(cx: &mut gpui_kit::TestAppContext) {
+        let _exclusive = assistant_config::exclusive_for_test();
+        assistant_config::set_global(assistant_config::AssistantConfig::default());
+
+        let (_root, panel, cx) = root_harness(cx, Vec::new());
+        paste_image(cx, &panel, png_bytes(32, 32));
+
+        panel.read_with(cx, |panel, cx| {
+            assert!(panel.drafts.is_empty(), "没开看图不该收图");
+            assert!(panel.composer.read(cx).value().is_empty());
+        });
+    }
+
+    /// 只贴了图、一个字没写也能发：那条提问带着图上屏，输入行上的图清空。
+    /// 还有图没规整完时不许发 —— 发出去的得是用户在缩略图上看到的那一张。
+    #[gpui_kit::test]
+    fn sending_takes_the_images_along(cx: &mut gpui_kit::TestAppContext) {
+        let _exclusive = assistant_config::exclusive_for_test();
+        assistant_config::set_global(assistant_config::AssistantConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            vision: true,
+            ..Default::default()
+        });
+
+        let (_root, panel, cx) = root_harness(cx, Vec::new());
+        let press_enter = |cx: &mut gpui_kit::VisualTestContext| {
+            panel.update(cx, |panel, cx| {
+                panel.composer.update(cx, |_, cx| {
+                    cx.emit(InputEvent::PressEnter {
+                        secondary: false,
+                        shift: false,
+                    });
+                });
+            });
+        };
+
+        panel.update(cx, |panel, _| {
+            panel.drafts.push(Draft {
+                id: "d1".into(),
+                image: None,
+            });
+        });
+        press_enter(cx);
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.messages.is_empty(), "还在规整的图不该跟着发出去");
+            assert_eq!(panel.drafts.len(), 1);
+        });
+
+        panel.update(cx, |panel, _| panel.drafts[0].image = Some(sample_image()));
+        press_enter(cx);
+        panel.update(cx, |panel, _| {
+            assert!(panel.drafts.is_empty(), "发出去之后输入行上的图该清空");
+            let Some(ChatMessage {
+                role: ChatRole::User,
+                body: MessageBody::Text { text, images },
+                ..
+            }) = panel.messages.last()
+            else {
+                panic!("该有一条提问上屏");
+            };
+            assert!(text.is_empty());
+            assert_eq!(images, &vec![sample_image()]);
+            assert!(panel.running);
+            panel._run = None;
+        });
+    }
+
+    /// 往剪贴板里放一张图，焦点放进输入框，派发一次 `Paste`，再等后台规整完。
+    fn paste_image(
+        cx: &mut gpui_kit::VisualTestContext,
+        panel: &Entity<AssistantPanel>,
+        png: Vec<u8>,
+    ) {
+        cx.write_to_clipboard(ClipboardItem::new_image(&gpui_kit::Image::from_bytes(
+            gpui_kit::ImageFormat::Png,
+            png,
+        )));
+        cx.update(|window, cx| {
+            let handle = panel.read(cx).composer.focus_handle(cx);
+            window.focus(&handle, cx);
+            window.dispatch_action(Box::new(gpui_kit::component::input::Paste), cx);
+        });
+        cx.run_until_parked();
     }
 
     /// 命令卡片一上屏是收着的：输出压根不画，点一下卡片头才摊开，再点一下

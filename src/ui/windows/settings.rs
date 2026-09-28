@@ -120,7 +120,8 @@ fn persist_terminal_font(value: TerminalFont, cx: &mut App) {
 /// 换掉智能助手配置：进程里那份缓存立刻生效，落库派到后台。
 ///
 /// 缓存先换的理由同 [`persist_proxy`]：助手抽屉按下"发送"读的就是缓存那份。
-/// 重画所有窗口 —— 抽屉标题行上"自动"那块警示牌要跟着这一位开关走。
+/// 重画所有窗口 —— 抽屉标题行上"自动"那块警示牌、输入行上贴图那颗键，都
+/// 跟着这里的开关走。
 fn persist_assistant_config(config: AssistantConfig, cx: &mut App) {
     assistant_config::set_global(config.clone());
     for handle in cx.windows() {
@@ -381,7 +382,8 @@ impl AssistantInputs {
         [&self.base_url, &self.api_key, &self.model]
     }
 
-    /// 三格现在的样子，协议与自动那一位跟着缓存走 —— 它们归各自的下拉/开关管。
+    /// 三格现在的样子，协议、看图与自动那两位跟着缓存走 —— 它们归各自的
+    /// 下拉/开关管。
     fn read(&self, cx: &App) -> AssistantConfig {
         let cached = assistant_config::global();
         AssistantConfig {
@@ -390,6 +392,7 @@ impl AssistantInputs {
             // API Key 不 trim 中间，只去首尾：粘贴时最常见的赃物是换行。
             api_key: self.api_key.read(cx).value().trim().to_string(),
             model: self.model.read(cx).value().trim().to_string(),
+            vision: cached.vision,
             auto_execute: cached.auto_execute,
         }
     }
@@ -1168,9 +1171,12 @@ impl SettingsWindow {
 
     /// 智能助手页：模型供应商（预设一键填表 + 协议 + 三格）与执行模式。
     ///
-    /// 预设下拉只是填表的捷径：选中一家就把协议、Base URL 与默认模型写进
-    /// 配置并回填输入框，API Key 永远要用户自己给。三格手改之后对不上任何
-    /// 一家，下拉就停在"自定义"。
+    /// 预设下拉只是填表的捷径：选中一家就把协议、Base URL、默认模型与那个
+    /// 模型看不看得了图写进配置并回填输入框，API Key 永远要用户自己给。三格
+    /// 手改之后对不上任何一家，下拉就停在"自定义"。
+    ///
+    /// "支持图片输入"紧挨着模型名摆：它说的是**这个模型**的能力，换了模型名
+    /// 就该回头看它一眼。
     fn assistant_page(&self) -> SettingPage {
         let inputs = self.assistant.clone();
 
@@ -1213,6 +1219,7 @@ impl SettingsWindow {
                                     base_url: preset.base_url.to_owned(),
                                     model: preset.model.to_owned(),
                                     api_key: inputs.api_key.read(cx).value().trim().to_string(),
+                                    vision: preset.vision,
                                     auto_execute: cached.auto_execute,
                                 },
                                 cx,
@@ -1266,7 +1273,21 @@ impl SettingsWindow {
             .item(SettingItem::new(
                 t!("settings.assistant_model"),
                 self.text_input(&self.assistant.model, false),
-            ));
+            ))
+            .item(
+                SettingItem::new(
+                    t!("settings.assistant_vision"),
+                    SettingField::switch(|_cx: &App| assistant_config::global().vision, {
+                        let inputs = inputs.clone();
+                        move |checked: bool, cx: &mut App| {
+                            let mut config = inputs.read(cx);
+                            config.vision = checked;
+                            persist_assistant_config(config, cx);
+                        }
+                    }),
+                )
+                .description(SharedString::from(t!("settings.assistant_vision_hint"))),
+            );
 
         // 执行模式单独一组：它管的不是"用哪家模型"，是"命令要不要送审"。
         let execution_group = SettingGroup::new()

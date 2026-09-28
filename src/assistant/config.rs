@@ -1,8 +1,9 @@
 //! 智能助手的模型供应商配置。
 //!
 //! 一份配置四样东西：协议（openai / anthropic）、Base URL、API Key、模型名，
-//! 外加"全自动模式"那一位开关 —— 开着时助手在服务器上执行命令不再逐条送审
-//! （见 [`crate::assistant::agent`] 的审核门）。
+//! 外加两位开关：模型能不能看图（[`AssistantConfig::vision`]，开着时输入行才收
+//! 剪贴板里的图），以及"全自动模式" —— 开着时助手在服务器上执行命令
+//! 不再逐条送审（见 [`crate::assistant::agent`] 的审核门）。
 //!
 //! 库是正本（`settings` 表的 `assistant.config` 一行，JSON 编码），进程里
 //! 留一份缓存：设置窗口在 gpui 线程上读写，助手抽屉按下"发送"那一刻也要
@@ -10,12 +11,15 @@
 //! 灌一次，之后每次保存两边一起写，模式同全局代理（[`crate::proxy`]）。
 //!
 //! 内置的供应商预填（[`PRESETS`]）只是设置页里的一键填表：选中一家就把
-//! 协议、Base URL 与默认模型填进表单，API Key 永远要用户自己给。
+//! 协议、Base URL、默认模型以及那个模型看不看得了图填进表单，API Key 永远
+//! 要用户自己给。
 
 use std::sync::{LazyLock, RwLock};
 
 use gpui_kit::SharedString;
 use serde::{Deserialize, Serialize};
+
+use crate::assistant::ChatImage;
 
 /// 模型供应商说话用的协议。国内外主流厂商基本都兼容这两种之一。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +74,15 @@ pub struct AssistantConfig {
     /// 模型名，例如 `gpt-4o` / `claude-sonnet-4-5`。
     #[serde(default)]
     pub model: String,
+    /// 模型能不能看图。开着时输入行上才收贴进来的图（粘贴键与 Ctrl+V），图随
+    /// 提问一起发过去（见 [`crate::assistant::image`]）。
+    ///
+    /// 出厂档关着，而且得用户自己说：兼容端点里不认图片的是多数（DeepSeek、
+    /// GLM-4.5、qwen-plus 都是纯文本模型），发过去就是一条 400 —— 而同一个
+    /// Base URL 下换个模型名（`glm-4.5v`、`qwen-vl-plus`）答案就反过来，
+    /// 从地址上猜不出来。
+    #[serde(default)]
+    pub vision: bool,
     /// 全自动模式：开着时在服务器上执行命令不再触发人工审核。
     /// 出厂档关着 —— 每一条命令都要先经用户批准。
     #[serde(default)]
@@ -94,6 +107,9 @@ pub struct ProviderPreset {
     pub base_url: &'static str,
     /// 这家的招牌模型，填进表单当起点，用户可以改。
     pub model: &'static str,
+    /// 上面那个模型看不看得了图。选中这一家时一并填进
+    /// [`AssistantConfig::vision`]，用户换了模型名要自己改。
+    pub vision: bool,
 }
 
 /// 内置的主流厂商预填。顺序就是下拉里的顺序。
@@ -104,6 +120,7 @@ pub const PRESETS: [ProviderPreset; 5] = [
         protocol: ProviderProtocol::OpenAi,
         base_url: "https://api.openai.com/v1",
         model: "gpt-4o",
+        vision: true,
     },
     ProviderPreset {
         id: "anthropic",
@@ -111,6 +128,7 @@ pub const PRESETS: [ProviderPreset; 5] = [
         protocol: ProviderProtocol::Anthropic,
         base_url: "https://api.anthropic.com",
         model: "claude-sonnet-4-5",
+        vision: true,
     },
     ProviderPreset {
         id: "deepseek",
@@ -118,13 +136,17 @@ pub const PRESETS: [ProviderPreset; 5] = [
         protocol: ProviderProtocol::OpenAi,
         base_url: "https://api.deepseek.com/v1",
         model: "deepseek-chat",
+        vision: false,
     },
+    // 下面两家的招牌模型是纯文本的；看图要换成同家的视觉模型
+    // （`glm-4.5v`、`qwen-vl-plus`），再在设置里把"支持图片"打开。
     ProviderPreset {
         id: "zhipu",
         name: "Zhipu",
         protocol: ProviderProtocol::OpenAi,
         base_url: "https://open.bigmodel.cn/api/paas/v4",
         model: "glm-4.5",
+        vision: false,
     },
     ProviderPreset {
         id: "qwen",
@@ -132,6 +154,7 @@ pub const PRESETS: [ProviderPreset; 5] = [
         protocol: ProviderProtocol::OpenAi,
         base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
         model: "qwen-plus",
+        vision: false,
     },
 ];
 
@@ -229,10 +252,16 @@ impl ChatRole {
     }
 }
 
-/// 一行消息的内容：一段话，或者一次服务器命令的执行卡片。
+/// 一行消息的内容：一段话（可能带着几张图），或者一次服务器命令的执行卡片。
 #[derive(Clone, Debug, PartialEq)]
 pub enum MessageBody {
-    Text(SharedString),
+    Text {
+        /// 可以是空串：只发了图、一个字没写也是一次提问。
+        text: SharedString,
+        /// 随这段话一起发的图（用户贴的截图），按贴进来的先后。助手的话
+        /// 现在总是空的。
+        images: Vec<ChatImage>,
+    },
     Command {
         command: SharedString,
         /// 在哪台机器上跑的（会话显示名）。
@@ -241,6 +270,16 @@ pub enum MessageBody {
         output: SharedString,
         status: CommandStatus,
     },
+}
+
+impl MessageBody {
+    /// 一段不带图的话 —— 助手说的每一句，以及大多数提问。
+    pub fn text(text: impl Into<SharedString>) -> Self {
+        Self::Text {
+            text: text.into(),
+            images: Vec::new(),
+        }
+    }
 }
 
 /// 一次命令执行的下场。
@@ -291,11 +330,22 @@ mod tests {
             base_url: "https://api.anthropic.com".into(),
             api_key: "sk-ant-xxx".into(),
             model: "claude-sonnet-4-5".into(),
+            vision: true,
             auto_execute: true,
         };
         assert_eq!(decode(&encode(&config)), config);
         assert_eq!(decode(""), AssistantConfig::default());
         assert_eq!(decode("не json"), AssistantConfig::default());
+    }
+
+    /// 这一位出现之前存下的配置读回来是"不看图"：老用户配的模型能不能看图没人打包票，
+    /// 升级一版就开始往一个纯文本模型发图，换来的只是一串 400。
+    #[test]
+    fn configs_saved_before_vision_existed_read_back_without_it() {
+        let old = r#"{"protocol":"openai","base_url":"https://api.deepseek.com/v1","api_key":"sk-x","model":"deepseek-chat","auto_execute":false}"#;
+        let config = decode(old);
+        assert_eq!(config.model, "deepseek-chat", "别的字段照常读回来");
+        assert!(!config.vision);
     }
 
     /// 每一家预填都要能按 id 找回来，而且填出来的配置能对回这一家 ——

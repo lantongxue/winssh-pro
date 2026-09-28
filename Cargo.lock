@@ -14226,6 +14226,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "aws-lc-rs",
+ "base64 0.22.1",
  "chrono",
  "cidr",
  "dirs 6.0.0",

@@ -451,6 +451,12 @@ settings.assistant_model:
 settings.assistant_model_placeholder:
   en: gpt-4o
   zh-CN: gpt-4o
+settings.assistant_vision:
+  en: Image input
+  zh-CN: 支持图片输入
+settings.assistant_vision_hint:
+  en: Turn on if this model can read images. You can then paste an image into the assistant and send it with your question. Text-only models reject requests that contain images.
+  zh-CN: 这个模型能看图时打开。打开后可以往助手里粘贴图片，随提问一起发给它。纯文本模型收到图片会直接报错。
 settings.assistant_execution:
   en: Command Execution
   zh-CN: 命令执行
@@ -4035,6 +4041,40 @@ assistant.missing_conversation:
 assistant.untitled:
   en: New chat
   zh-CN: 新对话
+# 图片：贴进输入行，以及把它们规整成模型收的样子（src/assistant/image.rs）
+assistant.paste_image:
+  en: Paste image from clipboard
+  zh-CN: 粘贴剪贴板里的图片
+assistant.remove_image:
+  en: Remove image
+  zh-CN: 移除图片
+assistant.vision_off:
+  en: This model isn’t set up for images. Turn on Image input in Settings → AI Assistant.
+  zh-CN: 当前模型没有开启图片支持，可以在「设置 → AI 助手」里打开「支持图片输入」。
+assistant.no_clipboard_image:
+  en: There’s no image on the clipboard.
+  zh-CN: 剪贴板里没有图片。
+assistant.too_many_images:
+  en: A message can carry at most %{count} images.
+  zh-CN: 一条提问最多带 %{count} 张图片。
+assistant.image_preparing:
+  en: Images are still being processed. Send again in a moment.
+  zh-CN: 图片还在处理，稍等一下再发。
+assistant.image_failed:
+  en: 'Couldn’t use that image: %{error}'
+  zh-CN: 这张图片用不了：%{error}
+assistant.image_unknown:
+  en: Unrecognized image format
+  zh-CN: 认不出的图片格式
+assistant.image_undecodable:
+  en: 'The image can’t be decoded (%{error})'
+  zh-CN: 图片解不开（%{error}）
+assistant.image_too_large:
+  en: The image is too large
+  zh-CN: 图片太大了
+assistant.image_unreadable:
+  en: 'Couldn’t read %{path}'
+  zh-CN: 读不出 %{path}
 
 # ── 主机信任确认弹窗 ──────────────────────────────────────────────────────────
 host_trust.title:

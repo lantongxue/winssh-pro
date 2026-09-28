@@ -6,17 +6,22 @@
 //!
 //! 供应商配置不在这里 —— 那是应用级偏好，归
 //! [`crate::service::SettingService`]（`settings` 表一行 JSON）。
+//!
+//! 消息上贴的图单独一张表（`ai_images`），这里负责两边对上：追加时和消息
+//! 同一个事务落下，读消息时一次把整段对话的图读回来、按消息挂好。
+
+use std::collections::HashMap;
 
 use anyhow::{Result, anyhow};
 use gpui_kit::SharedString;
 use rust_i18n::t;
-use sea_orm::{ActiveValue::Set, DatabaseConnection};
+use sea_orm::{ActiveValue::Set, DatabaseConnection, TransactionTrait as _};
 
 use crate::{
-    assistant::{ChatMessage, ChatRole, CommandStatus, Conversation, MessageBody},
+    assistant::{ChatImage, ChatMessage, ChatRole, CommandStatus, Conversation, MessageBody},
     db::{
         self,
-        entities::{ai_conversation, ai_message},
+        entities::{ai_conversation, ai_image, ai_message},
     },
     repository::AssistantRepository,
 };
@@ -113,18 +118,40 @@ impl AssistantService {
         .await
     }
 
-    /// 一段对话的全部消息，先来的在前。
+    /// 一段对话的全部消息，先来的在前，贴着的图挂回各自的消息上。
     pub async fn messages(&self, conversation_id: &str) -> Result<Vec<ChatMessage>> {
         let this = self.clone();
         let conversation_id = conversation_id.to_owned();
         db::run(async move {
             let rows = this.repo.load_messages(&this.db, &conversation_id).await?;
-            Ok(rows.into_iter().map(hydrate).collect())
+            let mut images: HashMap<String, Vec<ChatImage>> = HashMap::new();
+            for row in this.repo.load_images(&this.db, &conversation_id).await? {
+                // 认不出的（别的版本写坏的）就当没有这张，别让整段对话打不开。
+                let Some(image) = ChatImage::from_stored(
+                    &row.media_type,
+                    row.data,
+                    u32::try_from(row.width).unwrap_or_default(),
+                    u32::try_from(row.height).unwrap_or_default(),
+                ) else {
+                    continue;
+                };
+                images.entry(row.message_id).or_default().push(image);
+            }
+            Ok(rows
+                .into_iter()
+                .map(|row| {
+                    let images = images.remove(&row.id).unwrap_or_default();
+                    hydrate(row, images)
+                })
+                .collect())
         })
         .await
     }
 
     /// 追加一条消息并把对话的"最近动过"推到现在。返回带 id 的完整记录。
+    ///
+    /// 消息和它贴着的图在同一个事务里落下：半截（有字没图、有图没字）的
+    /// 提问比没存下更糟 —— 重开应用看到的就和当时发出去的不是一回事了。
     pub async fn append_message(
         &self,
         conversation_id: &str,
@@ -136,6 +163,7 @@ impl AssistantService {
         db::run(async move {
             let id: SharedString = format!("msg-{}", nanos()).into();
             let now = timestamp();
+            let mut images = Vec::new();
             let mut model = ai_message::ActiveModel {
                 id: Set(id.to_string()),
                 conversation_id: Set(conversation_id.clone()),
@@ -149,7 +177,25 @@ impl AssistantService {
                 created_at: Set(now.clone()),
             };
             match &body {
-                MessageBody::Text(text) => model.content = Set(text.to_string()),
+                MessageBody::Text {
+                    text,
+                    images: attached,
+                } => {
+                    model.content = Set(text.to_string());
+                    images = attached
+                        .iter()
+                        .enumerate()
+                        .map(|(position, image)| ai_image::ActiveModel {
+                            id: Set(format!("{id}-img-{position}")),
+                            message_id: Set(id.to_string()),
+                            position: Set(position as i32),
+                            media_type: Set(image.media_type().to_owned()),
+                            width: Set(image.width() as i32),
+                            height: Set(image.height() as i32),
+                            data: Set(image.bytes().to_vec()),
+                        })
+                        .collect();
+                }
                 MessageBody::Command {
                     command,
                     session,
@@ -163,18 +209,21 @@ impl AssistantService {
                     model.status = Set(status.as_str().to_owned());
                 }
             }
-            this.repo.insert_message(&this.db, model).await?;
+            let txn = this.db.begin().await?;
+            this.repo.insert_message(&txn, model).await?;
+            this.repo.insert_images(&txn, images).await?;
             this.repo
-                .touch_conversation(&this.db, &conversation_id, &now)
+                .touch_conversation(&txn, &conversation_id, &now)
                 .await?;
+            txn.commit().await?;
             Ok(ChatMessage { id, role, body })
         })
         .await
     }
 }
 
-/// 一行数据翻成领域模型。
-fn hydrate(row: ai_message::Model) -> ChatMessage {
+/// 一行数据（连同挂在它上面的图）翻成领域模型。
+fn hydrate(row: ai_message::Model, images: Vec<ChatImage>) -> ChatMessage {
     let body = if row.kind == KIND_COMMAND {
         MessageBody::Command {
             command: row.command.into(),
@@ -183,7 +232,10 @@ fn hydrate(row: ai_message::Model) -> ChatMessage {
             status: CommandStatus::from_str_or_default(&row.status),
         }
     } else {
-        MessageBody::Text(row.content.into())
+        MessageBody::Text {
+            text: row.content.into(),
+            images,
+        }
     };
     ChatMessage {
         id: row.id.into(),
@@ -227,6 +279,7 @@ fn nanos() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sea_orm::EntityTrait as _;
 
     /// 对话与两种消息的整条来回：建对话、塞消息、读回来一字不差、
     /// 删对话连消息一起没了。
@@ -243,11 +296,7 @@ mod tests {
             assert!(chat.title.starts_with("帮我看看 web-01"));
 
             service
-                .append_message(
-                    &chat.id,
-                    ChatRole::User,
-                    MessageBody::Text("nginx 起不来".into()),
-                )
+                .append_message(&chat.id, ChatRole::User, MessageBody::text("nginx 起不来"))
                 .await
                 .unwrap();
             service
@@ -267,7 +316,7 @@ mod tests {
             let messages = service.messages(&chat.id).await.unwrap();
             assert_eq!(messages.len(), 2);
             assert_eq!(messages[0].role, ChatRole::User);
-            assert_eq!(messages[0].body, MessageBody::Text("nginx 起不来".into()));
+            assert_eq!(messages[0].body, MessageBody::text("nginx 起不来"));
             assert_eq!(
                 messages[1].body,
                 MessageBody::Command {
@@ -283,6 +332,71 @@ mod tests {
             assert!(
                 service.messages(&chat.id).await.unwrap().is_empty(),
                 "外键该把消息连带删光"
+            );
+        });
+    }
+
+    /// 带图的提问：图的字节、格式、尺寸与先后一字不差地读回来，挂在原来那条
+    /// 消息上，别的消息不沾；删对话时图跟着消息一起走（两层级联）。
+    #[test]
+    fn images_round_trip_with_their_message() {
+        fn png(width: u32, height: u32) -> ChatImage {
+            let mut bytes = Vec::new();
+            image::DynamicImage::ImageRgb8(image::RgbImage::new(width, height))
+                .write_to(
+                    &mut std::io::Cursor::new(&mut bytes),
+                    image::ImageFormat::Png,
+                )
+                .unwrap();
+            ChatImage::prepare(&bytes).unwrap()
+        }
+
+        db::runtime().block_on(async {
+            let service = AssistantService::in_memory().await.unwrap();
+            let chat = service
+                .create_conversation("这个报错是什么意思")
+                .await
+                .unwrap();
+            let shots = vec![png(40, 30), png(8, 8)];
+            service
+                .append_message(
+                    &chat.id,
+                    ChatRole::User,
+                    MessageBody::Text {
+                        text: "这个报错是什么意思".into(),
+                        images: shots.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            service
+                .append_message(
+                    &chat.id,
+                    ChatRole::Assistant,
+                    MessageBody::text("是磁盘满了"),
+                )
+                .await
+                .unwrap();
+
+            let messages = service.messages(&chat.id).await.unwrap();
+            let MessageBody::Text { text, images } = &messages[0].body else {
+                panic!("第一条该是文字消息");
+            };
+            assert_eq!(text.as_ref(), "这个报错是什么意思");
+            assert_eq!(images, &shots, "图要按原样、原顺序读回来");
+            assert_eq!((images[0].width(), images[0].height()), (40, 30));
+            assert_eq!(
+                messages[1].body,
+                MessageBody::text("是磁盘满了"),
+                "别的消息不沾图"
+            );
+
+            service.delete_conversation(&chat.id).await.unwrap();
+            let left = ai_image::Entity::find().all(&service.db).await.unwrap();
+            assert!(
+                left.is_empty(),
+                "删对话该把图连带删光：还剩 {} 张",
+                left.len()
             );
         });
     }

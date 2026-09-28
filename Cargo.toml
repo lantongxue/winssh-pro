@@ -192,8 +192,17 @@ sha2 = "0.11.0"
 vnc-rs = "0.6.0"
 # VNC 画布打包给 GPUI 用的像素容器：`gpui::RenderImage` 吃的就是 `image` 的
 # 一帧 `RgbaImage`（见 `src/vnc/canvas.rs`），版本与 gpui 依赖的那份同一条
-# 解析线。解码器一个都不开 —— 我们只把已经解码好的 BGRA 字节塞进去。
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# 解析线。
+#
+# 编解码器那几档是智能助手的图片要的（`src/assistant/image.rs`）：剪贴板里的
+# 截图在 Windows 上是一张 BMP（CF_DIB），浏览器复制出来的可能是 WebP / GIF，
+# 统统解开、缩到模型收的尺寸，再编成 PNG（照片类太大时退成 JPEG）。这几档
+# gpui 自己早就点亮了（它的剪贴板与 `img()` 靠它们解码），这里写出来只是不靠
+# 特性合并的巧合，不多编译一份东西。
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp", "gif", "webp"] }
+# 发给模型的图片是 base64（两种协议都只收这一种内联写法）。和 rig / reqwest
+# 用的是同一份，本来就在依赖树里。
+base64 = "0.22"
 # VNC 经典剪贴板正文的字符集转换（见 `src/vnc/clipboard.rs`）。RFB 那条正文
 # 没有字符集字段，现实里各家服务器塞的是自己那台机器的本地编码 —— Windows
 # 一侧就是系统 ANSI 代码页（简体中文 GBK/936、繁体 Big5/950、日文 932、

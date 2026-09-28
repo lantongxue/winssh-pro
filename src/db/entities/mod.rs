@@ -4,6 +4,7 @@
 //! （[`crate::host`]）—— 两边怎么对上，归服务层翻译。
 
 pub mod ai_conversation;
+pub mod ai_image;
 pub mod ai_message;
 pub mod command_history;
 pub mod credential;
