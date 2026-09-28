@@ -406,6 +406,10 @@ impl NetworkLog {
         self.lines.is_empty()
     }
 
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+
     /// 最新的在前。
     pub fn iter(&self) -> impl Iterator<Item = &LogLine> {
         self.lines.iter()
