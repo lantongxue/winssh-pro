@@ -77,36 +77,16 @@ impl SshConnection {
         window: WindowSize,
         trust: TrustPolicy,
     ) -> Result<Self> {
-        let config = build_config();
-        // 登记处要在建连之前就造好：Handler 会被 `russh` 拿走，之后再没有
-        // 途径拿回它，所以这里留一份克隆，两边指向同一张表。
-        let forwards = ForwardRegistry::default();
-        let host_addr = (host.hostname.to_string(), host.port);
-        let handler = SshHandler::new(forwards.clone(), host_addr, trust);
-        let user = host.user.to_string();
+        let session = dial_authenticated(host, trust).await?;
+        let channel = shell_channel(&session.handle, window).await?;
+        Ok(Self { session, channel })
+    }
 
-        // 拨号自己带上下文（直连和走代理该说的话不一样），所以这一层不再包一遍。
-        let stream = dial(host, config.nodelay).await?;
-        let mut handle = client::connect_stream(Arc::new(config), stream, handler)
-            .await
-            .with_context(|| {
-                t!(
-                    "ssh.connect_failed",
-                    host => host.hostname,
-                    port => host.port,
-                )
-                .to_string()
-            })?;
-
-        authenticate(&mut handle, host, &user).await?;
-
-        let handle = Arc::new(handle);
-        let channel = shell_channel(&handle, window).await?;
-
-        Ok(Self {
-            session: SshSession { handle, forwards },
-            channel,
-        })
+    /// 与 [`Self::connect_trusted`] 同一趟拨号与认证，但**不开交互式 Shell**，
+    /// 把已认证的会话直接交出来：监控可以没有终端，只有 SFTP 的服务器
+    /// （[`crate::host::HostKind::Sftp`]）也是，它们要的只是 `session` 本身。
+    pub async fn connect_session_trusted(host: &Host, trust: TrustPolicy) -> Result<SshSession> {
+        dial_authenticated(host, trust).await
     }
 
     /// 按 [`Host`] 拨号，不做主机密钥校验（本机 Shell 测试等场景）。
@@ -190,6 +170,40 @@ impl WindowSize {
             cell_height as u32 * rows as u32,
         )
     }
+}
+
+/// 拨号 + 认证，拿回会话凭据。
+///
+/// [`SshConnection::connect_trusted`] 与 [`SshConnection::connect_session_trusted`]
+/// 的公共头一段：开不开 shell 是后面的分叉点，之前（TCP、握手、信任检查、认证）
+/// 一模一样，分开写迟早会有一边漏对一步。
+async fn dial_authenticated(host: &Host, trust: TrustPolicy) -> Result<SshSession> {
+    let config = build_config();
+    // 登记处要在建连之前就造好：Handler 会被 `russh` 拿走，之后再没有
+    // 途径拿回它，所以这里留一份克隆，两边指向同一张表。
+    let forwards = ForwardRegistry::default();
+    let host_addr = (host.hostname.to_string(), host.port);
+    let handler = SshHandler::new(forwards.clone(), host_addr, trust);
+    let user = host.user.to_string();
+
+    // 拨号自己带上下文（直连和走代理该说的话不一样），所以这一层不再包一遍。
+    let stream = dial(host, config.nodelay).await?;
+    let mut handle = client::connect_stream(Arc::new(config), stream, handler)
+        .await
+        .with_context(|| {
+            t!(
+                "ssh.connect_failed",
+                host => host.hostname,
+                port => host.port,
+            )
+            .to_string()
+        })?;
+
+    authenticate(&mut handle, host, &user).await?;
+    Ok(SshSession {
+        handle: Arc::new(handle),
+        forwards,
+    })
 }
 
 /// 开一条带 PTY 的交互式 Shell 通道。

@@ -7,9 +7,10 @@
 use gpui_kit::SharedString;
 use rust_i18n::t;
 
-/// 连接类型。一台主机要么是一条 SSH，要么是一个 VNC 桌面，要么是一个 RDP
-/// 远程桌面，要么是一条 Telnet，要么是一条本机串口，要么是一张 EasyTier 虚拟网，
-/// 落库时存为字符串（`ssh` / `vnc` / `rdp` / `telnet` / `serial` / `easytier`），
+/// 连接类型。一台主机要么是一条 SSH，要么是一条独立 SFTP（只开文件面板、
+/// 不开 shell），要么是一个 VNC 桌面，要么是一个 RDP 远程桌面，要么是一条
+/// Telnet，要么是一条本机串口，要么是一张 EasyTier 虚拟网，落库时存为字符串
+/// （`ssh` / `sftp` / `vnc` / `rdp` / `telnet` / `serial` / `easytier`），
 /// 读回时按小写匹配。
 ///
 /// 和 [`AuthMethod`] 一样：界面上的下拉按下标折回枚举，不拿那行字反查。
@@ -17,6 +18,10 @@ use rust_i18n::t;
 pub enum HostKind {
     #[default]
     Ssh,
+    /// 独立 SFTP：同一套 SSH 认证，但拨号后只开 SFTP 子系统、不开 shell，
+    /// 会话开出来是 [`crate::ui::panels::DockedSftpPanel`] 而不是终端。给
+    /// 那些关了 shell 只剩文件子系统的服务器用。
+    Sftp,
     Vnc,
     Rdp,
     Telnet,
@@ -30,8 +35,9 @@ pub enum HostKind {
 }
 
 impl HostKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Ssh,
+        Self::Sftp,
         Self::Vnc,
         Self::Rdp,
         Self::Telnet,
@@ -42,6 +48,7 @@ impl HostKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Ssh => "ssh",
+            Self::Sftp => "sftp",
             Self::Vnc => "vnc",
             Self::Rdp => "rdp",
             Self::Telnet => "telnet",
@@ -54,6 +61,7 @@ impl HostKind {
     pub fn label(&self) -> SharedString {
         match self {
             Self::Ssh => "SSH".into(),
+            Self::Sftp => "SFTP".into(),
             Self::Vnc => "VNC".into(),
             Self::Rdp => "RDP".into(),
             Self::Telnet => "Telnet".into(),
@@ -62,8 +70,8 @@ impl HostKind {
         }
     }
 
-    /// 这一档的惯例端口：SSH 22，VNC 5900，RDP 3389，Telnet 23。
-    /// [`crate::host::Host::address`]
+    /// 这一档的惯例端口：SSH 与独立 SFTP 都是 22（同一个 sshd），VNC 5900，
+    /// RDP 3389，Telnet 23。[`crate::host::Host::address`]
     /// 拿它决定要不要省略端口，表单拿它做换档时的默认值。
     ///
     /// 串口没有端口这一说，给 0 —— 它永远不会出现在地址里（`address()`
@@ -73,7 +81,7 @@ impl HostKind {
     /// [`crate::easytier::EasyTierSettings`] 里）。
     pub fn default_port(&self) -> u16 {
         match self {
-            Self::Ssh => 22,
+            Self::Ssh | Self::Sftp => 22,
             Self::Vnc => 5900,
             Self::Rdp => 3389,
             Self::Telnet => 23,
@@ -96,6 +104,7 @@ impl HostKind {
     /// 出厂档必须是不改变任何人现有行为的那一个。
     pub fn from_str_or_default(raw: &str) -> Self {
         match raw.trim().to_lowercase().as_str() {
+            "sftp" => Self::Sftp,
             "vnc" => Self::Vnc,
             "rdp" => Self::Rdp,
             "telnet" => Self::Telnet,
@@ -442,6 +451,7 @@ mod tests {
         assert_eq!(HostKind::from_str_or_default(""), HostKind::Ssh);
         assert_eq!(HostKind::from_str_or_default("VNC"), HostKind::Vnc);
         assert_eq!(HostKind::from_str_or_default("RDP"), HostKind::Rdp);
+        assert_eq!(HostKind::from_str_or_default("SFTP"), HostKind::Sftp);
         assert_eq!(HostKind::from_str_or_default("rdp "), HostKind::Rdp);
         assert_eq!(HostKind::from_str_or_default("telnet"), HostKind::Telnet);
         assert_eq!(HostKind::from_str_or_default("Telnet"), HostKind::Telnet);
@@ -455,6 +465,7 @@ mod tests {
     #[test]
     fn remote_desktop_kinds_are_marked_as_such() {
         assert!(!HostKind::Ssh.is_remote_desktop());
+        assert!(!HostKind::Sftp.is_remote_desktop());
         assert!(HostKind::Vnc.is_remote_desktop());
         assert!(HostKind::Rdp.is_remote_desktop());
         assert!(!HostKind::Telnet.is_remote_desktop());
@@ -494,6 +505,13 @@ mod tests {
         assert_eq!(host.address(), "root@10.0.0.1");
         host.port = 5901;
         assert_eq!(host.address(), "root@10.0.0.1:5901");
+
+        // 独立 SFTP 走的就是 SSH 的惯例端口。
+        host.kind = HostKind::Sftp;
+        host.port = 22;
+        assert_eq!(host.address(), "root@10.0.0.1");
+        host.port = 2222;
+        assert_eq!(host.address(), "root@10.0.0.1:2222");
 
         host.kind = HostKind::Rdp;
         host.port = 3389;

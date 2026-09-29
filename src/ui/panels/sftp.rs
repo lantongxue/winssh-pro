@@ -1422,6 +1422,18 @@ impl SftpPanel {
         cx.notify();
     }
 
+    /// 把连接失败的原因摆进空状态，不碰通道与条目。
+    ///
+    /// 与 [`Self::attach`] 的差别：那一位真的换了一条通道进来，所以连条目一起清空；
+    /// 这里只是在一次连不上的尝试之后把那句原因记下来 —— 失败发生的时候还没有
+    /// （或早已没有）可清的条目，见了重试按钮的就是这一份说明。独立 SFTP
+    /// （[`crate::ui::panels::DockedSftpPanel`]）那条路没有 `window` 可拿时
+    /// 用它，别处都走 `attach`。
+    pub fn note_error(&mut self, error: SharedString, cx: &mut Context<Self>) {
+        self.connect_error = Some(error);
+        cx.notify();
+    }
+
     /// 宿主展开或收起这一栏。展开的那一次如果还没列过目录，立刻去列 ——
     /// 不然要等用户手动点一下才有东西看。
     pub fn set_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {

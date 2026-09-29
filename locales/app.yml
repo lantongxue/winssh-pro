@@ -4283,3 +4283,11 @@ settings.zmodem_choose_dir:
 zmodem.size_unknown:
   en: unknown
   zh-CN: 未知
+
+# ── 独立 SFTP 会话（HostKind::Sftp 开出来的那个标签页，见 src/ui/panels/sftp_host.rs） ──
+sftp_host.close_session:
+  en: Close session
+  zh-CN: 关闭会话
+sftp_host.trust_rejected:
+  en: Connection cancelled — you chose not to trust this host
+  zh-CN: 连接已取消 —— 你拒绝信任这台主机

@@ -47,7 +47,7 @@ use crate::{
     ui::{
         cards::{HOST_CARD_HEIGHT, HostCard},
         menus::HostAction,
-        panels::{EasyTierPanel, RdpPanel, SessionEvent, TerminalPanel, VncPanel},
+        panels::{DockedSftpPanel, EasyTierPanel, RdpPanel, SessionEvent, TerminalPanel, VncPanel},
         theme::{AppIcon, palette},
         windows::HostFormWindow,
     },
@@ -147,6 +147,7 @@ struct TrackedSession {
 /// （见 [`HostExplorerView::open_host`]）。
 enum TrackedPanel {
     Terminal(WeakEntity<TerminalPanel>),
+    Sftp(WeakEntity<DockedSftpPanel>),
     Vnc(WeakEntity<VncPanel>),
     Rdp(WeakEntity<RdpPanel>),
     EasyTier(WeakEntity<EasyTierPanel>),
@@ -158,6 +159,7 @@ impl TrackedPanel {
     fn alive(&self, cx: &gpui_kit::App) -> bool {
         match self {
             Self::Terminal(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive(cx)),
+            Self::Sftp(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive(cx)),
             Self::Vnc(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
             Self::Rdp(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
             Self::EasyTier(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
@@ -168,6 +170,7 @@ impl TrackedPanel {
     fn exists(&self) -> bool {
         match self {
             Self::Terminal(panel) => panel.upgrade().is_some(),
+            Self::Sftp(panel) => panel.upgrade().is_some(),
             Self::Vnc(panel) => panel.upgrade().is_some(),
             Self::Rdp(panel) => panel.upgrade().is_some(),
             Self::EasyTier(panel) => panel.upgrade().is_some(),
@@ -177,6 +180,7 @@ impl TrackedPanel {
     fn entity_id(&self) -> EntityId {
         match self {
             Self::Terminal(panel) => panel.entity_id(),
+            Self::Sftp(panel) => panel.entity_id(),
             Self::Vnc(panel) => panel.entity_id(),
             Self::Rdp(panel) => panel.entity_id(),
             Self::EasyTier(panel) => panel.entity_id(),
@@ -509,6 +513,12 @@ impl HostExplorerView {
                     cx,
                 );
                 self.track_panel(host.id.clone(), &panel, TrackedPanel::Terminal, window, cx);
+                panel_handle(panel)
+            }
+            HostKind::Sftp => {
+                let panel =
+                    DockedSftpPanel::new(host.clone(), self.dock_area.clone(), window, cx);
+                self.track_panel(host.id.clone(), &panel, TrackedPanel::Sftp, window, cx);
                 panel_handle(panel)
             }
             HostKind::Vnc => {

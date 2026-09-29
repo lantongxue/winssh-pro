@@ -56,6 +56,17 @@ impl SshService {
             .await
     }
 
+    /// 拨号 + 认证之后就停手，把已认证的会话凭据交出来。
+    ///
+    /// 独立 SFTP（[`crate::host::HostKind::Sftp`]）走这条路：那台服务器上根本没有
+    /// shell 可开，面板要的只是能在上面开子系统通道的那条连接（见
+    /// [`crate::ssh::SshConnection::connect_session_trusted`]）。
+    pub async fn connect_session_trusted(&self, host: &Host, trust: TrustPolicy) -> Result<SshSession> {
+        let host = host.clone();
+        crate::db::run(async move { SshConnection::connect_session_trusted(&host, trust).await })
+            .await
+    }
+
     /// 在一条已经建立好的连接上再开一条交互式 Shell。
     ///
     /// 分屏用这条：第二个窗格要的是"同一台机器上的另一个 shell"，不是

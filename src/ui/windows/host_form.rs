@@ -64,8 +64,8 @@ use crate::{
 };
 use rust_i18n::t;
 
-/// 连接类型在下拉里的六档，顺序即 [`crate::host::HostKind`] 的编号顺序：
-/// 0 SSH、1 VNC、2 RDP、3 Telnet、4 Serial、5 EasyTier。和认证方式一样按**下标**
+/// 连接类型在下拉里的七档，顺序即 [`crate::host::HostKind`] 的编号顺序：
+/// 0 SSH、1 SFTP、2 VNC、3 RDP、4 Telnet、5 Serial、6 EasyTier。和认证方式一样按**下标**
 /// 判断，不比文案。
 fn host_kinds() -> Vec<SharedString> {
     HostKind::ALL.map(|kind| kind.label()).to_vec()
@@ -1117,12 +1117,13 @@ impl HostForm {
 
     /// 新建主机在各档连接类型下的出厂标签。
     ///
-    /// 只放操作系统这类分类标签；协议（SSH / VNC / RDP / Telnet / 串口 / EasyTier）
-    /// 不再当标签存 ——
+    /// 只放操作系统这类分类标签；协议（SSH / SFTP / VNC / RDP / Telnet / 串口 /
+    /// EasyTier）不再当标签存 ——
     /// 卡片直接从 `kind` 画成一枚徽标，跟着换型走，不会因为复制、改档而对不上。
     fn default_tags(kind: HostKind) -> Vec<SharedString> {
         match kind {
-            HostKind::Ssh => vec!["Linux".into()],
+            // 独立 SFTP 和 SSH 一样，多半对着一台 Linux 机器。
+            HostKind::Ssh | HostKind::Sftp => vec!["Linux".into()],
             HostKind::Vnc => vec![],
             HostKind::Rdp => vec!["Windows".into()],
             // Telnet 常见于老式内网设备（路由器、交换机、BBS）；不给一个
@@ -1291,7 +1292,7 @@ impl HostForm {
         } else {
             username
         };
-        let requires_user = matches!(kind, HostKind::Ssh | HostKind::Rdp);
+        let requires_user = matches!(kind, HostKind::Ssh | HostKind::Sftp | HostKind::Rdp);
         if name.is_empty() || hostname.is_empty() || (requires_user && username.is_empty()) {
             return Err(t!("host_form.required_fields").into());
         }
@@ -1324,6 +1325,7 @@ impl HostForm {
             .unwrap_or(OS_PLATFORMS[0]);
 
         // 认证方式按下拉的下标折回枚举，不拿那行字反查 —— 见 [`auth_types`]。
+        // SFTP 与 SSH 同一条回答：它是 SSH 之上的子系统，密码/密钥/Agent 三档都走。
         // VNC 只有一种认证：服务器那把密码（[`crate::vnc`]），下拉不画，
         // 落库也固定按密码档存，读回时那一格恰好显示密码框。RDP 同理：
         // CredSSP/NLA 吃的是账号密码，没有密钥/Agent 那两档。
@@ -2564,10 +2566,10 @@ impl HostFormWindow {
             HostKind::Rdp => settings.page(self.rdp_page()),
             HostKind::Serial => settings.page(self.serial_page()),
             HostKind::EasyTier => settings.page(self.easytier_page()),
-            // Telnet 没有独立的"协议参数"页 —— 协商是 [`crate::telnet`] 内部
-            // 固定的那几档（ECHO / SGA / NAWS / TTYPE），不给用户调；
-            // 未来要接 `NEW-ENVIRON` 或 LINEMODE 时在这里加一页。
-            HostKind::Ssh | HostKind::Telnet => settings,
+            // Ssh / Sftp / Telnet 没有独立的"协议参数"页 —— SFTP 的全部 UI 就是
+            // 会话开出来那个文件面板，表单上没有它自己的那一页；Telnet 的协商在
+            // [`crate::telnet`] 内部固定（ECHO / SGA / NAWS / TTYPE），不给用户调。
+            HostKind::Ssh | HostKind::Sftp | HostKind::Telnet => settings,
         };
         settings.page(self.tags_page())
     }
