@@ -734,7 +734,12 @@ impl TerminalPanel {
         cx.spawn_in(window, async move |_, cx| {
             let outcome = crate::service::SftpService::connect(handle).await;
             let _ = panel.update_in(cx, |this, window, cx| match outcome {
-                Ok(service) => this.attach(Some(service), None, window, cx),
+                Ok(service) => this.attach(
+                    Some(crate::service::FileService::Sftp(service)),
+                    None,
+                    window,
+                    cx,
+                ),
                 Err(error) => this.attach(
                     None,
                     Some(SharedString::from(format!("{error:#}"))),

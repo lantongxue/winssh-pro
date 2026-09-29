@@ -135,7 +135,7 @@ russh-sftp = "2.4"
 # 连我们自己的服务端。两头共用一份编解码的话，编码错了也会自洽地互通，而
 # 浏览器连不上；各自独立才让那条链路成为一次真正的 RFC 1928 一致性检验。
 tokio-socks = "0.5"
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "compat"] }
 
 # 远端 mtime 是 Unix 时间戳，表格要按本地时区显示绝对时间。chrono 本来就在依赖树里
 # （`russh-sftp` 用它），这里只是把它变成直接依赖，不多编译一份东西。
@@ -183,7 +183,7 @@ rust-i18n = "4.2"
 # 启动时问一下系统"现在是什么语言"。它本来就在依赖树里（cosmic-text 用它），
 # 变成直接依赖不多编译一份东西；比自己读 LANG / GetUserDefaultLocaleName 稳。
 sys-locale = "0.3"
-opendal = { version = "0.59", features = ["services-s3", "services-webdav"] }
+opendal = { version = "0.59", features = ["services-s3", "services-webdav", "services-ftp"] }
 aes-gcm = "0.11.1"
 pbkdf2 = "0.13.0"
 sha2 = "0.11.0"

@@ -239,8 +239,14 @@ impl DockedSftpPanel {
             _ = this.update_in(cx, |this, window, cx| match outcome {
                 Ok(service) => {
                     this.connecting = false;
-                    this.sftp_panel
-                        .update(cx, |panel, cx| panel.attach(Some(service), None, window, cx));
+                    this.sftp_panel.update(cx, |panel, cx| {
+                        panel.attach(
+                            Some(crate::service::FileService::Sftp(service)),
+                            None,
+                            window,
+                            cx,
+                        )
+                    });
                     this.set_alive(true, cx);
                     cx.notify();
                 }
@@ -356,7 +362,12 @@ impl Panel for DockedSftpPanel {
                     }),
             )
             .child(div().min_w_0().truncate().child(self.host.name.clone()))
-            .child(div().text_xs().text_color(palette::teal()).child("SFTP"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::teal())
+                    .child(self.host.kind.label()),
+            )
             .child(
                 Button::new("sftp-host-panel-close")
                     .ghost()

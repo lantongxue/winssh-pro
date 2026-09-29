@@ -4291,3 +4291,58 @@ sftp_host.close_session:
 sftp_host.trust_rejected:
   en: Connection cancelled — you chose not to trust this host
   zh-CN: 连接已取消 —— 你拒绝信任这台主机
+
+# ── 独立 FTP 会话（HostKind::Ftp 开出来的那个标签页，见 src/ui/panels/ftp_host.rs） ──
+ftp_host.close_session:
+  en: Close session
+  zh-CN: 关闭会话
+
+# ── FTP 服务错误（src/service/ftp_service.rs） ──
+ftp_err.no_hostname:
+  en: The FTP server address is empty
+  zh-CN: FTP 服务器地址为空
+ftp_err.build_operator:
+  en: Failed to build the FTP client parameters
+  zh-CN: 组装 FTP 客户端参数失败
+ftp_err.action_open_session:
+  en: Open the FTP session
+  zh-CN: 打开 FTP 会话
+ftp_err.action_read_dir:
+  en: List the directory {path}
+  zh-CN: 列目录 {path}
+ftp_err.action_stat_path:
+  en: Check whether the path exists
+  zh-CN: 判断路径是否存在
+ftp_err.action_stat_remote:
+  en: Check the remote path {path}
+  zh-CN: 查看远端路径 {path}
+ftp_err.action_create_dir:
+  en: Create the directory {path}
+  zh-CN: 新建目录 {path}
+ftp_err.action_create_file:
+  en: Create the file {path}
+  zh-CN: 新建文件 {path}
+ftp_err.action_delete:
+  en: Delete {path}
+  zh-CN: 删除 {path}
+ftp_err.action_delete_dir:
+  en: Remove the directory {path}
+  zh-CN: 删除目录 {path}
+ftp_err.action_rename:
+  en: Rename {from} to {to}
+  zh-CN: 把 {from} 改成 {to}
+ftp_err.action_read_file:
+  en: Read the file {path}
+  zh-CN: 读取文件 {path}
+ftp_err.action_save_file:
+  en: Save the file {path}
+  zh-CN: 写入文件 {path}
+ftp_err.action_open_remote:
+  en: Open the remote file {path}
+  zh-CN: 打开远端文件 {path}
+ftp_err.chmod_unsupported:
+  en: FTP servers do not support chmod; the permissions column is read-only
+  zh-CN: FTP 协议不支持 chmod，权限列只读
+ftp_err.raw_error:
+  en: "{action}: {error}"
+  zh-CN: "{action}:{error}"

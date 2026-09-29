@@ -66,7 +66,7 @@ use crate::ui::{
 use crate::{
     host::Host,
     service::{
-        LocalFileService, SftpService, TransferEvent, TransferHandle, TransferJob,
+        FileService, LocalFileService, TransferEvent, TransferHandle, TransferJob,
         unique_local_path,
     },
     sftp::{
@@ -1015,9 +1015,10 @@ impl TableDelegate for RemoteTableDelegate {
 /// 底部这一栏 SFTP 面板。
 pub struct SftpPanel {
     host: Host,
-    /// 这条会话的 SFTP 通道。`None` 时右栏只有一个空状态 —— 本地 Shell 会话、
-    /// 或者还没连上，都不该画一张假的文件表。
-    service: Option<SftpService>,
+    /// 这条会话的远端文件通道 —— 上/backed by SFTP（SSH 子系统）或 FTP（OpenDAL），
+    /// 面板不再区分[`FileService`]。`None` 时右栏只有一个空状态 —— 本地 Shell
+    /// 会话、或者还没连上，都不该画一张假的文件表。
+    service: Option<FileService>,
     /// 开不出通道时的那句话（对端没配 `Subsystem sftp` 之类）。
     connect_error: Option<SharedString>,
 
@@ -1406,7 +1407,7 @@ impl SftpPanel {
     /// 重连会再调一次：上一次那份 session 一起丢掉，它底下的通道已经不在了。
     pub fn attach(
         &mut self,
-        service: Option<SftpService>,
+        service: Option<FileService>,
         error: Option<SharedString>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -3107,7 +3108,15 @@ impl SftpPanel {
                     .max_w(px(140.))
                     .child(self.host.name.clone()),
             )
-            .child(div().text_xs().text_color(palette::idle(cx)).child("SFTP"))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(match self.service.as_ref() {
+                        Some(service) => service.label().to_string(),
+                        None => self.host.kind.label().to_string(),
+                    })),
+            )
     }
 
     fn render_follow_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {

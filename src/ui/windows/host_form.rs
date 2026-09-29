@@ -1122,8 +1122,8 @@ impl HostForm {
     /// 卡片直接从 `kind` 画成一枚徽标，跟着换型走，不会因为复制、改档而对不上。
     fn default_tags(kind: HostKind) -> Vec<SharedString> {
         match kind {
-            // 独立 SFTP 和 SSH 一样，多半对着一台 Linux 机器。
-            HostKind::Ssh | HostKind::Sftp => vec!["Linux".into()],
+            // 独立 SFTP / FTP 和 SSH 一样，多半对着一台 Linux 机器。
+            HostKind::Ssh | HostKind::Sftp | HostKind::Ftp => vec!["Linux".into()],
             HostKind::Vnc => vec![],
             HostKind::Rdp => vec!["Windows".into()],
             // Telnet 常见于老式内网设备（路由器、交换机、BBS）；不给一个
@@ -1287,12 +1287,16 @@ impl HostForm {
         // RDP 有，而且 NLA 要它，空着由表单报必填。
         // Telnet 的 login 提示走的是对端 shell，账号是"记一记"，不填也允许保存。
         // 串口同 Telnet：设备那头的 login 是它自己 shell 的事，账号只是备忘。
+        // FTP 是账号密码即认证，空着大概率是敲错而不是匿名 —— 必填。
         let username = if kind == HostKind::Vnc && username.is_empty() {
             "vnc".to_string()
         } else {
             username
         };
-        let requires_user = matches!(kind, HostKind::Ssh | HostKind::Sftp | HostKind::Rdp);
+        let requires_user = matches!(
+            kind,
+            HostKind::Ssh | HostKind::Sftp | HostKind::Rdp | HostKind::Ftp
+        );
         if name.is_empty() || hostname.is_empty() || (requires_user && username.is_empty()) {
             return Err(t!("host_form.required_fields").into());
         }
@@ -1334,8 +1338,10 @@ impl HostForm {
         // 串口更没有认证这一层：设备那头若弹 login，那是它自己的 shell 在
         // 说话，账号密码同样只是备忘。EasyTier 的"密码"是网络密钥，同一格落库。
         let auth_method = if kind.is_remote_desktop()
-            || matches!(kind, HostKind::Telnet | HostKind::Serial | HostKind::EasyTier)
-        {
+            || matches!(
+                kind,
+                HostKind::Telnet | HostKind::Serial | HostKind::EasyTier | HostKind::Ftp
+            ) {
             AuthMethod::Password
         } else {
             AuthMethod::from_index(
@@ -1600,7 +1606,9 @@ impl HostForm {
     /// 走同一档 UI 免得用户看到"选密钥还是选 Agent"的空白下拉；串口同理。
     fn render_auth_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let kind = self.selected_kind(cx);
-        if kind.is_remote_desktop() || matches!(kind, HostKind::Telnet | HostKind::Serial) {
+        if kind.is_remote_desktop()
+            || matches!(kind, HostKind::Telnet | HostKind::Serial | HostKind::Ftp)
+        {
             return field(
                 t!("host_form.field_username").into(),
                 Input::new(&self.username).font_family("monospace").w_full(),
@@ -1636,7 +1644,9 @@ impl HostForm {
         if kind == HostKind::Vnc {
             return Some(self.render_password_section(cx).into_any_element());
         }
-        if matches!(kind, HostKind::Telnet | HostKind::Serial) {
+        // Telnet / 串口的"密码"只是对端 login 提示要打的备忘；FTP 是真的拿它当
+        // 认证 —— 三种都只有"账号 + 密码"这一档，恒等于密码格。
+        if matches!(kind, HostKind::Telnet | HostKind::Serial | HostKind::Ftp) {
             return Some(self.render_password_section(cx).into_any_element());
         }
         if kind == HostKind::Rdp {
@@ -2569,7 +2579,7 @@ impl HostFormWindow {
             // Ssh / Sftp / Telnet 没有独立的"协议参数"页 —— SFTP 的全部 UI 就是
             // 会话开出来那个文件面板，表单上没有它自己的那一页；Telnet 的协商在
             // [`crate::telnet`] 内部固定（ECHO / SGA / NAWS / TTYPE），不给用户调。
-            HostKind::Ssh | HostKind::Sftp | HostKind::Telnet => settings,
+            HostKind::Ssh | HostKind::Sftp | HostKind::Ftp | HostKind::Telnet => settings,
         };
         settings.page(self.tags_page())
     }
@@ -2978,6 +2988,20 @@ mod tests {
         (host, group)
     }
 
+    /// 一台 FTP 主机：账号密码即认证，没有密钥那两档。
+    fn ftp_host() -> EditedHost {
+        let (mut host, group) = serial_host();
+        host.id = "nas".into();
+        host.name = "NAS".into();
+        host.kind = HostKind::Ftp;
+        host.hostname = "192.168.1.20".into();
+        host.port = 21;
+        host.user = "backup".into();
+        host.password = "  pa55  ".into();
+        host.serial = SerialSettings::default();
+        (host, group)
+    }
+
     /// 保险箱里的一条凭据，用来喂"从保险箱选取"那个下拉。
     fn vault_credential(name: &str, kind: CredentialKind) -> Credential {
         Credential {
@@ -3150,6 +3174,38 @@ mod tests {
         assert_eq!(draft.auth_method, AuthMethod::Password);
         assert!(draft.user.is_empty(), "组网不要账号");
         assert_eq!(draft.easytier, expected);
+    }
+
+    /// FTP 主机走表单这一趟：账号密码即认证（密码不 trim），认证固定压到密码档，
+    /// 端口语义与 SFTP 一样是"FTP 服务器的那个口"而不是 22。
+    #[gpui_kit::test]
+    fn an_ftp_host_drafts_password_only(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form(cx, Some(ftp_host()));
+
+        let (_, draft) = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect("这张表填得是全的");
+        assert_eq!(draft.kind, HostKind::Ftp);
+        assert_eq!(draft.hostname, "192.168.1.20");
+        assert_eq!(draft.port, 21);
+        assert_eq!(draft.user, "backup");
+        assert_eq!(draft.password, "  pa55  ", "密码里的空格是密码的一部分");
+        assert_eq!(draft.auth_method, AuthMethod::Password);
+    }
+
+    /// FTP 主机没有账号：表单该拦下来 —— 空账号大概率是敲错，而不是有意匿名。
+    #[gpui_kit::test]
+    fn an_ftp_host_without_a_user_is_refused(cx: &mut gpui_kit::TestAppContext) {
+        let (form, cx) = draw_form(cx, Some(ftp_host()));
+
+        form.update_in(cx, |this, window, cx| {
+            this.username
+                .update(cx, |state, cx| state.set_value("", window, cx));
+        });
+        let error = form
+            .read_with(cx, |this, cx| this.build_draft(cx))
+            .expect_err("没有账号不该存得下去");
+        assert_eq!(error, SharedString::from(t!("host_form.required_fields")));
     }
 
     /// 组网那一页填得不对（EasyTier 不认的协议、端口不是端口），表单就该拦下来；

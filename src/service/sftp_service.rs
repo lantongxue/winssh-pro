@@ -39,18 +39,24 @@ use rust_i18n::t;
 
 /// 一次搬运的块大小。SFTP 包上限一般是 32 KiB（`limits@openssh.com` 会自己收小），
 /// 比它大的读请求会被对端截短，所以再大也只是白占内存。
-const CHUNK: usize = 32 * 1024;
+///
+/// `pub(crate)`：[`super::FtpService`] 的传输循环也用这个块尺寸，避免复制定义。
+pub(crate) const CHUNK: usize = 32 * 1024;
 
 /// 一次目录传输内部同时搬运的文件数。一个文件夹在队列里是一行、一个任务，
 /// 里头的文件以前是一个搬完再搬下一个；这里让最多这么多文件并行走同一条 SFTP
 /// 会话（`russh-sftp` 会在一条通道上多路复用请求），小文件多的目录不再挨个干等。
-const FOLDER_CONCURRENCY: usize = 10;
+///
+/// `pub(crate)`：FTP 那侧目录传输也用同一档，与 SFTP 体验一致。
+pub(crate) const FOLDER_CONCURRENCY: usize = 10;
 
 /// 进度上报的最小间隔。搬运是 32 KiB 一块一块走的，但**没必要每块都惊动主线程** ——
 /// 一条进度条一秒刷十几次和刷几千次看着一样，后者只把界面刷到掉帧（并发时更放大十倍）。
 /// 所以 `pump` 攒够这个间隔才发一次；块始终在累加，收尾时一定补发一次准确值，进度条
 /// 到得了 100%。调小更跟手、更耗 UI；调大更省、看着更"跳"。
-const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(80);
+///
+/// `pub(crate)`：FTP 传输循环也用同一档节奏。
+pub(crate) const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(80);
 
 /// 编辑远端文本文件的大小上限。超过就当二进制文件处理（提示先下载到本地打开），
 /// 把 200 MB 的日志读进一个输入框是给自己找麻烦。
@@ -110,6 +116,16 @@ pub struct TransferHandle {
 }
 
 impl TransferHandle {
+    /// 把三个底层零件装成一个把手。`pub(crate)`：[`super::FtpService`] 的
+    /// 传输任务也产出同一形状的把手，与 [`super::SftpService`] 共一份实现。
+    pub(crate) fn new(
+        cancel: CancellationToken,
+        pause: Arc<PauseState>,
+        join: JoinHandle<()>,
+    ) -> Self {
+        Self { cancel, pause, join }
+    }
+
     /// 让任务在下一块之前停下。半截的 `.part` 留在原地，名字已经说明它是什么。
     pub fn cancel(&self) {
         self.cancel.cancel();
@@ -136,8 +152,11 @@ impl TransferHandle {
 
 /// 暂停开关。与 [`CancellationToken`] 同一思想，只是可逆：暂停在块与块之间
 /// 生效（一块 32 KiB 是最小的停顿单位），恢复要能把等待中的任务叫醒。
+///
+/// `pub(crate)`：[`super::FtpService`] 的传输循环也走同一个暂停实现，与
+/// [`super::SftpService`] 共用一个语义（暂停粒度、恢复兜底、可见性一致）。
 #[derive(Default)]
-struct PauseState {
+pub(crate) struct PauseState {
     paused: AtomicBool,
     notify: Notify,
 }
@@ -161,7 +180,9 @@ impl PauseState {
     /// 除了被 `notify` 叫醒，还挂了一个 200ms 一班的轮询兜底：恢复若发生在
     /// `notified()` 注册之前，通知会丢，靠着这一班最多晚 200ms 起身 ——
     /// 对一次人手点的暂停来说无关痛痒。
-    async fn wait(&self, cancel: &CancellationToken) {
+    ///
+    /// `pub(crate)`：[`super::FtpService`] 的传输循环也在这同一份状态上等暂停。
+    pub(crate) async fn wait(&self, cancel: &CancellationToken) {
         while self.is_paused() {
             tokio::select! {
                 _ = cancel.cancelled() => return,

@@ -10,6 +10,7 @@ mod assistant;
 mod easytier;
 #[allow(dead_code)]
 mod event_log;
+mod ftp_host;
 mod monitor;
 mod rdp;
 mod sftp;
@@ -28,6 +29,7 @@ pub use sftp::{
     SftpPanelEvent,
 };
 pub use sftp_host::DockedSftpPanel;
+pub use ftp_host::DockedFtpPanel;
 // `SftpEditorPanel` 与 `SavedHandler` 只在 `panels` 内部用（`sftp.rs` 直接从
 // `super::sftp_editor` 取），这里只把 `SaveFile` 抬出去给 `crate::ui::init` 绑键。
 pub use sftp_editor::SaveFile;

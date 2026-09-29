@@ -34,10 +34,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px, relative,
 };
 
-use crate::{
-    service::SftpService,
-    ui::theme::{AppIcon, palette},
-};
+use crate::ui::theme::{AppIcon, palette};
 use rust_i18n::t;
 
 gpui_kit::actions!(
@@ -72,7 +69,7 @@ enum Read {
 
 /// 远端文本编辑标签页。
 pub struct SftpEditorPanel {
-    service: SftpService,
+    service: crate::service::FileService,
     path: SharedString,
     name: SharedString,
     /// 从文件名解析出的语法名（如 `"rust"`、`"bash"`），喂给编辑器高亮，也在工具栏画一个
@@ -102,7 +99,7 @@ impl SftpEditorPanel {
     /// 由 [`crate::ui::panels::SftpPanel`] 在 `cx.new(..)` 里调，建好之后作为一个 Dock 面板
     /// 发给宿主标签页去挂进中心区。
     pub fn new(
-        service: SftpService,
+        service: crate::service::FileService,
         path: impl Into<SharedString>,
         name: impl Into<SharedString>,
         on_saved: SavedHandler,
