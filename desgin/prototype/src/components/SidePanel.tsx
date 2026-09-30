@@ -38,11 +38,13 @@ import {
   FolderLock,
   Star,
 } from 'lucide-react';
-import { ServerHost, DevOpsSnippet, PortTunnel, SSHKeyItem, TabType, VaultCredential, VaultCredentialType } from '../types';
+import { ServerHost, DevOpsSnippet, PortTunnel, SSHKeyItem, TabType, VaultCredential, VaultCredentialType, ClashSubscription, ClashCoreSettings } from '../types';
 import { ActionPanelId } from './ActionBar';
 import { SnippetModal } from './SnippetModal';
 import { calculatePasswordStrength, generateSecurePassword } from './CredentialVaultModal';
 import { OsBadge } from './OsIcon';
+import { ClashSidebarPanel } from './clash/ClashSidebarPanel';
+import { DEFAULT_CLASH_SETTINGS } from '../data/defaultClashData';
 
 interface SidePanelProps {
   activePanel: ActionPanelId;
@@ -75,6 +77,18 @@ interface SidePanelProps {
   credentials?: VaultCredential[];
   onUpdateCredentials?: (credentials: VaultCredential[]) => void;
   onOpenVaultModal?: () => void;
+
+  // Clash.Meta
+  clashSubscriptions?: ClashSubscription[];
+  activeClashSubscriptionId?: string;
+  onSelectClashSubscription?: (id: string) => void;
+  onAddNewClashSubscription?: () => void;
+  onEditClashSubscription?: (sub: ClashSubscription) => void;
+  onDeleteClashSubscription?: (id: string) => void;
+  onDuplicateClashSubscription?: (sub: ClashSubscription) => void;
+  onUpdateClashSubscription?: (id: string) => void;
+  onUpdateAllClashSubscriptions?: () => void;
+  clashSettings?: ClashCoreSettings;
 }
 
 export const SidePanel: React.FC<SidePanelProps> = ({
@@ -100,6 +114,16 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   credentials = [],
   onUpdateCredentials = () => {},
   onOpenVaultModal,
+  clashSubscriptions = [],
+  activeClashSubscriptionId,
+  onSelectClashSubscription = () => {},
+  onAddNewClashSubscription = () => {},
+  onEditClashSubscription = () => {},
+  onDeleteClashSubscription = () => {},
+  onDuplicateClashSubscription = () => {},
+  onUpdateClashSubscription = () => {},
+  onUpdateAllClashSubscriptions = () => {},
+  clashSettings = DEFAULT_CLASH_SETTINGS,
 }) => {
   const [isResizing, setIsResizing] = useState(false);
 
@@ -164,6 +188,7 @@ export const SidePanel: React.FC<SidePanelProps> = ({
   const panelMeta: Record<ActionPanelId, { title: string; icon: React.ElementType }> = {
     hosts: { title: 'HOSTS & SERVERS', icon: Server },
     snippets: { title: 'DEVOPS SNIPPETS', icon: Code2 },
+    clash: { title: 'CLASH.META 订阅', icon: Radio },
     keys: { title: 'CREDENTIAL & KEY VAULT', icon: ShieldCheck },
   };
 
@@ -199,6 +224,16 @@ export const SidePanel: React.FC<SidePanelProps> = ({
               onClick={handleOpenNewSnippet}
               title="Create New Command Snippet"
               className="p-1 hover:bg-[#333333] text-[#4EC9B0] hover:text-white rounded transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          {activePanel === 'clash' && onAddNewClashSubscription && (
+            <button
+              onClick={onAddNewClashSubscription}
+              title="Add New Clash.Meta Subscription"
+              className="p-1 hover:bg-[#333333] text-cyan-400 hover:text-white rounded transition-colors"
             >
               <Plus className="w-3.5 h-3.5" />
             </button>
@@ -248,6 +283,21 @@ export const SidePanel: React.FC<SidePanelProps> = ({
             onAddNewSnippet={handleOpenNewSnippet}
             onEditSnippet={handleOpenEditSnippet}
             onDeleteSnippet={handleDeleteSnippet}
+          />
+        )}
+
+        {activePanel === 'clash' && (
+          <ClashSidebarPanel
+            subscriptions={clashSubscriptions}
+            activeSubscriptionId={activeClashSubscriptionId || clashSubscriptions[0]?.id || ''}
+            onSelectSubscription={onSelectClashSubscription}
+            onAddNewSubscription={onAddNewClashSubscription}
+            onEditSubscription={onEditClashSubscription}
+            onDeleteSubscription={onDeleteClashSubscription}
+            onDuplicateSubscription={onDuplicateClashSubscription}
+            onUpdateSubscription={onUpdateClashSubscription}
+            onUpdateAllSubscriptions={onUpdateAllClashSubscriptions}
+            clashSettings={clashSettings}
           />
         )}
 

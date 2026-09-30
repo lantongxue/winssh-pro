@@ -80,7 +80,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4 select-none">
-      <div className="bg-zinc-900 border border-zinc-750 rounded-2xl max-w-xl w-full p-5 shadow-2xl space-y-4 font-sans max-h-[90vh] flex flex-col">
+      <div className="bg-zinc-900 border border-zinc-750 rounded-2xl max-w-2xl w-full p-5 shadow-2xl space-y-4 font-sans max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
           <div className="flex items-center gap-2.5">

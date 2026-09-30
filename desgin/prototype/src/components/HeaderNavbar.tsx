@@ -17,7 +17,7 @@ import {
   Search,
   ShieldCheck,
 } from 'lucide-react';
-import { AppSettings, SessionTab } from '../types';
+import { AppSettings, SessionTab, ClashCoreSettings } from '../types';
 
 interface HeaderNavbarProps {
   settings: AppSettings;
@@ -32,6 +32,8 @@ interface HeaderNavbarProps {
   onSetSplit: (split: 'none' | 'vertical' | 'horizontal') => void;
   connectedCount: number;
   totalHostsCount: number;
+  clashSettings?: ClashCoreSettings;
+  onOpenClash?: () => void;
 }
 
 export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
@@ -47,6 +49,8 @@ export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
   onSetSplit,
   connectedCount,
   totalHostsCount,
+  clashSettings,
+  onOpenClash,
 }) => {
   return (
     <header className="h-12 bg-[#2D2D2D] border-b border-[#333333] select-none flex items-center justify-between px-4 z-30">
@@ -130,6 +134,28 @@ export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
           <Zap className="w-3.5 h-3.5 fill-white/20" />
           <span className="hidden sm:inline">Connect</span>
         </button>
+
+        {/* Clash.Meta Status Indicator & Quick Switch */}
+        {clashSettings && onOpenClash && (
+          <button
+            onClick={onOpenClash}
+            title="Clash.Meta 代理管理与订阅 (Alt+4)"
+            className={`hidden md:flex h-7 items-center space-x-1.5 rounded px-2.5 text-xs font-mono transition-all border ${
+              clashSettings.masterProxyEnabled
+                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25 shadow-xs'
+                : 'bg-[#222224] text-zinc-400 border-zinc-700 hover:text-zinc-200'
+            }`}
+          >
+            <Radio className="w-3.5 h-3.5 text-cyan-400" />
+            <span className="font-sans font-medium text-[11px]">
+              {clashSettings.masterProxyEnabled
+                ? clashSettings.tunEnabled
+                  ? 'TUN代理: 运行中'
+                  : '系统代理: 运行中'
+                : '代理: 已停止'}
+            </span>
+          </button>
+        )}
       </div>
 
       {/* Right: Layout Split, Broadcast, AI Copilot, Settings */}
@@ -207,18 +233,6 @@ export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
           <Sparkles className="w-3.5 h-3.5 text-[#C586C0]" />
           <span className="hidden sm:inline">AI Copilot</span>
         </button>
-
-        {/* Credential & Private Key Vault Button */}
-        {onOpenVaultModal && (
-          <button
-            onClick={onOpenVaultModal}
-            title="账号密码与私钥保险箱 (Alt+3)"
-            className="flex h-7 items-center space-x-1.5 px-2.5 rounded text-xs font-medium transition-all border bg-[#3C3C3C] hover:bg-[#454545] text-[#D4D4D4] hover:text-white border-[#454545] hover:border-[#4EC9B0]/50"
-          >
-            <ShieldCheck className="w-3.5 h-3.5 text-[#4EC9B0]" />
-            <span className="hidden md:inline">密码保险箱</span>
-          </button>
-        )}
 
         {/* Audio Mute / Sound Toggle */}
         <button

@@ -9,6 +9,8 @@ import { QuickConnectModal } from './components/QuickConnectModal';
 import { InteractiveVimModal } from './components/InteractiveVimModal';
 import { SettingsModal } from './components/SettingsModal';
 import { CredentialVaultModal } from './components/CredentialVaultModal';
+import { ClashSubscriptionModal } from './components/clash/ClashSubscriptionModal';
+import { ClashMetaDetailView } from './components/clash/ClashMetaDetailView';
 import {
   DEFAULT_HOSTS,
   DEFAULT_SNIPPETS,
@@ -17,6 +19,10 @@ import {
   DEFAULT_CREDENTIALS,
   INITIAL_SFTP_FILES,
 } from './data/defaultData';
+import {
+  DEFAULT_CLASH_SUBSCRIPTIONS,
+  DEFAULT_CLASH_SETTINGS,
+} from './data/defaultClashData';
 import {
   ServerHost,
   SessionTab,
@@ -28,6 +34,8 @@ import {
   TabType,
   TerminalPane,
   VaultCredential,
+  ClashSubscription,
+  ClashCoreSettings,
 } from './types';
 import {
   Search,
@@ -42,6 +50,7 @@ import {
   ShieldCheck,
   Layers,
   Zap,
+  Radio,
 } from 'lucide-react';
 
 export function App() {
@@ -136,6 +145,21 @@ export function App() {
   const [showHostModal, setShowHostModal] = useState(false);
   const [editingHost, setEditingHost] = useState<ServerHost | null>(null);
 
+  // Clash.Meta State
+  const [clashSubscriptions, setClashSubscriptions] = useState<ClashSubscription[]>(() => {
+    const saved = localStorage.getItem('winssh_clash_subscriptions');
+    return saved ? JSON.parse(saved) : DEFAULT_CLASH_SUBSCRIPTIONS;
+  });
+  const [activeClashSubscriptionId, setActiveClashSubscriptionId] = useState<string>(
+    clashSubscriptions[0]?.id || 'sub-bgp-fast'
+  );
+  const [clashSettings, setClashSettings] = useState<ClashCoreSettings>(() => {
+    const saved = localStorage.getItem('winssh_clash_settings');
+    return saved ? JSON.parse(saved) : DEFAULT_CLASH_SETTINGS;
+  });
+  const [showClashModal, setShowClashModal] = useState(false);
+  const [editingClashSubscription, setEditingClashSubscription] = useState<ClashSubscription | null>(null);
+
   const [showVaultModal, setShowVaultModal] = useState(false);
   const [showQuickConnect, setShowQuickConnect] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -177,6 +201,14 @@ export function App() {
     localStorage.setItem('winssh_panel_width', panelWidth.toString());
   }, [panelWidth]);
 
+  useEffect(() => {
+    localStorage.setItem('winssh_clash_subscriptions', JSON.stringify(clashSubscriptions));
+  }, [clashSubscriptions]);
+
+  useEffect(() => {
+    localStorage.setItem('winssh_clash_settings', JSON.stringify(clashSettings));
+  }, [clashSettings]);
+
   // Global Keyboard Shortcuts (Ctrl+K Command Palette, Alt+1-5, Ctrl+B, etc.)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -202,7 +234,10 @@ export function App() {
         setIsPanelOpen(true);
       } else if (e.altKey && e.key === '3') {
         e.preventDefault();
-        setActivePanel('keys');
+        setShowVaultModal(true);
+      } else if (e.altKey && e.key === '4') {
+        e.preventDefault();
+        setActivePanel('clash');
         setIsPanelOpen(true);
       }
     };
@@ -450,6 +485,11 @@ export function App() {
         onSetSplit={handleSetSplit}
         connectedCount={hosts.filter((h) => h.status === 'online').length}
         totalHostsCount={hosts.length}
+        clashSettings={clashSettings}
+        onOpenClash={() => {
+          setActivePanel('clash');
+          setIsPanelOpen(true);
+        }}
       />
 
       {/* Main App Body */}
@@ -461,6 +501,7 @@ export function App() {
           onSelectPanel={handleSelectPanel}
           onOpenQuickConnect={() => setShowQuickConnect(true)}
           onOpenSettings={() => setShowSettings(true)}
+          onOpenVault={() => setShowVaultModal(true)}
           isCopilotOpen={isCopilotOpen}
           onToggleCopilot={() => setIsCopilotOpen(!isCopilotOpen)}
         />
@@ -502,47 +543,112 @@ export function App() {
           credentials={credentials}
           onUpdateCredentials={setCredentials}
           onOpenVaultModal={() => setShowVaultModal(true)}
+          clashSubscriptions={clashSubscriptions}
+          activeClashSubscriptionId={activeClashSubscriptionId}
+          onSelectClashSubscription={(id) => {
+            setActiveClashSubscriptionId(id);
+            setActivePanel('clash');
+            setIsPanelOpen(true);
+          }}
+          onAddNewClashSubscription={() => {
+            setEditingClashSubscription(null);
+            setShowClashModal(true);
+          }}
+          onEditClashSubscription={(sub) => {
+            setEditingClashSubscription(sub);
+            setShowClashModal(true);
+          }}
+          onDeleteClashSubscription={(id) => {
+            const nextList = clashSubscriptions.filter((s) => s.id !== id);
+            setClashSubscriptions(nextList);
+            if (activeClashSubscriptionId === id && nextList[0]) {
+              setActiveClashSubscriptionId(nextList[0].id);
+            }
+          }}
+          onDuplicateClashSubscription={(sub) => {
+            const dup: ClashSubscription = {
+              ...sub,
+              id: `sub-${Date.now()}`,
+              name: `${sub.name} (副本)`,
+              nodes: sub.nodes.map((n) => ({
+                ...n,
+                id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              })),
+            };
+            setClashSubscriptions([...clashSubscriptions, dup]);
+          }}
+          onUpdateClashSubscription={(id) => {
+            setClashSubscriptions((prev) =>
+              prev.map((s) =>
+                s.id === id ? { ...s, updatedAt: new Date().toLocaleString() } : s
+              )
+            );
+          }}
+          onUpdateAllClashSubscriptions={() => {
+            setClashSubscriptions((prev) =>
+              prev.map((s) => ({ ...s, updatedAt: new Date().toLocaleString() }))
+            );
+          }}
+          clashSettings={clashSettings}
         />
 
-        {/* Center Workspace View: Primary Terminal Workspace */}
+        {/* Center Workspace View: Primary Terminal Workspace OR Clash.Meta Dashboard */}
         <main className="flex-1 flex flex-col overflow-hidden bg-[#0F0F0F] min-w-0">
-          <TerminalView
-            tabs={tabs}
-            activeTabId={activeTabId}
-            onSelectTab={setActiveTabId}
-            onCloseTab={handleCloseTab}
-            onNewTab={handleNewTab}
-            hosts={hosts}
-            settings={settings}
-            sftpFiles={sftpFiles}
-            onUpdateSftpFiles={setSftpFiles}
-            onOpenFileEditor={setEditorFile}
-            onSwitchToSftp={(hostId) => {
-              setSelectedHostId(hostId);
-              // Open bottom SFTP panel in the active session tab
-              setTabs((prev) =>
-                prev.map((t) =>
-                  t.id === activeTabId ? { ...t, sftpOpen: true } : t
-                )
-              );
-            }}
-            onSwitchToMonitor={(hostId) => {
-              setSelectedHostId(hostId);
-              // Open right monitor panel in the active session tab
-              setTabs((prev) =>
-                prev.map((t) =>
-                  t.id === activeTabId ? { ...t, monitorOpen: !t.monitorOpen } : t
-                )
-              );
-            }}
-            onAskCopilot={(text, taskType) => {
-              setCopilotExternalPrompt({ text, taskType });
-              setIsCopilotOpen(true);
-            }}
-            onUpdateTabs={setTabs}
-            tunnels={tunnels}
-            onUpdateTunnels={setTunnels}
-          />
+          {activePanel === 'clash' ? (
+            <ClashMetaDetailView
+              subscription={
+                clashSubscriptions.find((s) => s.id === activeClashSubscriptionId) ||
+                clashSubscriptions[0] ||
+                DEFAULT_CLASH_SUBSCRIPTIONS[0]
+              }
+              allSubscriptions={clashSubscriptions}
+              clashSettings={clashSettings}
+              onUpdateSettings={setClashSettings}
+              onUpdateSubscription={(updated) => {
+                setClashSubscriptions((prev) =>
+                  prev.map((s) => (s.id === updated.id ? updated : s))
+                );
+              }}
+            />
+          ) : (
+            <TerminalView
+              tabs={tabs}
+              activeTabId={activeTabId}
+              onSelectTab={setActiveTabId}
+              onCloseTab={handleCloseTab}
+              onNewTab={handleNewTab}
+              hosts={hosts}
+              settings={settings}
+              sftpFiles={sftpFiles}
+              onUpdateSftpFiles={setSftpFiles}
+              onOpenFileEditor={setEditorFile}
+              onSwitchToSftp={(hostId) => {
+                setSelectedHostId(hostId);
+                // Open bottom SFTP panel in the active session tab
+                setTabs((prev) =>
+                  prev.map((t) =>
+                    t.id === activeTabId ? { ...t, sftpOpen: true } : t
+                  )
+                );
+              }}
+              onSwitchToMonitor={(hostId) => {
+                setSelectedHostId(hostId);
+                // Open right monitor panel in the active session tab
+                setTabs((prev) =>
+                  prev.map((t) =>
+                    t.id === activeTabId ? { ...t, monitorOpen: !t.monitorOpen } : t
+                  )
+                );
+              }}
+              onAskCopilot={(text, taskType) => {
+                setCopilotExternalPrompt({ text, taskType });
+                setIsCopilotOpen(true);
+              }}
+              onUpdateTabs={setTabs}
+              tunnels={tunnels}
+              onUpdateTunnels={setTunnels}
+            />
+          )}
         </main>
 
         {/* Right AI Copilot Drawer */}
@@ -606,6 +712,28 @@ export function App() {
         credentials={credentials}
         onUpdateCredentials={setCredentials}
       />
+
+      {/* Clash.Meta Subscription Add/Edit Modal */}
+      {showClashModal && (
+        <ClashSubscriptionModal
+          isOpen={showClashModal}
+          onClose={() => {
+            setShowClashModal(false);
+            setEditingClashSubscription(null);
+          }}
+          onSaveSubscription={(savedSub) => {
+            if (editingClashSubscription) {
+              setClashSubscriptions((prev) =>
+                prev.map((s) => (s.id === savedSub.id ? savedSub : s))
+              );
+            } else {
+              setClashSubscriptions((prev) => [savedSub, ...prev]);
+              setActiveClashSubscriptionId(savedSub.id);
+            }
+          }}
+          editingSubscription={editingClashSubscription}
+        />
+      )}
 
       {/* Preferences & Backup Settings Modal */}
       <SettingsModal
@@ -695,30 +823,30 @@ export function App() {
               </button>
               <button
                 onClick={() => {
-                  setActivePanel('keys');
-                  setIsPanelOpen(true);
-                  setShowCommandPalette(false);
-                }}
-                className="w-full flex items-center justify-between px-3 py-2 hover:bg-[#37373D] rounded text-left text-[#CCCCCC] hover:text-[#4EC9B0]"
-              >
-                <div className="flex items-center gap-2.5">
-                  <ShieldCheck className="w-4 h-4 text-[#4EC9B0]" />
-                  <span>账号密码与私钥保险箱 (Vault)</span>
-                </div>
-                <span className="text-[10px] text-[#6D6D6D] font-mono">Alt+3</span>
-              </button>
-              <button
-                onClick={() => {
                   setShowVaultModal(true);
                   setShowCommandPalette(false);
                 }}
                 className="w-full flex items-center justify-between px-3 py-2 hover:bg-[#37373D] rounded text-left text-[#CCCCCC] hover:text-[#4EC9B0]"
               >
                 <div className="flex items-center gap-2.5">
-                  <KeyRound className="w-4 h-4 text-[#CE9178]" />
-                  <span>打开保险箱全屏管理面板</span>
+                  <ShieldCheck className="w-4 h-4 text-[#4EC9B0]" />
+                  <span>密码库 (Vault &amp; Credentials)</span>
                 </div>
-                <span className="text-[10px] text-[#6D6D6D] font-mono">Vault Modal</span>
+                <span className="text-[10px] text-[#6D6D6D] font-mono">Alt+3</span>
+              </button>
+              <button
+                onClick={() => {
+                  setActivePanel('clash');
+                  setIsPanelOpen(true);
+                  setShowCommandPalette(false);
+                }}
+                className="w-full flex items-center justify-between px-3 py-2 hover:bg-[#37373D] rounded text-left text-[#CCCCCC] hover:text-cyan-400"
+              >
+                <div className="flex items-center gap-2.5">
+                  <Radio className="w-4 h-4 text-cyan-400" />
+                  <span>Clash.Meta 订阅与代理管理</span>
+                </div>
+                <span className="text-[10px] text-[#6D6D6D] font-mono">Alt+4</span>
               </button>
 
               <div className="text-[10px] uppercase font-bold text-[#6D6D6D] px-2 pt-2 border-t border-[#333333]">

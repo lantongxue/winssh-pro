@@ -233,6 +233,123 @@ export interface AICopilotMessage {
   timestamp: string;
 }
 
+// Clash.Meta (Mihomo) Types
+export type ClashNodeType =
+  | 'hysteria2'
+  | 'vless'
+  | 'vmess'
+  | 'trojan'
+  | 'ss'
+  | 'ssr'
+  | 'wireguard'
+  | 'tuic'
+  | 'direct'
+  | 'reject';
+
+export interface ClashNode {
+  id: string;
+  name: string;
+  type: ClashNodeType;
+  server: string;
+  port: number;
+  latency?: number | null; // in ms (-1 = timeout, null = untested)
+  isTesting?: boolean;
+  udp?: boolean;
+  tls?: boolean;
+  network?: string;
+  country?: string;
+  flag?: string;
+  status: 'online' | 'slow' | 'timeout' | 'untested';
+  rate?: number;
+}
+
+export interface ClashProxyGroup {
+  id: string;
+  name: string;
+  type: 'select' | 'url-test' | 'fallback' | 'load-balance';
+  selectedNode: string;
+  proxies: string[];
+  testUrl?: string;
+  interval?: number;
+}
+
+export type ClashRuleType =
+  | 'DOMAIN-SUFFIX'
+  | 'DOMAIN'
+  | 'DOMAIN-KEYWORD'
+  | 'IP-CIDR'
+  | 'GEOIP'
+  | 'GEOSITE'
+  | 'MATCH'
+  | 'RULE-SET'
+  | 'PROCESS-NAME';
+
+export interface ClashRule {
+  id: string;
+  type: ClashRuleType;
+  payload: string;
+  target: string;
+  noResolve?: boolean;
+  hits?: number;
+}
+
+export interface ClashSubscription {
+  id: string;
+  name: string;
+  url: string;
+  rawYaml?: string;
+  updatedAt: string;
+  autoUpdateInterval: number; // hours (0 = off)
+  uploadBytes: number;
+  downloadBytes: number;
+  totalBytes: number;
+  expireDate: string;
+  nodes: ClashNode[];
+  proxyGroups: ClashProxyGroup[];
+  rules: ClashRule[];
+  status: 'active' | 'ready' | 'updating' | 'error';
+  tag?: string;
+  color?: string;
+  notes?: string;
+  userAgent?: string;
+}
+
+export type ClashProxyMode = 'rule' | 'global' | 'direct' | 'script';
+
+export interface ClashCoreSettings {
+  masterProxyEnabled: boolean;
+  systemProxyEnabled: boolean;
+  tunEnabled: boolean;
+  mode: ClashProxyMode;
+  mixedPort: number;
+  socksPort: number;
+  redirPort: number;
+  tproxyPort: number;
+  apiPort: number;
+  allowLan: boolean;
+  tunStack: 'gVisor' | 'mixed' | 'system';
+  tunDevice: string;
+  fakeIp: boolean;
+  autoRoute: boolean;
+  strictRoute: boolean;
+  dnsServers: string[];
+}
+
+export interface ClashActiveConnection {
+  id: string;
+  host: string;
+  destinationIP: string;
+  destinationPort: number;
+  network: 'tcp' | 'udp';
+  process: string;
+  rule: string;
+  proxyChain: string[];
+  upload: number;
+  download: number;
+  speed: string;
+  time: string;
+}
+
 export type ThemeType = 'winssh-dark' | 'dracula' | 'nord' | 'tokyo-night' | 'one-dark' | 'matrix-green' | 'light-clean' | 'dark' | 'matrix' | 'solarized';
 
 export interface AppSettings {

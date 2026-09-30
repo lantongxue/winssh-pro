@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Server,
   Code2,
@@ -9,9 +9,10 @@ import {
   Zap,
   Settings,
   Terminal,
+  Radio,
 } from 'lucide-react';
 
-export type ActionPanelId = 'hosts' | 'snippets' | 'keys';
+export type ActionPanelId = 'hosts' | 'snippets' | 'clash' | 'keys';
 
 interface ActionBarProps {
   activePanel: ActionPanelId;
@@ -19,6 +20,7 @@ interface ActionBarProps {
   onSelectPanel: (panel: ActionPanelId) => void;
   onOpenQuickConnect: () => void;
   onOpenSettings: () => void;
+  onOpenVault?: () => void;
   isCopilotOpen: boolean;
   onToggleCopilot: () => void;
 }
@@ -29,9 +31,34 @@ export const ActionBar: React.FC<ActionBarProps> = ({
   onSelectPanel,
   onOpenQuickConnect,
   onOpenSettings,
+  onOpenVault,
   isCopilotOpen,
   onToggleCopilot,
 }) => {
+  const [isSettingsMenuOpen, setIsSettingsMenuOpen] = useState(false);
+  const settingsMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (settingsMenuRef.current && !settingsMenuRef.current.contains(e.target as Node)) {
+        setIsSettingsMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isSettingsMenuOpen) {
+        setIsSettingsMenuOpen(false);
+      }
+    };
+
+    if (isSettingsMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('keydown', handleKeyDown);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isSettingsMenuOpen]);
   const topItems: {
     id: ActionPanelId;
     label: string;
@@ -51,10 +78,10 @@ export const ActionBar: React.FC<ActionBarProps> = ({
       shortcut: 'Alt+2',
     },
     {
-      id: 'keys',
-      label: '账号密码与私钥保险箱 (Vault)',
-      icon: ShieldCheck,
-      shortcut: 'Alt+3',
+      id: 'clash',
+      label: 'Clash.Meta 订阅与代理',
+      icon: Radio,
+      shortcut: 'Alt+4',
     },
   ];
 
@@ -146,18 +173,64 @@ export const ActionBar: React.FC<ActionBarProps> = ({
           </div>
         </div>
 
-        {/* Settings Trigger */}
-        <div className="relative group w-full flex justify-center">
+        {/* Settings Trigger with Popup Menu */}
+        <div ref={settingsMenuRef} className="relative group w-full flex justify-center">
           <button
-            onClick={onOpenSettings}
-            aria-label="Settings"
-            className="w-9 h-9 rounded-md flex items-center justify-center text-[#858585] hover:text-[#D4D4D4] hover:bg-[#202020] transition-colors"
+            onClick={() => setIsSettingsMenuOpen((prev) => !prev)}
+            aria-label="Settings and Vault"
+            className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${
+              isSettingsMenuOpen
+                ? 'bg-[#007ACC] text-white shadow-sm'
+                : 'text-[#858585] hover:text-[#D4D4D4] hover:bg-[#202020]'
+            }`}
           >
             <Settings className="w-5 h-5" />
           </button>
-          <div className="absolute left-12 top-1/2 -translate-y-1/2 bg-[#252526] text-[#D4D4D4] text-xs px-2.5 py-1.5 rounded shadow-xl border border-[#454545] whitespace-nowrap hidden group-hover:flex items-center gap-2 pointer-events-none z-50">
-            <span className="font-medium text-white">Terminal & App Settings</span>
-          </div>
+
+          {/* Hover Tooltip when menu is not open */}
+          {!isSettingsMenuOpen && (
+            <div className="absolute left-12 top-1/2 -translate-y-1/2 bg-[#252526] text-[#D4D4D4] text-xs px-2.5 py-1.5 rounded shadow-xl border border-[#454545] whitespace-nowrap hidden group-hover:flex items-center gap-2 pointer-events-none z-50">
+              <span className="font-medium text-white">设置</span>
+            </div>
+          )}
+
+          {/* Settings & Vault Dropdown Menu */}
+          {isSettingsMenuOpen && (
+            <div className="absolute left-12 bottom-0 mb-0 ml-1 bg-[#252526] text-[#D4D4D4] rounded-lg shadow-2xl border border-[#454545] py-1.5 w-44 z-50 animate-in fade-in select-none">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSettingsMenuOpen(false);
+                  onOpenSettings();
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-[#CCCCCC] hover:text-white hover:bg-[#007ACC] transition-colors text-left group/item"
+              >
+                <Settings className="w-4 h-4 text-[#9CDCFE] group-hover/item:text-white shrink-0" />
+                <div className="flex-1 min-w-0 font-medium text-[13px]">
+                  设置
+                </div>
+              </button>
+
+              <div className="h-px bg-[#3C3C3C] my-1" />
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSettingsMenuOpen(false);
+                  onOpenVault?.();
+                }}
+                className="w-full flex items-center justify-between px-3 py-2 text-xs text-[#CCCCCC] hover:text-white hover:bg-[#007ACC] transition-colors text-left group/item"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <ShieldCheck className="w-4 h-4 text-[#4EC9B0] group-hover/item:text-white shrink-0" />
+                  <span className="font-medium text-[13px]">密码库</span>
+                </div>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1E1E1E] text-[#858585] border border-[#3C3C3C] font-mono group-hover/item:bg-[#005A9E] group-hover/item:border-transparent group-hover/item:text-white">
+                  Alt+3
+                </span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </aside>
