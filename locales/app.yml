@@ -125,6 +125,9 @@ sidebar.hosts:
 sidebar.snippets:
   en: Snippets
   zh-CN: 命令片段
+sidebar.clash:
+  en: Clash
+  zh-CN: Clash
 sidebar.keys:
   en: Vault
   zh-CN: 保险箱
@@ -1488,6 +1491,439 @@ easytier.log_title:
 easytier.log_empty:
   en: "Nothing yet."
   zh-CN: "暂无事件。"
+
+# ── Clash 订阅（协议层在 src/clash/，界面上是侧边栏那一栏 + 中心区那块详情） ──
+# 订阅正文本身（YAML）的解读与报错。
+clash.config.empty:
+  en: "This subscription has no body yet."
+  zh-CN: "这条订阅还没有正文。"
+clash.config.not_yaml:
+  en: "This is not readable YAML: %{error}"
+  zh-CN: "这不是一份能读的 YAML：%{error}"
+clash.config.not_a_mapping:
+  en: "This is not a Clash configuration. If the link hands out a node list, use the Clash / mihomo subscription link instead."
+  zh-CN: "这不是一份 Clash 配置。如果这个链接给的是一份节点列表，请改用机场面板里 Clash / mihomo 那一栏的订阅链接。"
+# 拉取订阅（src/clash/subscription.rs）。
+clash.fetch.no_url:
+  en: "There is no subscription address to fetch from."
+  zh-CN: "没有订阅地址可拉。"
+clash.fetch.not_http:
+  en: "The subscription address must start with http:// or https://."
+  zh-CN: "订阅地址要以 http:// 或 https:// 开头。"
+clash.fetch.failed:
+  en: "Could not reach the subscription: %{url}"
+  zh-CN: "拉取订阅失败：%{url}"
+clash.fetch.interrupted:
+  en: "The connection broke off while fetching the subscription."
+  zh-CN: "拉取订阅时连接中断了。"
+clash.fetch.status:
+  en: "The subscription answered %{status}: %{url}"
+  zh-CN: "订阅地址返回 %{status}：%{url}"
+clash.fetch.not_utf8:
+  en: "The subscription is not UTF-8 text: %{url}"
+  zh-CN: "订阅正文不是 UTF-8 文本：%{url}"
+clash.fetch.empty:
+  en: "The subscription came back empty: %{url}"
+  zh-CN: "订阅拉回来是空的：%{url}"
+clash.fetch.too_large:
+  en: "The subscription is larger than %{mb} MB — that is not a configuration."
+  zh-CN: "订阅正文超过 %{mb} MB —— 那不是一份配置。"
+# 跟本机 mihomo 的外部控制口说话（src/clash/api.rs）。
+clash.api.unreachable:
+  en: "The mihomo control port did not answer (%{path})."
+  zh-CN: "mihomo 的控制口没有应答（%{path}）。"
+clash.api.status:
+  en: "The control port answered %{status} for %{path}."
+  zh-CN: "控制口对 %{path} 返回 %{status}。"
+clash.api.bad_json:
+  en: "Unreadable answer from the control port (%{path})."
+  zh-CN: "控制口回来的东西读不动（%{path}）。"
+# 系统代理（src/clash/system_proxy.rs）。
+clash.system_proxy.unsupported:
+  en: "System proxy is not wired up on this platform yet."
+  zh-CN: "这台机器上还没有接系统代理这一档。"
+# 运行中的那个实例（src/clash/runtime.rs）。
+clash.runtime.empty_config:
+  en: "This subscription has no body to start from."
+  zh-CN: "这条订阅还没有正文，起不了。"
+clash.runtime.no_binary:
+  en: "mihomo was not found. Put %{name} beside the application (see third_party/mihomo/)."
+  zh-CN: "没找到 mihomo。把 %{name} 放到程序旁边（见 third_party/mihomo/）。"
+clash.runtime.not_meta:
+  en: "This is not the Meta (mihomo) core: rules and the virtual NIC are unavailable."
+  zh-CN: "这不是 Meta（mihomo）内核：分流规则与虚拟网卡用不了。"
+clash.runtime.start_timeout:
+  en: "mihomo did not come up within %{secs}s: %{error}"
+  zh-CN: "mihomo 在 %{secs} 秒内没有起来：%{error}"
+clash.runtime.exited:
+  en: "mihomo exited on its own (%{status})."
+  zh-CN: "mihomo 自己退出了（%{status}）。"
+clash.runtime.exited_with_logs:
+  en: "mihomo exited on its own (%{status}): %{logs}"
+  zh-CN: "mihomo 自己退出了（%{status}）：%{logs}"
+clash.runtime.tun_failed:
+  en: "Could not toggle the virtual NIC: %{error}"
+  zh-CN: "虚拟网卡没拨动：%{error}"
+clash.runtime.system_proxy_failed:
+  en: "Could not toggle the system proxy: %{error}"
+  zh-CN: "系统代理没拨动：%{error}"
+clash.runtime.refresh_failed:
+  en: "Could not read the node list: %{error}"
+  zh-CN: "读节点表失败：%{error}"
+clash.runtime.mode_failed:
+  en: "Could not switch the mode: %{error}"
+  zh-CN: "换分流模式失败：%{error}"
+clash.runtime.select_failed:
+  en: "Could not switch to that node: %{error}"
+  zh-CN: "切不到这个节点：%{error}"
+clash.runtime.delay_failed:
+  en: "Could not test this group: %{error}"
+  zh-CN: "这个组测不了速：%{error}"
+clash.runtime.bad_config:
+  en: "This configuration cannot be applied: %{error}"
+  zh-CN: "这份配置用不了：%{error}"
+clash.runtime.write_config_failed:
+  en: "Could not write the configuration file: %{error}"
+  zh-CN: "写配置文件失败：%{error}"
+clash.runtime.reload_failed:
+  en: "The core refused the new configuration: %{error}"
+  zh-CN: "内核没收下这份新配置：%{error}"
+# 订阅服务（src/service/clash_subscription_service.rs）。
+clash.missing:
+  en: "This subscription is gone (%{id})."
+  zh-CN: "这条订阅没了（%{id}）。"
+clash.no_source:
+  en: "This subscription has no address to fetch from."
+  zh-CN: "这条订阅没有订阅地址，拉不了。"
+# 订阅表单（新建 / 编辑订阅的对话框）。
+clash.form.subtitle:
+  en: "Subscription"
+  zh-CN: "订阅"
+clash.form.title_new:
+  en: New subscription
+  zh-CN: 新建订阅
+clash.form.title_edit:
+  en: Edit subscription
+  zh-CN: 编辑订阅
+clash.form.name:
+  en: Name
+  zh-CN: 名称
+clash.form.name_placeholder:
+  en: e.g. Provider A
+  zh-CN: 例如：机场 A
+clash.form.url:
+  en: Subscription address
+  zh-CN: 订阅地址
+clash.form.url_placeholder:
+  en: https://example.com/api/v1/client/subscribe?token=…
+  zh-CN: https://example.com/api/v1/client/subscribe?token=…
+clash.form.url_required:
+  en: Fill in the subscription address first.
+  zh-CN: 先填订阅地址。
+clash.form.body:
+  en: Configuration
+  zh-CN: 配置正文
+clash.form.body_empty:
+  en: "Nothing yet — fetch it, or import a file."
+  zh-CN: "还没有正文 —— 拉一次，或者从文件导入。"
+clash.form.body_ready:
+  en: "%{nodes} nodes · %{groups} proxy groups · %{rules} rules"
+  zh-CN: "%{nodes} 个节点 · %{groups} 个策略组 · %{rules} 条分流规则"
+clash.form.body_unreadable:
+  en: "This body cannot be read as a Clash configuration."
+  zh-CN: "这份正文读不出 Clash 配置该有的东西。"
+clash.form.fetch:
+  en: Fetch
+  zh-CN: 拉取
+clash.form.fetch_failed:
+  en: "Could not fetch the subscription: %{error}"
+  zh-CN: "拉取订阅失败：%{error}"
+clash.form.import:
+  en: Import file
+  zh-CN: 从文件导入
+clash.form.import_prompt:
+  en: Pick a subscription file
+  zh-CN: 挑一份订阅文件
+clash.form.import_failed:
+  en: "Could not read that file: %{error}"
+  zh-CN: "那个文件读不出来：%{error}"
+clash.form.name_required:
+  en: Give the subscription a name.
+  zh-CN: 给这条订阅起个名字。
+clash.form.source_required:
+  en: "Fill in a subscription address, or import a configuration file."
+  zh-CN: "填一个订阅地址，或者导入一份配置文件。"
+clash.form.config_required:
+  en: "The subscription has no body yet — fetch it, or import a file."
+  zh-CN: "这条订阅还没有正文 —— 拉一次，或者从文件导入。"
+clash.form.not_a_config:
+  en: "This body is not a usable Clash configuration."
+  zh-CN: "这份正文不是一份能用的 Clash 配置。"
+clash.form.tag:
+  en: Tag
+  zh-CN: 分组标签
+clash.form.tag_placeholder:
+  en: e.g. IEPL, self-hosted
+  zh-CN: 例如：IEPL高速、自建
+clash.form.color:
+  en: Color
+  zh-CN: 标识色
+clash.form.cancel:
+  en: Cancel
+  zh-CN: 取消
+clash.form.create:
+  en: Create
+  zh-CN: 新建
+clash.form.save:
+  en: Save
+  zh-CN: 保存
+clash.form.save_failed:
+  en: "Could not save the subscription: %{error}"
+  zh-CN: "订阅没存上：%{error}"
+# 侧边栏那一栏（订阅列表）。
+clash.view.search_placeholder:
+  en: Search subscriptions
+  zh-CN: 搜索订阅
+clash.view.new:
+  en: New subscription
+  zh-CN: 新建订阅
+clash.view.empty:
+  en: No subscriptions yet.
+  zh-CN: 还没有订阅。
+clash.view.empty_hint:
+  en: "Add one with the address your provider gave you, or import a yml file."
+  zh-CN: "填上机场给的订阅地址加一条，或者导入一份 yml 文件。"
+clash.view.no_match:
+  en: Nothing matches.
+  zh-CN: 没有符合条件的订阅。
+clash.view.load_failed:
+  en: "Could not read the subscriptions: %{error}"
+  zh-CN: "订阅列表读不出来：%{error}"
+clash.view.nodes:
+  en: "%{count} nodes"
+  zh-CN: "%{count} 个节点"
+clash.view.updated_at:
+  en: "updated %{time}"
+  zh-CN: "更新于 %{time}"
+clash.view.unreadable:
+  en: Unreadable configuration
+  zh-CN: 正文读不出来
+clash.view.running:
+  en: Live
+  zh-CN: 运行中
+clash.view.update:
+  en: Fetch the latest
+  zh-CN: 更新订阅
+clash.view.updated:
+  en: "%{name} updated."
+  zh-CN: "%{name} 已更新。"
+clash.view.update_failed:
+  en: "Could not update: %{error}"
+  zh-CN: "更新失败：%{error}"
+clash.view.updated_all:
+  en: All subscriptions updated.
+  zh-CN: 全部订阅已更新。
+clash.view.refresh_all:
+  en: Refresh all
+  zh-CN: 一键更新全部
+clash.view.menu:
+  en: Subscription actions
+  zh-CN: 订阅操作
+clash.view.menu_set_current:
+  en: Set as active
+  zh-CN: 设为当前使用
+clash.view.menu_refresh_nodes:
+  en: Refresh nodes
+  zh-CN: 更新节点
+clash.view.nodes_count:
+  en: "%{count} nodes"
+  zh-CN: "%{count} 节点"
+clash.view.rules_count:
+  en: "%{count} rules"
+  zh-CN: "%{count} 规则"
+clash.view.usage:
+  en: "%{used} / %{total}"
+  zh-CN: "%{used} / %{total}"
+clash.view.usage_percent:
+  en: "%{percent}%"
+  zh-CN: "%{percent}%"
+clash.view.usage_unknown:
+  en: —
+  zh-CN: —
+clash.view.updated_date:
+  en: "updated %{time}"
+  zh-CN: "更新于 %{time}"
+clash.view.expire:
+  en: "expires %{date}"
+  zh-CN: "到期 %{date}"
+clash.view.expire_unknown:
+  en: no expiry
+  zh-CN: 未注明到期
+clash.view.edit:
+  en: Edit
+  zh-CN: 编辑
+clash.view.delete:
+  en: Delete
+  zh-CN: 删除
+clash.view.delete_title:
+  en: Delete subscription
+  zh-CN: 删除订阅
+clash.view.delete_confirm:
+  en: "Delete “%{name}”? Its configuration goes with it."
+  zh-CN: "删掉「%{name}」？它那份配置也一起没了。"
+clash.view.delete_failed:
+  en: "Could not delete: %{error}"
+  zh-CN: "删不掉：%{error}"
+clash.view.cancel:
+  en: Cancel
+  zh-CN: 取消
+# 中心区那块详情面板。
+clash.panel.idle:
+  en: Not running
+  zh-CN: 未启动
+clash.panel.starting:
+  en: Starting…
+  zh-CN: 正在启动…
+clash.panel.stopping:
+  en: Stopping…
+  zh-CN: 正在停止…
+clash.panel.running:
+  en: Running
+  zh-CN: 运行中
+clash.panel.other_running:
+  en: "%{name} is running"
+  zh-CN: "正在跑的是 %{name}"
+clash.panel.failed:
+  en: "Failed: %{error}"
+  zh-CN: "启动失败：%{error}"
+clash.panel.start_failed:
+  en: "Could not start: %{error}"
+  zh-CN: "启动失败：%{error}"
+clash.panel.start:
+  en: Start
+  zh-CN: 启动
+clash.panel.stop:
+  en: Stop
+  zh-CN: 停止
+clash.panel.idle_hint:
+  en: "Start it and the system proxy and virtual NIC switches appear here."
+  zh-CN: "启动之后，系统代理与虚拟网卡两个开关就摆在这儿。"
+clash.panel.mixed_port:
+  en: "mixed port %{port}"
+  zh-CN: "混合端口 %{port}"
+clash.panel.version:
+  en: "core %{version}"
+  zh-CN: "内核 %{version}"
+clash.panel.system_proxy:
+  en: System proxy
+  zh-CN: 系统代理
+clash.panel.system_proxy_hint:
+  en: "Point apps at 127.0.0.1:%{port}"
+  zh-CN: "把程序指向 127.0.0.1:%{port}"
+clash.panel.system_proxy_no_port:
+  en: Waiting for the port
+  zh-CN: 等端口就位
+clash.panel.tun:
+  en: Virtual NIC
+  zh-CN: 虚拟网卡
+clash.panel.tun_hint:
+  en: Needs administrator rights
+  zh-CN: 需要管理员权限
+clash.panel.mode:
+  en: Mode
+  zh-CN: 分流模式
+clash.panel.mode_rule:
+  en: Rule
+  zh-CN: 规则
+clash.panel.mode_global:
+  en: Global
+  zh-CN: 全局
+clash.panel.mode_direct:
+  en: Direct
+  zh-CN: 直连
+clash.panel.refresh:
+  en: Refresh
+  zh-CN: 刷新
+clash.panel.test_delay:
+  en: Test latency
+  zh-CN: 测速
+clash.panel.tab_nodes:
+  en: "Nodes (%{count})"
+  zh-CN: "节点（%{count}）"
+clash.panel.tab_rules:
+  en: "Rules (%{count})"
+  zh-CN: "分流规则（%{count}）"
+clash.panel.tab_logs:
+  en: Log
+  zh-CN: 日志
+clash.panel.tab_config:
+  en: Config
+  zh-CN: 配置源码
+clash.panel.config_hint:
+  en: The configuration YAML as stored
+  zh-CN: 当前这份订阅的原始 YAML 配置
+clash.panel.config_empty:
+  en: No configuration yet.
+  zh-CN: 还没有正文。
+clash.panel.copy_config:
+  en: Copy YAML
+  zh-CN: 复制 YAML
+clash.panel.current:
+  en: "current · %{name}"
+  zh-CN: "当前 · %{name}"
+clash.panel.members_count:
+  en: "%{count} members"
+  zh-CN: "成员 %{count} 个"
+clash.panel.all_nodes:
+  en: All nodes
+  zh-CN: 全部节点
+# 节点表与规则表的列名。延迟与地址是同一列的两个身份，宽度一样、只有列名
+# 跟着数据源换。
+clash.panel.col_name:
+  en: Name
+  zh-CN: 名称
+clash.panel.col_kind:
+  en: Type
+  zh-CN: 类型
+clash.panel.col_delay:
+  en: Latency
+  zh-CN: 延迟
+clash.panel.col_address:
+  en: Address
+  zh-CN: 地址
+clash.panel.col_payload:
+  en: Payload
+  zh-CN: 内容
+clash.panel.col_target:
+  en: Target
+  zh-CN: 策略
+clash.panel.static_hint:
+  en: "From the configuration itself — start it to see what the core reports."
+  zh-CN: "这是正文里写的 —— 启动之后看内核报回来的那一份。"
+clash.panel.no_nodes:
+  en: This subscription has no nodes.
+  zh-CN: 这份订阅里没有节点。
+clash.panel.no_rules:
+  en: This subscription has no rules.
+  zh-CN: 这份订阅里没有分流规则。
+clash.panel.no_logs:
+  en: Nothing logged yet.
+  zh-CN: 还没有日志。
+clash.panel.delay_ms:
+  en: "%{ms} ms"
+  zh-CN: "%{ms} ms"
+clash.panel.delay_timeout:
+  en: Timeout
+  zh-CN: 超时
+clash.panel.delay_untested:
+  en: "—"
+  zh-CN: "—"
+clash.panel.unreadable:
+  en: This configuration cannot be read.
+  zh-CN: 这份正文读不出来。
+clash.panel.unreadable_hint:
+  en: "Edit the subscription and fetch it again, or import a fresh file."
+  zh-CN: "去编辑这条订阅重新拉一次，或者导入一份新的文件。"
 
 # ── 主机表单（新建 / 编辑主机的对话框） ──────────────────────────────────
 host_form.title_new:

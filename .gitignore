@@ -2,3 +2,4 @@
 /dist
 .DS_Store
 .zcode/
+/third_party/mihomo/

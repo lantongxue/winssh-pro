@@ -18,6 +18,11 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
   虚拟网卡那一档在 Windows 上要 `wintun.dll`：放在 `third_party/<架构>/`，
   `build.rs` 按目标架构拷到 exe 旁边（`cargo run` / `cargo test` 都找得到），
   发版 workflow 把它和 exe 一起打包
+- Clash 订阅（mihomo）：**不嵌库**，起一个子进程，通过它的 RESTful API 控制
+  （见 `src/clash/`）。那份内核是用户自己放进 `third_party/mihomo/windows/` 的
+  （`mihomo-windows-amd64.exe`），仓库里不跟踪它、我们也不代它下载或升级；
+  没有它应用照跑，只有 Clash 那一档会说"没找到 mihomo"。它要和 `wintun.dll`
+  落在同一个目录里 —— 虚拟网卡那一档是内核自己按名字加载那个 dll
 
 ## 开发规则
 
@@ -78,6 +83,10 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
   `CredentialVaultWindow`，它持有一份前者、只另画版式。
   凭据和主机是**取用**关系不是引用：主机表单里挑一条，把内容填进表单，
   存进 `hosts` 表的还是那份内容本身（见 `src/credential.rs` 的模块文档）。
+- **订阅（Subscription）**：一条保存下来的 Clash 配置 —— 名字、订阅地址，以及
+  **整份正文**，对应 `ClashSubscription`。正文整份进库，备份同步带的就是它。
+  按它跑起来的那个 mihomo 子进程叫**实例**（`clash::runtime`），本进程里同时
+  只有一个。
 - **活动栏（ActivityBar）**：最左边那条固定的窄栏，切换侧边栏视图，底部是全局动作。
 - **侧边栏（sidebar）**：活动栏与 Dock 之间那一栏，一次显示一个 `SidebarView`。
 
@@ -108,7 +117,9 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 `command_history.rs`（主机上跑过的命令）、`terminal/`（终端内核）、
 `monitor/`（对端资源采集：采集脚本、解析、速率累加）、
 `easytier/`（组网：实例配置、进程内实例的起停与运行快照，以及别的主机
-"经组网"连接时等它就绪的入口登记处 `easytier::portal`）。
+"经组网"连接时等它就绪的入口登记处 `easytier::portal`）、
+`clash/`（Clash 订阅：订阅正文的解读与运行配置的生成、mihomo 外部控制口的
+客户端、运行中那个子进程的起停与状态、Windows 系统代理的开关与复原）。
 
 数据访问走三层，UI 只认最上面那层：
 

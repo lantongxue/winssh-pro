@@ -2,17 +2,20 @@
 //!
 //! 侧边栏是活动栏与 Dock 之间那一栏，显示哪个视图由活动栏决定（[`SidebarView`]）。
 //! 视图各自是独立组件：主机视图（[`HostExplorerView`]）、命令片段视图
-//! （[`SnippetVaultView`]）与保险箱视图（[`CredentialVaultView`]）。所有视图共用
-//! 同一条标题行，版式常量也放在这里，换视图时这一栏的骨架不会跳。
+//! （[`SnippetVaultView`]）、Clash 订阅视图（[`ClashView`]）与保险箱视图
+//! （[`CredentialVaultView`]）。所有视图共用同一条标题行，版式常量也放在这里，
+//! 换视图时这一栏的骨架不会跳。
 //!
 //! 视图不进 [`gpui_kit::component::dock`]：它由 [`crate::ui::Workspace`] 直接渲染在一个
 //! 可拖宽的区域里，不能被拖走、分屏或另存布局。要那些能力的是 `*Panel`，
 //! 见 [`crate::ui::panels`]。
 
+mod clash;
 mod credential_vault;
 mod host_explorer;
 mod snippet_vault;
 
+pub use clash::{ClashView, ClashViewEvent};
 pub use credential_vault::{CredentialVaultEvent, CredentialVaultView, VaultFilter};
 pub use host_explorer::{HostExplorerEvent, HostExplorerView};
 pub use snippet_vault::{SnippetVaultEvent, SnippetVaultView};
@@ -43,18 +46,21 @@ pub enum SidebarView {
     Hosts,
     /// 命令片段：常用命令与脚本，可直接发到会话里。
     Snippets,
+    /// Clash 订阅：机场给的那份 yml 管起来，按需起一个 mihomo 子进程。
+    Clash,
     /// 保险箱：账号密码、SSH 私钥与 API 令牌。
     Keys,
 }
 
 impl SidebarView {
     /// 自上而下的排列顺序。活动栏上的侧边栏视图导航条目。
-    pub const ALL: [SidebarView; 2] = [Self::Hosts, Self::Snippets];
+    pub const ALL: [SidebarView; 3] = [Self::Hosts, Self::Snippets, Self::Clash];
 
     pub fn id(&self) -> &'static str {
         match self {
             Self::Hosts => "hosts",
             Self::Snippets => "snippets",
+            Self::Clash => "clash",
             Self::Keys => "keys",
         }
     }
@@ -64,6 +70,7 @@ impl SidebarView {
         match self {
             Self::Hosts => t!("sidebar.hosts"),
             Self::Snippets => t!("sidebar.snippets"),
+            Self::Clash => t!("sidebar.clash"),
             Self::Keys => t!("sidebar.keys"),
         }
         .into()
@@ -73,6 +80,7 @@ impl SidebarView {
         match self {
             Self::Hosts => AppIcon::Server,
             Self::Snippets => AppIcon::CodeXml,
+            Self::Clash => AppIcon::Route,
             Self::Keys => AppIcon::ShieldCheck,
         }
     }

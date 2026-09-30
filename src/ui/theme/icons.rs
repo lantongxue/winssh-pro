@@ -61,6 +61,9 @@ pub enum AppIcon {
     Pencil,
     /// 首尾相接的两个箭头：重新列一次。组件库的 `Reload` 不存在，`LoaderCircle` 是转圈。
     RefreshCw,
+    /// 一条穿过两个端点的路径：Clash 订阅这一档 —— 流量从哪儿进、按什么规矩
+    /// 分流、从哪儿出去，画的就是这条路。组件库默认图标集没带这一枚。
+    Route,
     /// 双层机架：主机与会话。
     Server,
     /// 打勾的盾牌：凭据保险箱。
@@ -109,6 +112,7 @@ impl IconNamed for AppIcon {
             Self::Monitor => "icons/monitor.svg",
             Self::Pencil => "icons/pencil.svg",
             Self::RefreshCw => "icons/refresh-cw.svg",
+            Self::Route => "icons/route.svg",
             Self::Server => "icons/server.svg",
             Self::ShieldCheck => "icons/shield-check.svg",
             Self::Sparkles => "icons/sparkles.svg",

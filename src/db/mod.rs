@@ -22,7 +22,7 @@ use tokio::runtime::Runtime;
 
 /// 建表语句。`CREATE TABLE IF NOT EXISTS` 是幂等的，每次启动都跑一遍；
 /// 老用户的库文件已存在时原样保留，新字段通过 [`MIGRATIONS`] 补齐。
-const SCHEMA: [&str; 12] = [
+const SCHEMA: [&str; 13] = [
     "CREATE TABLE IF NOT EXISTS host_groups (
         id         INTEGER PRIMARY KEY,
         name       TEXT    NOT NULL UNIQUE,
@@ -167,11 +167,38 @@ const SCHEMA: [&str; 12] = [
         last_seen    TEXT    NOT NULL DEFAULT '',
         UNIQUE (hostname, port)
     )",
+    // Clash.Meta（mihomo）订阅（见 `crate::clash`）。一条记录 = 一份订阅的
+    // 名字、来路（订阅地址，手工粘贴的为空）与**整份正文**。
+    //
+    // 正文整份存进库、而不是只存地址、启动时现拉，有两个理由：一是订阅站
+    // 挂了或者换了地址，手里这份还能用；二是备份同步的是整座库（见
+    // `crate::service::BackupService` 的快照），正文在库里，换台机器恢复出来
+    // 就是**同一份**节点，而不是一份要靠重新联网才凑得出的配置。
+    //
+    // 套餐用量与到期是机场回在响应头里的（`subscription-userinfo`），存进库
+    // 里让列表卡片不用每次先联网才知道流量还剩多少。`None`（NULL）是机场没
+    // 回这个数 —— 那三列不是"0"，是"不知道"。
+    //
+    // 与 hosts 无外键：订阅是全局的，不属于哪台主机。
+    "CREATE TABLE IF NOT EXISTS clash_subscriptions (
+        id             TEXT    PRIMARY KEY,
+        name           TEXT    NOT NULL,
+        source_url     TEXT    NOT NULL DEFAULT '',
+        config_yaml    TEXT    NOT NULL DEFAULT '',
+        tag            TEXT    NOT NULL DEFAULT '',
+        color          TEXT    NOT NULL DEFAULT '',
+        upload_bytes   INTEGER,
+        download_bytes INTEGER,
+        total_bytes    INTEGER,
+        expire_date    TEXT,
+        created_at     TEXT    NOT NULL DEFAULT '',
+        updated_at     TEXT    NOT NULL DEFAULT ''
+    )",
 ];
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 16] = [
+const MIGRATIONS: [&str; 25] = [
     // 连接类型（见 [`crate::host::HostKind`]）。老库补出来的是 `ssh` ——
     // 这一列出现之前存的每一台主机都是 SSH，出厂值不改变任何人的行为。
     "ALTER TABLE hosts ADD COLUMN kind TEXT NOT NULL DEFAULT 'ssh'",
@@ -219,6 +246,23 @@ const MIGRATIONS: [&str; 16] = [
     // 用户态 SOCKS5、DHCP、不监听、加密开，这一列出现之前根本没有组网主机，
     // 老库补出来不影响任何一台主机现在的连法。
     "ALTER TABLE hosts ADD COLUMN easytier_settings TEXT NOT NULL DEFAULT ''",
+    // ── Clash 订阅卡片化（label + 流量用量 / 到期日） ──
+    // label 与颜色是老库没有的，补出来是空串 —— 一份老订阅升级之后回到"未
+    // 分组、本色"的样子，与新建时的出厂态一致。
+    "ALTER TABLE clash_subscriptions ADD COLUMN tag TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE clash_subscriptions ADD COLUMN color TEXT NOT NULL DEFAULT ''",
+    // 用量与到期是机场回的（`subscription-userinfo`），补出来是 NULL ——
+    // "还不知道那一行"而不是 0：0 会骗人说"没用过流量"，NULL 才说"没读到"。
+    "ALTER TABLE clash_subscriptions ADD COLUMN upload_bytes INTEGER",
+    "ALTER TABLE clash_subscriptions ADD COLUMN download_bytes INTEGER",
+    "ALTER TABLE clash_subscriptions ADD COLUMN total_bytes INTEGER",
+    "ALTER TABLE clash_subscriptions ADD COLUMN expire_date TEXT",
+    // ── Clash 订阅表单对齐原型（拉取 UA / 自动更新频率 / 备注） ──
+    // 老库补出来都是"没有"：UA 空着走协议层那一份默认，频率 0 是手动更新，
+    // 备注空串。
+    "ALTER TABLE clash_subscriptions ADD COLUMN user_agent TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE clash_subscriptions ADD COLUMN auto_update_hours INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE clash_subscriptions ADD COLUMN notes TEXT NOT NULL DEFAULT ''",
 ];
 
 /// 数据层专用的 tokio runtime，进程生命周期内只建一次。

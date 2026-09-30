@@ -1,5 +1,6 @@
-//! Windows 构建要补的两件事：把主线程的栈开大；把虚拟网卡要的 `wintun.dll`
-//! 摆到 exe 旁边（后者见 [`copy_wintun`]）。图标与版本信息那段 `winres` 不必解释。
+//! Windows 构建要补的几件事：把主线程的栈开大；把虚拟网卡要的 `wintun.dll`
+//! 摆到 exe 旁边；把 Clash 那一档要的 `mihomo.exe` 也摆过去（后两件见
+//! [`copy_wintun`] 与 [`copy_mihomo`]）。图标与版本信息那段 `winres` 不必解释。
 //!
 //! ## 主线程的栈
 //!
@@ -40,6 +41,7 @@ fn main() {
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         copy_wintun();
+        copy_mihomo();
     }
 
     #[cfg(target_os = "windows")]
@@ -83,9 +85,61 @@ fn copy_wintun() {
         }
     };
     let source = Path::new("third_party").join(arch).join("wintun.dll");
-    println!("cargo:rerun-if-changed={}", source.display());
-    let dll = std::fs::read(&source)
-        .unwrap_or_else(|e| panic!("读不到 {}（虚拟网卡模式要它）：{e}", source.display()));
+    copy_sidecar(&source, "wintun.dll", true);
+}
+
+/// 把 Clash 那一档要的 `mihomo.exe` 拷到 exe 旁边。
+///
+/// **这份二进制不由我们发。** 它体积大（六十多 MB）、更新快，还是用户按自己的
+/// 判断挑的版本，所以放在 `third_party/mihomo/` 里由用户自己放进去，仓库里
+/// 不跟踪它。没有它，应用照跑 —— 只有 Clash 那一档会说"没找到 mihomo"
+/// （见 `src/clash/runtime.rs` 的 `binary_path`）。
+///
+/// 正因为它可有可无，这里**读不到源文件时只警告一句就走**，绝不 panic：
+/// 一 panic，所有没放这份二进制的人（包括发版流水线上的机器）都编不过。
+///
+/// 它和 `wintun.dll` 必须落在同一个目录里：mihomo 建虚拟网卡时按名字加载
+/// `wintun.dll`，第一站就是它自己所在的那个目录。
+fn copy_mihomo() {
+    match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        // 手里这份是 Windows 的 x86_64 构建；别的架构上先不摆，让它去说
+        // 那句"没找到 mihomo"。
+        Ok("x86_64") => {}
+        _ => return,
+    }
+    let source = Path::new("third_party")
+        .join("mihomo")
+        .join("windows")
+        .join("mihomo-windows-amd64.exe");
+    copy_sidecar(&source, "mihomo.exe", false);
+}
+
+/// 把一份随包带的文件拷到这次构建的 exe 旁边。
+///
+/// 拷两处：`target/[<triple>/]<profile>/`（`cargo run` 与发版打包拿的 exe 在
+/// 这儿）和它下面的 `deps/`（`cargo test` 起的测试 exe 在这儿）。输出目录没有
+/// 环境变量可读，从 `OUT_DIR`（`<profile>/build/winssh-pro-<hash>/out`）往上数
+/// 三层是通行做法。内容没变就不重写：应用开着时那份文件被映射着（dll）或者
+/// 正被跑着（exe），写不进去。
+///
+/// `required` 见 [`copy_mihomo`] 的文档。`rerun-if-changed` 只在源文件真的在
+/// 时才发：指向一个不存在的路径，cargo 会当它每次都在变，于是每回构建都要重跑
+/// 一遍这个脚本。
+fn copy_sidecar(source: &Path, name: &str, required: bool) {
+    let bytes = match std::fs::read(source) {
+        Ok(bytes) => {
+            println!("cargo:rerun-if-changed={}", source.display());
+            bytes
+        }
+        Err(error) if required => panic!("读不到 {}：{error}", source.display()),
+        Err(error) => {
+            println!(
+                "cargo:warning=没有 {}（{error}）：Clash 那一档在这台机器上找不到内核，其余功能不受影响",
+                source.display()
+            );
+            return;
+        }
+    };
 
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo 总会给构建脚本 OUT_DIR"));
     let profile_dir = out_dir
@@ -93,12 +147,12 @@ fn copy_wintun() {
         .nth(3)
         .expect("OUT_DIR 应当形如 <profile>/build/<包>-<hash>/out");
     for dir in [profile_dir.to_path_buf(), profile_dir.join("deps")] {
-        let target = dir.join("wintun.dll");
-        if std::fs::read(&target).is_ok_and(|existing| existing == dll) {
+        let target = dir.join(name);
+        if std::fs::read(&target).is_ok_and(|existing| existing == bytes) {
             continue;
         }
         std::fs::create_dir_all(&dir)
-            .and_then(|()| std::fs::write(&target, &dll))
-            .unwrap_or_else(|e| panic!("wintun.dll 拷不到 {}：{e}", target.display()));
+            .and_then(|()| std::fs::write(&target, &bytes))
+            .unwrap_or_else(|e| panic!("{name} 拷不到 {}：{e}", target.display()));
     }
 }

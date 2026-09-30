@@ -3,6 +3,7 @@
 mod assets;
 mod assistant;
 mod backup;
+mod clash;
 mod command_history;
 mod credential;
 mod db;
@@ -67,6 +68,15 @@ fn main() {
         // 可能开始拨号，那时候再去读库已经晚了（见 `SettingService::prime`）。
         service::SettingService::open().prime();
         service::BackupService::start_scheduler();
+        // Clash 那一档动的是**用户的机器**（系统代理是整台机器一份的设置），
+        // 所以上一次要是没来得及收，得在开窗之前先收拾掉：上一次改的那份还
+        // 留在注册表里、而那个代理口已经没人听的话，用户此刻的网是断的
+        // （见 `clash::system_proxy::reconcile`）。
+        match clash::system_proxy::reconcile() {
+            Ok(Some(port)) => log::info!("已复原上一次留下的系统代理（127.0.0.1:{port}）"),
+            Ok(None) => {}
+            Err(error) => log::warn!("收拾上一次的系统代理失败：{error:#}"),
+        }
         cx.activate(true);
 
         let mut window_size = size(px(1440.), px(900.));
@@ -110,7 +120,13 @@ fn main() {
                 window.set_window_title("WinSSH Pro");
                 // 系统深浅设置在 Linux 上是开窗之后才送达的，订阅之后补上。
                 ui::observe_appearance(window, cx).detach();
-                cx.on_release(|_, cx| cx.quit()).detach();
+                cx.on_release(|_, cx| {
+                    // 退出之前先把 mihomo 与系统代理收掉。这条路径上来不及等
+                    // 会话线程自己收尾，理由见 `clash::runtime::shutdown`。
+                    clash::runtime::shutdown();
+                    cx.quit()
+                })
+                .detach();
             })
             .expect("初始化主窗口失败");
 

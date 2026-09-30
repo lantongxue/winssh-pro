@@ -246,7 +246,11 @@ fn write_all_patiently(
     Ok(())
 }
 
-#[cfg(test)]
+// 这一档的测试要一对伪终端当虚拟串口用（`TTYPort::pair`），而伪终端是 Unix
+// 才有的东西：`serialport` 把 `TTYPort` 整个关在 `#[cfg(unix)]` 后面，Windows
+// 上它根本不存在。所以这整块测试跟着它走 —— 不 gate 的话，Windows 上连
+// `cargo test` 都编不过（不是跑不过，是编不过），一条测试也别想跑。
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use serialport::TTYPort;

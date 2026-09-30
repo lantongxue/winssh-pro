@@ -157,8 +157,18 @@ jobs:
             cp "target/${{ matrix.target }}/release/winssh-pro${{ matrix.extension }}" \
               "target/${{ matrix.target }}/release/wintun.dll" \
               "$package_dir/"
-            tar -czf "dist/$artifact.tar.gz" -C "$package_dir" \
-              "winssh-pro${{ matrix.extension }}" wintun.dll
+            # mihomo.exe 是 Clash 那一档要的内核，由用户自己放进
+            # third_party/mihomo/（见 build.rs 的 copy_mihomo）：仓库里不跟踪它，
+            # 流水线上多半没有。有就一起打包，没有就照没有打包 —— 应用那边
+            # 只会说一句"没找到 mihomo"，其余功能不受影响。
+            if [[ -f "target/${{ matrix.target }}/release/mihomo.exe" ]]; then
+              cp "target/${{ matrix.target }}/release/mihomo.exe" "$package_dir/"
+              tar -czf "dist/$artifact.tar.gz" -C "$package_dir" \
+                "winssh-pro${{ matrix.extension }}" wintun.dll mihomo.exe
+            else
+              tar -czf "dist/$artifact.tar.gz" -C "$package_dir" \
+                "winssh-pro${{ matrix.extension }}" wintun.dll
+            fi
           fi
 
       - name: Upload release artifact

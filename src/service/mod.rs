@@ -6,6 +6,7 @@
 
 pub mod assistant_service;
 pub mod backup_service;
+pub mod clash_subscription_service;
 pub mod command_history_service;
 pub mod credential_service;
 pub mod file_service;
@@ -24,6 +25,7 @@ pub mod trusted_host_service;
 
 pub use assistant_service::AssistantService;
 pub use backup_service::BackupService;
+pub use clash_subscription_service::ClashSubscriptionService;
 pub use command_history_service::CommandHistoryService;
 pub use credential_service::CredentialService;
 pub use file_service::FileService;

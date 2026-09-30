@@ -7,6 +7,7 @@
 //! 放在 [`crate::ui::sidebar`]。
 
 mod assistant;
+mod clash;
 mod easytier;
 #[allow(dead_code)]
 mod event_log;
@@ -21,6 +22,7 @@ mod vnc;
 mod welcome;
 
 pub use assistant::{ASSISTANT_DOCK_WIDTH, AssistantPanel};
+pub use clash::ClashPanel;
 pub use easytier::EasyTierPanel;
 pub use monitor::{MonitorEvent, MonitorPanel};
 pub use rdp::RdpPanel;

@@ -1,0 +1,433 @@
+//! 运行中实例的读数：上游 JSON 到我们自己的类型。
+//!
+//! 界面只认这一层。mihomo 改了字段名，要跟着动的只有这个文件里的几个
+//! `from_*`；[`super::api`] 那一层只管把 JSON 取回来，不管它长什么样。
+//!
+//! 两处**顺序**上的讲究，都来自同一个事实：mihomo 的内部表是 Go 的 map，
+//! 序列化出来每一行的顺序都不一样。
+//!
+//! * 策略组与组内成员按**正文里写的顺序**摆（[`LiveState::ordered_by`]）——
+//!   枚举顺序好看不好看是次要的，重要的是它**稳定**：同一份订阅点两次刷新，
+//!   列表不会跳位置。
+//! * 没有正文可依时退回字典序，至少也是稳定的。
+
+use gpui_kit::SharedString;
+use serde_json::Value;
+
+use super::config::{RuleSummary, SubscriptionOutline};
+
+/// 一份读数：此刻的节点/策略组，以及此刻生效的分流规则。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LiveState {
+    /// 策略组。全局那一档（`GLOBAL`）在最后。
+    pub groups: Vec<LiveGroup>,
+    pub rules: Vec<RuleSummary>,
+}
+
+impl LiveState {
+    /// 从 `/proxies` 与 `/rules` 两份响应译出来。
+    pub fn from_api(proxies: &Value, rules: Option<&Value>) -> Self {
+        let mut groups = Vec::new();
+        if let Some(table) = proxies.get("proxies").and_then(Value::as_object) {
+            for (name, entry) in table {
+                let kind = entry
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                if !is_group(&kind) {
+                    continue;
+                }
+                groups.push(LiveGroup::from_entry(name, &kind, entry));
+            }
+        }
+        // Go 的 map 没有顺序，字典序至少是稳定的。有人拿着正文时再按正文摆。
+        groups.sort_by(|left, right| left.name.cmp(&right.name));
+
+        let rules = rules
+            .and_then(|value| value.get("rules"))
+            .and_then(Value::as_array)
+            .map(|rules| rules.iter().map(rule_of).collect())
+            .unwrap_or_default();
+
+        Self { groups, rules }
+    }
+
+    /// 按订阅正文里写的顺序重排：策略组照 `proxy-groups` 那段，组内成员照
+    /// 各自的 `proxies` 顺序。正文里没有的（`GLOBAL`、`use:` 拉来的 provider
+    /// 成员）排在后面，顺序不变。
+    pub fn ordered_by(mut self, outline: &SubscriptionOutline) -> Self {
+        for group in &mut self.groups {
+            let declared = outline
+                .groups
+                .iter()
+                .find(|declared| declared.name == group.name)
+                .map(|declared| declared.members.as_slice())
+                .unwrap_or_default();
+            group.ordered_by(declared);
+        }
+
+        // 正文里没有的组（`GLOBAL` 是固定那一个）一律沉底，组内顺序保持原样。
+        let declared: Vec<&SharedString> = outline.groups.iter().map(|g| &g.name).collect();
+        self.groups.sort_by_key(|group| {
+            declared
+                .iter()
+                .position(|name| **name == group.name)
+                .unwrap_or(usize::MAX)
+        });
+        self
+    }
+
+    /// 这个组。找不到就是 `None`。
+    #[cfg(test)]
+    pub fn group(&self, name: &str) -> Option<&LiveGroup> {
+        self.groups.iter().find(|group| group.name == name)
+    }
+}
+
+/// 一个策略组此刻的样子。
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveGroup {
+    pub name: SharedString,
+    /// `Selector` / `URLTest` / `Fallback` / `LoadBalance` / `Relay`。
+    pub kind: SharedString,
+    /// 此刻选中的那个成员。不是选择器（比如 `url-test`）时是内核自己要用的
+    /// 那一个，照样有意义。
+    pub now: Option<SharedString>,
+    pub nodes: Vec<LiveNode>,
+}
+
+impl LiveGroup {
+    fn from_entry(name: &str, kind: &str, entry: &Value) -> Self {
+        let now = entry
+            .get("now")
+            .and_then(Value::as_str)
+            .filter(|now| !now.is_empty())
+            .map(SharedString::from);
+        let nodes = entry
+            .get("all")
+            .and_then(Value::as_array)
+            .map(|all| {
+                all.iter()
+                    .filter_map(Value::as_str)
+                    .map(|name| LiveNode {
+                        name: SharedString::from(name.to_owned()),
+                        // 组内成员只有名字，协议与地址要回 `/proxies` 那张表里查。
+                        kind: SharedString::default(),
+                        server: SharedString::default(),
+                        port: None,
+                        delay: None,
+                        tested: false,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        Self {
+            name: SharedString::from(name.to_owned()),
+            kind: SharedString::from(kind.to_owned()),
+            now,
+            nodes,
+        }
+    }
+
+    /// 补齐成员的协议、地址、端口与最近一次测速 —— 那几样在 `/proxies` 的
+    /// 另一段里，由 [`LiveState::from_api`] 的调用方一次性交进来。
+    pub fn fill(&mut self, facts: &NodeFacts) {
+        for node in &mut self.nodes {
+            if let Some(fact) = facts.get(&node.name) {
+                node.kind = fact.kind.clone();
+                node.server = fact.server.clone();
+                node.port = fact.port.clone();
+                node.delay = fact.delay;
+                node.tested = fact.tested;
+            }
+        }
+    }
+
+    /// 组内成员按 `declared` 的顺序摆，不在里面的沉底。
+    fn ordered_by(&mut self, declared: &[SharedString]) {
+        if declared.is_empty() {
+            return;
+        }
+        self.nodes.sort_by_key(|node| {
+            declared
+                .iter()
+                .position(|name| *name == node.name)
+                .unwrap_or(usize::MAX)
+        });
+    }
+
+    }
+
+/// 组内一个成员。
+///
+/// 名字与协议来自内核，地址与端口也来自内核 —— `/proxies` 那张表里每个节点都
+/// 带着 `server` / `port`。内置的那几个假节点（`DIRECT` / `REJECT`）没有地址，
+/// 那两格就空着。
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveNode {
+    pub name: SharedString,
+    /// 协议类型（`Shadowsocks` / `Vmess` / `Trojan`…），查不到时是空串。
+    pub kind: SharedString,
+    /// 服务器地址。内置节点与查不到的成员是空串。
+    pub server: SharedString,
+    /// 端口。内核给的是数字，非数字的来源一律当没有。
+    pub port: Option<SharedString>,
+    /// 最近一次测出来的毫秒数，`None` 是测不出来。
+    pub delay: Option<u32>,
+    /// 测过没有 —— `delay` 是 `None` 时用来分辨"还没测"与"测了不通"。
+    pub tested: bool,
+}
+
+/// 全部节点的事实。单独抽出来是因为策略组那一段只有名字 —— 成员到底是个什么
+/// 协议、服务器在哪儿、上次测速多少，得回 `/proxies` 的顶层那张表里查。
+///
+/// 用具名结构而不是元组：要补的字段加一个就得动全部读法，三格的时候还能忍，
+/// 五格就是一场事故。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NodeFact {
+    pub kind: SharedString,
+    pub server: SharedString,
+    pub port: Option<SharedString>,
+    pub delay: Option<u32>,
+    pub tested: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct NodeFacts(std::collections::HashMap<SharedString, NodeFact>);
+
+impl NodeFacts {
+    pub fn from_api(proxies: &Value) -> Self {
+        let mut facts = Self::default();
+        let Some(table) = proxies.get("proxies").and_then(Value::as_object) else {
+            return facts;
+        };
+        for (name, entry) in table {
+            let kind = entry
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let server = entry
+                .get("server")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            // 内核报的是数字。字符串形式的留个口子，别的一律当没有。
+            let port = match entry.get("port") {
+                Some(Value::Number(number)) => Some(SharedString::from(number.to_string())),
+                Some(Value::String(text)) if !text.is_empty() => {
+                    Some(SharedString::from(text.clone()))
+                }
+                _ => None,
+            };
+            let (delay, tested) = delay_of(entry);
+            facts.0.insert(
+                SharedString::from(name.clone()),
+                NodeFact {
+                    kind: SharedString::from(kind),
+                    server: SharedString::from(server),
+                    port,
+                    delay,
+                    tested,
+                },
+            );
+        }
+        facts
+    }
+
+    fn get(&self, name: &SharedString) -> Option<&NodeFact> {
+        self.0.get(name)
+    }
+}
+
+/// 一个节点的测速记录：`history` 的最后一条说了最近一次的结果。
+/// `delay: 0` 是"没测通"，和"还没测过"（`history` 为空）不是一回事。
+fn delay_of(entry: &Value) -> (Option<u32>, bool) {
+    let Some(history) = entry.get("history").and_then(Value::as_array) else {
+        return (None, false);
+    };
+    let Some(last) = history.last() else {
+        return (None, false);
+    };
+    let delay = last.get("delay").and_then(Value::as_u64).unwrap_or(0);
+    match u32::try_from(delay) {
+        Ok(delay) if delay > 0 => (Some(delay), true),
+        _ => (None, true),
+    }
+}
+
+/// 这个 `type` 是不是一个"组"。其余的是节点，或者是内核自带的几个假节点
+/// （`DIRECT` / `REJECT` / `COMPATIBLE`…）—— 它们只在组成员里出现。
+fn is_group(kind: &str) -> bool {
+    matches!(
+        kind,
+        "Selector" | "URLTest" | "Fallback" | "LoadBalance" | "Relay"
+    )
+}
+
+/// `/rules` 里的一条。
+fn rule_of(entry: &Value) -> RuleSummary {
+    RuleSummary {
+        kind: rule_type(entry.get("type").and_then(Value::as_str).unwrap_or_default()).into(),
+        payload: entry
+            .get("payload")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .into(),
+        target: entry
+            .get("proxy")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .into(),
+    }
+}
+
+/// 内核报的规则类型是驼峰（`DomainSuffix`），正文里写的是大写短横
+/// （`DOMAIN-SUFFIX`）。界面上这两处摆的是同一列东西，写法也得是同一种。
+///
+/// 绝大多数靠驼峰拆词就能对上，`GeoIP` / `GeoSite` / `IPCIDR` 这几个人家
+/// 本来就不拆，得点名。
+fn rule_type(kind: &str) -> String {
+    match kind {
+        "GeoIP" => return "GEOIP".to_owned(),
+        "GeoSite" => return "GEOSITE".to_owned(),
+        "IPCIDR" => return "IP-CIDR".to_owned(),
+        "IPCIDR6" => return "IP-CIDR6".to_owned(),
+        "SrcIPCIDR" => return "SRC-IP-CIDR".to_owned(),
+        "SrcIPCIDR6" => return "SRC-IP-CIDR6".to_owned(),
+        "IPSUFFIX" => return "IP-SUFFIX".to_owned(),
+        "SrcIPASN" => return "SRC-IP-ASN".to_owned(),
+        "IPASN" => return "IP-ASN".to_owned(),
+        "RuleSet" => return "RULE-SET".to_owned(),
+        "Process" => return "PROCESS-NAME".to_owned(),
+        "ProcessPath" => return "PROCESS-PATH".to_owned(),
+        "" => return String::new(),
+        _ => {}
+    }
+
+    let mut out = String::with_capacity(kind.len() + 4);
+    for (index, letter) in kind.chars().enumerate() {
+        if letter.is_ascii_uppercase() && index > 0 {
+            out.push('-');
+        }
+        out.extend(letter.to_uppercase());
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn proxies() -> Value {
+        json!({
+            "proxies": {
+                "DIRECT": { "type": "Direct" },
+                "香港 01": { "type": "Shadowsocks", "server": "hk.example.com", "port": 443,
+                             "history": [{ "delay": 120 }, { "delay": 88 }] },
+                "日本 01": { "type": "Trojan", "server": "jp.example.com", "port": 8443,
+                             "history": [{ "delay": 0 }] },
+                "德国 01": { "type": "Vmess", "server": "de.example.com", "port": 1234 },
+                "PROXY": { "type": "Selector", "now": "香港 01", "all": ["日本 01", "香港 01", "DIRECT"] },
+                "自动": { "type": "URLTest", "now": "香港 01", "all": ["香港 01", "日本 01"] },
+                "GLOBAL": { "type": "Selector", "now": "PROXY", "all": ["PROXY"] }
+            }
+        })
+    }
+
+    fn rules() -> Value {
+        json!({
+            "rules": [
+                { "type": "DomainSuffix", "payload": "example.com", "proxy": "PROXY" },
+                { "type": "GeoIP", "payload": "CN", "proxy": "DIRECT" },
+                { "type": "Match", "payload": "", "proxy": "自动" }
+            ]
+        })
+    }
+
+    #[test]
+    fn groups_are_told_apart_from_nodes_and_built_ins() {
+        let live = LiveState::from_api(&proxies(), Some(&rules()));
+        let names: Vec<&str> = live.groups.iter().map(|g| g.name.as_ref()).collect();
+        assert_eq!(names, ["GLOBAL", "PROXY", "自动"], "字典序，GLOBAL 也是组");
+        assert_eq!(live.groups[1].now.as_deref(), Some("香港 01"));
+    }
+
+    /// 组内成员只有名字，协议、地址、端口与测速要另外那张表补齐。
+    #[test]
+    fn members_get_their_kind_and_delay_from_the_node_table() {
+        let mut live = LiveState::from_api(&proxies(), None);
+        let facts = NodeFacts::from_api(&proxies());
+        for group in &mut live.groups {
+            group.fill(&facts);
+        }
+
+        let proxy = live.group("PROXY").unwrap();
+        assert_eq!(proxy.nodes[0].name.as_ref(), "日本 01");
+        assert_eq!(proxy.nodes[0].kind.as_ref(), "Trojan");
+        assert_eq!(proxy.nodes[0].server.as_ref(), "jp.example.com");
+        assert_eq!(proxy.nodes[0].port.as_deref(), Some("8443"));
+        assert_eq!(proxy.nodes[0].delay, None);
+        assert!(proxy.nodes[0].tested, "测过，只是没通");
+
+        let hk = proxy.nodes.iter().find(|n| n.name == "香港 01").unwrap();
+        assert_eq!(hk.delay, Some(88), "取最近一次");
+        assert_eq!(hk.kind.as_ref(), "Shadowsocks");
+        assert_eq!(hk.server.as_ref(), "hk.example.com");
+        assert_eq!(hk.port.as_deref(), Some("443"));
+
+        // 内置的假节点：查得到协议，但没有地址与端口。
+        let de = proxy.nodes.iter().find(|n| n.name == "DIRECT").unwrap();
+        assert_eq!(de.kind.as_ref(), "Direct");
+        assert!(de.server.is_empty());
+        assert_eq!(de.port, None);
+        assert!(!de.tested, "从来没测过");
+    }
+
+    /// 正文里写的顺序说了算：组按 `proxy-groups` 排，成员按各组自己的顺序排。
+    #[test]
+    fn the_subscription_decides_the_order() {
+        let mut live = LiveState::from_api(&proxies(), None);
+        let facts = NodeFacts::from_api(&proxies());
+        for group in &mut live.groups {
+            group.fill(&facts);
+        }
+        let outline = crate::clash::config::outline(
+            "proxy-groups:\n  - name: 自动\n    type: url-test\n    proxies: [日本 01, 香港 01]\n  \
+             - name: PROXY\n    type: select\n    proxies: [香港 01, 日本 01, DIRECT]\n",
+        )
+        .unwrap();
+
+        let live = live.ordered_by(&outline);
+        let names: Vec<&str> = live.groups.iter().map(|g| g.name.as_ref()).collect();
+        assert_eq!(names, ["自动", "PROXY", "GLOBAL"], "正文里的在前，GLOBAL 沉底");
+
+        let proxy = live.group("PROXY").unwrap();
+        let members: Vec<&str> = proxy.nodes.iter().map(|n| n.name.as_ref()).collect();
+        assert_eq!(members, ["香港 01", "日本 01", "DIRECT"], "照正文的顺序");
+    }
+
+    /// 规则：驼峰译成正文里那种写法，`GEOIP` 这类不拆词。
+    #[test]
+    fn rule_types_are_spelled_the_way_the_config_spells_them() {
+        let live = LiveState::from_api(&proxies(), Some(&rules()));
+        assert_eq!(live.rules[0].kind.as_ref(), "DOMAIN-SUFFIX");
+        assert_eq!(live.rules[0].payload.as_ref(), "example.com");
+        assert_eq!(live.rules[0].target.as_ref(), "PROXY");
+        assert_eq!(live.rules[1].kind.as_ref(), "GEOIP");
+        assert_eq!(live.rules[2].kind.as_ref(), "MATCH");
+        // 没点名的按驼峰拆。
+        assert_eq!(rule_type("DstPort"), "DST-PORT");
+        assert_eq!(rule_type("SrcIPASN"), "SRC-IP-ASN");
+        assert_eq!(rule_type(""), "");
+    }
+
+    #[test]
+    fn an_empty_response_is_an_empty_snapshot() {
+        let live = LiveState::from_api(&json!({}), None);
+        assert!(live.groups.is_empty() && live.rules.is_empty());
+    }
+}

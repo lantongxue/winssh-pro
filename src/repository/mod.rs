@@ -8,6 +8,7 @@
 //! 操作，传事务则由服务层把几条捆成一个原子操作。
 
 pub mod assistant_repository;
+pub mod clash_subscription_repository;
 pub mod command_history_repository;
 pub mod credential_repository;
 pub mod host_repository;
@@ -16,6 +17,7 @@ pub mod snippet_repository;
 pub mod trusted_host_repository;
 
 pub use assistant_repository::AssistantRepository;
+pub use clash_subscription_repository::{ClashSubscriptionRepository, FetchedMetaUpdate};
 pub use command_history_repository::CommandHistoryRepository;
 pub use credential_repository::CredentialRepository;
 pub use host_repository::HostRepository;

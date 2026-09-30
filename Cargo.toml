@@ -148,10 +148,21 @@ chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# 订阅正文是 YAML（Clash 配置），见 `src/clash/config.rs`：要读懂里面的节点、
+# 策略组与分流规则给界面看，还要把端口那几项盖进去再交给 mihomo。这份解读
+# 用 serde 那套 `Value` 来做，所以挑的是 serde_yaml 那一族的维护分支 ——
+# 上游 `serde_yaml` 0.9 已归档停更，`serde_yaml_ng` 是它的直接后继（同一个
+# unsafe-libyaml 底座，API 逐字兼容，改动只在修 bug），换过去只是换个名字。
+serde_yaml_ng = "0.10"
+
 # 主机配置的数据层：SeaORM 负责 SQLite 的访问，sqlx 自带静态编译的 SQLite，
 # 不依赖系统安装的库；异步操作跑在应用级 tokio runtime 上（见 src/db/mod.rs）。
 sea-orm = { version = "2.0", features = ["sqlx-sqlite", "runtime-tokio", "macros"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "fs"] }
+# `process` 那一档是 Clash 订阅要的：mihomo 是个独立程序，由我们起、由我们收
+# （见 `src/clash/runtime.rs`）—— 不用它就得回到同步的 `std::process`，把整个
+# 会话线程堵在 `wait()` 上。`signal` 不开：Windows 上没有信号可发，停子进程
+# 走的是 `kill()`。
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "fs", "process"] }
 # 跨平台的应用数据目录（Windows 是 %APPDATA%，macOS 是 ~/Library/Application Support）。
 dirs = "6"
 
@@ -317,6 +328,18 @@ url = "2"
 cidr = "0.3"
 strum = "0.28"
 
+# Clash 订阅那两处 HTTP（见 `src/clash/`）：拉订阅正文本体，以及跟本机
+# mihomo 的外部控制口说话。图上本来就有 reqwest 0.13（OpenDAL 的
+# WebDAV/S3 传输、rig 的后端都用它），这里只是把它变成直接依赖，
+# 不多编译一份东西 —— 所以版本跟着图上那一份走。
+#
+# 关掉默认特性、只留 `rustls` 与 `json`：默认那一档里 `system-proxy` 是要
+# 紧的一项 —— 它会让 reqwest 去读 Windows 的系统代理设置，而我们**正是**在
+# 改那份设置的那一方（`src/clash/system_proxy.rs`）。代理开着的时候，连
+# `127.0.0.1` 上那个控制口都可能被绕进代理里，于是"设置系统代理"这一步自己
+# 先把控制通道掐了。两处请求都显式 `no_proxy()`，这一档干脆不点亮。
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+
 # russh 的默认加密后端 aws-lc-rs 会用 C + 汇编编译 aws-lc-sys；在 x86_64 Windows 上
 # 它的汇编要靠 NASM 汇编，本机没有 nasm.exe 时 build 脚本直接 panic。开启
 # `prebuilt-nasm` 让 aws-lc-sys 使用 crate 里随附的预汇编 .obj，构建机就不必再装 NASM。
@@ -324,6 +347,14 @@ strum = "0.28"
 # resolver v2 下这一段只在编译 Windows 目标时生效，不会影响 Linux/macOS。
 [target.'cfg(windows)'.dependencies]
 aws-lc-rs = { version = "1.16.2", features = ["prebuilt-nasm"] }
+# Clash 的「系统代理」那一档（见 `src/clash/system_proxy.rs`）：往
+# `HKCU\…\Internet Settings` 里写 `ProxyEnable` / `ProxyServer`，改完再喊一声
+# `InternetSetOptionW` 让已经开着的程序当场认账。两件事分属两份 API ——
+# 注册表用 `winreg`（它自己就是 windows-sys 的薄封装，读写值不必手搓
+# `RegQueryValueExW` 那一套缓冲区），广播用 windows-sys 的 WinInet 那一档。
+# 两个版本都跟着图上已有那一份走；其余平台没有这一档，开关会说清楚。
+winreg = "0.56"
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinInet", "Win32_Foundation"] }
 
 [dev-dependencies]
 # 让界面能在无窗口的测试里真的画一遍（`TestAppContext` + `window.draw`）。

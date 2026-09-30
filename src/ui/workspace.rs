@@ -28,15 +28,18 @@ use gpui_kit::{
     Styled as _, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 
-use crate::service::{AssistantService, CredentialService, HostService, SnippetService, TrustedHostService};
+use crate::service::{
+    AssistantService, ClashSubscriptionService, CredentialService, HostService, SnippetService,
+    TrustedHostService,
+};
 use crate::ui::{
     bars::{ActivityAction, ActivityBar, CommandCenterBar},
     dialogs::{CommandPaletteDialog, CommandPaletteEvent},
     panels::{ASSISTANT_DOCK_WIDTH, AssistantPanel, TerminalPanel, WelcomeEvent, WelcomePanel},
     theme::AppIcon,
     views::{
-        CredentialVaultEvent, CredentialVaultView, HostExplorerEvent, HostExplorerView,
-        SidebarView, SnippetVaultEvent, SnippetVaultView,
+        ClashView, ClashViewEvent, CredentialVaultEvent, CredentialVaultView, HostExplorerEvent,
+        HostExplorerView, SidebarView, SnippetVaultEvent, SnippetVaultView,
     },
     windows::{CredentialVaultWindow, SettingsWindow, TrustedHostsWindow, show_fps_monitor},
 };
@@ -99,6 +102,9 @@ pub struct Workspace {
     credential_service: CredentialService,
     /// 命令片段视图。同样常驻：它持有搜索词、选中的分类与那份快照。
     snippet_vault: Entity<SnippetVaultView>,
+    /// Clash 订阅视图。同样常驻：它持有搜索词、那份订阅快照，以及中心区
+    /// 那块详情面板的实体（换订阅时换的是它看哪一条，不另开一页）。
+    clash_view: Entity<ClashView>,
     /// 命令面板。它常驻在这里而不是每次现搭：面板的搜索状态归它自己，
     /// 外壳只在打开时把当前的主机递过去。
     command_palette: Entity<CommandPaletteDialog>,
@@ -208,6 +214,24 @@ impl Workspace {
         )
         .detach();
 
+        // Clash 订阅也住在同一座库里，同上只是再取一个业务入口。它要一份 Dock
+        // 的弱引用：列表里点一条订阅，中心区那块详情面板要从这儿开出来。
+        let clash_view = cx.new(|cx| {
+            ClashView::new(
+                ClashSubscriptionService::open(),
+                dock_area.downgrade(),
+                window,
+                cx,
+            )
+        });
+        cx.subscribe(
+            &clash_view,
+            |this, _, event: &ClashViewEvent, cx| match event {
+                ClashViewEvent::Collapse => this.toggle_sidebar(cx),
+            },
+        )
+        .detach();
+
         // 智能助手。对话存在同一座库里（`ai_conversations` / `ai_messages`）；
         // 要一份 Dock 的弱引用：助手只操作中心区当前那条会话，标签页换了
         // 它得跟着换（面板自己订 Dock 的布局事件）。它自己也是 Dock 的面板，
@@ -281,6 +305,7 @@ impl Workspace {
             credential_vault,
             credential_service,
             snippet_vault,
+            clash_view,
             command_palette,
             view: SidebarView::Hosts,
             sidebar_open: true,
@@ -536,6 +561,7 @@ impl Workspace {
         match self.view {
             SidebarView::Hosts => self.host_explorer.clone().into_any_element(),
             SidebarView::Snippets => self.snippet_vault.clone().into_any_element(),
+            SidebarView::Clash => self.clash_view.clone().into_any_element(),
             SidebarView::Keys => self.credential_vault.clone().into_any_element(),
         }
     }

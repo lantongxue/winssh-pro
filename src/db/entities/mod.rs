@@ -6,6 +6,7 @@
 pub mod ai_conversation;
 pub mod ai_image;
 pub mod ai_message;
+pub mod clash_subscription;
 pub mod command_history;
 pub mod credential;
 pub mod host;
