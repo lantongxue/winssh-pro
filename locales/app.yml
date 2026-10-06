@@ -1579,6 +1579,9 @@ clash.runtime.select_failed:
 clash.runtime.delay_failed:
   en: "Could not test this group: %{error}"
   zh-CN: "这个组测不了速：%{error}"
+clash.runtime.connection_failed:
+  en: "Could not close the connection: %{error}"
+  zh-CN: "关闭连接失败：%{error}"
 clash.runtime.bad_config:
   en: "This configuration cannot be applied: %{error}"
   zh-CN: "这份配置用不了：%{error}"
@@ -1668,6 +1671,54 @@ clash.form.tag_placeholder:
 clash.form.color:
   en: Color
   zh-CN: 标识色
+clash.form.source_type:
+  en: Import method
+  zh-CN: 导入方式
+clash.form.kind_url:
+  en: Remote subscription URL
+  zh-CN: 远程订阅 URL
+clash.form.kind_yaml:
+  en: Paste Clash YAML
+  zh-CN: 直接粘贴 YAML
+clash.form.yaml:
+  en: YAML configuration
+  zh-CN: YAML 配置正文
+clash.form.yaml_placeholder:
+  en: Paste a Clash.Meta configuration here…
+  zh-CN: 在这里粘贴 Clash.Meta 配置正文……
+clash.form.auto_update:
+  en: Automatic refresh
+  zh-CN: 自动更新频率
+clash.form.auto_off:
+  en: Manual
+  zh-CN: 手动更新
+clash.form.auto_6h:
+  en: Every 6 hours
+  zh-CN: 每 6 小时
+clash.form.auto_12h:
+  en: Every 12 hours
+  zh-CN: 每 12 小时
+clash.form.auto_24h:
+  en: Every 24 hours
+  zh-CN: 每 24 小时
+clash.form.auto_3d:
+  en: Every 3 days
+  zh-CN: 每 3 天
+clash.form.user_agent:
+  en: User-Agent
+  zh-CN: 请求 User-Agent
+clash.form.user_agent_placeholder:
+  en: Leave blank to use the default Clash client
+  zh-CN: 留空使用默认 Clash 客户端标识
+clash.form.notes:
+  en: Notes
+  zh-CN: 备注说明
+clash.form.protocol_title:
+  en: Supported Clash.Meta protocols
+  zh-CN: 支持 Clash.Meta 协议
+clash.form.protocol_hint:
+  en: Hysteria2, VLESS, VMess, Trojan, Shadowsocks, TUIC, WireGuard and provider-backed proxy groups are kept in the original YAML.
+  zh-CN: Hysteria2、VLESS、VMess、Trojan、Shadowsocks、TUIC、WireGuard 以及引用节点提供器的策略组都会保留在原始 YAML 中。
 clash.form.cancel:
   en: Cancel
   zh-CN: 取消
@@ -1681,6 +1732,9 @@ clash.form.save_failed:
   en: "Could not save the subscription: %{error}"
   zh-CN: "订阅没存上：%{error}"
 # 侧边栏那一栏（订阅列表）。
+clash.view.title:
+  en: CLASH.Meta subscription
+  zh-CN: CLASH.Meta 订阅
 clash.view.search_placeholder:
   en: Search subscriptions
   zh-CN: 搜索订阅
@@ -1723,6 +1777,9 @@ clash.view.update_failed:
 clash.view.updated_all:
   en: All subscriptions updated.
   zh-CN: 全部订阅已更新。
+clash.view.auto_updated:
+  en: "Automatically refreshed %{count} subscriptions."
+  zh-CN: "已自动更新 %{count} 条订阅。"
 clash.view.refresh_all:
   en: Refresh all
   zh-CN: 一键更新全部
@@ -1762,6 +1819,24 @@ clash.view.expire_unknown:
 clash.view.edit:
   en: Edit
   zh-CN: 编辑
+clash.view.duplicate:
+  en: Duplicate
+  zh-CN: 创建副本
+clash.view.duplicate_suffix:
+  en: " (copy)"
+  zh-CN: "（副本）"
+clash.view.duplicated:
+  en: "Created a copy of %{name}."
+  zh-CN: "已创建「%{name}」的副本。"
+clash.view.duplicate_failed:
+  en: "Could not duplicate: %{error}"
+  zh-CN: "创建副本失败：%{error}"
+clash.view.mixed_port:
+  en: Mixed
+  zh-CN: 混合端口
+clash.view.api_port:
+  en: API
+  zh-CN: API 控制
 clash.view.delete:
   en: Delete
   zh-CN: 删除
@@ -1796,6 +1871,9 @@ clash.panel.other_running:
 clash.panel.failed:
   en: "Failed: %{error}"
   zh-CN: "启动失败：%{error}"
+clash.panel.effective_subscription:
+  en: "Active subscription · %{name}"
+  zh-CN: "当前生效订阅 · %{name}"
 clash.panel.start_failed:
   en: "Could not start: %{error}"
   zh-CN: "启动失败：%{error}"
@@ -1805,12 +1883,39 @@ clash.panel.start:
 clash.panel.stop:
   en: Stop
   zh-CN: 停止
+clash.panel.master_running:
+  en: Proxy Running
+  zh-CN: 代理已运行
+clash.panel.master_stopped:
+  en: Proxy Stopped
+  zh-CN: 代理已停止
+clash.panel.system_proxy_running:
+  en: ":%{port} Running"
+  zh-CN: ":%{port} 运行中"
+clash.panel.system_proxy_unset:
+  en: Not Set
+  zh-CN: 未设置
+clash.panel.tun_active:
+  en: Fake-IP / gVisor
+  zh-CN: Fake-IP / gVisor
+clash.panel.tun_inactive:
+  en: Disabled
+  zh-CN: 未启用
+clash.panel.route_detector:
+  en: "Route Detector:"
+  zh-CN: "分流探测器:"
 clash.panel.idle_hint:
   en: "Start it and the system proxy and virtual NIC switches appear here."
   zh-CN: "启动之后，系统代理与虚拟网卡两个开关就摆在这儿。"
 clash.panel.mixed_port:
   en: "mixed port %{port}"
   zh-CN: "混合端口 %{port}"
+clash.panel.port_status:
+  en: "Clash.Meta port: HTTP %{port}"
+  zh-CN: "Clash.Meta 端口：HTTP %{port}"
+clash.panel.tun_status:
+  en: "TUN: %{state}"
+  zh-CN: "TUN：%{state}"
 clash.panel.version:
   en: "core %{version}"
   zh-CN: "内核 %{version}"
@@ -1841,6 +1946,9 @@ clash.panel.mode_global:
 clash.panel.mode_direct:
   en: Direct
   zh-CN: 直连
+clash.panel.mode_script:
+  en: Script
+  zh-CN: 脚本
 clash.panel.refresh:
   en: Refresh
   zh-CN: 刷新
@@ -1856,6 +1964,60 @@ clash.panel.tab_rules:
 clash.panel.tab_logs:
   en: Log
   zh-CN: 日志
+clash.panel.tab_connections:
+  en: "Connections (%{count})"
+  zh-CN: "实时连接与日志（%{count}）"
+clash.panel.node_search_placeholder:
+  en: Search node name, address or protocol
+  zh-CN: 搜索节点名称、服务器地址或协议
+clash.panel.rule_search_placeholder:
+  en: Search rule payload or target
+  zh-CN: 搜索规则内容或目标
+clash.panel.route_search_placeholder:
+  en: Domain to test, e.g. github.com
+  zh-CN: 输入域名测试分流，例如 github.com
+clash.panel.test_all:
+  en: Test all
+  zh-CN: 一键测速
+clash.panel.test_node:
+  en: Test this node
+  zh-CN: 测试此节点
+clash.panel.test_route:
+  en: Test route
+  zh-CN: 测试分流
+clash.panel.route_result:
+  en: "Matched %{kind} %{payload} → %{target}"
+  zh-CN: "命中 %{kind} %{payload} → %{target}"
+clash.panel.rules_total:
+  en: "%{count} rules"
+  zh-CN: "%{count} 条规则"
+clash.panel.all_regions:
+  en: All
+  zh-CN: 全部
+clash.panel.all_protocols:
+  en: All protocols
+  zh-CN: 全部协议
+clash.panel.selected_node:
+  en: Selected
+  zh-CN: 当前选定
+clash.panel.connections_title:
+  en: Active connections
+  zh-CN: 活跃网络连接
+clash.panel.close_all_connections:
+  en: Close all
+  zh-CN: 关闭全部连接
+clash.panel.close_connection:
+  en: Close connection
+  zh-CN: 关闭连接
+clash.panel.no_connections:
+  en: No active connections.
+  zh-CN: 暂无活跃连接。
+clash.panel.logs_title:
+  en: Mihomo core logs
+  zh-CN: Mihomo 内核日志
+clash.panel.clear_logs:
+  en: Clear
+  zh-CN: 清空日志
 clash.panel.tab_config:
   en: Config
   zh-CN: 配置源码
@@ -1868,6 +2030,18 @@ clash.panel.config_empty:
 clash.panel.copy_config:
   en: Copy YAML
   zh-CN: 复制 YAML
+clash.panel.export_config:
+  en: Export YAML
+  zh-CN: 导出配置
+clash.panel.export_prompt:
+  en: Choose a folder for the YAML file
+  zh-CN: 选择保存 YAML 的文件夹
+clash.panel.exported:
+  en: "Configuration exported to %{path}."
+  zh-CN: "配置已导出到 %{path}。"
+clash.panel.export_failed:
+  en: "Could not export the configuration: %{error}"
+  zh-CN: "导出配置失败：%{error}"
 clash.panel.current:
   en: "current · %{name}"
   zh-CN: "当前 · %{name}"
@@ -1903,6 +2077,9 @@ clash.panel.static_hint:
 clash.panel.no_nodes:
   en: This subscription has no nodes.
   zh-CN: 这份订阅里没有节点。
+clash.panel.no_matching_nodes:
+  en: No nodes match the current filters.
+  zh-CN: 没有符合当前筛选条件的节点。
 clash.panel.no_rules:
   en: This subscription has no rules.
   zh-CN: 这份订阅里没有分流规则。

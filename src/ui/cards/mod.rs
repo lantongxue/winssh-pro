@@ -4,10 +4,12 @@
 //! 点击、菜单这些都以回调发回去。所以同一张卡片可以出现在侧边栏的列表里，
 //! 将来也可以出现在别的地方。
 
+mod clash_node_card;
 mod credential_card;
 mod host_card;
 mod snippet_card;
 
+pub use clash_node_card::{CLASH_NODE_CARD_HEIGHT, ClashNodeCard};
 pub use credential_card::{
     CredentialAction, CredentialCard, CredentialField, kind_icon, kind_tone,
 };

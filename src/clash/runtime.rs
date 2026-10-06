@@ -39,7 +39,7 @@ use serde_json::Value;
 
 use super::api::ApiClient;
 use super::config::{self, RuntimePorts, SubscriptionOutline};
-use super::snapshot::{LiveState, NodeFacts};
+use super::snapshot::{ConnectionSummary, LiveState, NodeFacts};
 use super::subscription::ClashSubscription;
 
 /// 起来了之后，多久问一次内核"现在什么样"。
@@ -92,6 +92,14 @@ pub enum Action {
     TestNodeDelay(SharedString),
     /// 立刻重采一次（手动刷新）。
     Refresh,
+    /// 测试正文里能看到的全部策略组。
+    TestDelayAll,
+    /// 关闭一条实时连接。
+    CloseConnection(SharedString),
+    /// 关闭全部实时连接。
+    CloseConnections,
+    /// 清空界面上的内核日志尾巴。
+    ClearLogs,
     /// 正文换了：重写配置文件并让内核重读一遍，不重起进程。
     Reload(SharedString),
 }
@@ -161,6 +169,8 @@ pub struct RuntimeState {
     pub traffic_down: SharedString,
     /// 子进程日志的尾巴，最后一行在最后。
     pub logs: Vec<SharedString>,
+    /// 当前活跃连接。
+    pub connections: Vec<ConnectionSummary>,
     /// 最近一次没办成的事。
     pub error: Option<ErrorReport>,
 }
@@ -180,6 +190,7 @@ impl Default for RuntimeState {
             traffic_up: SharedString::default(),
             traffic_down: SharedString::default(),
             logs: Vec::new(),
+            connections: Vec::new(),
             error: None,
         }
     }
@@ -251,6 +262,7 @@ pub fn start(subscription: &ClashSubscription) -> Result<()> {
         state.api_port = None;
         state.version = SharedString::default();
         state.live = None;
+        state.connections.clear();
         state.logs.clear();
         state.system_proxy = false;
         state.tun = false;
@@ -277,6 +289,12 @@ pub fn send(action: Action) -> bool {
     current()
         .as_ref()
         .is_some_and(|running| running.input.send(action).is_ok())
+}
+
+/// 清掉界面保留的日志尾巴。实例已经结束时没有会话线程可接收
+/// [`Action::ClearLogs`]，因此由这里直接清快照。
+pub fn clear_logs() {
+    publish(|state| state.logs.clear());
 }
 
 /// 应用退出时的收尾。
@@ -548,6 +566,7 @@ fn finish(token: u64, outcome: Option<String>) {
             state.mixed_port = None;
             state.api_port = None;
             state.live = None;
+            state.connections.clear();
         }
     });
 }
@@ -699,6 +718,27 @@ impl Session {
             state.traffic_down = down.into();
         });
     }
+
+    /// 采一份连接表。连接不是节点表的一部分，单独发布可以在连接变化时
+    /// 更新详情页而不重建节点行模型。
+    fn publish_connections(&self, value: &Value) {
+        let connections = value
+            .get("connections")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(ConnectionSummary::from_entry)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        publish(|state| state.connections = connections);
+    }
+
+    fn clear_logs(&self) {
+        self.logs.clear();
+        publish(|state| state.logs.clear());
+    }
 }
 
 /// 字节每秒 → 一句短话（"1.2 MB/s"、"88 KB/s"）。EB 那一档只是占格子 ——
@@ -823,6 +863,9 @@ async fn supervise(
         if let Ok(traffic) = api.traffic().await {
             session.publish_traffic(&traffic);
         }
+        if let Ok(connections) = api.connections().await {
+            session.publish_connections(&connections);
+        }
     }
 
     let mut ticker = tokio::time::interval(POLL_INTERVAL);
@@ -858,6 +901,9 @@ async fn supervise(
                 if let Ok(traffic) = api.traffic().await {
                     session.publish_traffic(&traffic);
                 }
+                if let Ok(connections) = api.connections().await {
+                    session.publish_connections(&connections);
+                }
             }
         }
     }
@@ -879,6 +925,49 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
                 None
             }
         },
+        Action::TestDelayAll => {
+            let groups = session
+                .outline
+                .as_ref()
+                .map(|outline| outline.groups.iter().map(|group| group.name.clone()).collect::<Vec<_>>())
+                .or_else(|| {
+                    state().live.as_ref().map(|live| {
+                        live.groups.iter().map(|group| group.name.clone()).collect::<Vec<_>>()
+                    })
+                })
+                .unwrap_or_default();
+            for group in groups {
+                if let Err(error) = session.api.group_delay(&group, TEST_URL, TEST_TIMEOUT).await {
+                    log::info!("策略组 {group} 测速没通：{error:#}");
+                }
+            }
+            if let Ok(nodes) = session.api.proxies().await {
+                session.publish_live(&nodes, None, None);
+            }
+            None
+        }
+        Action::CloseConnection(id) => {
+            match session.api.close_connection(&id).await {
+                Ok(()) => {
+                    if let Ok(connections) = session.api.connections().await {
+                        session.publish_connections(&connections);
+                    }
+                }
+                Err(error) => report(t!("clash.runtime.connection_failed", error => format!("{error:#}"))),
+            }
+            None
+        }
+        Action::CloseConnections => {
+            match session.api.close_connections().await {
+                Ok(()) => publish(|state| state.connections.clear()),
+                Err(error) => report(t!("clash.runtime.connection_failed", error => format!("{error:#}"))),
+            }
+            None
+        }
+        Action::ClearLogs => {
+            session.clear_logs();
+            None
+        }
         Action::SetMode(mode) => {
             match session
                 .api
@@ -1082,6 +1171,12 @@ impl Logs {
             .iter()
             .cloned()
             .collect()
+    }
+
+    fn clear(&self) {
+        let mut inner = self.0.lock().unwrap_or_else(poisoned);
+        inner.startup.clear();
+        inner.tail.clear();
     }
 
     /// 报错时那几行。启动那一段有的话用它 —— 原因在那儿。

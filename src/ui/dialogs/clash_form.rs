@@ -19,7 +19,7 @@ use gpui_kit::component::{
     StyledExt as _, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
-    input::{Input, InputState, Textarea, TextareaState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     select::{Select, SelectState},
     v_flex,
 };
@@ -156,8 +156,15 @@ pub struct ClashFormDialog {
     color: String,
     /// 用户备注。
     notes: Entity<TextareaState>,
+    /// 最近一次 URL 拉取带回的套餐元数据。保存时与正文一起交给服务层，
+    /// 手工粘贴或从文件导入则为空。
+    fetched_meta: Option<crate::clash::SubscriptionMeta>,
+    /// 与正文对应的 URL；用户改了地址之后必须重新拉取，不能把旧正文配给新地址。
+    body_source: String,
     /// 正在拉。
     fetching: bool,
+    /// 保存期间挡住重复提交，防止一次双击建出两条订阅。
+    saving: bool,
 }
 
 impl ClashFormDialog {
@@ -217,9 +224,13 @@ impl ClashFormDialog {
                                         true => t!("clash.form.save"),
                                         false => t!("clash.form.create"),
                                     })
+                                    .disabled(form.read(cx).saving || form.read(cx).fetching)
                                     .on_click(move |_, window, cx| {
                                         let outcome = submit_form.update(cx, |state, cx| {
-                                            state.build_draft(cx)
+                                            let draft = state.build_draft(cx)?;
+                                            state.saving = true;
+                                            cx.notify();
+                                            Ok::<_, SharedString>(draft)
                                         });
                                         let draft = match outcome {
                                             Ok(draft) => draft,
@@ -232,12 +243,17 @@ impl ClashFormDialog {
                                         let service = submit_service.clone();
                                         let on_saved = submit_saved.clone();
                                         let editing = editing.clone();
+                                        let form = submit_form.clone();
                                         window
                                             .spawn(cx, async move |cx| {
-                                                let draft = match fill_body(draft).await {
-                                                    Ok(draft) => draft,
+                                                let (draft, fetched_meta) = match fill_body(draft).await {
+                                                    Ok(result) => result,
                                                     Err(error) => {
                                                         cx.update(|window, cx| {
+                                                            form.update(cx, |state, cx| {
+                                                                state.saving = false;
+                                                                cx.notify();
+                                                            });
                                                             window.push_notification(
                                                                 t!(
                                                                     "clash.form.fetch_failed",
@@ -252,24 +268,31 @@ impl ClashFormDialog {
                                                 };
 
                                                 let outcome = match &editing {
-                                                    None => service.insert(draft).await,
+                                                    None => service.insert_with_meta(draft, fetched_meta).await,
                                                     Some(subscription) => {
-                                                        service.update(&subscription.id, draft).await
+                                                        service
+                                                            .update_with_meta(
+                                                                &subscription.id,
+                                                                draft,
+                                                                fetched_meta,
+                                                            )
+                                                            .await
                                                     }
                                                 };
 
                                                 let saved = outcome.is_ok();
-                                                cx.update(|window, cx| match outcome {
-                                                    Ok(subscription) => {
-                                                        on_saved(subscription, window, cx)
-                                                    }
-                                                    Err(error) => window.push_notification(
-                                                        t!(
-                                                            "clash.form.save_failed",
-                                                            error => format!("{error:#}"),
+                                                cx.update(|window, cx| {
+                                                    form.update(cx, |state, cx| {
+                                                        state.saving = false;
+                                                        cx.notify();
+                                                    });
+                                                    match outcome {
+                                                        Ok(subscription) => on_saved(subscription, window, cx),
+                                                        Err(error) => window.push_notification(
+                                                            t!("clash.form.save_failed", error => format!("{error:#}")),
+                                                            cx,
                                                         ),
-                                                        cx,
-                                                    ),
+                                                    }
                                                 })
                                                 .ok();
                                                 if saved {
@@ -311,10 +334,19 @@ impl ClashFormDialog {
                 )
         });
         let yaml = cx.new(|cx| {
-            TextareaState::new(window, cx).auto_grow(6, 12).placeholder(
-                SharedString::from(t!("clash.form.yaml_placeholder")),
-            )
+            TextareaState::new(window, cx)
+                .auto_grow(6, 12)
+                .placeholder(SharedString::from(t!("clash.form.yaml_placeholder")))
+                .default_value(editing.map(|s| s.config_yaml.to_string()).unwrap_or_default())
         });
+        cx.subscribe(&yaml, |this, yaml, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) && !this.by_url {
+                this.config_yaml = yaml.read(cx).value().to_string();
+                this.outline = crate::clash::config::outline(&this.config_yaml).ok();
+                this.fetched_meta = None;
+                cx.notify();
+            }
+        }).detach();
         // 编辑已导入（无地址）的订阅时从 YAML 那一档进场，与上一次的来路对上。
         let by_url = match editing {
             Some(subscription) => subscription.has_source(),
@@ -381,7 +413,10 @@ impl ClashFormDialog {
             tag,
             color,
             notes,
+            fetched_meta: None,
+            body_source: editing.map(|s| s.source_url.to_string()).unwrap_or_default(),
             fetching: false,
+            saving: false,
         }
     }
 
@@ -398,14 +433,28 @@ impl ClashFormDialog {
     ///
     /// "粘贴 YAML"那一档的正文**当场**从输入框里取：textarea 里敲到哪儿，
     /// 存的就是哪一份；URL 那一档的正文由"拉取"或保存前那次补拉来。
-    fn build_draft(&self, cx: &App) -> Result<ClashSubscriptionDraft, SharedString> {
+    fn build_draft(
+        &self,
+        cx: &App,
+    ) -> Result<
+        (
+            ClashSubscriptionDraft,
+            Option<crate::clash::SubscriptionMeta>,
+        ),
+        SharedString,
+    > {
         let config_yaml = match self.by_url {
-            true => self.config_yaml.clone(),
+            true if self.source_url.read(cx).value().trim() == self.body_source => self.config_yaml.clone(),
+            true => String::new(),
             false => self.yaml.read(cx).value().to_string(),
         };
         let draft = ClashSubscriptionDraft {
             name: self.name.read(cx).value().trim().to_string(),
-            source_url: self.source_url.read(cx).value().trim().to_string(),
+            source_url: if self.by_url {
+                self.source_url.read(cx).value().trim().to_string()
+            } else {
+                String::new()
+            },
             config_yaml,
             tag: self.tag.read(cx).value().trim().to_string(),
             color: self.color_now(),
@@ -423,17 +472,28 @@ impl ClashFormDialog {
             notes: self.notes.read(cx).value().to_string(),
         };
         draft.check()?;
-        Ok(draft)
+        let meta = if self.by_url && self.source_url.read(cx).value().trim() == self.body_source {
+            self.fetched_meta
+        } else { None };
+        Ok((draft, meta))
     }
 
     /// 换一份正文：重新解读一遍，界面上那行说明跟着变。URL 那一档把输入框
     /// 里的也换上（"拉取"走的就是这条路）。
-    fn set_body(&mut self, config_yaml: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn set_body(
+        &mut self,
+        config_yaml: String,
+        meta: Option<crate::clash::SubscriptionMeta>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.yaml.update(cx, |state, cx| {
             state.set_value(config_yaml.clone(), window, cx);
         });
         self.outline = crate::clash::config::outline(&config_yaml).ok();
         self.config_yaml = config_yaml;
+        self.fetched_meta = meta;
+        self.body_source = self.source_url.read(cx).value().trim().to_string();
         cx.notify();
     }
 
@@ -444,6 +504,7 @@ impl ClashFormDialog {
             window.push_notification(t!("clash.form.url_required"), cx);
             return;
         }
+        if self.fetching || self.saving { return; }
         self.fetching = true;
         cx.notify();
 
@@ -453,7 +514,12 @@ impl ClashFormDialog {
             this.update_in(cx, |this, window, cx| {
                 this.fetching = false;
                 match outcome {
-                    Ok(fetched) => this.set_body(fetched.body, window, cx),
+                    Ok(fetched) => {
+                        // 网络回来时地址可能已经改了。晚到的响应不覆盖新地址的正文。
+                        if this.source_url.read(cx).value().trim() == url {
+                            this.set_body(fetched.body, fetched.meta, window, cx);
+                        }
+                    }
                     Err(error) => window.push_notification(
                         t!("clash.form.fetch_failed", error => format!("{error:#}")),
                         cx,
@@ -491,7 +557,7 @@ impl ClashFormDialog {
 
             let outcome = LocalFileService::read_text(path).await;
             this.update_in(cx, |this, window, cx| match outcome {
-                Ok(text) => this.set_body(text, window, cx),
+                Ok(text) => this.set_body(text, None, window, cx),
                 // 读不出来（挑中了一个目录、权限不够、不是 UTF-8）就说一声，
                 // 别把表里已经有的东西冲掉。
                 Err(error) => window.push_notification(
@@ -554,7 +620,7 @@ impl ClashFormDialog {
                             }))
                             .label(t!("clash.form.fetch"))
                             // 正在拉的时候按不动：不然连点两下就是两份请求。
-                            .disabled(self.fetching)
+                            .disabled(self.fetching || self.saving || !self.by_url)
                             .on_click(cx.listener(|this, _, window, cx| this.fetch(window, cx))),
                     )
                     .child(
@@ -669,7 +735,9 @@ impl ClashFormDialog {
                     .child(Icon::new(icon).with_size(px(14.)))
                     .child(div().text_xs().font_medium().child(label))
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.saving || this.fetching { return; }
                         this.by_url = by_url;
+                        this.fetched_meta = None;
                         cx.notify();
                     }))
             }))
@@ -678,17 +746,22 @@ impl ClashFormDialog {
 }
 
 /// 正文还空着、地址却填了：先拉一次再存（见模块文档）。
-async fn fill_body(draft: ClashSubscriptionDraft) -> anyhow::Result<ClashSubscriptionDraft> {
+async fn fill_body(
+    (draft, meta): (ClashSubscriptionDraft, Option<crate::clash::SubscriptionMeta>),
+) -> anyhow::Result<(ClashSubscriptionDraft, Option<crate::clash::SubscriptionMeta>)> {
     if !draft.config_yaml.trim().is_empty() || draft.source_url.trim().is_empty() {
-        return Ok(draft);
+        return Ok((draft, meta));
     }
     let url = draft.source_url.clone();
     let user_agent = draft.user_agent.clone();
     let fetched = subscription::fetch_with_ua(&url, &user_agent).await?;
-    Ok(ClashSubscriptionDraft {
-        config_yaml: fetched.body,
-        ..draft
-    })
+    Ok((
+        ClashSubscriptionDraft {
+            config_yaml: fetched.body,
+            ..draft
+        },
+        fetched.meta,
+    ))
 }
 
 impl Render for ClashFormDialog {

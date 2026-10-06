@@ -70,7 +70,7 @@ impl SidebarView {
         match self {
             Self::Hosts => t!("sidebar.hosts"),
             Self::Snippets => t!("sidebar.snippets"),
-            Self::Clash => t!("sidebar.clash"),
+            Self::Clash => t!("clash.view.title"),
             Self::Keys => t!("sidebar.keys"),
         }
         .into()

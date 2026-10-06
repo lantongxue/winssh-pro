@@ -95,23 +95,32 @@ impl ClashSubscriptionRepository {
                 Expr::value(user_agent),
             );
         if let Some(meta) = meta {
-            update = update
-                .col_expr(
+            // 机场可能只回其中一两个字段。只写明确存在的值，避免一次
+            // 不完整的响应把卡片上上次已经读到的额度清成 NULL。
+            if let Some(value) = meta.upload_bytes.and_then(|value| i64::try_from(value).ok()) {
+                update = update.col_expr(
                     clash_subscription::Column::UploadBytes,
-                    Expr::value(meta.upload_bytes.map(|v| v as i64)),
-                )
-                .col_expr(
-                    clash_subscription::Column::DownloadBytes,
-                    Expr::value(meta.download_bytes.map(|v| v as i64)),
-                )
-                .col_expr(
-                    clash_subscription::Column::TotalBytes,
-                    Expr::value(meta.total_bytes.map(|v| v as i64)),
-                )
-                .col_expr(
-                    clash_subscription::Column::ExpireDate,
-                    Expr::value(meta.expire_date.clone()),
+                    Expr::value(value),
                 );
+            }
+            if let Some(value) = meta.download_bytes.and_then(|value| i64::try_from(value).ok()) {
+                update = update.col_expr(
+                    clash_subscription::Column::DownloadBytes,
+                    Expr::value(value),
+                );
+            }
+            if let Some(value) = meta.total_bytes.and_then(|value| i64::try_from(value).ok()) {
+                update = update.col_expr(
+                    clash_subscription::Column::TotalBytes,
+                    Expr::value(value),
+                );
+            }
+            if let Some(value) = &meta.expire_date {
+                update = update.col_expr(
+                    clash_subscription::Column::ExpireDate,
+                    Expr::value(value.clone()),
+                );
+            }
         }
         let result = update
             .filter(clash_subscription::Column::Id.eq(id))

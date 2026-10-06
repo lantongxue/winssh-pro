@@ -18,6 +18,7 @@
 //! 机器上还没有"（[`is_supported`]），而不是假装拨了一下。
 
 use std::path::PathBuf;
+#[cfg(target_os = "windows")]
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};

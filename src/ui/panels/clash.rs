@@ -34,28 +34,30 @@ use std::{rc::Rc, sync::Arc};
 
 use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Icon, IconName, Sizable as _, StyledExt as _,
-    VirtualListScrollHandle, WindowExt as _,
+    VirtualListScrollHandle, WindowExt as _, Disableable as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     h_flex,
+    input::{Input, InputEvent, InputState},
     scroll::{ScrollableElement as _, ScrollbarAxis},
     switch::Switch,
-    tab::{Tab, TabBar},
     table::{Table, TableCell, TableHead, TableHeader, TableRow},
     v_flex, v_virtual_list,
 };
 use gpui_kit::{
-    AnyElement, App, ClipboardItem, Context, Div, ElementId, EventEmitter, FocusHandle, Focusable,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Div, ElementId, Entity, EventEmitter,
+    FocusHandle, Focusable, PathPromptOptions,
     Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
     Size, Stateful, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px, size,
+    prelude::FluentBuilder as _, px, rgb, size,
 };
 
 use crate::clash::{
-    Action, ClashSubscription, GroupSummary, LiveGroup, LiveNode, NodeSummary, Phase, RuleSummary,
-    RuntimeState, SubscriptionOutline, runtime,
+    Action, ClashSubscription, ConnectionSummary, GroupSummary, LiveGroup, LiveNode, NodeSummary,
+    RuleSummary, RuntimeState, SubscriptionOutline, runtime,
 };
-use crate::ui::theme::{AppIcon, palette};
+use crate::ui::cards::{CLASH_NODE_CARD_HEIGHT, ClashNodeCard};
+use crate::{service::LocalFileService, ui::theme::{AppIcon, palette}};
 use rust_i18n::t;
 
 /// 标签页上那颗状态点的直径。和终端、组网那几档是同一个数。
@@ -80,10 +82,11 @@ const HEADER_ROW_HEIGHT: Pixels = px(24.);
 
 /// 列表里两行之间的缝。挂在虚拟列表自己身上 —— 它按这个数把行位推开，
 /// 所以行高表里放的是**纯行高**，不含这道缝。
-const ROW_GAP: Pixels = px(4.);
+const ROW_GAP: Pixels = px(8.);
 
 /// 勾位。选中那颗勾占的宽度 —— 没选中的行也留这一格，表头也有，
 /// 名字才对得齐。
+#[allow(dead_code)]
 const CHECK_WIDTH: Pixels = px(16.);
 
 /// 吃掉剩余宽度的那一列（节点名、规则内容）兜底留多宽。
@@ -91,26 +94,56 @@ const WIDE_MIN_WIDTH: Pixels = px(80.);
 
 /// 表格格子左右的内边距（`Size::XSmall` 的格内边距就是它）。不是表格行的
 /// 那几行照这个补 —— 文字才跟列里的对齐。
+#[allow(dead_code)]
 const CELL_PADDING: Pixels = px(4.);
 
 /// 协议那一列。最长的 `Shadowsocks` 装得下。
+#[allow(dead_code)]
 const KIND_WIDTH: Pixels = px(88.);
 
+/// 规则编号那一列。
+const RULE_INDEX_WIDTH: Pixels = px(36.);
+
 /// 规则类型那一列宽一些：`DOMAIN-SUFFIX` 比协议名长。
-const RULE_KIND_WIDTH: Pixels = px(140.);
+const RULE_KIND_WIDTH: Pixels = px(130.);
 
 /// 结尾那一列：节点的延迟或地址、规则走谁。**两种数据源共用这一个宽度**
 /// （只有列名跟着换）—— 切一次数据源，列不该跳。
 const TAIL_WIDTH: Pixels = px(160.);
 
 /// 延迟低于这个数算"快"，字用绿色。
+#[allow(dead_code)]
 const DELAY_FAST_MS: u32 = 300;
 
 /// 低于这个数算"还行"，用琥珀色；再高就是红的。
+#[allow(dead_code)]
 const DELAY_OK_MS: u32 = 800;
 
-/// 分流模式的固定顺序。`TabBar` 报的是下标，这里按位置对上。
-const MODES: [&str; 3] = ["rule", "global", "direct"];
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn safe_file_name(name: &str) -> String {
+    let mut value: String = name
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') { ch } else { '_' })
+        .collect();
+    if value.trim_matches('_').is_empty() {
+        value = "subscription".to_owned();
+    }
+    value
+}
 
 /// 节点栏的一行。
 ///
@@ -218,6 +251,18 @@ pub struct ClashPanel {
     /// 两条列表各自的滚动位置。换一条订阅看时要归零。
     node_scroll: VirtualListScrollHandle,
     rule_scroll: VirtualListScrollHandle,
+    node_search: Entity<InputState>,
+    rule_search: Entity<InputState>,
+    test_domain: Entity<InputState>,
+    active_group: Option<SharedString>,
+    selected_region: SharedString,
+    selected_protocol: SharedString,
+    testing_all: bool,
+    testing_node: Option<SharedString>,
+    route_result: Option<(RuleSummary, SharedString)>,
+    filtered_rule_indices: Vec<usize>,
+    rule_query: String,
+    node_query: String,
     focus_handle: FocusHandle,
 }
 
@@ -231,6 +276,17 @@ impl ClashPanel {
         let outline = subscription.outline();
         let state = runtime::state();
         let shown_error = state.error.as_ref().map(|error| error.seq).unwrap_or(0);
+        let node_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("clash.panel.node_search_placeholder"))
+        });
+        let rule_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("clash.panel.rule_search_placeholder"))
+        });
+        let test_domain = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("clash.panel.route_search_placeholder"))
+                .default_value("github.com")
+        });
         let mut this = Self {
             subscription,
             outline,
@@ -242,11 +298,45 @@ impl ClashPanel {
             rule_sizes: Rc::new(Vec::new()),
             node_scroll: VirtualListScrollHandle::new(),
             rule_scroll: VirtualListScrollHandle::new(),
+            node_search,
+            rule_search,
+            test_domain,
+            active_group: None,
+            selected_region: "ALL".into(),
+            selected_protocol: "ALL".into(),
+            testing_all: false,
+            testing_node: None,
+            route_result: None,
+            filtered_rule_indices: Vec::new(),
+            rule_query: String::new(),
+            node_query: String::new(),
             focus_handle: cx.focus_handle(),
         };
+        this.subscribe_inputs(window, cx);
         this.rebuild_rows();
         this.follow_runtime(window, cx);
         this
+    }
+
+    fn subscribe_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let node_search = self.node_search.clone();
+        cx.subscribe_in(&node_search, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.node_query = this.node_search.read(cx).value().trim().to_lowercase();
+                this.rebuild_rows();
+                cx.notify();
+            }
+        })
+        .detach();
+        let rule_search = self.rule_search.clone();
+        cx.subscribe_in(&rule_search, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.rule_query = this.rule_search.read(cx).value().trim().to_lowercase();
+                this.rebuild_rows();
+                cx.notify();
+            }
+        })
+        .detach();
     }
 
     /// 换一条订阅来看。已经开着的那块面板点另一条订阅时走的就是这里。
@@ -295,6 +385,18 @@ impl ClashPanel {
             window.push_notification(error.message.clone(), cx);
         }
         self.state = state;
+        self.testing_all = false;
+        self.testing_node = None;
+        if let Some(group) = &self.active_group {
+            if !self
+                .state
+                .live
+                .as_ref()
+                .is_some_and(|live| live.groups.iter().any(|known| known.name == *group))
+            {
+                self.active_group = None;
+            }
+        }
         // 数据换了，行也跟着换 —— 重建只摊下标，几千行也是微秒级；
         // 真正的开销在渲染那一头，那边现在只画看得见的。
         self.rebuild_rows();
@@ -313,11 +415,30 @@ impl ClashPanel {
         let mut rows: Vec<NodeRow> = Vec::new();
         if let Some(live) = &self.state.live {
             for (group, live_group) in live.groups.iter().enumerate() {
+                if let Some(active) = &self.active_group
+                    && active != &live_group.name
+                {
+                    continue;
+                }
+                let members: Vec<usize> = live_group
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, node)| self.node_matches(node))
+                    .map(|(node, _)| node)
+                    .collect();
+                if members.is_empty() {
+                    continue;
+                }
                 if !rows.is_empty() {
                     rows.push(NodeRow::Gap);
                 }
                 rows.push(NodeRow::Group { group });
-                rows.extend((0..live_group.nodes.len()).map(|node| NodeRow::Member { group, node }));
+                rows.extend(
+                    members
+                        .into_iter()
+                        .map(|node| NodeRow::Member { group, node }),
+                );
             }
         } else if let Some(outline) = &self.outline {
             let has_nodes = !outline.nodes.is_empty();
@@ -345,11 +466,52 @@ impl ClashPanel {
                 .collect::<Vec<_>>(),
         );
         self.node_rows = rows;
+        self.filtered_rule_indices = self
+            .rules()
+            .map(|rules| {
+                rules
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, rule)| {
+                        self.rule_query.is_empty()
+                            || rule.kind.to_lowercase().contains(&self.rule_query)
+                            || rule.payload.to_lowercase().contains(&self.rule_query)
+                            || rule.target.to_lowercase().contains(&self.rule_query)
+                    })
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         self.rule_sizes = Rc::new(
-            (0..self.rules().map_or(0, |rules| rules.len()))
+            self.filtered_rule_indices
+                .iter()
                 .map(|_| size(px(0.), ROW_HEIGHT))
                 .collect::<Vec<_>>(),
         );
+    }
+
+    fn node_matches(&self, node: &LiveNode) -> bool {
+        let haystack = format!("{} {} {}", node.name, node.server, node.kind).to_lowercase();
+        if !self.node_query.is_empty() && !haystack.contains(&self.node_query) {
+            return false;
+        }
+        if self.selected_protocol != "ALL"
+            && !node.kind.to_lowercase().contains(&self.selected_protocol.to_lowercase())
+        {
+            return false;
+        }
+        if self.selected_region == "ALL" {
+            return true;
+        }
+        let region = match self.selected_region.as_ref() {
+            "HK" => ["🇭🇰", "香港", "hk"],
+            "JP" => ["🇯🇵", "日本", "jp"],
+            "US" => ["🇺🇸", "美国", "us"],
+            "SG" => ["🇸🇬", "新加坡", "sg"],
+            _ => ["", "", ""],
+        };
+        let name = node.name.to_lowercase();
+        region.iter().any(|mark| !mark.is_empty() && name.contains(&mark.to_lowercase()))
     }
 
     /// 此刻该摆的那份规则：实时那一份优先，其次是正文那一份。**行数、行体、
@@ -391,355 +553,514 @@ impl ClashPanel {
         }
     }
 
+    fn clear_logs(&mut self) {
+        if self.is_running() {
+            self.send(Action::ClearLogs);
+        } else {
+            runtime::clear_logs();
+        }
+    }
+
     /// 把一道指令交给运行中的实例。没在跑时送出去也没人接，见
     /// [`crate::clash::runtime::send`]。
     fn send(&mut self, action: Action) {
         runtime::send(action);
     }
 
-    /// 顶部控制条：状态、启动/停止，以及那两个开关。
+    /// 顶部控制条：代理总开关、当前生效订阅、系统代理、虚拟网卡 (TUN)、实时速率、一键测速、分流模式。
     fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let running = self.is_running();
+        let up = self.state.traffic_up.as_ref();
+        let down = self.state.traffic_down.as_ref();
+        let up_display = if up.is_empty() { "0 B/s" } else { up };
+        let down_display = if down.is_empty() { "0 B/s" } else { down };
+
+        let sys_proxy_active = self.state.system_proxy;
+        let tun_active = self.state.tun;
+        let testing_all = self.testing_all;
+
+        let current_mode = self.state.mode.as_ref();
+        let modes = [
+            ("rule", "规则 (Rule)"),
+            ("global", "全局 (Global)"),
+            ("direct", "直连 (Direct)"),
+            ("script", "脚本 (Script)"),
+        ];
+
         v_flex()
+            .id("clash-panel-header")
             .flex_shrink_0()
             .w_full()
-            .gap_2()
-            .px_3()
-            .py_2()
+            .px_4()
+            .py_3()
+            .gap_3()
             .border_b_1()
             .border_color(cx.theme().border)
+            .bg(palette::surface(cx))
+            // 第一行：总开关 + 生效订阅名称 (左) | 分流模式选择器 (右)
             .child(
                 h_flex()
                     .w_full()
-                    .gap_2()
                     .items_center()
+                    .justify_between()
+                    .gap_4()
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_sm()
-                            .text_color(self.phase_tone(cx))
-                            .child(self.phase_text()),
+                        h_flex()
+                            .items_center()
+                            .gap_3()
+                            // 主开关胶囊按钮
+                            .child(
+                                h_flex()
+                                    .id("clash-panel-master-toggle")
+                                    .items_center()
+                                    .gap_2()
+                                    .px_4()
+                                    .py_2()
+                                    .rounded_full()
+                                    .cursor_pointer()
+                                    .when(running, |this| {
+                                        this.bg(rgb(0x059669))
+                                            .border_1()
+                                            .border_color(rgb(0x10b981).opacity(0.6))
+                                            .hover(|this| this.bg(rgb(0x10b981)))
+                                    })
+                                    .when(!running, |this| {
+                                        this.bg(rgb(0x27272a))
+                                            .border_1()
+                                            .border_color(rgb(0x3f3f46))
+                                            .hover(|this| this.bg(rgb(0x3f3f46)))
+                                    })
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_bold()
+                                            .text_color(if running { rgb(0xffffff).into() } else { palette::idle(cx) })
+                                            .child("⏻"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_semibold()
+                                            .text_color(if running { rgb(0xffffff).into() } else { palette::idle(cx) })
+                                            .child(if running { "代理已运行" } else { "代理已停止" }),
+                                    )
+                                    .child(
+                                        div()
+                                            .size(px(7.))
+                                            .rounded_full()
+                                            .bg(if running { rgb(0xffffff) } else { rgb(0x71717a) }),
+                                    )
+                                    .on_click(cx.listener(|this, _, window, cx| this.start_or_stop(window, cx))),
+                            )
+                            // 当前生效订阅两行描述
+                            .child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(
+                                        h_flex()
+                                            .gap_1p5()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_medium()
+                                                    .text_color(palette::idle(cx))
+                                                    .child("当前生效订阅"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .size(px(5.))
+                                                    .rounded_full()
+                                                    .bg(rgb(0x06b6d4)),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_bold()
+                                            .text_color(cx.theme().foreground)
+                                            .child(format!("🚀 {}", self.subscription.name)),
+                                    ),
+                            ),
                     )
-                    .children(self.render_ports(cx))
-                    .child(self.render_start_button(cx)),
+                    // 右侧：分流模式选择盒
+                    .child(
+                        h_flex()
+                            .p_1()
+                            .rounded(px(12.))
+                            .bg(palette::recessed(cx))
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .gap_1()
+                            .children(modes.into_iter().map(|(mode_key, label)| {
+                                let selected = current_mode == mode_key;
+                                let panel = cx.weak_entity();
+                                let icon_color = if selected { palette::teal() } else { palette::idle(cx) };
+                                let icon_element = match mode_key {
+                                    "rule" => Icon::new(IconName::Settings2).with_size(px(12.)).text_color(icon_color).into_any_element(),
+                                    "global" => Icon::new(IconName::Globe).with_size(px(12.)).text_color(icon_color).into_any_element(),
+                                    "direct" => Icon::new(AppIcon::Zap).with_size(px(12.)).text_color(icon_color).into_any_element(),
+                                    _ => Icon::new(AppIcon::Terminal).with_size(px(12.)).text_color(icon_color).into_any_element(),
+                                };
+                                h_flex()
+                                    .id(format!("clash-mode-{mode_key}"))
+                                    .items_center()
+                                    .gap_1p5()
+                                    .px_2p5()
+                                    .py_1()
+                                    .rounded(px(8.))
+                                    .cursor_pointer()
+                                    .when(selected, |this| {
+                                        this.bg(rgb(0x06b6d4).opacity(0.18))
+                                            .border_1()
+                                            .border_color(rgb(0x06b6d4).opacity(0.45))
+                                    })
+                                    .when(!selected, |this| {
+                                        this.hover(|this| this.bg(palette::surface_strong(cx)))
+                                    })
+                                    .child(icon_element)
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_semibold()
+                                            .text_color(if selected { palette::teal() } else { palette::idle(cx) })
+                                            .child(label),
+                                    )
+                                    .on_click(move |_, _, cx| {
+                                        panel.update(cx, |p, _| p.send(Action::SetMode(mode_key.into()))).ok();
+                                    })
+                            })),
+                    ),
             )
-            .child(self.render_controls(cx))
-    }
-
-    /// 混合端口与内核版本。起来了才有。
-    fn render_ports(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
-        let port = self.state.mixed_port?;
-        let version = self.state.version.clone();
-        Some(
-            h_flex()
-                .flex_shrink_0()
-                .gap_2()
-                .text_xs()
-                .text_color(palette::idle(cx))
-                .child(SharedString::from(t!("clash.panel.mixed_port", port => port)))
-                .when(!version.is_empty(), |this| {
-                    this.child(SharedString::from(t!(
-                        "clash.panel.version",
-                        version => version,
-                    )))
-                }),
-        )
-    }
-
-    /// 状态那一句话。
-    fn phase_text(&self) -> SharedString {
-        match &self.state.phase {
-            Phase::Idle => t!("clash.panel.idle").into(),
-            Phase::Starting => t!("clash.panel.starting").into(),
-            Phase::Running => match self.state.is_current(&self.subscription.id) {
-                true => t!("clash.panel.running").into(),
-                // 跑的是别的订阅：说清楚，别让人以为这一条在跑。
-                false => t!("clash.panel.other_running", name => self.running_name()).into(),
-            },
-            Phase::Stopping => t!("clash.panel.stopping").into(),
-            Phase::Failed(reason) => t!("clash.panel.failed", error => reason.clone()).into(),
-        }
-    }
-
-    fn running_name(&self) -> SharedString {
-        self.state
-            .subscription
-            .as_ref()
-            .map(|running| running.name.clone())
-            .unwrap_or_default()
-    }
-
-    fn phase_tone(&self, cx: &App) -> Hsla {
-        match &self.state.phase {
-            Phase::Idle | Phase::Stopping => palette::idle(cx),
-            Phase::Starting => palette::amber(),
-            Phase::Running => match self.state.is_current(&self.subscription.id) {
-                true => palette::magenta(),
-                false => palette::amber(),
-            },
-            Phase::Failed(_) => cx.theme().danger,
-        }
-    }
-
-    /// 启动 / 停止那一颗。
-    fn render_start_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let running = self.is_running();
-        let label = match running {
-            true => t!("clash.panel.stop"),
-            false => t!("clash.panel.start"),
-        };
-        let blue = palette::blue();
-        let danger = cx.theme().danger;
-        let (color, hover, active) = match running {
-            true => (danger, danger.lighten(0.08), danger.darken(0.08)),
-            false => (blue, blue.lighten(0.08), blue.darken(0.08)),
-        };
-        let variant = ButtonCustomVariant::new(cx)
-            .color(color)
-            .foreground(palette::on_accent())
-            .hover(hover)
-            .active(active);
-
-        Button::new("clash-panel-toggle")
-            .custom(variant)
-            .bg(color)
-            .rounded(cx.theme().radius)
-            .small()
-            .icon(Icon::new(match running {
-                true => IconName::Pause,
-                false => IconName::Play,
-            }))
-            .label(label)
-            .on_click(cx.listener(|this, _, window, cx| this.start_or_stop(window, cx)))
-    }
-
-    /// 两个开关 + 分流模式 + 刷新/测速 + **实时速率**。没跑起来时是一句说明。
-    fn render_controls(&self, cx: &mut Context<Self>) -> AnyElement {
-        if !self.is_running() {
-            return div()
-                .w_full()
-                .text_xs()
-                .text_color(palette::idle(cx))
-                .child(SharedString::from(t!("clash.panel.idle_hint")))
-                .into_any_element();
-        }
-
-        h_flex()
-            .w_full()
-            .gap_4()
-            .items_center()
-            .child(self.render_switch(
-                "clash-panel-system-proxy",
-                t!("clash.panel.system_proxy").to_string(),
-                match self.state.mixed_port {
-                    Some(port) => t!("clash.panel.system_proxy_hint", port => port).to_string(),
-                    None => t!("clash.panel.system_proxy_no_port").to_string(),
-                },
-                self.state.system_proxy,
-                |panel, on| panel.send(Action::SetSystemProxy(on)),
-                cx,
-            ))
-            // 虚拟网卡要内核建一块网卡，得管理员权限 —— 提示写在这儿，
-            // 免得用户拨不动时去别处找原因。
-            .child(self.render_switch(
-                "clash-panel-tun",
-                t!("clash.panel.tun").to_string(),
-                t!("clash.panel.tun_hint").to_string(),
-                self.state.tun,
-                |panel, on| panel.send(Action::SetTun(on)),
-                cx,
-            ))
-            .child(self.render_mode(cx))
-            .child(div().flex_1())
-            .child(self.render_traffic(cx))
+            // 第二行：系统代理 + 虚拟网卡 (TUN) + 实时速率 + 一键测速
             .child(
                 h_flex()
-                    .flex_shrink_0()
-                    .gap_1()
+                    .w_full()
+                    .items_center()
+                    .gap_2p5()
+                    // 系统代理卡片
                     .child(
-                        Button::new("clash-panel-refresh")
-                            .ghost()
-                            .xsmall()
-                            .icon(AppIcon::RefreshCw)
-                            .tooltip(t!("clash.panel.refresh"))
-                            .accessibility_id(t!("clash.panel.refresh"))
-                            .on_click(cx.listener(|this, _, _, _| this.send(Action::Refresh))),
-                    )
-                    .child(
-                        Button::new("clash-panel-test")
-                            .ghost()
-                            .xsmall()
-                            .icon(AppIcon::Zap)
-                            .tooltip(t!("clash.panel.test_delay"))
-                            .accessibility_id(t!("clash.panel.test_delay"))
+                        h_flex()
+                            .id("clash-header-sys-proxy")
+                            .gap_3()
+                            .items_center()
+                            .px_3()
+                            .py_1p5()
+                            .rounded(px(8.))
+                            .cursor_pointer()
+                            .when(sys_proxy_active, |this| {
+                                this.bg(rgb(0x1e3a8a).opacity(0.25))
+                                    .border_1()
+                                    .border_color(rgb(0x3b82f6).opacity(0.5))
+                            })
+                            .when(!sys_proxy_active, |this| {
+                                this.bg(palette::recessed(cx))
+                                    .border_1()
+                                    .border_color(cx.theme().border.opacity(0.6))
+                                    .hover(|this| this.bg(palette::surface_strong(cx)))
+                            })
+                            .child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_semibold()
+                                            .text_color(if sys_proxy_active { rgb(0x93c5fd).into() } else { palette::idle(cx) })
+                                            .child("系统代理"),
+                                    )
+                                    .child(
+                                        div()
+                                            .font_family("monospace")
+                                            .text_xs()
+                                            .text_color(if sys_proxy_active { rgb(0x60a5fa).into() } else { palette::idle(cx).opacity(0.7) })
+                                            .child(if sys_proxy_active {
+                                                match self.state.mixed_port {
+                                                    Some(p) => format!(":{p} 运行中"),
+                                                    None => ":7890 运行中".into(),
+                                                }
+                                            } else {
+                                                "未设置".into()
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                Switch::new("clash-panel-system-proxy")
+                                    .small()
+                                    .color(rgb(0x3b82f6))
+                                    .checked(sys_proxy_active)
+                                    .disabled(!running)
+                                    .on_change(cx.listener(|this, on: &bool, _, _| this.send(Action::SetSystemProxy(*on)))),
+                            )
                             .on_click(cx.listener(|this, _, _, _| {
-                                // 测速测的是列表里第一个组 —— 那一屏最先看到
-                                // 的就是它，测出来的延迟也就摆在那一列上。
-                                let group = this
-                                    .state
-                                    .live
-                                    .as_ref()
-                                    .and_then(|live| live.groups.first())
-                                    .map(|group| group.name.clone());
-                                if let Some(group) = group {
-                                    this.send(Action::TestDelay(group));
+                                if this.is_running() {
+                                    let next = !this.state.system_proxy;
+                                    this.send(Action::SetSystemProxy(next));
+                                }
+                            })),
+                    )
+                    // 虚拟网卡 (TUN) 卡片
+                    .child(
+                        h_flex()
+                            .id("clash-header-tun")
+                            .gap_3()
+                            .items_center()
+                            .px_3()
+                            .py_1p5()
+                            .rounded(px(8.))
+                            .cursor_pointer()
+                            .when(tun_active, |this| {
+                                this.bg(rgb(0x064e3b).opacity(0.25))
+                                    .border_1()
+                                    .border_color(rgb(0x10b981).opacity(0.5))
+                            })
+                            .when(!tun_active, |this| {
+                                this.bg(palette::recessed(cx))
+                                    .border_1()
+                                    .border_color(cx.theme().border.opacity(0.6))
+                                    .hover(|this| this.bg(palette::surface_strong(cx)))
+                            })
+                            .child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(
+                                        h_flex()
+                                            .gap_1p5()
+                                            .items_center()
+                                            .child(
+                                                Icon::new(IconName::Network)
+                                                    .with_size(px(12.))
+                                                    .text_color(rgb(0x34d399)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_semibold()
+                                                    .text_color(if tun_active { rgb(0x6ee7b7).into() } else { cx.theme().foreground })
+                                                    .child("虚拟网卡 (TUN)"),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .font_family("monospace")
+                                            .text_xs()
+                                            .text_color(if tun_active { rgb(0x34d399).into() } else { palette::idle(cx).opacity(0.7) })
+                                            .child(if tun_active { "Fake-IP / gVisor" } else { "未启用" }),
+                                    ),
+                            )
+                            .child(
+                                Switch::new("clash-panel-tun")
+                                    .small()
+                                    .color(rgb(0x10b981))
+                                    .checked(tun_active)
+                                    .disabled(!running)
+                                    .on_change(cx.listener(|this, on: &bool, _, _| this.send(Action::SetTun(*on)))),
+                            )
+                            .on_click(cx.listener(|this, _, _, _| {
+                                if this.is_running() {
+                                    let next = !this.state.tun;
+                                    this.send(Action::SetTun(next));
+                                }
+                            })),
+                    )
+                    // 实时流量速率胶囊
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .px_3()
+                            .py_2()
+                            .rounded(px(8.))
+                            .bg(palette::recessed(cx))
+                            .border_1()
+                            .border_color(cx.theme().border.opacity(0.6))
+                            .font_family("monospace")
+                            .text_xs()
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(Icon::new(IconName::ArrowUp).with_size(px(11.)).text_color(rgb(0x22d3ee)))
+                                    .child(
+                                        div()
+                                            .font_semibold()
+                                            .text_color(rgb(0x22d3ee))
+                                            .child(SharedString::from(up_display.to_string())),
+                                    ),
+                            )
+                            .child(div().text_color(cx.theme().border).child("|"))
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(Icon::new(IconName::ArrowDown).with_size(px(11.)).text_color(rgb(0x34d399)))
+                                    .child(
+                                        div()
+                                            .font_semibold()
+                                            .text_color(rgb(0x34d399))
+                                            .child(SharedString::from(down_display.to_string())),
+                                    ),
+                            ),
+                    )
+                    // 一键全量测速按钮
+                    .child(
+                        h_flex()
+                            .id("clash-header-quick-test")
+                            .gap_1p5()
+                            .items_center()
+                            .px_3()
+                            .py_2()
+                            .rounded(px(8.))
+                            .bg(palette::recessed(cx))
+                            .border_1()
+                            .border_color(cx.theme().border.opacity(0.6))
+                            .hover(|this| this.bg(palette::surface_strong(cx)))
+                            .cursor_pointer()
+                            .child(
+                                Icon::new(AppIcon::Zap)
+                                    .with_size(px(13.))
+                                    .text_color(rgb(0xfbbf24)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_medium()
+                                    .text_color(cx.theme().foreground)
+                                    .child(if testing_all { "测速中..." } else { "一键测速" }),
+                            )
+                            .on_click(cx.listener(|this, _, _, _| {
+                                if this.is_running() && !this.testing_all {
+                                    this.testing_all = true;
+                                    this.send(Action::TestDelayAll);
                                 }
                             })),
                     ),
             )
-            .into_any_element()
     }
 
-    /// 实时速率那一格：上行 / 下行，两个箭头领头的数字。没跑起来或没采到时
-    /// 是空的 —— "0 B/s"是假话，留白才接近"还没读到"。
-    fn render_traffic(&self, cx: &App) -> AnyElement {
-        let running = self.is_running();
-        let up = self.state.traffic_up.as_ref();
-        let down = self.state.traffic_down.as_ref();
-        match running && (!up.is_empty() || !down.is_empty()) {
-            false => div().into_any_element(),
-            true => h_flex()
-                .flex_shrink_0()
-                .gap_2()
-                .items_center()
-                .px_2()
-                .py_1()
-                .rounded(px(6.))
-                .bg(palette::surface(cx))
-                .border_1()
-                .border_color(cx.theme().border.opacity(0.35))
-                .text_xs()
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(
-                            Icon::new(IconName::ArrowUp)
-                                .with_size(px(11.))
-                                .text_color(palette::sky()),
-                        )
-                        .child(
-                            div()
-                                .font_family("monospace")
-                                .child(SharedString::from(up.to_string())),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
-                        .child(
-                            Icon::new(IconName::ArrowDown)
-                                .with_size(px(11.))
-                                .text_color(palette::green()),
-                        )
-                        .child(
-                            div()
-                                .font_family("monospace")
-                                .child(SharedString::from(down.to_string())),
-                        ),
-                )
-                .into_any_element(),
-        }
-    }
-
-    /// 一个开关带一句说明。两个开关长得一模一样，摆法就别写两遍。
-    fn render_switch(
-        &self,
-        id: &'static str,
-        label: String,
-        hint: String,
-        checked: bool,
-        apply: fn(&mut Self, bool),
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        h_flex()
-            .flex_shrink_0()
-            .gap_2()
-            .items_center()
-            .child(
-                Switch::new(id)
-                    .checked(checked)
-                    .accessibility_label(SharedString::from(label.clone()))
-                    .on_change(cx.listener(move |this, on: &bool, _, _| apply(this, *on))),
-            )
-            .child(
-                v_flex()
-                    .gap_0p5()
-                    .child(div().text_sm().child(SharedString::from(label)))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(palette::idle(cx))
-                            .child(SharedString::from(hint)),
-                    ),
-            )
-    }
-
-    /// 分流模式。内核认 `rule` / `global` / `direct` 这三档。
-    fn render_mode(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mode = self.state.mode.to_string();
-        let selected = MODES.iter().position(|known| *known == mode).unwrap_or(0);
-        let panel = cx.weak_entity();
-
-        h_flex()
-            .flex_shrink_0()
-            .gap_2()
-            .items_center()
-            .child(div().text_sm().child(SharedString::from(t!("clash.panel.mode"))))
-            .child(
-                TabBar::new("clash-panel-mode")
-                    .segmented()
-                    .selected_index(selected)
-                    .child(Tab::new().label(t!("clash.panel.mode_rule")))
-                    .child(Tab::new().label(t!("clash.panel.mode_global")))
-                    .child(Tab::new().label(t!("clash.panel.mode_direct")))
-                    .on_click(move |index, _, cx| {
-                        let mode = MODES.get(*index).copied().unwrap_or(MODES[0]);
-                        panel
-                            .update(cx, |panel, _| panel.send(Action::SetMode(mode.into())))
-                            .ok();
-                    }),
-            )
-    }
-
-    /// 四栏的标签条。
+    /// 四栏的导航标签条。
     fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (nodes, rules) = self.counts().unwrap_or((0, 0));
-        let panel = cx.weak_entity();
+        let active_conns = self.state.connections.len();
+        let port_text = self
+            .state
+            .mixed_port
+            .map(|p| format!("HTTP {p}"))
+            .unwrap_or_else(|| "HTTP 7890".into());
+        let tun_text = if self.state.tun { "ON" } else { "OFF" };
 
-        div()
+        let tabs = [
+            (0, "节点与代理组", Some(format!("{nodes} 节点"))),
+            (1, "分流规则", Some(format!("{rules} 规则"))),
+            (2, "配置源码 (YAML)", None),
+            (3, "实时连接与日志", Some(format!("{active_conns} 活跃"))),
+        ];
+
+        h_flex()
+            .id("clash-panel-nav-tabs")
             .flex_shrink_0()
             .w_full()
-            .px_3()
+            .h(px(48.))
+            .px_4()
+            .py_2()
+            .items_center()
+            .justify_between()
             .border_b_1()
             .border_color(cx.theme().border)
+            .bg(palette::surface(cx))
             .child(
-                TabBar::new("clash-panel-tabs")
-                    .underline()
-                    .selected_index(self.tab)
-                    .child(Tab::new().label(SharedString::from(t!(
-                        "clash.panel.tab_nodes",
-                        count => nodes,
-                    ))))
-                    .child(Tab::new().label(SharedString::from(t!(
-                        "clash.panel.tab_rules",
-                        count => rules,
-                    ))))
-                    .child(Tab::new().label(t!("clash.panel.tab_config")))
-                    .child(Tab::new().label(t!("clash.panel.tab_logs")))
-                    .on_click(move |index, _, cx| {
-                        let tab = *index;
-                        panel
-                            .update(cx, |panel, cx| {
-                                if panel.tab != tab {
-                                    panel.tab = tab;
-                                    cx.notify();
-                                }
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .children(tabs.into_iter().map(|(tab_idx, label, badge)| {
+                        let is_active = self.tab == tab_idx;
+                        let panel = cx.weak_entity();
+                        h_flex()
+                            .id(format!("clash-nav-tab-{tab_idx}"))
+                            .gap_1p5()
+                            .items_center()
+                            .px_3()
+                            .py_1p5()
+                            .rounded(px(8.))
+                            .cursor_pointer()
+                            .when(is_active, |this| {
+                                this.bg(palette::surface_strong(cx))
+                                    .border_1()
+                                    .border_color(rgb(0x3a3a40))
                             })
-                            .ok();
-                    }),
+                            .when(!is_active, |this| {
+                                this.border_1()
+                                    .border_color(gpui_kit::transparent_black())
+                                    .hover(|this| this.bg(palette::surface_strong(cx)))
+                            })
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_medium()
+                                    .text_color(if is_active {
+                                        palette::teal()
+                                    } else {
+                                        palette::idle(cx)
+                                    })
+                                    .child(label),
+                            )
+                            .when_some(badge, |this, badge_text| {
+                                this.child(
+                                    div()
+                                        .px_1p5()
+                                        .py_0p5()
+                                        .rounded_full()
+                                        .font_family("monospace")
+                                        .text_xs()
+                                        .when(is_active, |badge| {
+                                            badge
+                                                .bg(palette::teal().opacity(0.18))
+                                                .text_color(palette::teal())
+                                        })
+                                        .when(!is_active, |badge| {
+                                            badge
+                                                .bg(palette::recessed(cx))
+                                                .text_color(palette::idle(cx))
+                                        })
+                                        .child(badge_text),
+                                )
+                            })
+                            .on_click(move |_, _, cx| {
+                                panel
+                                    .update(cx, |p, cx| {
+                                        if p.tab != tab_idx {
+                                            p.tab = tab_idx;
+                                            cx.notify();
+                                        }
+                                    })
+                                    .ok();
+                            })
+                    })),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .text_xs()
+                    .font_family("monospace")
+                    .text_color(palette::idle(cx))
+                    .child(format!("Clash.Meta 端口: {port_text}"))
+                    .child("•")
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child("TUN:")
+                            .child(
+                                div()
+                                    .text_color(if self.state.tun {
+                                        palette::green()
+                                    } else {
+                                        palette::idle(cx)
+                                    })
+                                    .child(tun_text),
+                            ),
+                    ),
             )
     }
 
@@ -763,17 +1084,243 @@ impl ClashPanel {
             0 => self.render_nodes(cx),
             1 => self.render_rules(cx),
             2 => self.render_config(cx),
-            // 日志那一栏不动：运行时只留最近一百来行，代价有界；改成定高
-            // 会把长行截断，而日志恰恰是要看全的。
-            _ => div()
-                .id("clash-panel-body")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .p_3()
-                .child(self.render_logs(cx))
-                .into_any_element(),
+            _ => self.render_connections(cx),
         }
+    }
+
+    /// 实时连接与内核日志。连接列表来自 mihomo `/connections`，每次采样只
+    /// 保留当前快照；关闭动作直接交给运行时会话，避免面板自己持有 API 密钥。
+    fn render_connections(&self, cx: &mut Context<Self>) -> AnyElement {
+        let panel = cx.weak_entity();
+        let rows: Vec<AnyElement> = self
+            .state
+            .connections
+            .iter()
+            .map(|connection| self.render_connection_row(connection, &panel, cx))
+            .collect();
+        let logs: Vec<AnyElement> = self
+            .state
+            .logs
+            .iter()
+            .map(|line| {
+                div()
+                    .font_family("monospace")
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(line.clone())
+                    .into_any_element()
+            })
+            .collect();
+
+        v_flex()
+            .id("clash-panel-connections")
+            .flex_1()
+            .min_h_0()
+            .bg(palette::recessed(cx))
+            .child(
+                h_flex()
+                    .flex_shrink_0()
+                    .w_full()
+                    .px_3()
+                    .py_2()
+                    .justify_between()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(Icon::new(AppIcon::Activity).with_size(px(14.)).text_color(palette::green()))
+                            .child(div().text_sm().font_semibold().child(t!("clash.panel.connections_title")))
+                            .child(
+                                div()
+                                    .px_1p5()
+                                    .py_0p5()
+                                    .rounded(px(4.))
+                                    .bg(palette::surface(cx))
+                                    .font_family("monospace")
+                                    .text_xs()
+                                    .text_color(palette::green())
+                                    .child(SharedString::from(self.state.connections.len().to_string())),
+                            ),
+                    )
+                    .child(
+                        Button::new("clash-panel-close-connections")
+                            .ghost()
+                            .xsmall()
+                            .icon(AppIcon::Trash)
+                            .label(t!("clash.panel.close_all_connections"))
+                            .disabled(self.state.connections.is_empty() || !self.is_running())
+                            .on_click(cx.listener(|this, _, _, _| {
+                                this.send(Action::CloseConnections);
+                            })),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .id("clash-panel-connection-list")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
+                    .p_2()
+                    .gap_1()
+                    .children(if rows.is_empty() {
+                        vec![self
+                            .render_note(SharedString::from(t!("clash.panel.no_connections")), cx)]
+                    } else {
+                        rows
+                    }),
+            )
+            .child(
+                v_flex()
+                    .id("clash-panel-log-section")
+                    .h(px(176.))
+                    .flex_shrink_0()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .px_3()
+                            .py_1p5()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                h_flex()
+                                    .gap_1p5()
+                                    .items_center()
+                                    .child(Icon::new(AppIcon::Terminal).with_size(px(13.)).text_color(palette::idle(cx)))
+                                    .child(div().text_xs().font_semibold().child(t!("clash.panel.logs_title"))),
+                            )
+                            .child(
+                                Button::new("clash-panel-clear-logs")
+                                    .ghost()
+                                    .xsmall()
+                                    .label(t!("clash.panel.clear_logs"))
+                                    .disabled(self.state.logs.is_empty())
+                                    .on_click(cx.listener(|this, _, _, _| this.clear_logs())),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scrollbar()
+                            .px_3()
+                            .pb_2()
+                            .gap_0p5()
+                            .children(if logs.is_empty() {
+                                vec![self.render_note(SharedString::from(t!("clash.panel.no_logs")), cx)]
+                            } else {
+                                logs
+                            }),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_connection_row(
+        &self,
+        connection: &ConnectionSummary,
+        panel: &WeakEntity<Self>,
+        cx: &App,
+    ) -> AnyElement {
+        let id = connection.id.clone();
+        let chain = if connection.chains.is_empty() {
+            SharedString::from("DIRECT")
+        } else {
+            SharedString::from(
+                connection
+                    .chains
+                    .iter()
+                    .map(|chain| chain.as_ref())
+                    .collect::<Vec<_>>()
+                    .join(" ➔ "),
+            )
+        };
+        h_flex()
+            .id(ElementId::Name(SharedString::from(format!("clash-connection-{}", id))))
+            .w_full()
+            .min_w_0()
+            .gap_3()
+            .items_center()
+            .px_2()
+            .py_1p5()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(cx.theme().border.opacity(0.35))
+            .bg(palette::surface(cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .font_semibold()
+                    .child(connection.host.clone()),
+            )
+            .child(
+                div()
+                    .w(px(120.))
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(palette::sky())
+                    .child(connection.process.clone()),
+            )
+            .child(
+                div()
+                    .w(px(140.))
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(if connection.rule_payload.is_empty() {
+                        connection.rule.to_string()
+                    } else {
+                        format!("{} · {}", connection.rule, connection.rule_payload)
+                    })),
+            )
+            .child(
+                div()
+                    .w(px(140.))
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(palette::teal())
+                    .child(chain),
+            )
+            .child(
+                div()
+                    .w(px(120.))
+                    .text_right()
+                    .font_family("monospace")
+                    .text_xs()
+                    .text_color(palette::green())
+                    .child(SharedString::from(format!(
+                        "↑ {} ↓ {}",
+                        format_bytes(connection.upload),
+                        format_bytes(connection.download)
+                    ))),
+            )
+            .child(
+                Button::new(format!("clash-connection-close-{}", id))
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Close)
+                    .tooltip(t!("clash.panel.close_connection"))
+                    .on_click({
+                        let panel = panel.clone();
+                        move |_, _, cx| {
+                            let id = id.clone();
+                            panel
+                                .update(cx, |panel, _| panel.send(Action::CloseConnection(id)))
+                                .ok();
+                        }
+                    }),
+            )
+            .into_any_element()
     }
 
     /// 配置源码那一栏：正文原文摆出来，供"看一看，复制走"。
@@ -811,16 +1358,30 @@ impl ClashPanel {
                                 .child(SharedString::from(t!("clash.panel.config_hint"))),
                         )
                         .child(
-                            Button::new("clash-panel-copy-config")
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Copy)
-                                .label(t!("clash.panel.copy_config"))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        this.subscription.config_yaml.to_string(),
-                                    ));
-                                })),
+                            h_flex()
+                                .gap_1()
+                                .child(
+                                    Button::new("clash-panel-copy-config")
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Copy)
+                                        .label(t!("clash.panel.copy_config"))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                this.subscription.config_yaml.to_string(),
+                                            ));
+                                        })),
+                                )
+                                .child(
+                                    Button::new("clash-panel-export-config")
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(AppIcon::Download)
+                                        .label(t!("clash.panel.export_config"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.export_config(window, cx);
+                                        })),
+                                ),
                         ),
                 )
                 .child(
@@ -828,7 +1389,7 @@ impl ClashPanel {
                         .id("clash-panel-config-body")
                         .flex_1()
                         .min_h_0()
-                        .overflow_y_scroll()
+                        .overflow_y_scrollbar()
                         .p_3()
                         .bg(palette::recessed(cx))
                         .child(
@@ -840,6 +1401,39 @@ impl ClashPanel {
                 )
                 .into_any_element(),
         }
+    }
+
+    fn export_config(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(t!("clash.panel.export_prompt").into()),
+        });
+        let body = self.subscription.config_yaml.to_string();
+        let file_name = format!("clash-{}.yaml", safe_file_name(&self.subscription.name));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(dir) = paths.into_iter().next() else {
+                return;
+            };
+            let path = dir.join(file_name);
+            let result = LocalFileService::write_text(path.clone(), body).await;
+            this.update_in(cx, |_, window, cx| match result {
+                Ok(()) => window.push_notification(
+                    t!("clash.panel.exported", path => path.display()),
+                    cx,
+                ),
+                Err(error) => window.push_notification(
+                    t!("clash.panel.export_failed", error => format!("{error:#}")),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// 一栏的列表：定高、自己滚，只画看得见的那几行。两栏（节点、规则）共用
@@ -882,42 +1476,549 @@ impl ClashPanel {
             .into_any_element()
     }
 
-    /// 节点那一栏：列名表头 + 一条虚拟列表。
-    ///
-    /// 摆的是实时那一份还是正文那一份，在 [`Self::rebuild_rows`] 里就定下来了 ——
-    /// 这里只看行模型，不再现算（见模块文档）。
+    /// 节点那一栏：策略组过滤条 + 搜索/地区/协议工具栏 + 三列节点卡片虚拟网格。
     fn render_nodes(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.node_rows.is_empty() {
-            // 没东西可摆的两种原因分开说：正文读不出来，还是这份订阅里真没有。
+            if self.state.live.is_some() {
+                return v_flex()
+                    .id("clash-panel-nodes-empty")
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.render_node_toolbar(cx))
+                    .child(self.render_plain(self.render_note(
+                        SharedString::from(t!("clash.panel.no_matching_nodes")),
+                        cx,
+                    )))
+                    .into_any_element();
+            }
             return self.render_plain(match self.state.live.is_some() || self.outline.is_some() {
                 true => self.render_note(SharedString::from(t!("clash.panel.no_nodes")), cx),
                 false => self.render_unreadable(cx),
             });
         }
 
-        let live = self.state.live.is_some();
-        let sizes = self.node_sizes.clone();
+        self.render_node_grid(cx)
+    }
+
+    fn live_card_indices(&self) -> Vec<(usize, usize)> {
+        let Some(live) = &self.state.live else {
+            return Vec::new();
+        };
+        let active_group_name = self.active_group.as_ref().or_else(|| {
+            live.groups.first().map(|g| &g.name)
+        });
+        live.groups
+            .iter()
+            .enumerate()
+            .filter(|(_, group)| {
+                active_group_name.is_none_or(|active| active == &group.name)
+            })
+            .flat_map(|(group, live_group)| {
+                live_group
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, node)| self.node_matches(node))
+                    .map(move |(node, _)| (group, node))
+            })
+            .collect()
+    }
+
+    fn outline_card_indices(&self) -> Vec<(usize, usize)> {
+        let Some(outline) = &self.outline else {
+            return Vec::new();
+        };
+        let active_group_name = self.active_group.as_ref().or_else(|| {
+            outline.groups.first().map(|g| &g.name)
+        });
+        let mut indices: Vec<(usize, usize)> = Vec::new();
+        for (group_idx, group) in outline.groups.iter().enumerate() {
+            if active_group_name.is_some_and(|active| active != &group.name) {
+                continue;
+            }
+            for member_name in &group.members {
+                if let Some(node_idx) = outline.nodes.iter().position(|n| &n.name == member_name) {
+                    if self.outline_node_matches(&outline.nodes[node_idx]) {
+                        indices.push((group_idx, node_idx));
+                    }
+                }
+            }
+        }
+        if indices.is_empty() && !outline.nodes.is_empty() {
+            return outline
+                .nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, node)| self.outline_node_matches(node))
+                .map(|(node_idx, _)| (0, node_idx))
+                .collect();
+        }
+        indices
+    }
+
+    fn outline_node_matches(&self, node: &NodeSummary) -> bool {
+        let haystack = format!("{} {} {}", node.name, node.server, node.kind).to_lowercase();
+        if !self.node_query.is_empty() && !haystack.contains(&self.node_query) {
+            return false;
+        }
+        if self.selected_protocol != "ALL"
+            && !node.kind.to_lowercase().contains(&self.selected_protocol.to_lowercase())
+        {
+            return false;
+        }
+        if self.selected_region == "ALL" {
+            return true;
+        }
+        let region = match self.selected_region.as_ref() {
+            "HK" => ["🇭🇰", "香港", "hk"],
+            "JP" => ["🇯🇵", "日本", "jp"],
+            "US" => ["🇺🇸", "美国", "us"],
+            "SG" => ["🇸🇬", "新加坡", "sg"],
+            _ => ["", "", ""],
+        };
+        let name = node.name.to_lowercase();
+        region.iter().any(|mark| !mark.is_empty() && name.contains(&mark.to_lowercase()))
+    }
+
+    fn render_node_grid(&self, cx: &mut Context<Self>) -> AnyElement {
+        let is_live = self.state.live.is_some();
+        let indices = if is_live {
+            self.live_card_indices()
+        } else {
+            self.outline_card_indices()
+        };
+
+        let rows: Vec<Vec<(usize, usize)>> = indices
+            .chunks(3)
+            .map(|chunk| chunk.to_vec())
+            .collect();
+        let sizes = Rc::new(
+            rows.iter()
+                .map(|_| size(px(0.), CLASH_NODE_CARD_HEIGHT))
+                .collect::<Vec<_>>(),
+        );
+        let rows = Rc::new(rows);
         let scroll = self.node_scroll.clone();
+        let rows_for_list = rows.clone();
+
         v_flex()
-            .id("clash-panel-nodes")
+            .id("clash-panel-proxy-grid")
             .flex_1()
             .min_h_0()
-            .relative()
-            .px_2()
-            .child(self.render_node_head(live, cx))
-            .child(self.render_rows(
-                "clash-panel-node-rows",
-                sizes,
-                &scroll,
-                |panel, ix, cx| panel.render_node_row(ix, cx),
-                cx,
-            ))
+            .child(self.render_node_toolbar(cx))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .px_3()
+                    .pb_3()
+                    .relative()
+                    .child(
+                        v_virtual_list(cx.entity(), "clash-proxy-grid-rows", sizes, move |this, visible, _, cx| {
+                            visible
+                                .map(|ix| {
+                                    let row = rows_for_list.get(ix).cloned().unwrap_or_default();
+                                    let mut card_elements: Vec<AnyElement> = row
+                                        .into_iter()
+                                        .map(|(group, node)| {
+                                            if is_live {
+                                                this.render_live_card(group, node, cx)
+                                            } else {
+                                                this.render_outline_card(group, node, cx)
+                                            }
+                                        })
+                                        .collect();
+                                    while card_elements.len() < 3 {
+                                        card_elements.push(div().flex_1().min_w_0().into_any_element());
+                                    }
+                                    h_flex()
+                                        .id(("clash-proxy-grid-row", ix))
+                                        .w_full()
+                                        .h(CLASH_NODE_CARD_HEIGHT)
+                                        .flex_shrink_0()
+                                        .gap_2p5()
+                                        .children(card_elements)
+                                        .into_any_element()
+                                })
+                                .collect()
+                        })
+                        .flex_1()
+                        .min_h_0()
+                        .gap(ROW_GAP)
+                        .track_scroll(&scroll),
+                    )
+                    .scrollbar(&scroll, ScrollbarAxis::Vertical),
+            )
+            .into_any_element()
+    }
+
+    fn render_live_card(&self, group: usize, node: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(live_group) = self.state.live.as_ref().and_then(|live| live.groups.get(group)) else {
+            return div().h(CLASH_NODE_CARD_HEIGHT).into_any_element();
+        };
+        let Some(live_node) = live_group.nodes.get(node) else {
+            return div().h(CLASH_NODE_CARD_HEIGHT).into_any_element();
+        };
+        let selected = live_group.now.as_ref() == Some(&live_node.name);
+        let group_name = live_group.name.clone();
+        let node_name = live_node.name.clone();
+        let testing = self.testing_node.as_ref() == Some(&live_node.name) || self.testing_all;
+        let is_running = self.is_running();
+        let panel = cx.weak_entity();
+        let test_panel = panel.clone();
+        let test_node_name = node_name.clone();
+
+        let card = ClashNodeCard::new(
+            ("clash-proxy-card", group * 100_000 + node),
+            live_node.name.clone(),
+            live_node.kind.clone(),
+            live_node.server.clone(),
+            live_node.port.clone(),
+            live_node.delay,
+            live_node.tested,
+            testing,
+            selected,
+        );
+
+        let card = if is_running {
+            card.on_select(move |_, cx| {
+                panel
+                    .update(cx, |panel, _| {
+                        panel.send(Action::Select {
+                            group: group_name.clone(),
+                            node: node_name.clone(),
+                        });
+                    })
+                    .ok();
+            })
+            .on_test(move |_, cx| {
+                let node_name = test_node_name.clone();
+                test_panel
+                    .update(cx, |panel, _| {
+                        panel.testing_node = Some(node_name.clone());
+                        panel.send(Action::TestNodeDelay(node_name));
+                    })
+                    .ok();
+            })
+        } else {
+            card
+        };
+
+        div().flex_1().min_w_0().child(card).into_any_element()
+    }
+
+    fn render_outline_card(&self, group: usize, node: usize, _cx: &mut Context<Self>) -> AnyElement {
+        let Some(outline) = &self.outline else {
+            return div().h(CLASH_NODE_CARD_HEIGHT).into_any_element();
+        };
+        let Some(node_summary) = outline.nodes.get(node) else {
+            return div().h(CLASH_NODE_CARD_HEIGHT).into_any_element();
+        };
+        let card = ClashNodeCard::new(
+            ("clash-outline-card", group * 100_000 + node),
+            node_summary.name.clone(),
+            node_summary.kind.clone(),
+            node_summary.server.clone(),
+            node_summary.port.clone(),
+            None,
+            false,
+            false,
+            false,
+        );
+        div().flex_1().min_w_0().child(card).into_any_element()
+    }
+
+    fn render_node_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let live_groups = self
+            .state
+            .live
+            .as_ref()
+            .map(|live| {
+                live.groups
+                    .iter()
+                    .map(|group| (group.name.clone(), group.nodes.len()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let groups = if live_groups.is_empty() {
+            self.outline
+                .as_ref()
+                .map(|outline| {
+                    outline
+                        .groups
+                        .iter()
+                        .map(|group| (group.name.clone(), group.members.len()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            live_groups
+        };
+
+        let active_group_name = self.active_group.as_ref().or_else(|| {
+            if let Some(live) = &self.state.live {
+                live.groups.first().map(|g| &g.name)
+            } else if let Some(outline) = &self.outline {
+                outline.groups.first().map(|g| &g.name)
+            } else {
+                None
+            }
+        });
+
+        let selected_node = self
+            .state
+            .live
+            .as_ref()
+            .and_then(|live| {
+                if let Some(active) = active_group_name {
+                    live.groups.iter().find(|g| &g.name == active).and_then(|g| g.now.clone())
+                } else {
+                    live.groups.iter().find_map(|group| group.now.clone())
+                }
+            })
+            .or_else(|| {
+                self.outline.as_ref().and_then(|outline| {
+                    outline
+                        .groups
+                        .iter()
+                        .find_map(|group| group.members.first().cloned())
+                })
+            })
+            .unwrap_or_else(|| "—".into());
+
+        let panel = cx.weak_entity();
+        let group_chips: Vec<AnyElement> = groups
+            .into_iter()
+            .map(|(group, count)| {
+                let is_selected = active_group_name == Some(&group);
+                let panel = panel.clone();
+                let label = group.clone();
+                h_flex()
+                    .id(format!("clash-group-filter-{}", group))
+                    .gap_1p5()
+                    .items_center()
+                    .px_3()
+                    .py_1()
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .when(is_selected, |this| {
+                        this.bg(palette::teal().opacity(0.15))
+                            .border_1()
+                            .border_color(palette::teal().opacity(0.45))
+                    })
+                    .when(!is_selected, |this| {
+                        this.bg(palette::surface(cx))
+                            .border_1()
+                            .border_color(cx.theme().border.opacity(0.5))
+                            .hover(|this| this.bg(palette::surface_strong(cx)))
+                    })
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_medium()
+                            .text_color(if is_selected {
+                                palette::teal()
+                            } else {
+                                palette::idle(cx)
+                            })
+                            .child(group),
+                    )
+                    .child(
+                        div()
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded(px(4.))
+                            .bg(palette::recessed(cx))
+                            .font_family("monospace")
+                            .text_xs()
+                            .text_color(if is_selected {
+                                palette::teal()
+                            } else {
+                                palette::idle(cx)
+                            })
+                            .child(count.to_string()),
+                    )
+                    .on_click(move |_, _, cx| {
+                        panel
+                            .update(cx, |panel, cx| {
+                                panel.active_group = Some(label.clone());
+                                panel.rebuild_rows();
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .into_any_element()
+            })
+            .collect();
+
+        let regions = ["ALL", "HK", "JP", "US", "SG"];
+        let region_chips: Vec<AnyElement> = regions
+            .into_iter()
+            .map(|region| {
+                let selected = self.selected_region.as_ref() == region;
+                let panel = panel.clone();
+                Button::new(format!("clash-region-filter-{region}"))
+                    .ghost()
+                    .xsmall()
+                    .label(SharedString::from(if region == "ALL" {
+                        t!("clash.panel.all_regions").to_string()
+                    } else {
+                        region.to_owned()
+                    }))
+                    .when(selected, |button| {
+                        button.bg(palette::surface_strong(cx)).text_color(cx.theme().foreground)
+                    })
+                    .on_click(move |_, _, cx| {
+                        panel
+                            .update(cx, |panel, cx| {
+                                panel.selected_region = region.into();
+                                panel.rebuild_rows();
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .into_any_element()
+            })
+            .collect();
+
+        let protocols = [
+            ("ALL", "全部协议"),
+            ("hysteria2", "Hysteria2"),
+            ("vless", "VLESS"),
+            ("trojan", "Trojan"),
+            ("vmess", "VMess"),
+            ("ss", "Shadowsocks"),
+        ];
+        let protocol_chips: Vec<AnyElement> = protocols
+            .into_iter()
+            .map(|(protocol, label)| {
+                let selected = self.selected_protocol.as_ref() == protocol;
+                let panel = panel.clone();
+                Button::new(format!("clash-protocol-filter-{protocol}"))
+                    .ghost()
+                    .xsmall()
+                    .label(label)
+                    .when(selected, |button| {
+                        button.bg(palette::surface_strong(cx)).text_color(cx.theme().foreground)
+                    })
+                    .on_click(move |_, _, cx| {
+                        panel
+                            .update(cx, |panel, cx| {
+                                panel.selected_protocol = protocol.into();
+                                panel.rebuild_rows();
+                                cx.notify();
+                            })
+                            .ok();
+                    })
+                    .into_any_element()
+            })
+            .collect();
+
+        v_flex()
+            .flex_shrink_0()
+            .w_full()
+            .child(
+                // Sub-bar 1: Group chips + Selected node tag
+                h_flex()
+                    .w_full()
+                    .px_3()
+                    .py_2()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .bg(palette::surface(cx))
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .flex_wrap()
+                            .children(group_chips),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .flex_shrink_0()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette::idle(cx))
+                                    .child("当前选定:"),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded(px(4.))
+                                    .bg(palette::teal().opacity(0.15))
+                                    .border_1()
+                                    .border_color(palette::teal().opacity(0.4))
+                                    .text_xs()
+                                    .font_semibold()
+                                    .text_color(palette::teal())
+                                    .child(selected_node.to_string()),
+                            ),
+                    ),
+            )
+            .child(
+                // Sub-bar 2: Search input + Region pills + Protocol pills
+                h_flex()
+                    .w_full()
+                    .px_3()
+                    .py_2()
+                    .gap_2p5()
+                    .items_center()
+                    .justify_between()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .bg(palette::recessed(cx))
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .max_w(px(380.))
+                            .child(
+                                Input::new(&self.node_search)
+                                    .small()
+                                    .cleanable(true)
+                                    .prefix(Icon::new(IconName::Search).with_size(px(13.)))
+                                    .w_full(),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                h_flex()
+                                    .gap_0p5()
+                                    .p_0p5()
+                                    .rounded(px(6.))
+                                    .border_1()
+                                    .border_color(cx.theme().border.opacity(0.5))
+                                    .bg(palette::surface(cx))
+                                    .children(region_chips),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_0p5()
+                                    .p_0p5()
+                                    .rounded(px(6.))
+                                    .border_1()
+                                    .border_color(cx.theme().border.opacity(0.5))
+                                    .bg(palette::surface(cx))
+                                    .children(protocol_chips),
+                            ),
+                    ),
+            )
             .into_any_element()
     }
 
     /// 节点表的表头。延迟与地址是同一列的两个身份：**宽度一样，只有列名跟着
     /// 数据源换** —— 切一次数据源，列不该跳。对齐也跟着内容走（毫秒数贴右边，
     /// 地址贴左边）。
+    #[allow(dead_code)]
     fn render_node_head(&self, live: bool, cx: &App) -> impl IntoElement {
         let (tail, tail_right) = match live {
             true => (t!("clash.panel.col_delay"), true),
@@ -949,6 +2050,7 @@ impl ClashPanel {
     ///
     /// "这一行指向哪份数据"只在这一处查：行体收的是数据本身的引用，
     /// 一份都没有时（行模型与数据错开了才会这样）就空一行，不要慌。
+    #[allow(dead_code)]
     fn render_node_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let Some(row) = self.node_rows.get(ix).copied() else {
             return div().h(ROW_HEIGHT).into_any_element();
@@ -1010,6 +2112,7 @@ impl ClashPanel {
 
     /// 勾位：选中那颗勾。没选中的行也占这一格（是个空位），表头也有，
     /// 名字才对得齐。
+    #[allow(dead_code)]
     fn check_cell(&self, selected: bool) -> TableCell {
         cell(CHECK_WIDTH).when(selected, |this| {
             this.child(
@@ -1022,6 +2125,7 @@ impl ClashPanel {
     }
 
     /// 一个策略组（实时那一份）：组名、类型、此刻选中的是谁。
+    #[allow(dead_code)]
     fn render_live_group(&self, ix: usize, live_group: &LiveGroup, cx: &App) -> AnyElement {
         row_shell(GROUP_ROW_HEIGHT, ("clash-node-group", ix), cx)
             .child(TableRow::new().xsmall().h_full().w_full().min_w_0().children([
@@ -1061,6 +2165,7 @@ impl ClashPanel {
     }
 
     /// 组里的一个成员。点它把这一组切过去 —— 只有跑着的时候点得动。
+    #[allow(dead_code)]
     fn render_member(
         &self,
         ix: usize,
@@ -1074,6 +2179,9 @@ impl ClashPanel {
         let panel = cx.weak_entity();
         let group_name = live_group.name.clone();
         let node_name = live_node.name.clone();
+        let testing = self.testing_node.as_ref() == Some(&live_node.name);
+        let test_node = live_node.name.clone();
+        let test_panel = panel.clone();
 
         row_shell(ROW_HEIGHT, ("clash-node", ix), cx)
             .when(selected, |this| this.bg(palette::surface_strong(cx)))
@@ -1108,13 +2216,41 @@ impl ClashPanel {
                         .text_color(palette::idle(cx))
                         .child(live_node.kind.clone()),
                 ),
-                cell(TAIL_WIDTH).text_right().child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(tone)
-                        .child(delay),
+                cell(TAIL_WIDTH).child(
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .items_center()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(tone)
+                                .child(delay),
+                        )
+                        .child(
+                            Button::new(("clash-node-test", ix))
+                                .ghost()
+                                .xsmall()
+                                .icon(Icon::new(if testing {
+                                    IconName::LoaderCircle
+                                } else {
+                                    IconName::RotateCw
+                                }))
+                                .tooltip(t!("clash.panel.test_node"))
+                                .disabled(testing || !selectable)
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    let test_node = test_node.clone();
+                                    test_panel
+                                        .update(cx, |panel, _| {
+                                            panel.testing_node = Some(test_node.clone());
+                                            panel.send(Action::TestNodeDelay(test_node));
+                                        })
+                                        .ok();
+                                }),
+                        ),
                 ),
             ]))
             .into_any_element()
@@ -1122,6 +2258,7 @@ impl ClashPanel {
 
     /// 一个策略组（正文那一份）：组名、类型、几个成员。成员都有谁，下面
     /// "全部节点"那一节里列着 —— 一格里塞不下那一串。
+    #[allow(dead_code)]
     fn render_static_group(&self, ix: usize, summary: &GroupSummary, cx: &App) -> AnyElement {
         row_shell(GROUP_ROW_HEIGHT, ("clash-node-static-group", ix), cx)
             .child(TableRow::new().xsmall().h_full().w_full().min_w_0().children([
@@ -1158,6 +2295,7 @@ impl ClashPanel {
     }
 
     /// 正文里定义的一个节点：名字、协议、地址。
+    #[allow(dead_code)]
     fn render_plain_node(&self, ix: usize, summary: &NodeSummary, cx: &App) -> AnyElement {
         row_shell(ROW_HEIGHT, ("clash-node-plain", ix), cx)
             .child(TableRow::new().xsmall().h_full().w_full().min_w_0().children([
@@ -1211,15 +2349,188 @@ impl ClashPanel {
             .flex_1()
             .min_h_0()
             .relative()
-            .px_2()
-            .child(self.render_rule_head(cx))
-            .child(self.render_rows(
-                "clash-panel-rule-rows",
-                sizes,
-                &scroll,
-                |panel, ix, cx| panel.render_rule_row(ix, cx),
-                cx,
-            ))
+            .child(self.render_rule_toolbar(cx))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .px_3()
+                    .py_2()
+                    .child(self.render_rule_head(cx))
+                    .child(self.render_rows(
+                        "clash-panel-rule-rows",
+                        sizes,
+                        &scroll,
+                        |panel, ix, cx| panel.render_rule_row(ix, cx),
+                        cx,
+                    )),
+            )
+            .into_any_element()
+    }
+
+    fn test_route(&mut self, cx: &mut Context<Self>) {
+        let domain = self.test_domain.read(cx).value().trim().to_lowercase();
+        if domain.is_empty() {
+            self.route_result = None;
+            cx.notify();
+            return;
+        }
+        let result = self.rules().and_then(|rules| {
+            rules.iter().find_map(|rule| {
+                let payload = rule.payload.to_lowercase();
+                let matched = match rule.kind.as_ref() {
+                    "DOMAIN" => domain == payload,
+                    "DOMAIN-SUFFIX" => domain == payload || domain.ends_with(&format!(".{payload}")),
+                    "DOMAIN-KEYWORD" => domain.contains(&payload),
+                    "MATCH" => true,
+                    // GEO/IP 与进程规则需要内核上下文；只在有明确域名匹配时
+                    // 预览，其它类型继续找下一条规则。
+                    _ => false,
+                };
+                matched.then(|| (rule.clone(), rule.target.clone()))
+            })
+        });
+        self.route_result = result;
+        cx.notify();
+    }
+
+    fn render_rule_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
+        v_flex()
+            .flex_shrink_0()
+            .w_full()
+            .gap_2()
+            .p_3()
+            .bg(palette::surface(cx))
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .p_1p5()
+                    .rounded(px(8.))
+                    .bg(palette::recessed(cx))
+                    .border_1()
+                    .border_color(cx.theme().border.opacity(0.5))
+                    .items_center()
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .px_2()
+                            .items_center()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(palette::teal())
+                            .child(Icon::new(AppIcon::Sparkles).with_size(px(14.)))
+                            .child(t!("clash.panel.route_detector")),
+                    )
+                    .child(
+                        Input::new(&self.test_domain)
+                            .small()
+                            .cleanable(true)
+                            .font_family("monospace")
+                            .flex_1(),
+                    )
+                    .child(
+                        Button::new("clash-panel-test-route")
+                            .custom(
+                                ButtonCustomVariant::new(cx)
+                                    .color(palette::teal())
+                                    .foreground(palette::on_accent())
+                                    .hover(palette::teal().lighten(0.08))
+                                    .active(palette::teal().darken(0.08)),
+                            )
+                            .bg(palette::teal())
+                            .small()
+                            .label(t!("clash.panel.test_route"))
+                            .on_click(cx.listener(|this, _, _, cx| this.test_route(cx))),
+                    ),
+            )
+            .when_some(self.route_result.clone(), |this, (rule, target)| {
+                this.child(
+                    h_flex()
+                        .w_full()
+                        .justify_between()
+                        .items_center()
+                        .px_3()
+                        .py_2()
+                        .rounded(px(6.))
+                        .bg(palette::teal().opacity(0.1))
+                        .border_1()
+                        .border_color(palette::teal().opacity(0.35))
+                        .text_xs()
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(Icon::new(IconName::Check).with_size(px(14.)).text_color(palette::teal()))
+                                .child(
+                                    h_flex()
+                                        .gap_1p5()
+                                        .items_center()
+                                        .child(div().text_color(palette::idle(cx)).child("命中规则:"))
+                                        .child(div().font_semibold().font_family("monospace").child(rule.kind.clone()))
+                                        .child(div().font_family("monospace").text_color(palette::teal()).child(
+                                            if rule.payload.is_empty() {
+                                                SharedString::from("MATCH (全量匹配)")
+                                            } else {
+                                                rule.payload.clone()
+                                            }
+                                        )),
+                                ),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_1p5()
+                                .items_center()
+                                .child(div().text_color(palette::idle(cx)).child("走向目标:"))
+                                .child(
+                                    div()
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded(px(4.))
+                                        .bg(palette::teal().opacity(0.2))
+                                        .border_1()
+                                        .border_color(palette::teal().opacity(0.4))
+                                        .font_semibold()
+                                        .text_color(palette::teal())
+                                        .child(target),
+                                ),
+                        ),
+                )
+            })
+            .child(
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .max_w(px(360.))
+                            .child(
+                                Input::new(&self.rule_search)
+                                    .small()
+                                    .cleanable(true)
+                                    .prefix(Icon::new(IconName::Search).with_size(px(13.)))
+                                    .w_full(),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .text_xs()
+                            .items_center()
+                            .child(div().text_color(palette::idle(cx)).child("规则总计:"))
+                            .child(
+                                div()
+                                    .font_semibold()
+                                    .font_family("monospace")
+                                    .child(format!("{} 条", self.rules().map_or(0, |r| r.len()))),
+                            ),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -1235,6 +2546,7 @@ impl ClashPanel {
                     .font_semibold()
                     .text_color(palette::idle(cx))
                     .child(TableRow::new().h(HEADER_ROW_HEIGHT).children([
+                        head_cell(SharedString::from("#"), RULE_INDEX_WIDTH),
                         head_cell(SharedString::from(t!("clash.panel.col_kind")), RULE_KIND_WIDTH),
                         wide_head(SharedString::from(t!("clash.panel.col_payload"))),
                         head_cell(SharedString::from(t!("clash.panel.col_target")), TAIL_WIDTH),
@@ -1242,63 +2554,103 @@ impl ClashPanel {
             )
     }
 
-    /// 规则表的一行：类型、内容、走谁。
+    /// 规则表的一行：序号、类型、内容、走谁。
     fn render_rule_row(&self, ix: usize, cx: &App) -> AnyElement {
-        let Some(rule) = self.rules().and_then(|rules| rules.get(ix)) else {
+        let Some(source_ix) = self.filtered_rule_indices.get(ix).copied() else {
             return div().h(ROW_HEIGHT).into_any_element();
+        };
+        let Some(rule) = self.rules().and_then(|rules| rules.get(source_ix)) else {
+            return div().h(ROW_HEIGHT).into_any_element();
+        };
+
+        let payload_str = rule.payload.as_ref();
+        let payload_node = if payload_str.is_empty() {
+            div()
+                .italic()
+                .text_xs()
+                .text_color(palette::idle(cx))
+                .child("全量匹配 (Fallback)")
+                .into_any_element()
+        } else {
+            div()
+                .min_w_0()
+                .truncate()
+                .font_family("monospace")
+                .text_xs()
+                .text_color(palette::idle(cx))
+                .child(rule.payload.clone())
+                .into_any_element()
         };
 
         row_shell(ROW_HEIGHT, ("clash-rule", ix), cx)
             .child(TableRow::new().xsmall().h_full().w_full().min_w_0().children([
+                cell(RULE_INDEX_WIDTH).child(
+                    div()
+                        .w_full()
+                        .font_family("monospace")
+                        .text_xs()
+                        .text_color(palette::idle(cx))
+                        .child(format!("{}", ix + 1)),
+                ),
                 cell(RULE_KIND_WIDTH).child(
                     div()
-                        .min_w_0()
-                        .truncate()
+                        .px_1p5()
+                        .py_0p5()
+                        .rounded(px(4.))
+                        .bg(cx.theme().secondary.opacity(0.6))
+                        .border_1()
+                        .border_color(cx.theme().border.opacity(0.4))
+                        .font_family("monospace")
                         .text_xs()
                         .font_semibold()
                         .child(rule.kind.clone()),
                 ),
-                wide_cell().child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(palette::idle(cx))
-                        .child(rule.payload.clone()),
-                ),
-                cell(TAIL_WIDTH).child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(palette::teal())
-                        .child(rule.target.clone()),
-                ),
+                wide_cell().child(payload_node),
+                cell(TAIL_WIDTH).child(self.render_target_badge(&rule.target, cx)),
             ]))
             .into_any_element()
     }
 
-    /// 日志那一栏：内核自己的话。启动失败时原因就在这儿。
-    fn render_logs(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.state.logs.is_empty() {
-            return self.render_note(SharedString::from(t!("clash.panel.no_logs")), cx);
-        }
+    /// 目标走向的彩色徽标（如 DIRECT、REJECT、节点选择 等）。
+    fn render_target_badge(&self, target: &str, cx: &App) -> AnyElement {
+        let (bg, border, text): (Hsla, Hsla, Hsla) = if target.eq_ignore_ascii_case("DIRECT") {
+            (
+                gpui_kit::rgba(0x10b98126).into(),
+                gpui_kit::rgba(0x10b9814d).into(),
+                palette::green(),
+            )
+        } else if target.eq_ignore_ascii_case("REJECT") {
+            (
+                gpui_kit::rgba(0xef444426).into(),
+                gpui_kit::rgba(0xef44444d).into(),
+                palette::coral(),
+            )
+        } else if target.contains("节点") || target.contains("PROXY") || target.eq_ignore_ascii_case("GLOBAL") {
+            (
+                gpui_kit::rgba(0x06b6d426).into(),
+                gpui_kit::rgba(0x06b6d44d).into(),
+                palette::teal(),
+            )
+        } else {
+            (
+                palette::surface_strong(cx),
+                cx.theme().border.opacity(0.5),
+                cx.theme().foreground,
+            )
+        };
 
-        let rows: Vec<AnyElement> = self
-            .state
-            .logs
-            .iter()
-            .map(|line| {
-                div()
-                    .text_xs()
-                    .font_family("monospace")
-                    .text_color(palette::idle(cx))
-                    .child(line.clone())
-                    .into_any_element()
-            })
-            .collect();
-
-        v_flex().w_full().gap_0p5().children(rows).into_any_element()
+        div()
+            .px_2()
+            .py_0p5()
+            .rounded(px(4.))
+            .bg(bg)
+            .border_1()
+            .border_color(border)
+            .text_xs()
+            .font_semibold()
+            .text_color(text)
+            .child(SharedString::from(target.to_string()))
+            .into_any_element()
     }
 
     fn render_note(&self, note: SharedString, cx: &App) -> AnyElement {
@@ -1339,6 +2691,7 @@ impl ClashPanel {
 }
 
 /// 一个节点的延迟怎么画：快、还行、慢、测不通、还没测，五种。
+#[allow(dead_code)]
 fn delay_badge(node: &LiveNode, cx: &App) -> (SharedString, Hsla) {
     match node.delay {
         Some(delay) if delay < DELAY_FAST_MS => (
@@ -1434,8 +2787,7 @@ impl Render for ClashPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clash::{LiveGroup, SubscriptionRef, snapshot::LiveState};
-    use gpui_kit::AppContext as _;
+    use crate::clash::{LiveGroup, Phase, SubscriptionRef, snapshot::LiveState};
     use gpui_kit::Entity;
     use gpui_kit::component::dock::DockArea;
 

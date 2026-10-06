@@ -19,7 +19,7 @@
 //! 一次、列表快照换回新的，拉不动的记一行日志就过去 —— 一次网路抖动不该把用户所有的
 //! 流量条都推上零。
 
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc, time::Duration};
 
 use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, Sizable as _,
@@ -42,7 +42,7 @@ use gpui_kit::{
 
 use super::{GUTTER, ICON_SIZE, SidebarView, collapse_button, view_header};
 use crate::{
-    clash::{ClashSubscription, SubscriptionOutline, SubscriptionRef, runtime},
+    clash::{ClashSubscription, RuntimeState, SubscriptionOutline, SubscriptionRef, runtime},
     service::ClashSubscriptionService,
     ui::{
         dialogs::{ClashFormDialog, ClashSavedHandler},
@@ -103,7 +103,7 @@ fn usage_fraction(subscription: &ClashSubscription) -> Option<u32> {
         .saturating_add(subscription.download_bytes.unwrap_or(0));
     match total {
         0 => None,
-        _ => Some(((used as f64 / total as f64) * 100.0).round() as u32),
+        _ => Some((((used as f64 / total as f64) * 100.0).round() as u32).min(100)),
     }
 }
 
@@ -126,6 +126,7 @@ pub struct ClashView {
     panel: Option<Entity<ClashPanel>>,
     /// 此刻在跑的是哪一条订阅。读的是运行时状态，不是本地判断。
     running: Option<SubscriptionRef>,
+    runtime_state: Arc<RuntimeState>,
     /// 正在从订阅地址拉正文的那一条（按钮转圈用）。
     fetching: Option<SharedString>,
     /// 一键更新全部时转圈：全部有地址的在挨个拉。
@@ -155,6 +156,7 @@ impl ClashView {
             selected: None,
             panel: None,
             running: runtime::running_subscription(),
+            runtime_state: runtime::state(),
             fetching: None,
             fetching_all: false,
             search,
@@ -163,6 +165,7 @@ impl ClashView {
         };
         this.reload(window, cx);
         this.follow_runtime(window, cx);
+        this.follow_auto_update(window, cx);
         this
     }
 
@@ -190,6 +193,7 @@ impl ClashView {
             selected: None,
             panel: None,
             running: None,
+            runtime_state: Arc::new(RuntimeState::default()),
             fetching: None,
             fetching_all: false,
             search: cx.new(|cx| InputState::new(window, cx)),
@@ -213,13 +217,52 @@ impl ClashView {
                 };
                 let changed = this
                     .update_in(cx, |this, _, cx| {
-                        if this.running != running {
+                        if this.running != running || *this.runtime_state != *state {
                             this.running = running;
+                            this.runtime_state = state.clone();
                             cx.notify();
                         }
                     })
                     .is_err();
                 if changed {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// 每分钟检查一次自动更新频率。网络请求在服务层 runtime 上执行，
+    /// 视图只在成功后重新加载快照，不会阻塞 GPUI 的帧线程。
+    fn follow_auto_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let service = self.service.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(60))
+                    .await;
+                let result = service.refresh_due_subscriptions().await;
+                let done = this
+                    .update_in(cx, |this, window, cx| match result {
+                        Ok(updated) if !updated.is_empty() => {
+                            for subscription in &updated {
+                                if runtime::state().is_current(&subscription.id) {
+                                    runtime::send(runtime::Action::Reload(
+                                        subscription.config_yaml.clone(),
+                                    ));
+                                }
+                            }
+                            window.push_notification(
+                                t!("clash.view.auto_updated", count => updated.len()),
+                                cx,
+                            );
+                            this.reload(window, cx);
+                        }
+                        Ok(_) => {}
+                        Err(error) => log::warn!("自动更新订阅失败：{error:#}"),
+                    })
+                    .is_err();
+                if done {
                     break;
                 }
             }
@@ -298,6 +341,7 @@ impl ClashView {
                 query.is_empty()
                     || subscription.name.to_lowercase().contains(&query)
                     || subscription.tag.to_lowercase().contains(&query)
+                    || subscription.notes.to_lowercase().contains(&query)
             })
             .map(|(index, subscription)| (index, subscription.clone()))
             .collect()
@@ -360,6 +404,37 @@ impl ClashView {
             window,
             cx,
         );
+    }
+
+    fn duplicate(
+        &mut self,
+        subscription: &ClashSubscription,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let service = self.service.clone();
+        let source = subscription.clone();
+        let view = cx.weak_entity();
+        window
+            .spawn(cx, async move |cx| {
+                let outcome = service.duplicate(&source).await;
+                view.update_in(cx, |view, window, cx| match outcome {
+                    Ok(copy) => {
+                        window.push_notification(
+                            t!("clash.view.duplicated", name => copy.name.clone()),
+                            cx,
+                        );
+                        view.open_panel(&copy, window, cx);
+                        view.reload(window, cx);
+                    }
+                    Err(error) => window.push_notification(
+                        t!("clash.view.duplicate_failed", error => format!("{error:#}")),
+                        cx,
+                    ),
+                })
+                .ok();
+            })
+            .detach();
     }
 
     /// 从订阅地址拉一份新的正文回来。
@@ -702,6 +777,27 @@ impl ClashView {
                         let view = view.clone();
                         menu = menu.item(
                             PopupMenuItem::element({
+                                let label = t!("clash.view.duplicate").to_string();
+                                move |_, _| div().text_sm().child(label.clone()).into_any_element()
+                            })
+                            .on_click(move |_, window, cx| {
+                                let card = card.clone();
+                                let view = view.clone();
+                                window
+                                    .spawn(cx, async move |cx| {
+                                        let _ = view.update_in(cx, |this, window, cx| {
+                                            this.duplicate(&card, window, cx);
+                                        });
+                                    })
+                                    .detach();
+                            }),
+                        );
+                    }
+                    {
+                        let card = card.clone();
+                        let view = view.clone();
+                        menu = menu.item(
+                            PopupMenuItem::element({
                                 let label = t!("clash.view.delete").to_string();
                                 move |_, _| div().text_sm().child(label.clone()).into_any_element()
                             })
@@ -961,7 +1057,8 @@ impl ClashView {
             })
     }
 
-    /// 底部：一个主操作。
+    /// 底部：mihomo 实例读数与两个主操作。运行状态直接读运行时快照，
+    /// 不在视图里另维护一份“看起来运行中”的布尔值。
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let has_sources = self
             .subscriptions
@@ -973,6 +1070,21 @@ impl ClashView {
             .foreground(palette::on_accent())
             .hover(blue.lighten(0.08))
             .active(blue.darken(0.08));
+        let state = &self.runtime_state;
+        let running = state.phase.is_busy();
+        let version = if state.version.is_empty() {
+            "mihomo".to_owned()
+        } else {
+            state.version.to_string()
+        };
+        let mixed_port = state
+            .mixed_port
+            .map(|port| port.to_string())
+            .unwrap_or_else(|| "—".to_owned());
+        let api_port = state
+            .api_port
+            .map(|port| port.to_string())
+            .unwrap_or_else(|| "—".to_owned());
 
         div()
             .flex_shrink_0()
@@ -982,6 +1094,83 @@ impl ClashView {
             .child(
                 v_flex()
                     .gap_2()
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                h_flex()
+                                    .gap_1p5()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .size(px(7.))
+                                            .rounded_full()
+                                            .bg(if running {
+                                                palette::green()
+                                            } else {
+                                                palette::idle(cx)
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_semibold()
+                                            .child(SharedString::from("Clash.Meta (Mihomo)")),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px_1p5()
+                                    .py_0p5()
+                                    .rounded(px(4.))
+                                    .bg(palette::surface_strong(cx))
+                                    .font_family("monospace")
+                                    .text_xs()
+                                    .text_color(palette::sky())
+                                    .child(SharedString::from(version)),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .px_1p5()
+                                    .py_1()
+                                    .rounded(px(4.))
+                                    .bg(palette::recessed(cx))
+                                    .border_1()
+                                    .border_color(cx.theme().sidebar_border)
+                                    .text_xs()
+                                    .text_color(palette::idle(cx))
+                                    .child(SharedString::from(format!(
+                                        "{} {}",
+                                        t!("clash.view.mixed_port"),
+                                        mixed_port
+                                    ))),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .px_1p5()
+                                    .py_1()
+                                    .rounded(px(4.))
+                                    .bg(palette::recessed(cx))
+                                    .border_1()
+                                    .border_color(cx.theme().sidebar_border)
+                                    .text_xs()
+                                    .text_color(palette::idle(cx))
+                                    .child(SharedString::from(format!(
+                                        "{} {}",
+                                        t!("clash.view.api_port"),
+                                        api_port
+                                    ))),
+                            ),
+                    )
                     .child(
                         Button::new("clash-view-refresh-all")
                             .ghost()

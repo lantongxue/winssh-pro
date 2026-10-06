@@ -45,5 +45,5 @@ pub mod system_proxy;
 /// `crate::clash::X` 这一种写法，和 [`crate::easytier`] 那边一个规矩。
 pub use config::{GroupSummary, NodeSummary, RuleSummary, SubscriptionOutline};
 pub use runtime::{Action, Phase, RuntimeState, SubscriptionRef};
-pub use snapshot::{LiveGroup, LiveNode};
+pub use snapshot::{ConnectionSummary, LiveGroup, LiveNode};
 pub use subscription::{ClashSubscription, ClashSubscriptionDraft, FetchedBody, SubscriptionMeta};

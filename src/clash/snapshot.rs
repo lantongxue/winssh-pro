@@ -180,6 +180,74 @@ pub struct LiveNode {
     pub tested: bool,
 }
 
+/// `/connections` 的一条实时连接。它只保留详情页真正展示的字段，
+/// mihomo 不同版本增加的其它统计字段不会让界面模型跟着变。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConnectionSummary {
+    pub id: SharedString,
+    pub host: SharedString,
+    pub process: SharedString,
+    pub rule: SharedString,
+    pub rule_payload: SharedString,
+    pub chains: Vec<SharedString>,
+    pub upload: u64,
+    pub download: u64,
+}
+
+impl ConnectionSummary {
+    pub fn from_entry(entry: &Value) -> Option<Self> {
+        let id = entry.get("id").and_then(Value::as_str)?.to_owned();
+        let metadata = entry.get("metadata").and_then(Value::as_object);
+        let text = |key: &str| {
+            metadata
+                .and_then(|metadata| metadata.get(key))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let host = ["host", "destinationIP", "destinationPort"]
+            .iter()
+            .map(|key| text(key))
+            .find(|value| !value.is_empty())
+            .unwrap_or_default();
+        let process = ["process", "processPath", "sourceIP"]
+            .iter()
+            .map(|key| text(key))
+            .find(|value| !value.is_empty())
+            .unwrap_or_default();
+        let chains = entry
+            .get("chains")
+            .and_then(Value::as_array)
+            .map(|chains| {
+                chains
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(SharedString::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(Self {
+            id: id.into(),
+            host: host.into(),
+            process: process.into(),
+            rule: entry
+                .get("rule")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .into(),
+            rule_payload: entry
+                .get("rulePayload")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .into(),
+            chains,
+            upload: entry.get("upload").and_then(Value::as_u64).unwrap_or(0),
+            download: entry.get("download").and_then(Value::as_u64).unwrap_or(0),
+        })
+    }
+}
+
 /// 全部节点的事实。单独抽出来是因为策略组那一段只有名字 —— 成员到底是个什么
 /// 协议、服务器在哪儿、上次测速多少，得回 `/proxies` 的顶层那张表里查。
 ///
@@ -429,5 +497,28 @@ mod tests {
     fn an_empty_response_is_an_empty_snapshot() {
         let live = LiveState::from_api(&json!({}), None);
         assert!(live.groups.is_empty() && live.rules.is_empty());
+    }
+
+    #[test]
+    fn connection_snapshot_keeps_the_fields_used_by_the_panel() {
+        let connection = ConnectionSummary::from_entry(&json!({
+            "id": "conn/1",
+            "metadata": {
+                "host": "github.com",
+                "process": "browser",
+                "sourceIP": "127.0.0.1"
+            },
+            "rule": "DOMAIN-SUFFIX",
+            "rulePayload": "github.com",
+            "chains": ["🚀 节点选择", "香港 01"],
+            "upload": 12,
+            "download": 345
+        }))
+        .expect("connection id");
+        assert_eq!(connection.host.as_ref(), "github.com");
+        assert_eq!(connection.process.as_ref(), "browser");
+        assert_eq!(connection.chains.len(), 2);
+        assert_eq!(connection.upload, 12);
+        assert_eq!(connection.download, 345);
     }
 }

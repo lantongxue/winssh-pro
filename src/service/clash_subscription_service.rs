@@ -55,9 +55,22 @@ impl ClashSubscriptionService {
 
     /// 新建一条订阅。id 由这里分配。
     pub async fn insert(&self, draft: ClashSubscriptionDraft) -> Result<ClashSubscription> {
+        self.insert_with_meta(draft, None).await
+    }
+
+    /// 新建一条订阅，并把这次 HTTP 响应里的套餐信息一起落库。
+    ///
+    /// 表单第一次拉取时正文与 `subscription-userinfo` 是同一趟请求拿到的；
+    /// 如果只调用 [`Self::insert`]，卡片要等下一次手动更新才会出现流量与到期日。
+    pub async fn insert_with_meta(
+        &self,
+        draft: ClashSubscriptionDraft,
+        meta: Option<SubscriptionMeta>,
+    ) -> Result<ClashSubscription> {
         let stored = draft
             .into_stored()
             .map_err(|message| anyhow!("{message}"))?;
+        let meta = meta.map(|meta| meta_to_row(&meta));
         let this = self.clone();
         db::run(async move {
             let id = next_id(&stored.name);
@@ -75,6 +88,10 @@ impl ClashSubscriptionService {
                         user_agent: Set(stored.user_agent.clone()),
                         auto_update_hours: Set(stored.auto_update_hours as i32),
                         notes: Set(stored.notes.clone()),
+                        upload_bytes: Set(meta.as_ref().and_then(|meta| meta.upload_bytes).and_then(|v| i64::try_from(v).ok())),
+                        download_bytes: Set(meta.as_ref().and_then(|meta| meta.download_bytes).and_then(|v| i64::try_from(v).ok())),
+                        total_bytes: Set(meta.as_ref().and_then(|meta| meta.total_bytes).and_then(|v| i64::try_from(v).ok())),
+                        expire_date: Set(meta.as_ref().and_then(|meta| meta.expire_date.clone())),
                         created_at: Set(now.clone()),
                         updated_at: Set(now.clone()),
                         ..Default::default()
@@ -91,10 +108,13 @@ impl ClashSubscriptionService {
                 user_agent: stored.user_agent.into(),
                 auto_update_hours: stored.auto_update_hours,
                 notes: stored.notes.into(),
-                upload_bytes: None,
-                download_bytes: None,
-                total_bytes: None,
-                expire_date: None,
+                upload_bytes: meta.as_ref().and_then(|meta| meta.upload_bytes),
+                download_bytes: meta.as_ref().and_then(|meta| meta.download_bytes),
+                total_bytes: meta.as_ref().and_then(|meta| meta.total_bytes),
+                expire_date: meta
+                    .as_ref()
+                    .and_then(|meta| meta.expire_date.clone())
+                    .map(Into::into),
                 created_at: now.clone().into(),
                 updated_at: now.into(),
             })
@@ -108,9 +128,20 @@ impl ClashSubscriptionService {
         id: &str,
         draft: ClashSubscriptionDraft,
     ) -> Result<ClashSubscription> {
+        self.update_with_meta(id, draft, None).await
+    }
+
+    /// 编辑一条订阅，并可把同一趟拉取的套餐信息更新到卡片。
+    pub async fn update_with_meta(
+        &self,
+        id: &str,
+        draft: ClashSubscriptionDraft,
+        meta: Option<SubscriptionMeta>,
+    ) -> Result<ClashSubscription> {
         let stored = draft
             .into_stored()
             .map_err(|message| anyhow!("{message}"))?;
+        let meta = meta.map(|meta| meta_to_row(&meta));
         let this = self.clone();
         let id = id.to_owned();
         db::run(async move {
@@ -134,10 +165,24 @@ impl ClashSubscriptionService {
                         auto_update_hours: Set(stored.auto_update_hours as i32),
                         notes: Set(stored.notes.clone()),
                         updated_at: Set(updated_at.clone()),
+                        // 编辑表单通常没有新的套餐信息，只有这次从 URL 拉过正文时才
+                        // 写这些列；否则保留库里上一趟读到的值。
                         ..Default::default()
                     },
                 )
                 .await?;
+            if let Some(meta) = &meta {
+                this.repo
+                    .update_config(
+                        &this.db,
+                        &id,
+                        &stored.config_yaml,
+                        &updated_at,
+                        stored.user_agent.trim(),
+                        Some(meta),
+                    )
+                    .await?;
+            }
             Ok(ClashSubscription {
                 id: id.into(),
                 name: stored.name.into(),
@@ -148,14 +193,57 @@ impl ClashSubscriptionService {
                 user_agent: stored.user_agent.into(),
                 auto_update_hours: stored.auto_update_hours,
                 notes: stored.notes.into(),
-                upload_bytes: existing.upload_bytes,
-                download_bytes: existing.download_bytes,
-                total_bytes: existing.total_bytes,
-                expire_date: existing.expire_date.clone(),
+                upload_bytes: meta
+                    .as_ref()
+                    .and_then(|meta| meta.upload_bytes)
+                    .or(existing.upload_bytes),
+                download_bytes: meta
+                    .as_ref()
+                    .and_then(|meta| meta.download_bytes)
+                    .or(existing.download_bytes),
+                total_bytes: meta
+                    .as_ref()
+                    .and_then(|meta| meta.total_bytes)
+                    .or(existing.total_bytes),
+                expire_date: meta
+                    .as_ref()
+                    .and_then(|meta| meta.expire_date.clone())
+                    .map(Into::into)
+                    .or(existing.expire_date.clone()),
                 created_at: existing.created_at,
                 updated_at: updated_at.into(),
             })
         })
+        .await
+    }
+
+    /// 复制一条订阅，保留正文、来源、标签、更新策略与最近一次套餐读数，
+    /// 但分配新的 id 与创建时间。副本随后可以独立编辑或启动。
+    pub async fn duplicate(&self, subscription: &ClashSubscription) -> Result<ClashSubscription> {
+        let name = format!("{}{}", subscription.name, t!("clash.view.duplicate_suffix"));
+        self.insert_with_meta(
+            ClashSubscriptionDraft {
+                name,
+                source_url: subscription.source_url.to_string(),
+                config_yaml: subscription.config_yaml.to_string(),
+                tag: subscription.tag.to_string(),
+                color: subscription.color.to_string(),
+                user_agent: subscription.user_agent.to_string(),
+                auto_update_hours: subscription.auto_update_hours,
+                notes: subscription.notes.to_string(),
+            },
+            Some(SubscriptionMeta {
+                upload: subscription.upload_bytes,
+                download: subscription.download_bytes,
+                total: subscription.total_bytes,
+                expire: subscription
+                    .expire_date
+                    .as_ref()
+                    .and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+                    .and_then(|date| date.and_hms_opt(0, 0, 0))
+                    .map(|date| date.and_utc().timestamp() as u64),
+            }),
+        )
         .await
     }
 
@@ -212,6 +300,49 @@ impl ClashSubscriptionService {
                 }
             }
             Ok(())
+        })
+        .await
+    }
+
+    /// 更新已经到达自动刷新时间的订阅。频率为 0 或没有地址的订阅跳过；
+    /// 每条成功后立即落库，单条网络失败不会阻塞其它订阅。
+    pub async fn refresh_due(&self) -> Result<usize> {
+        Ok(self.refresh_due_subscriptions().await?.len())
+    }
+
+    /// 自动刷新并返回成功换上的订阅，供运行时在当前实例上热重载正文。
+    pub async fn refresh_due_subscriptions(&self) -> Result<Vec<ClashSubscription>> {
+        let this = self.clone();
+        db::run(async move {
+            let rows = this.repo.load_all(&this.db).await?;
+            let now = chrono::Local::now().naive_local();
+            let mut refreshed = Vec::new();
+            for row in rows {
+                let existing = stitch(row);
+                if existing.auto_update_hours == 0 || existing.source_url.trim().is_empty() {
+                    continue;
+                }
+                let due = chrono::NaiveDateTime::parse_from_str(
+                    existing.updated_at.trim(),
+                    "%Y-%m-%d %H:%M:%S",
+                )
+                .map(|updated| {
+                    now.signed_duration_since(updated)
+                        >= chrono::Duration::hours(existing.auto_update_hours as i64)
+                })
+                .unwrap_or(true);
+                if !due {
+                    continue;
+                }
+                match subscription::fetch_with_ua(existing.source_url.trim(), &existing.user_agent).await {
+                    Ok(fetched) => match this.apply_fetched(&existing, &fetched).await {
+                        Ok(subscription) => refreshed.push(subscription),
+                        Err(error) => log::warn!("自动更新 {} 失败：{error:#}", existing.name),
+                    },
+                    Err(error) => log::warn!("自动拉取 {} 失败：{error:#}", existing.name),
+                }
+            }
+            Ok(refreshed)
         })
         .await
     }
@@ -285,10 +416,11 @@ fn meta_to_row(meta: &SubscriptionMeta) -> FetchedMetaUpdate {
         upload_bytes: meta.upload,
         download_bytes: meta.download,
         total_bytes: meta.total,
-        expire_date: meta.expire.map(|secs| {
-            chrono::DateTime::from_timestamp(secs as i64, 0)
+        expire_date: meta.expire.and_then(|secs| {
+            i64::try_from(secs)
+                .ok()
+                .and_then(|secs| chrono::DateTime::from_timestamp(secs, 0))
                 .map(|t| t.format("%Y-%m-%d").to_string())
-                .unwrap_or_default()
         }),
     }
 }
@@ -332,9 +464,9 @@ fn stitch(row: clash_subscription::Model) -> ClashSubscription {
         user_agent: row.user_agent.into(),
         auto_update_hours: row.auto_update_hours.max(0) as u32,
         notes: row.notes.into(),
-        upload_bytes: row.upload_bytes.map(|v| v as u64),
-        download_bytes: row.download_bytes.map(|v| v as u64),
-        total_bytes: row.total_bytes.map(|v| v as u64),
+        upload_bytes: row.upload_bytes.and_then(|v| u64::try_from(v).ok()),
+        download_bytes: row.download_bytes.and_then(|v| u64::try_from(v).ok()),
+        total_bytes: row.total_bytes.and_then(|v| u64::try_from(v).ok()),
         expire_date: row.expire_date.map(Into::into),
         created_at: row.created_at.into(),
         updated_at: row.updated_at.into(),
@@ -473,6 +605,30 @@ mod tests {
         let all = service.load_all().await.unwrap();
         assert_eq!(all[0].tag.as_ref(), "IEPL高速");
         assert_eq!(all[0].color.as_ref(), "#3b82f6");
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_keeps_body_and_usage_but_gets_a_new_identity() {
+        let service = ClashSubscriptionService::in_memory().await.unwrap();
+        let source = service
+            .insert_with_meta(
+                draft("机场 A", USABLE),
+                Some(SubscriptionMeta {
+                    upload: Some(10),
+                    download: Some(20),
+                    total: Some(100),
+                    expire: Some(1_735_689_600),
+                }),
+            )
+            .await
+            .unwrap();
+        let copy = service.duplicate(&source).await.unwrap();
+        assert_ne!(copy.id, source.id);
+        assert!(copy.name.contains("副本") || copy.name.contains("copy"));
+        assert_eq!(copy.config_yaml, source.config_yaml);
+        assert_eq!(copy.upload_bytes, source.upload_bytes);
+        assert_eq!(copy.download_bytes, source.download_bytes);
+        assert_eq!(copy.total_bytes, source.total_bytes);
     }
 
     /// 坏正文一律进不来：导入与更新都先过一遍解读。

@@ -98,6 +98,26 @@ impl ApiClient {
         self.get("/traffic").await
     }
 
+    /// `GET /connections`。当前所有入站连接及其命中规则。
+    pub async fn connections(&self) -> Result<Value> {
+        self.get("/connections").await
+    }
+
+    /// 关闭一条实时连接。
+    pub async fn close_connection(&self, id: &str) -> Result<()> {
+        let path = format!("/connections/{}", encode(id));
+        self.send(reqwest::Method::DELETE, &path, None)
+            .await
+            .map(|_| ())
+    }
+
+    /// 关闭当前全部实时连接。
+    pub async fn close_connections(&self) -> Result<()> {
+        self.send(reqwest::Method::DELETE, "/connections", None)
+            .await
+            .map(|_| ())
+    }
+
     /// `PUT /proxies/{组名}`：把某个策略组切到 `node` 上。
     pub async fn select(&self, group: &str, node: &str) -> Result<()> {
         let path = format!("/proxies/{}", encode(group));
