@@ -598,6 +598,7 @@ impl ClashPanel {
     fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_dark = cx.theme().is_dark();
         let running = self.is_running();
+        let starting = running && self.state.phase == Phase::Starting;
         let stopping = running && self.state.phase == Phase::Stopping;
         let up = self.state.traffic_up.as_ref();
         let down = self.state.traffic_down.as_ref();
@@ -650,11 +651,17 @@ impl ClashPanel {
                                     .py_2()
                                     .rounded_full()
                                     .cursor_pointer()
-                                    .when(running, |this| {
+                                    .when(running && !starting, |this| {
                                         this.bg(rgb(0x059669))
                                             .border_1()
                                             .border_color(rgb(0x10b981).opacity(0.6))
                                             .hover(|this| this.bg(rgb(0x10b981)))
+                                    })
+                                    .when(starting, |this| {
+                                        this.bg(rgb(0xd97706))
+                                            .border_1()
+                                            .border_color(rgb(0xf59e0b).opacity(0.6))
+                                            .hover(|this| this.bg(rgb(0xf59e0b)))
                                     })
                                     .when(!running, |this| {
                                         if is_dark {
@@ -695,6 +702,8 @@ impl ClashPanel {
                                             })
                                             .child(if stopping {
                                                 "正在停止…"
+                                            } else if starting {
+                                                "正在启动…"
                                             } else if running {
                                                 "代理已运行"
                                             } else {

@@ -238,6 +238,37 @@ pub fn runtime_config(config_yaml: &str, ports: &RuntimePorts) -> Result<String>
     );
     root.insert(Value::from("tun"), Value::Mapping(tun));
 
+    // 配置 geox-url 使用高速镜像并关闭后台静默自动更新。
+    // 正文里若未配置 geox-url，mihomo 在缺少 Geo 数据库时会默认打 GitHub Releases 下载，
+    // 在国内网络环境下极易发生超时（context deadline exceeded），导致启动超过 30s 失败或内核直接崩溃退出。
+    // 使用 jsdelivr / testingcf CDN 镜像可确保毫秒级下载完毕。
+    let mut geox = match root.get("geox-url") {
+        Some(Value::Mapping(mapping)) => mapping.clone(),
+        _ => Mapping::new(),
+    };
+    fill(
+        &mut geox,
+        "geoip",
+        Value::from("https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb"),
+    );
+    fill(
+        &mut geox,
+        "geosite",
+        Value::from("https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"),
+    );
+    fill(
+        &mut geox,
+        "mmdb",
+        Value::from("https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"),
+    );
+    fill(
+        &mut geox,
+        "asn",
+        Value::from("https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb"),
+    );
+    root.insert(Value::from("geox-url"), Value::Mapping(geox));
+    fill(&mut root, "geo-auto-update", Value::from(false));
+
     serde_yaml_ng::to_string(&Value::Mapping(root))
         .context("生成 mihomo 运行配置失败")
         .map_err(Into::into)

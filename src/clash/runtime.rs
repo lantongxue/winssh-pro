@@ -50,7 +50,7 @@ use super::subscription::ClashSubscription;
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// 起进程之后，等控制口答话最多等多久。
-const START_TIMEOUT: Duration = Duration::from_secs(30);
+const START_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 等控制口时每轮之间歇多久。第一轮之前先歇一下：进程刚 fork 出来，
 /// 那一下连接必然是拒的。
@@ -363,6 +363,103 @@ pub fn instance_dir(subscription_id: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// 确保实例目录或共享目录中具备 GeoIP 数据库文件。
+///
+/// mihomo 在遇到包含 GEOIP 规则的订阅时必须读取 Geo 数据库（如 `geoip.metadb` 或 `Country.mmdb`）。
+/// 若实例目录中缺少该文件或文件残留损坏，mihomo 会在初始化时尝试打远程下载；
+/// 在网络受限时极易超时导致进程启动超过 60s 被杀，或直接由于 context deadline exceeded 崩溃退出。
+/// 此处在启动子进程前，优先从共享目录 `clash_dir` 或其它实例目录寻找有效数据库并同步，
+/// 若本地均无有效文件则尝试从高速镜像下载，确保秒级启动。
+async fn ensure_geo_databases(instance_dir: &Path) {
+    const GEO_FILES: [&str; 2] = ["geoip.metadb", "Country.mmdb"];
+    const MIN_VALID_SIZE: u64 = 1_000_000;
+
+    let shared_dir = match clash_dir() {
+        Ok(dir) => dir,
+        Err(_) => return,
+    };
+
+    let mut has_geo = false;
+    for &filename in &GEO_FILES {
+        let instance_file = instance_dir.join(filename);
+        let shared_file = shared_dir.join(filename);
+
+        // 如果实例目录下已有文件，先检查其大小；若小于最小阈值，说明是损坏残卷，直接清理
+        if instance_file.is_file() {
+            if let Ok(meta) = std::fs::metadata(&instance_file) {
+                if meta.len() >= MIN_VALID_SIZE {
+                    if !shared_file.is_file() {
+                        let _ = std::fs::copy(&instance_file, &shared_file);
+                    }
+                    has_geo = true;
+                    continue;
+                } else {
+                    let _ = std::fs::remove_file(&instance_file);
+                }
+            }
+        }
+
+        // 实例目录没有有效文件，优先从共享目录复制
+        if shared_file.is_file()
+            && let Ok(meta) = std::fs::metadata(&shared_file)
+            && meta.len() >= MIN_VALID_SIZE
+            && std::fs::copy(&shared_file, &instance_file).is_ok()
+        {
+            has_geo = true;
+            continue;
+        }
+
+        // 尝试从其它旧实例目录中查找有效文件并同步
+        if let Ok(entries) = std::fs::read_dir(shared_dir.join("instances")) {
+            for entry in entries.flatten() {
+                let candidate = entry.path().join(filename);
+                if candidate.is_file()
+                    && let Ok(meta) = std::fs::metadata(&candidate)
+                    && meta.len() >= MIN_VALID_SIZE
+                {
+                    let _ = std::fs::copy(&candidate, &instance_file);
+                    let _ = std::fs::copy(&candidate, &shared_file);
+                    has_geo = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if has_geo {
+        return;
+    }
+
+    // 本地任何目录均无有效 GeoIP 数据库，通过高速镜像预下载一份
+    const GEOIP_URLS: [&str; 2] = [
+        "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb",
+        "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb",
+    ];
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        .build();
+
+    let Ok(client) = client else { return };
+
+    for url in GEOIP_URLS {
+        log::info!("正在从高速镜像预下载 GeoIP 数据库：{url}");
+        if let Ok(response) = client.get(url).send().await
+            && response.status().is_success()
+            && let Ok(bytes) = response.bytes().await
+            && bytes.len() as u64 >= MIN_VALID_SIZE
+        {
+            let shared_file = shared_dir.join("geoip.metadb");
+            let instance_file = instance_dir.join("geoip.metadb");
+            let _ = std::fs::write(&shared_file, &bytes);
+            let _ = std::fs::write(&instance_file, &bytes);
+            log::info!("GeoIP 数据库预下载完成（{} 字节）", bytes.len());
+            break;
+        }
+    }
+}
+
 /// 把一条订阅的运行痕迹扫掉：它的数据目录（那份现写的 `config.yaml`、内核的
 /// `cache.db` 与 geo 数据）。
 ///
@@ -590,6 +687,9 @@ fn finish(token: u64, outcome: Option<String>) {
         log::warn!("还原系统代理失败：{error:#}");
     }
     *current() = None;
+    if let Some(reason) = &outcome {
+        report(reason.clone());
+    }
     publish(|state| {
         state.system_proxy = false;
         state.tun = false;
@@ -631,6 +731,7 @@ async fn run(
         Ok(dir) => dir,
         Err(error) => return Some(format!("{error:#}")),
     };
+    ensure_geo_databases(&dir).await;
 
     let ports = RuntimePorts {
         mixed_port: free_port()?,

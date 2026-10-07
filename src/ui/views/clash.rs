@@ -1071,7 +1071,6 @@ impl ClashView {
             .hover(blue.lighten(0.08))
             .active(blue.darken(0.08));
         let state = &self.runtime_state;
-        let running = state.phase.is_busy();
         let version = if state.version.is_empty() {
             "mihomo".to_owned()
         } else {
@@ -1107,10 +1106,10 @@ impl ClashView {
                                         div()
                                             .size(px(7.))
                                             .rounded_full()
-                                            .bg(if running {
-                                                palette::green()
-                                            } else {
-                                                palette::idle(cx)
+                                            .bg(match state.phase {
+                                                crate::clash::Phase::Running => palette::green(),
+                                                crate::clash::Phase::Starting | crate::clash::Phase::Stopping => gpui_kit::rgb(0xf59e0b).into(),
+                                                _ => palette::idle(cx),
                                             }),
                                     )
                                     .child(
