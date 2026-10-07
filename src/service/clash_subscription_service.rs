@@ -54,6 +54,7 @@ impl ClashSubscriptionService {
     }
 
     /// 新建一条订阅。id 由这里分配。
+    #[allow(dead_code)]
     pub async fn insert(&self, draft: ClashSubscriptionDraft) -> Result<ClashSubscription> {
         self.insert_with_meta(draft, None).await
     }
@@ -123,6 +124,7 @@ impl ClashSubscriptionService {
     }
 
     /// 改一条订阅。正文没变时不动 `updated_at` —— 改个名字不算更新过了。
+    #[allow(dead_code)]
     pub async fn update(
         &self,
         id: &str,
@@ -306,6 +308,7 @@ impl ClashSubscriptionService {
 
     /// 更新已经到达自动刷新时间的订阅。频率为 0 或没有地址的订阅跳过；
     /// 每条成功后立即落库，单条网络失败不会阻塞其它订阅。
+    #[allow(dead_code)]
     pub async fn refresh_due(&self) -> Result<usize> {
         Ok(self.refresh_due_subscriptions().await?.len())
     }
@@ -405,6 +408,7 @@ impl ClashSubscriptionService {
 
     /// 这座库的那条连接。只给测试用。
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn connection(&self) -> DatabaseConnection {
         self.db.clone()
     }

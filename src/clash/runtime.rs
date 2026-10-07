@@ -87,10 +87,12 @@ pub enum Action {
         node: SharedString,
     },
     /// 把一个组里的节点测一遍速。
+    #[allow(dead_code)]
     TestDelay(SharedString),
     /// 只测一个节点。列表里那一行自己那颗按钮走的是它。
     TestNodeDelay(SharedString),
     /// 立刻重采一次（手动刷新）。
+    #[allow(dead_code)]
     Refresh,
     /// 一轮测速在独立任务里跑完了：重采一次节点表，并把进行中的测速计数减一。
     /// 是内部指令，界面不该发它。
@@ -613,7 +615,7 @@ async fn run(
     subscription: &ClashSubscription,
     _token: u64,
     input_tx: mpsc::UnboundedSender<Action>,
-    mut input_rx: mpsc::UnboundedReceiver<Action>,
+    input_rx: mpsc::UnboundedReceiver<Action>,
     stop: Arc<tokio::sync::Notify>,
 ) -> Option<String> {
     // 检查并准备 mihomo 可执行文件（若本地未找到则按系统架构自动下载并解压）

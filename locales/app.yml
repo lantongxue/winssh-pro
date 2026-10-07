@@ -1551,6 +1551,7 @@ clash.runtime.no_binary:
   zh-CN: "未找到 mihomo 内核（%{name}）。"
 clash.runtime.downloading:
   en: "Downloading mihomo core (%{asset})..."
+  zh-CN: "正在下载 mihomo 内核（%{asset}）..."
 clash.runtime.download_failed:
   en: "Failed to download mihomo core: %{error}"
   zh-CN: "下载 mihomo 内核失败：%{error}"
@@ -1597,6 +1598,9 @@ clash.download.downloading_title:
 clash.download.downloading_subtitle:
   en: "Downloading core archive..."
   zh-CN: "正在下载内核压缩包并准备解压..."
+clash.download.connecting:
+  en: "Connecting to GitHub Releases..."
+  zh-CN: "正在连接 GitHub Releases..."
 clash.download.unpacking:
   en: "Unpacking and configuring binary permissions..."
   zh-CN: "下载完成，正在解压并配置内核文件..."

@@ -44,6 +44,7 @@ const REPORT_INTERVAL: Duration = Duration::from_millis(120);
 
 /// 下载进度或状态事件。
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum DownloadEvent {
     /// 开始下载某个 release 资源。
     Start { asset: String, url: String },
