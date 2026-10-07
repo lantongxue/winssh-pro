@@ -24,6 +24,9 @@ const API_TIMEOUT: Duration = Duration::from_secs(5);
 /// 拉一份订阅最多等多久。跨境线路慢是常态。
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// 流式端点（`/traffic`）一条连接最多挂多久。到点断开由调用方重连。
+const STREAM_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
 /// 全进程共用一个 HTTP 客户端（连接池、TLS 会话都在它身上）。
 ///
 /// `no_proxy()` 是必须的：我们**自己**就是改系统代理的那一方
@@ -92,10 +95,47 @@ impl ApiClient {
             .map(|_| ())
     }
 
-    /// `GET /traffic`。平台对流量的现量（每秒字节数） —— `{"up": ..., "down": ...}`。
-    /// 这个端点回的是流（`Stream`），但首份 JSON 就是当前的速录，直接取下来。
-    pub async fn traffic(&self) -> Result<Value> {
-        self.get("/traffic").await
+    /// `GET /traffic`：持续消费内核的实时吞吐流，每来一份 `{"up": ..., "down": ...}`
+    /// （字节每秒）就交给 `on_sample`。
+    ///
+    /// 这个端点**不是**一问一答：内核每秒往连接里推一行 JSON，永不收尾。
+    /// 当普通 GET 去读正文只会一直等到超时 —— 所以它得自己一份循环，
+    /// 由调用方放进独立任务里跑，**别占着会话循环**。流断了（内核重载、
+    /// 超时）就带着错误返回，由调用方决定要不要重连。
+    pub async fn traffic_stream(&self, mut on_sample: impl FnMut(Value)) -> Result<()> {
+        // 请求级超时盖过客户端上那个 30 秒的总超时：流本来就是长连接。
+        let mut response = self
+            .request(reqwest::Method::GET, "/traffic")
+            .timeout(STREAM_TIMEOUT)
+            .send()
+            .await
+            .with_context(|| t!("clash.api.unreachable", path => "/traffic").to_string())?;
+        if !response.status().is_success() {
+            return Err(anyhow!("/traffic: {}", response.status()));
+        }
+        // 一行一份样本，但块的边界与行的边界不对齐：先攒进缓冲，凑齐整行再解。
+        let mut pending: Vec<u8> = Vec::new();
+        while let Some(chunk) = response.chunk().await.context("读 /traffic 流失败")? {
+            pending.extend_from_slice(&chunk);
+            while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = pending.drain(..=end).collect();
+                if let Ok(sample) = serde_json::from_slice::<Value>(&line) {
+                    on_sample(sample);
+                }
+            }
+            // 没带换行收尾的版本：整块恰好是一份完整 JSON 就算一份。
+            if !pending.is_empty()
+                && let Ok(sample) = serde_json::from_slice::<Value>(&pending)
+            {
+                pending.clear();
+                on_sample(sample);
+            }
+            // 兜底：一直拼不成 JSON 说明对面发的不是我们认识的东西，别无限攒。
+            if pending.len() > 64 * 1024 {
+                pending.clear();
+            }
+        }
+        Ok(())
     }
 
     /// `GET /connections`。当前所有入站连接及其命中规则。

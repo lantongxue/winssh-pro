@@ -92,6 +92,9 @@ pub enum Action {
     TestNodeDelay(SharedString),
     /// 立刻重采一次（手动刷新）。
     Refresh,
+    /// 一轮测速在独立任务里跑完了：重采一次节点表，并把进行中的测速计数减一。
+    /// 是内部指令，界面不该发它。
+    DelayTestDone,
     /// 测试正文里能看到的全部策略组。
     TestDelayAll,
     /// 关闭一条实时连接。
@@ -171,6 +174,9 @@ pub struct RuntimeState {
     pub logs: Vec<SharedString>,
     /// 当前活跃连接。
     pub connections: Vec<ConnectionSummary>,
+    /// 此刻还在跑的测速轮数。界面拿它决定"测速中"那个状态何时撤掉 ——
+    /// 测速在独立任务里跑，不再占着会话循环，不能靠"状态变了"来猜它完没完。
+    pub delay_tests: u32,
     /// 最近一次没办成的事。
     pub error: Option<ErrorReport>,
 }
@@ -191,6 +197,7 @@ impl Default for RuntimeState {
             traffic_down: SharedString::default(),
             logs: Vec::new(),
             connections: Vec::new(),
+            delay_tests: 0,
             error: None,
         }
     }
@@ -230,7 +237,9 @@ pub fn start(subscription: &ClashSubscription) -> Result<()> {
     if subscription.config_yaml.trim().is_empty() {
         bail!(t!("clash.runtime.empty_config"));
     }
-    let binary = binary_path()?;
+    if binary_path().is_err() {
+        bail!(t!("clash.runtime.no_binary", name => MIHOMO_EXE));
+    }
     // 换一条订阅就是换一个端口，而系统代理指的是**上一个实例那个口** ——
     // 不还回去的话，那个口马上没人听，用户的网就断在那儿。所以开新的之前
     // 先把系统代理收掉；开关也跟着回到"关"，用户在新实例上再拨一次，
@@ -243,12 +252,13 @@ pub fn start(subscription: &ClashSubscription) -> Result<()> {
     }
     // 已经在跑的（哪怕是同一条）先收掉：一个实例换一次订阅，收干净再起。
     stop_and_wait();
-    log::info!("启动 mihomo：{}", binary.display());
 
     let token = next_token();
     let (input_tx, input_rx) = mpsc::unbounded_channel();
+    let stop = Arc::new(tokio::sync::Notify::new());
     *current() = Some(Running {
-        input: input_tx,
+        input: input_tx.clone(),
+        stop: stop.clone(),
         pid: None,
         token,
     });
@@ -266,21 +276,31 @@ pub fn start(subscription: &ClashSubscription) -> Result<()> {
         state.logs.clear();
         state.system_proxy = false;
         state.tun = false;
+        state.delay_tests = 0;
+        state.traffic_up = SharedString::default();
+        state.traffic_down = SharedString::default();
     });
 
     let subscription = subscription.clone();
     std::thread::Builder::new()
         .name("clash-mihomo".to_owned())
-        .spawn(move || session(subscription, binary, token, input_rx))
+        .spawn(move || session(subscription, token, input_tx, input_rx, stop))
         .map_err(|error| anyhow!("启动 mihomo 会话线程失败：{error}"))?;
     Ok(())
 }
 
 /// 收掉。没在跑就什么也不做。
+///
+/// 先摇**抢占铃**再排 [`Action::Stop`]：会话线程不管此刻正卡在哪一步都会被
+/// 当场打断去收尾；界面也立刻看到"正在停止"，不必等线程醒过来。
 pub fn stop() {
-    let input = current().as_ref().map(|running| running.input.clone());
-    if let Some(input) = input {
+    let target = current()
+        .as_ref()
+        .map(|running| (running.input.clone(), running.stop.clone()));
+    if let Some((input, stop)) = target {
+        stop.notify_one();
         let _ = input.send(Action::Stop);
+        stopping();
     }
 }
 
@@ -391,6 +411,14 @@ pub fn binary_path() -> Result<PathBuf> {
         }
     }
 
+    if let Ok(dir) = clash_dir() {
+        for candidate in [dir.join("bin").join(name), dir.join(name)] {
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+
     #[cfg(debug_assertions)]
     for relative in DEV_CANDIDATES {
         let candidate = Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
@@ -403,9 +431,9 @@ pub fn binary_path() -> Result<PathBuf> {
 }
 
 #[cfg(windows)]
-const MIHOMO_EXE: &str = "mihomo.exe";
+pub const MIHOMO_EXE: &str = "mihomo.exe";
 #[cfg(not(windows))]
-const MIHOMO_EXE: &str = "mihomo";
+pub const MIHOMO_EXE: &str = "mihomo";
 
 /// 开发时到哪儿去找那份二进制（用户自己放进来的，见 `third_party/mihomo/`）。
 #[cfg(debug_assertions)]
@@ -424,6 +452,11 @@ const DEV_CANDIDATES: [&str; 3] = [
 /// 输入通道抹成空，那颗"停止"从此按不动。
 struct Running {
     input: mpsc::UnboundedSender<Action>,
+    /// 点停时**抢占**用的铃：会话线程在等的任何一件事（下载、等控制口、
+    /// 一轮采样、一条慢指令）都会被它打断。光靠 `input` 里排一条
+    /// [`Action::Stop`] 不够 —— 队伍前面有活儿在跑的话，它要等到那件事做完
+    /// 才轮得到。
+    stop: Arc<tokio::sync::Notify>,
     pid: Option<u32>,
     token: u64,
 }
@@ -517,9 +550,10 @@ fn stop_and_wait() {
 /// 会话线程：起进程、看住它、收尾。
 fn session(
     subscription: ClashSubscription,
-    binary: PathBuf,
     token: u64,
+    input_tx: mpsc::UnboundedSender<Action>,
     input_rx: mpsc::UnboundedReceiver<Action>,
+    stop: Arc<tokio::sync::Notify>,
 ) {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -532,7 +566,7 @@ fn session(
             return;
         }
     };
-    let outcome = runtime.block_on(run(&subscription, &binary, input_rx));
+    let outcome = runtime.block_on(run(&subscription, token, input_tx, input_rx, stop));
     runtime.shutdown_timeout(SHUTDOWN_GRACE);
     finish(token, outcome);
 }
@@ -557,6 +591,9 @@ fn finish(token: u64, outcome: Option<String>) {
     publish(|state| {
         state.system_proxy = false;
         state.tun = false;
+        state.delay_tests = 0;
+        state.traffic_up = SharedString::default();
+        state.traffic_down = SharedString::default();
         state.phase = match outcome {
             Some(reason) => Phase::Failed(reason.into()),
             None => Phase::Idle,
@@ -574,9 +611,20 @@ fn finish(token: u64, outcome: Option<String>) {
 /// 会话主体。返回 `Some(原因)` 就是出了事。
 async fn run(
     subscription: &ClashSubscription,
-    binary: &Path,
-    input_rx: mpsc::UnboundedReceiver<Action>,
+    _token: u64,
+    input_tx: mpsc::UnboundedSender<Action>,
+    mut input_rx: mpsc::UnboundedReceiver<Action>,
+    stop: Arc<tokio::sync::Notify>,
 ) -> Option<String> {
+    // 检查并准备 mihomo 可执行文件（若本地未找到则按系统架构自动下载并解压）
+    let binary = match binary_path() {
+        Ok(path) => path,
+        Err(err) => {
+            log::error!("未找到 mihomo 内核：{err:#}");
+            return Some(format!("{err:#}"));
+        }
+    };
+    log::info!("启动 mihomo：{}", binary.display());
     let dir = match instance_dir(&subscription.id) {
         Ok(dir) => dir,
         Err(error) => return Some(format!("{error:#}")),
@@ -605,7 +653,7 @@ async fn run(
     // 子进程：`-d` 是它的数据目录（cache.db、geo 数据都落这儿），`-f` 是那份
     // 现写的配置。`CREATE_NO_WINDOW` 是必须的 —— 少了它，一个黑框会跟着弹出来，
     // 而且会一直挂在那儿（见 `crate::service::local_file_service` 里同一处讲究）。
-    let mut command = tokio::process::Command::new(binary);
+    let mut command = tokio::process::Command::new(&binary);
     command
         .arg("-d")
         .arg(&dir)
@@ -645,7 +693,22 @@ async fn run(
 
     // 正文里那份顺序：界面照它摆节点与策略组（见 [`Session::publish_live`]）。
     let outline = config::outline(&subscription.config_yaml).ok();
-    let outcome = supervise(&mut child, api.clone(), &dir, ports, logs, outline, input_rx).await;
+
+    // 实时吞吐是条永不收尾的流，单独一个任务消费（见 [`ApiClient::traffic_stream`]），
+    // 不占会话循环。
+    let traffic_task = tokio::spawn(stream_traffic(api.clone()));
+
+    // `biased`：抢占铃优先。点了停止就不再等任何一件在飞的事，
+    // supervise 的 future 被丢掉（里面在等的 HTTP 随之取消），直接去收子进程。
+    let outcome = tokio::select! {
+        biased;
+        _ = stop.notified() => {
+            stopping();
+            None
+        }
+        outcome = supervise(&mut child, api.clone(), &dir, ports, logs, outline, input_tx, input_rx) => outcome,
+    };
+    traffic_task.abort();
 
     // 收尾：子进程先收掉。`kill` 在它已经退出时是空操作。
     let _ = child.kill().await;
@@ -656,10 +719,52 @@ async fn run(
     outcome
 }
 
+/// 在独立任务里把内核的吞吐流一份份发布到状态里。流断了（内核还没起来、
+/// 被重载）就隔一秒重连，直到任务被中止。
+async fn stream_traffic(api: Arc<ApiClient>) {
+    loop {
+        if let Err(error) = api.traffic_stream(publish_traffic).await {
+            log::debug!("吞吐流断了：{error:#}");
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// 采一份实时吞吐（上行 / 下行，字节每秒）写进状态。
+///
+/// 和上一份一样就不发：流每秒一份，而每次发布都要克隆整份状态
+/// （节点表、连接表都在里面），没变化的时候不值得。
+fn publish_traffic(traffic: Value) {
+    let up: SharedString = traffic
+        .get("up")
+        .and_then(Value::as_u64)
+        .map(format_bytes_per_sec)
+        .unwrap_or_default()
+        .into();
+    let down: SharedString = traffic
+        .get("down")
+        .and_then(Value::as_u64)
+        .map(format_bytes_per_sec)
+        .unwrap_or_default()
+        .into();
+    {
+        let current = state();
+        if current.traffic_up == up && current.traffic_down == down {
+            return;
+        }
+    }
+    publish(|state| {
+        state.traffic_up = up;
+        state.traffic_down = down;
+    });
+}
+
 /// 一次运行里那几样不随采样变的东西：控制口、数据目录、端口、日志，外加正文
 /// 解读出来的那份**顺序**（见 [`Session::publish_live`]）。
 struct Session {
     api: Arc<ApiClient>,
+    /// 会话自己的指令入口：独立任务（测速）跑完后往里回送指令。
+    input: mpsc::UnboundedSender<Action>,
     dir: PathBuf,
     ports: RuntimePorts,
     logs: Logs,
@@ -695,27 +800,6 @@ impl Session {
             if let Some(mode) = mode {
                 state.mode = mode.into();
             }
-        });
-    }
-
-    /// 采一份实时吞吐（上行 / 下行，字节每秒）写进状态。
-    ///
-    /// 内核的回数不是每次都在（`/traffic` 与 `/proxies` 是两份独立的采样），
-    /// 拿不到就留白 —— 一次本机 HTTP 抖动不该让界面顶上写个"0 B/s"骗人。
-    fn publish_traffic(&self, traffic: &Value) {
-        let up = traffic
-            .get("up")
-            .and_then(Value::as_u64)
-            .map(format_bytes_per_sec)
-            .unwrap_or_default();
-        let down = traffic
-            .get("down")
-            .and_then(Value::as_u64)
-            .map(format_bytes_per_sec)
-            .unwrap_or_default();
-        publish(|state| {
-            state.traffic_up = up.into();
-            state.traffic_down = down.into();
         });
     }
 
@@ -773,10 +857,12 @@ async fn supervise(
     ports: RuntimePorts,
     logs: Logs,
     outline: Option<SubscriptionOutline>,
+    input_tx: mpsc::UnboundedSender<Action>,
     mut input_rx: mpsc::UnboundedReceiver<Action>,
 ) -> Option<String> {
     let mut session = Session {
         api,
+        input: input_tx,
         dir: dir.to_path_buf(),
         ports,
         logs,
@@ -851,18 +937,8 @@ async fn supervise(
     // 再开始按拍子问节点表。
     let mut rules = api.rules().await.ok();
     if let Ok(nodes) = api.proxies().await {
-        let mode = api.configs().await.ok().and_then(|configs| {
-            configs
-                .get("mode")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        });
+        let mode = api.configs().await.ok().as_ref().and_then(mode_of);
         session.publish_live(&nodes, rules.as_ref(), mode);
-        // 起来的第一下就把吞吐也采一份：不然顶栏上要等第一个拍子（两秒）才
-        // 有东西 —— 那两秒里整个顶栏都该是已经起来的样子。
-        if let Ok(traffic) = api.traffic().await {
-            session.publish_traffic(&traffic);
-        }
         if let Ok(connections) = api.connections().await {
             session.publish_connections(&connections);
         }
@@ -894,12 +970,9 @@ async fn supervise(
                     if rules.is_none() {
                         rules = api.rules().await.ok();
                     }
-                    session.publish_live(&nodes, rules.as_ref(), None);
-                }
-                // 顺带采一次吞吐。这是**本机**的 HTTP，不算多：每两秒多一次
-                // 本地调用，换来顶栏上那个一直在走的速率条。
-                if let Ok(traffic) = api.traffic().await {
-                    session.publish_traffic(&traffic);
+                    // 模式也跟着采：重载配置、别的客户端改了它，界面都该跟上。
+                    let mode = api.configs().await.ok().as_ref().and_then(mode_of);
+                    session.publish_live(&nodes, rules.as_ref(), mode);
                 }
                 if let Ok(connections) = api.connections().await {
                     session.publish_connections(&connections);
@@ -907,6 +980,14 @@ async fn supervise(
             }
         }
     }
+}
+
+/// 从 `GET /configs` 的回数里读出分流模式。
+fn mode_of(configs: &Value) -> Option<String> {
+    configs
+        .get("mode")
+        .and_then(Value::as_str)
+        .map(|mode| mode.to_lowercase())
 }
 
 /// 办一道指令。`Some(原因)` 是"这一下把这个实例弄没了"。
@@ -925,6 +1006,17 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
                 None
             }
         },
+        Action::DelayTestDone => {
+            match session.api.proxies().await {
+                Ok(nodes) => session.publish_live(&nodes, None, None),
+                Err(error) => {
+                    report(t!("clash.runtime.refresh_failed", error => format!("{error:#}")))
+                }
+            }
+            // 数据先出、计数后落：界面看到计数归零时，新数字已经在了。
+            publish(|state| state.delay_tests = state.delay_tests.saturating_sub(1));
+            None
+        }
         Action::TestDelayAll => {
             let groups = session
                 .outline
@@ -936,14 +1028,17 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
                     })
                 })
                 .unwrap_or_default();
-            for group in groups {
-                if let Err(error) = session.api.group_delay(&group, TEST_URL, TEST_TIMEOUT).await {
-                    log::info!("策略组 {group} 测速没通：{error:#}");
+            publish(|state| state.delay_tests += 1);
+            let api = session.api.clone();
+            let input = session.input.clone();
+            tokio::spawn(async move {
+                for group in groups {
+                    if let Err(error) = api.group_delay(&group, TEST_URL, TEST_TIMEOUT).await {
+                        log::info!("策略组 {group} 测速没通：{error:#}");
+                    }
                 }
-            }
-            if let Ok(nodes) = session.api.proxies().await {
-                session.publish_live(&nodes, None, None);
-            }
+                let _ = input.send(Action::DelayTestDone);
+            });
             None
         }
         Action::CloseConnection(id) => {
@@ -1024,44 +1119,35 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
             None
         }
         Action::TestDelay(group) => {
-            // 一个组里的节点要一个一个去连，这一下会等几秒（见 [`TEST_TIMEOUT`]）。
-            // 等的时候这一条指令占着会话循环，别的那几道排队 —— 队列里的
-            // 取消指令也一样，所以点完"停止"最多晚几秒才生效。
-            match session.api.group_delay(&group, TEST_URL, TEST_TIMEOUT).await {
-                Ok(()) => match session.api.proxies().await {
-                    Ok(nodes) => session.publish_live(&nodes, None, None),
-                    Err(error) => {
-                        report(t!("clash.runtime.refresh_failed", error => format!("{error:#}")))
-                    }
-                },
-                Err(error) => {
-                    report(t!("clash.runtime.delay_failed", error => format!("{error:#}")))
+            // 一个组里的节点要一个一个去连，要等几秒（见 [`TEST_TIMEOUT`]）。
+            // 放进独立任务：占着会话循环的话，等的这几秒里切模式、选节点都得排队。
+            // 测完回送一条 `Refresh` 让界面重采。
+            publish(|state| state.delay_tests += 1);
+            let api = session.api.clone();
+            let input = session.input.clone();
+            tokio::spawn(async move {
+                if let Err(error) = api.group_delay(&group, TEST_URL, TEST_TIMEOUT).await {
+                    report(t!("clash.runtime.delay_failed", error => format!("{error:#}")));
                 }
-            }
+                let _ = input.send(Action::DelayTestDone);
+            });
             None
         }
         Action::TestNodeDelay(node) => {
-            // 单测一个节点：比整组快得多（内核只连那一个），但也是阻塞这一条
-            // 会话循环的几秒。
-            match session.api.node_delay(&node, TEST_URL, TEST_TIMEOUT).await {
-                // 测通了：内核把结果记进那一份历史，重采一次就有数字了。
-                Ok(_) => match session.api.proxies().await {
-                    Ok(nodes) => session.publish_live(&nodes, None, None),
-                    Err(error) => {
-                        report(t!("clash.runtime.refresh_failed", error => format!("{error:#}")))
-                    }
-                },
-                Err(error) => {
-                    // 这里**不弹通知**：一个节点不通是常事（机场的死节点、
-                    // 跨境线路临时抽风），弹一次通知就是一次打扰。界面上
-                    // 那个数字会变成"超时"，那才是用户要的信息。
+            // 单测一个节点：比整组快得多（内核只连那一个），同样放进独立任务。
+            publish(|state| state.delay_tests += 1);
+            let api = session.api.clone();
+            let input = session.input.clone();
+            tokio::spawn(async move {
+                // 这里**不弹通知**：一个节点不通是常事（机场的死节点、跨境线路
+                // 临时抽风），弹一次通知就是一次打扰。界面上那个数字会变成
+                // "超时"，那才是用户要的信息。
+                if let Err(error) = api.node_delay(&node, TEST_URL, TEST_TIMEOUT).await {
                     log::info!("节点 {node} 测速没通：{error:#}");
-                    // 结果还是要采一次：内核可能已经把这一笔记成不通了。
-                    if let Ok(nodes) = session.api.proxies().await {
-                        session.publish_live(&nodes, None, None);
-                    }
                 }
-            }
+                // 通不通结果都要重采一次：内核已经把这一笔记进历史了。
+                let _ = input.send(Action::DelayTestDone);
+            });
             None
         }
         Action::Reload(config_yaml) => {

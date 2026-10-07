@@ -36,6 +36,7 @@
 
 pub mod api;
 pub mod config;
+pub mod downloader;
 pub mod runtime;
 pub mod snapshot;
 pub mod subscription;
@@ -44,6 +45,8 @@ pub mod system_proxy;
 /// 界面要的那几样，从各子模块抬到这一层 —— 外边（`src/ui/`）只认
 /// `crate::clash::X` 这一种写法，和 [`crate::easytier`] 那边一个规矩。
 pub use config::{GroupSummary, NodeSummary, RuleSummary, SubscriptionOutline};
+#[allow(unused_imports)]
+pub use downloader::ensure_binary;
 pub use runtime::{Action, Phase, RuntimeState, SubscriptionRef};
 pub use snapshot::{ConnectionSummary, LiveGroup, LiveNode};
 pub use subscription::{ClashSubscription, ClashSubscriptionDraft, FetchedBody, SubscriptionMeta};

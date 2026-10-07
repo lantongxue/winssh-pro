@@ -1547,8 +1547,68 @@ clash.runtime.empty_config:
   en: "This subscription has no body to start from."
   zh-CN: "这条订阅还没有正文，起不了。"
 clash.runtime.no_binary:
-  en: "mihomo was not found. Put %{name} beside the application (see third_party/mihomo/)."
-  zh-CN: "没找到 mihomo。把 %{name} 放到程序旁边（见 third_party/mihomo/）。"
+  en: "mihomo was not found (%{name})."
+  zh-CN: "未找到 mihomo 内核（%{name}）。"
+clash.runtime.downloading:
+  en: "Downloading mihomo core (%{asset})..."
+clash.runtime.download_failed:
+  en: "Failed to download mihomo core: %{error}"
+  zh-CN: "下载 mihomo 内核失败：%{error}"
+# mihomo 内核下载弹窗（src/ui/dialogs/mihomo_download.rs）。
+clash.download.title:
+  en: "Mihomo Core Not Found"
+  zh-CN: "未检测到 mihomo 内核"
+clash.download.subtitle:
+  en: "Proxy requires the mihomo core executable"
+  zh-CN: "启动代理需要 mihomo 核心程序支持"
+clash.download.confirm_desc:
+  en: "The mihomo executable was not found locally. Would you like to automatically download it from GitHub Releases?"
+  zh-CN: "未在本地找到 mihomo 内核。启动代理需要该程序，是否从 GitHub Releases 自动下载并解压配置？"
+clash.download.version:
+  en: "Core Version"
+  zh-CN: "内核版本"
+clash.download.platform:
+  en: "Platform"
+  zh-CN: "目标平台"
+clash.download.asset:
+  en: "Release Asset"
+  zh-CN: "下载资源"
+clash.download.target_dir:
+  en: "Install Path"
+  zh-CN: "安装路径"
+clash.download.btn_download:
+  en: "Download Now"
+  zh-CN: "立即下载"
+clash.download.btn_cancel:
+  en: "Cancel"
+  zh-CN: "取消"
+clash.download.btn_retry:
+  en: "Retry"
+  zh-CN: "重试"
+clash.download.btn_start:
+  en: "Start Proxy"
+  zh-CN: "启动代理"
+clash.download.btn_close:
+  en: "Close"
+  zh-CN: "关闭"
+clash.download.downloading_title:
+  en: "Downloading Mihomo Core"
+  zh-CN: "正在下载 mihomo 内核"
+clash.download.downloading_subtitle:
+  en: "Downloading core archive..."
+  zh-CN: "正在下载内核压缩包并准备解压..."
+clash.download.unpacking:
+  en: "Unpacking and configuring binary permissions..."
+  zh-CN: "下载完成，正在解压并配置内核文件..."
+clash.download.done_title:
+  en: "Mihomo Core Ready"
+  zh-CN: "mihomo 内核已就绪"
+clash.download.done_desc:
+  en: "The core was installed successfully. You can start the proxy whenever you want."
+  zh-CN: "内核程序已下载并配置完成，可手动启动代理。"
+clash.download.failed_title:
+  en: "Download Failed"
+  zh-CN: "下载 mihomo 内核失败"
 clash.runtime.not_meta:
   en: "This is not the Meta (mihomo) core: rules and the virtual NIC are unavailable."
   zh-CN: "这不是 Meta（mihomo）内核：分流规则与虚拟网卡用不了。"

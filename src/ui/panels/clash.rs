@@ -54,9 +54,10 @@ use gpui_kit::{
 
 use crate::clash::{
     Action, ClashSubscription, ConnectionSummary, GroupSummary, LiveGroup, LiveNode, NodeSummary,
-    RuleSummary, RuntimeState, SubscriptionOutline, runtime,
+    Phase, RuleSummary, RuntimeState, SubscriptionOutline, runtime,
 };
 use crate::ui::cards::{CLASH_NODE_CARD_HEIGHT, ClashNodeCard};
+use crate::ui::dialogs::MihomoDownloadDialog;
 use crate::{service::LocalFileService, ui::theme::{AppIcon, palette}};
 use rust_i18n::t;
 
@@ -384,9 +385,14 @@ impl ClashPanel {
             self.shown_error = error.seq;
             window.push_notification(error.message.clone(), cx);
         }
+        // 测速在内核那边的独立任务里跑，期间会有别的状态更新（吞吐、连接）穿插进来，
+        // 所以"测速中"不能随便哪次更新就撤：等进行中的轮数落回零、或实例没了才撤。
+        let was_testing = self.state.delay_tests > 0;
         self.state = state;
-        self.testing_all = false;
-        self.testing_node = None;
+        if (was_testing && self.state.delay_tests == 0) || !self.state.phase.is_busy() {
+            self.testing_all = false;
+            self.testing_node = None;
+        }
         if let Some(group) = &self.active_group {
             if !self
                 .state
@@ -545,6 +551,27 @@ impl ClashPanel {
             runtime::stop();
             return;
         }
+
+        if !crate::clash::downloader::is_installed() {
+            let this = cx.weak_entity();
+            MihomoDownloadDialog::open(
+                Some(Rc::new(move |window, cx| {
+                    if let Some(panel) = this.upgrade() {
+                        panel.update(cx, |this, cx| {
+                            this.launch_proxy(window, cx);
+                        });
+                    }
+                })),
+                window,
+                cx,
+            );
+            return;
+        }
+
+        self.launch_proxy(window, cx);
+    }
+
+    fn launch_proxy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Err(error) = runtime::start(&self.subscription) {
             window.push_notification(
                 t!("clash.panel.start_failed", error => format!("{error:#}")),
@@ -569,7 +596,9 @@ impl ClashPanel {
 
     /// 顶部控制条：代理总开关、当前生效订阅、系统代理、虚拟网卡 (TUN)、实时速率、一键测速、分流模式。
     fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_dark = cx.theme().is_dark();
         let running = self.is_running();
+        let stopping = running && self.state.phase == Phase::Stopping;
         let up = self.state.traffic_up.as_ref();
         let down = self.state.traffic_down.as_ref();
         let up_display = if up.is_empty() { "0 B/s" } else { up };
@@ -584,8 +613,9 @@ impl ClashPanel {
             ("rule", "规则 (Rule)"),
             ("global", "全局 (Global)"),
             ("direct", "直连 (Direct)"),
-            ("script", "脚本 (Script)"),
         ];
+        // 没有"脚本 (Script)"这一档：mihomo 只认 rule / global / direct，
+        // `PATCH /configs` 带 `script` 会被内核直接拒掉。
 
         v_flex()
             .id("clash-panel-header")
@@ -606,6 +636,8 @@ impl ClashPanel {
                     .gap_4()
                     .child(
                         h_flex()
+                            .flex_1()
+                            .min_w_0()
                             .items_center()
                             .gap_3()
                             // 主开关胶囊按钮
@@ -625,30 +657,61 @@ impl ClashPanel {
                                             .hover(|this| this.bg(rgb(0x10b981)))
                                     })
                                     .when(!running, |this| {
-                                        this.bg(rgb(0x27272a))
-                                            .border_1()
-                                            .border_color(rgb(0x3f3f46))
-                                            .hover(|this| this.bg(rgb(0x3f3f46)))
+                                        if is_dark {
+                                            this.bg(rgb(0x27272a))
+                                                .border_1()
+                                                .border_color(rgb(0x3f3f46))
+                                                .hover(|this| this.bg(rgb(0x3f3f46)))
+                                        } else {
+                                            this.bg(cx.theme().background)
+                                                .border_1()
+                                                .border_color(cx.theme().border)
+                                                .hover(|this| this.bg(palette::surface(cx)))
+                                        }
                                     })
                                     .child(
                                         div()
                                             .text_xs()
                                             .font_bold()
-                                            .text_color(if running { rgb(0xffffff).into() } else { palette::idle(cx) })
+                                            .text_color(if running {
+                                                rgb(0xffffff).into()
+                                            } else if is_dark {
+                                                palette::idle(cx)
+                                            } else {
+                                                cx.theme().foreground
+                                            })
                                             .child("⏻"),
                                     )
                                     .child(
                                         div()
                                             .text_xs()
                                             .font_semibold()
-                                            .text_color(if running { rgb(0xffffff).into() } else { palette::idle(cx) })
-                                            .child(if running { "代理已运行" } else { "代理已停止" }),
+                                            .text_color(if running {
+                                                rgb(0xffffff).into()
+                                            } else if is_dark {
+                                                palette::idle(cx)
+                                            } else {
+                                                cx.theme().foreground
+                                            })
+                                            .child(if stopping {
+                                                "正在停止…"
+                                            } else if running {
+                                                "代理已运行"
+                                            } else {
+                                                "代理已停止"
+                                            }),
                                     )
                                     .child(
                                         div()
                                             .size(px(7.))
                                             .rounded_full()
-                                            .bg(if running { rgb(0xffffff) } else { rgb(0x71717a) }),
+                                            .bg(if running {
+                                                rgb(0xffffff)
+                                            } else if is_dark {
+                                                rgb(0x71717a)
+                                            } else {
+                                                rgb(0x94a3b8)
+                                            }),
                                     )
                                     .on_click(cx.listener(|this, _, window, cx| this.start_or_stop(window, cx))),
                             )
@@ -664,7 +727,7 @@ impl ClashPanel {
                                                 div()
                                                     .text_xs()
                                                     .font_medium()
-                                                    .text_color(palette::idle(cx))
+                                                    .text_color(if is_dark { palette::idle(cx) } else { cx.theme().muted_foreground })
                                                     .child("当前生效订阅"),
                                             )
                                             .child(
@@ -686,16 +749,34 @@ impl ClashPanel {
                     // 右侧：分流模式选择盒
                     .child(
                         h_flex()
+                            .flex_shrink_0()
                             .p_1()
                             .rounded(px(12.))
-                            .bg(palette::recessed(cx))
-                            .border_1()
-                            .border_color(cx.theme().border)
+                            .when(is_dark, |this| {
+                                this.bg(palette::recessed(cx))
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                            })
+                            .when(!is_dark, |this| {
+                                this.bg(cx.theme().background)
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                            })
                             .gap_1()
                             .children(modes.into_iter().map(|(mode_key, label)| {
                                 let selected = current_mode == mode_key;
                                 let panel = cx.weak_entity();
-                                let icon_color = if selected { palette::teal() } else { palette::idle(cx) };
+                                let active_color: Hsla = if is_dark {
+                                    palette::teal()
+                                } else {
+                                    rgb(0x0d9488).into()
+                                };
+                                let inactive_color: Hsla = if is_dark {
+                                    palette::idle(cx)
+                                } else {
+                                    cx.theme().muted_foreground
+                                };
+                                let icon_color = if selected { active_color } else { inactive_color };
                                 let icon_element = match mode_key {
                                     "rule" => Icon::new(IconName::Settings2).with_size(px(12.)).text_color(icon_color).into_any_element(),
                                     "global" => Icon::new(IconName::Globe).with_size(px(12.)).text_color(icon_color).into_any_element(),
@@ -711,19 +792,27 @@ impl ClashPanel {
                                     .rounded(px(8.))
                                     .cursor_pointer()
                                     .when(selected, |this| {
-                                        this.bg(rgb(0x06b6d4).opacity(0.18))
-                                            .border_1()
-                                            .border_color(rgb(0x06b6d4).opacity(0.45))
+                                        if is_dark {
+                                            this.bg(rgb(0x06b6d4).opacity(0.18))
+                                                .border_1()
+                                                .border_color(rgb(0x06b6d4).opacity(0.45))
+                                        } else {
+                                            this.bg(palette::teal().opacity(0.15))
+                                                .border_1()
+                                                .border_color(palette::teal().opacity(0.5))
+                                        }
                                     })
                                     .when(!selected, |this| {
-                                        this.hover(|this| this.bg(palette::surface_strong(cx)))
+                                        this.border_1()
+                                            .border_color(gpui_kit::transparent_black())
+                                            .hover(|this| this.bg(palette::surface(cx)))
                                     })
                                     .child(icon_element)
                                     .child(
                                         div()
                                             .text_xs()
                                             .font_semibold()
-                                            .text_color(if selected { palette::teal() } else { palette::idle(cx) })
+                                            .text_color(if selected { active_color } else { inactive_color })
                                             .child(label),
                                     )
                                     .on_click(move |_, _, cx| {
@@ -749,15 +838,28 @@ impl ClashPanel {
                             .rounded(px(8.))
                             .cursor_pointer()
                             .when(sys_proxy_active, |this| {
-                                this.bg(rgb(0x1e3a8a).opacity(0.25))
-                                    .border_1()
-                                    .border_color(rgb(0x3b82f6).opacity(0.5))
+                                if is_dark {
+                                    this.bg(rgb(0x1e3a8a).opacity(0.25))
+                                        .border_1()
+                                        .border_color(rgb(0x3b82f6).opacity(0.5))
+                                } else {
+                                    this.bg(rgb(0xeff6ff))
+                                        .border_1()
+                                        .border_color(rgb(0x93c5fd))
+                                }
                             })
                             .when(!sys_proxy_active, |this| {
-                                this.bg(palette::recessed(cx))
-                                    .border_1()
-                                    .border_color(cx.theme().border.opacity(0.6))
-                                    .hover(|this| this.bg(palette::surface_strong(cx)))
+                                if is_dark {
+                                    this.bg(palette::recessed(cx))
+                                        .border_1()
+                                        .border_color(cx.theme().border.opacity(0.6))
+                                        .hover(|this| this.bg(palette::surface_strong(cx)))
+                                } else {
+                                    this.bg(cx.theme().background)
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .hover(|this| this.bg(palette::surface(cx)))
+                                }
                             })
                             .child(
                                 v_flex()
@@ -766,14 +868,22 @@ impl ClashPanel {
                                         div()
                                             .text_xs()
                                             .font_semibold()
-                                            .text_color(if sys_proxy_active { rgb(0x93c5fd).into() } else { palette::idle(cx) })
+                                            .text_color(if sys_proxy_active {
+                                                if is_dark { rgb(0x93c5fd).into() } else { rgb(0x1d4ed8).into() }
+                                            } else {
+                                                cx.theme().foreground
+                                            })
                                             .child("系统代理"),
                                     )
                                     .child(
                                         div()
                                             .font_family("monospace")
                                             .text_xs()
-                                            .text_color(if sys_proxy_active { rgb(0x60a5fa).into() } else { palette::idle(cx).opacity(0.7) })
+                                            .text_color(if sys_proxy_active {
+                                                if is_dark { rgb(0x60a5fa).into() } else { rgb(0x2563eb).into() }
+                                            } else {
+                                                cx.theme().muted_foreground
+                                            })
                                             .child(if sys_proxy_active {
                                                 match self.state.mixed_port {
                                                     Some(p) => format!(":{p} 运行中"),
@@ -810,15 +920,28 @@ impl ClashPanel {
                             .rounded(px(8.))
                             .cursor_pointer()
                             .when(tun_active, |this| {
-                                this.bg(rgb(0x064e3b).opacity(0.25))
-                                    .border_1()
-                                    .border_color(rgb(0x10b981).opacity(0.5))
+                                if is_dark {
+                                    this.bg(rgb(0x064e3b).opacity(0.25))
+                                        .border_1()
+                                        .border_color(rgb(0x10b981).opacity(0.5))
+                                } else {
+                                    this.bg(rgb(0xecfdf5))
+                                        .border_1()
+                                        .border_color(rgb(0xa7f3d0))
+                                }
                             })
                             .when(!tun_active, |this| {
-                                this.bg(palette::recessed(cx))
-                                    .border_1()
-                                    .border_color(cx.theme().border.opacity(0.6))
-                                    .hover(|this| this.bg(palette::surface_strong(cx)))
+                                if is_dark {
+                                    this.bg(palette::recessed(cx))
+                                        .border_1()
+                                        .border_color(cx.theme().border.opacity(0.6))
+                                        .hover(|this| this.bg(palette::surface_strong(cx)))
+                                } else {
+                                    this.bg(cx.theme().background)
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .hover(|this| this.bg(palette::surface(cx)))
+                                }
                             })
                             .child(
                                 v_flex()
@@ -830,13 +953,21 @@ impl ClashPanel {
                                             .child(
                                                 Icon::new(IconName::Network)
                                                     .with_size(px(12.))
-                                                    .text_color(rgb(0x34d399)),
+                                                    .text_color(if tun_active {
+                                                        if is_dark { rgb(0x34d399).into() } else { rgb(0x059669).into() }
+                                                    } else {
+                                                        cx.theme().muted_foreground
+                                                    }),
                                             )
                                             .child(
                                                 div()
                                                     .text_xs()
                                                     .font_semibold()
-                                                    .text_color(if tun_active { rgb(0x6ee7b7).into() } else { cx.theme().foreground })
+                                                    .text_color(if tun_active {
+                                                        if is_dark { rgb(0x6ee7b7).into() } else { rgb(0x047857).into() }
+                                                    } else {
+                                                        cx.theme().foreground
+                                                    })
                                                     .child("虚拟网卡 (TUN)"),
                                             ),
                                     )
@@ -844,7 +975,11 @@ impl ClashPanel {
                                         div()
                                             .font_family("monospace")
                                             .text_xs()
-                                            .text_color(if tun_active { rgb(0x34d399).into() } else { palette::idle(cx).opacity(0.7) })
+                                            .text_color(if tun_active {
+                                                if is_dark { rgb(0x34d399).into() } else { rgb(0x059669).into() }
+                                            } else {
+                                                cx.theme().muted_foreground
+                                            })
                                             .child(if tun_active { "Fake-IP / gVisor" } else { "未启用" }),
                                     ),
                             )
@@ -871,20 +1006,27 @@ impl ClashPanel {
                             .px_3()
                             .py_2()
                             .rounded(px(8.))
-                            .bg(palette::recessed(cx))
-                            .border_1()
-                            .border_color(cx.theme().border.opacity(0.6))
+                            .when(is_dark, |this| {
+                                this.bg(palette::recessed(cx))
+                                    .border_1()
+                                    .border_color(cx.theme().border.opacity(0.6))
+                            })
+                            .when(!is_dark, |this| {
+                                this.bg(cx.theme().background)
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                            })
                             .font_family("monospace")
                             .text_xs()
                             .child(
                                 h_flex()
                                     .gap_1()
                                     .items_center()
-                                    .child(Icon::new(IconName::ArrowUp).with_size(px(11.)).text_color(rgb(0x22d3ee)))
+                                    .child(Icon::new(IconName::ArrowUp).with_size(px(11.)).text_color(if is_dark { rgb(0x22d3ee) } else { rgb(0x0284c7) }))
                                     .child(
                                         div()
                                             .font_semibold()
-                                            .text_color(rgb(0x22d3ee))
+                                            .text_color(if is_dark { rgb(0x22d3ee) } else { rgb(0x0284c7) })
                                             .child(SharedString::from(up_display.to_string())),
                                     ),
                             )
@@ -893,11 +1035,11 @@ impl ClashPanel {
                                 h_flex()
                                     .gap_1()
                                     .items_center()
-                                    .child(Icon::new(IconName::ArrowDown).with_size(px(11.)).text_color(rgb(0x34d399)))
+                                    .child(Icon::new(IconName::ArrowDown).with_size(px(11.)).text_color(if is_dark { rgb(0x34d399) } else { rgb(0x059669) }))
                                     .child(
                                         div()
                                             .font_semibold()
-                                            .text_color(rgb(0x34d399))
+                                            .text_color(if is_dark { rgb(0x34d399) } else { rgb(0x059669) })
                                             .child(SharedString::from(down_display.to_string())),
                                     ),
                             ),
@@ -911,15 +1053,23 @@ impl ClashPanel {
                             .px_3()
                             .py_2()
                             .rounded(px(8.))
-                            .bg(palette::recessed(cx))
-                            .border_1()
-                            .border_color(cx.theme().border.opacity(0.6))
-                            .hover(|this| this.bg(palette::surface_strong(cx)))
+                            .when(is_dark, |this| {
+                                this.bg(palette::recessed(cx))
+                                    .border_1()
+                                    .border_color(cx.theme().border.opacity(0.6))
+                                    .hover(|this| this.bg(palette::surface_strong(cx)))
+                            })
+                            .when(!is_dark, |this| {
+                                this.bg(cx.theme().background)
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .hover(|this| this.bg(palette::surface(cx)))
+                            })
                             .cursor_pointer()
                             .child(
                                 Icon::new(AppIcon::Zap)
                                     .with_size(px(13.))
-                                    .text_color(rgb(0xfbbf24)),
+                                    .text_color(if is_dark { rgb(0xfbbf24) } else { rgb(0xd97706) }),
                             )
                             .child(
                                 div()
@@ -940,6 +1090,7 @@ impl ClashPanel {
 
     /// 四栏的导航标签条。
     fn render_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_dark = cx.theme().is_dark();
         let (nodes, rules) = self.counts().unwrap_or((0, 0));
         let active_conns = self.state.connections.len();
         let port_text = self
@@ -975,6 +1126,11 @@ impl ClashPanel {
                     .children(tabs.into_iter().map(|(tab_idx, label, badge)| {
                         let is_active = self.tab == tab_idx;
                         let panel = cx.weak_entity();
+                        let active_tab_color: Hsla = if is_dark {
+                            palette::teal()
+                        } else {
+                            rgb(0x0d9488).into()
+                        };
                         h_flex()
                             .id(format!("clash-nav-tab-{tab_idx}"))
                             .gap_1p5()
@@ -984,9 +1140,15 @@ impl ClashPanel {
                             .rounded(px(8.))
                             .cursor_pointer()
                             .when(is_active, |this| {
-                                this.bg(palette::surface_strong(cx))
-                                    .border_1()
-                                    .border_color(rgb(0x3a3a40))
+                                if is_dark {
+                                    this.bg(palette::surface_strong(cx))
+                                        .border_1()
+                                        .border_color(rgb(0x3a3a40))
+                                } else {
+                                    this.bg(cx.theme().background)
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                }
                             })
                             .when(!is_active, |this| {
                                 this.border_1()
@@ -998,9 +1160,11 @@ impl ClashPanel {
                                     .text_xs()
                                     .font_medium()
                                     .text_color(if is_active {
-                                        palette::teal()
-                                    } else {
+                                        active_tab_color
+                                    } else if is_dark {
                                         palette::idle(cx)
+                                    } else {
+                                        cx.theme().muted_foreground
                                     })
                                     .child(label),
                             )
@@ -1013,14 +1177,26 @@ impl ClashPanel {
                                         .font_family("monospace")
                                         .text_xs()
                                         .when(is_active, |badge| {
-                                            badge
-                                                .bg(palette::teal().opacity(0.18))
-                                                .text_color(palette::teal())
+                                            if is_dark {
+                                                badge
+                                                    .bg(palette::teal().opacity(0.18))
+                                                    .text_color(palette::teal())
+                                            } else {
+                                                badge
+                                                    .bg(palette::teal().opacity(0.15))
+                                                    .text_color(rgb(0x0f766e))
+                                            }
                                         })
                                         .when(!is_active, |badge| {
-                                            badge
-                                                .bg(palette::recessed(cx))
-                                                .text_color(palette::idle(cx))
+                                            if is_dark {
+                                                badge
+                                                    .bg(palette::recessed(cx))
+                                                    .text_color(palette::idle(cx))
+                                            } else {
+                                                badge
+                                                    .bg(rgb(0xf1f5f9))
+                                                    .text_color(cx.theme().muted_foreground)
+                                            }
                                         })
                                         .child(badge_text),
                                 )
@@ -1043,7 +1219,7 @@ impl ClashPanel {
                     .items_center()
                     .text_xs()
                     .font_family("monospace")
-                    .text_color(palette::idle(cx))
+                    .text_color(if is_dark { palette::idle(cx) } else { cx.theme().muted_foreground })
                     .child(format!("Clash.Meta 端口: {port_text}"))
                     .child("•")
                     .child(
@@ -1054,9 +1230,11 @@ impl ClashPanel {
                             .child(
                                 div()
                                     .text_color(if self.state.tun {
-                                        palette::green()
-                                    } else {
+                                        if is_dark { palette::green() } else { rgb(0x059669).into() }
+                                    } else if is_dark {
                                         palette::idle(cx)
+                                    } else {
+                                        cx.theme().muted_foreground
                                     })
                                     .child(tun_text),
                             ),
@@ -1239,6 +1417,7 @@ impl ClashPanel {
                     .join(" ➔ "),
             )
         };
+        let is_dark = cx.theme().is_dark();
         h_flex()
             .id(ElementId::Name(SharedString::from(format!("clash-connection-{}", id))))
             .w_full()
@@ -1249,8 +1428,8 @@ impl ClashPanel {
             .py_1p5()
             .rounded(cx.theme().radius)
             .border_1()
-            .border_color(cx.theme().border.opacity(0.35))
-            .bg(palette::surface(cx))
+            .border_color(if is_dark { cx.theme().border.opacity(0.35) } else { cx.theme().border })
+            .bg(if is_dark { palette::surface(cx) } else { cx.theme().background })
             .child(
                 div()
                     .flex_1()
@@ -1275,7 +1454,7 @@ impl ClashPanel {
                     .min_w_0()
                     .truncate()
                     .text_xs()
-                    .text_color(palette::idle(cx))
+                    .text_color(if is_dark { palette::idle(cx) } else { cx.theme().muted_foreground })
                     .child(SharedString::from(if connection.rule_payload.is_empty() {
                         connection.rule.to_string()
                     } else {
@@ -1288,7 +1467,7 @@ impl ClashPanel {
                     .min_w_0()
                     .truncate()
                     .text_xs()
-                    .text_color(palette::teal())
+                    .text_color(if is_dark { palette::teal() } else { rgb(0x0d9488).into() })
                     .child(chain),
             )
             .child(
@@ -1297,7 +1476,7 @@ impl ClashPanel {
                     .text_right()
                     .font_family("monospace")
                     .text_xs()
-                    .text_color(palette::green())
+                    .text_color(if is_dark { palette::green() } else { rgb(0x059669).into() })
                     .child(SharedString::from(format!(
                         "↑ {} ↓ {}",
                         format_bytes(connection.upload),
@@ -1611,7 +1790,7 @@ impl ClashPanel {
                     .flex_1()
                     .min_h_0()
                     .px_3()
-                    .pb_3()
+                    .py_3()
                     .relative()
                     .child(
                         v_virtual_list(cx.entity(), "clash-proxy-grid-rows", sizes, move |this, visible, _, cx| {
@@ -1644,7 +1823,7 @@ impl ClashPanel {
                         })
                         .flex_1()
                         .min_h_0()
-                        .gap(ROW_GAP)
+                        .gap(px(10.))
                         .track_scroll(&scroll),
                     )
                     .scrollbar(&scroll, ScrollbarAxis::Vertical),
@@ -1786,6 +1965,7 @@ impl ClashPanel {
             })
             .unwrap_or_else(|| "—".into());
 
+        let is_dark = cx.theme().is_dark();
         let panel = cx.weak_entity();
         let group_chips: Vec<AnyElement> = groups
             .into_iter()
@@ -1793,6 +1973,11 @@ impl ClashPanel {
                 let is_selected = active_group_name == Some(&group);
                 let panel = panel.clone();
                 let label = group.clone();
+                let active_chip_color: Hsla = if is_dark {
+                    palette::teal()
+                } else {
+                    rgb(0x0d9488).into()
+                };
                 h_flex()
                     .id(format!("clash-group-filter-{}", group))
                     .gap_1p5()
@@ -1804,22 +1989,31 @@ impl ClashPanel {
                     .when(is_selected, |this| {
                         this.bg(palette::teal().opacity(0.15))
                             .border_1()
-                            .border_color(palette::teal().opacity(0.45))
+                            .border_color(palette::teal().opacity(if is_dark { 0.45 } else { 0.6 }))
                     })
                     .when(!is_selected, |this| {
-                        this.bg(palette::surface(cx))
-                            .border_1()
-                            .border_color(cx.theme().border.opacity(0.5))
-                            .hover(|this| this.bg(palette::surface_strong(cx)))
+                        if is_dark {
+                            this.bg(palette::surface(cx))
+                                .border_1()
+                                .border_color(cx.theme().border.opacity(0.5))
+                                .hover(|this| this.bg(palette::surface_strong(cx)))
+                        } else {
+                            this.bg(cx.theme().background)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .hover(|this| this.bg(palette::surface(cx)))
+                        }
                     })
                     .child(
                         div()
                             .text_xs()
                             .font_medium()
                             .text_color(if is_selected {
-                                palette::teal()
-                            } else {
+                                active_chip_color
+                            } else if is_dark {
                                 palette::idle(cx)
+                            } else {
+                                cx.theme().foreground
                             })
                             .child(group),
                     )
@@ -1828,13 +2022,15 @@ impl ClashPanel {
                             .px_1p5()
                             .py_0p5()
                             .rounded(px(4.))
-                            .bg(palette::recessed(cx))
+                            .bg(if is_dark { palette::recessed(cx) } else { rgb(0xf1f5f9).into() })
                             .font_family("monospace")
                             .text_xs()
                             .text_color(if is_selected {
-                                palette::teal()
-                            } else {
+                                active_chip_color
+                            } else if is_dark {
                                 palette::idle(cx)
+                            } else {
+                                cx.theme().muted_foreground
                             })
                             .child(count.to_string()),
                     )
@@ -1866,7 +2062,11 @@ impl ClashPanel {
                         region.to_owned()
                     }))
                     .when(selected, |button| {
-                        button.bg(palette::surface_strong(cx)).text_color(cx.theme().foreground)
+                        if is_dark {
+                            button.bg(palette::surface_strong(cx)).text_color(cx.theme().foreground)
+                        } else {
+                            button.bg(cx.theme().secondary).text_color(cx.theme().secondary_foreground)
+                        }
                     })
                     .on_click(move |_, _, cx| {
                         panel
@@ -1899,7 +2099,11 @@ impl ClashPanel {
                     .xsmall()
                     .label(label)
                     .when(selected, |button| {
-                        button.bg(palette::surface_strong(cx)).text_color(cx.theme().foreground)
+                        if is_dark {
+                            button.bg(palette::surface_strong(cx)).text_color(cx.theme().foreground)
+                        } else {
+                            button.bg(cx.theme().secondary).text_color(cx.theme().secondary_foreground)
+                        }
                     })
                     .on_click(move |_, _, cx| {
                         panel
@@ -1944,7 +2148,7 @@ impl ClashPanel {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(palette::idle(cx))
+                                    .text_color(if is_dark { palette::idle(cx) } else { cx.theme().muted_foreground })
                                     .child("当前选定:"),
                             )
                             .child(
@@ -1954,10 +2158,10 @@ impl ClashPanel {
                                     .rounded(px(4.))
                                     .bg(palette::teal().opacity(0.15))
                                     .border_1()
-                                    .border_color(palette::teal().opacity(0.4))
+                                    .border_color(palette::teal().opacity(if is_dark { 0.4 } else { 0.55 }))
                                     .text_xs()
                                     .font_semibold()
-                                    .text_color(palette::teal())
+                                    .text_color(if is_dark { palette::teal() } else { rgb(0x0d9488).into() })
                                     .child(selected_node.to_string()),
                             ),
                     ),
@@ -1973,7 +2177,7 @@ impl ClashPanel {
                     .justify_between()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .bg(palette::recessed(cx))
+                    .bg(if is_dark { palette::recessed(cx) } else { palette::surface(cx) })
                     .child(
                         h_flex()
                             .flex_1()
@@ -1997,7 +2201,7 @@ impl ClashPanel {
                                     .rounded(px(6.))
                                     .border_1()
                                     .border_color(cx.theme().border.opacity(0.5))
-                                    .bg(palette::surface(cx))
+                                    .bg(if is_dark { palette::surface(cx) } else { cx.theme().background })
                                     .children(region_chips),
                             )
                             .child(
@@ -2007,7 +2211,7 @@ impl ClashPanel {
                                     .rounded(px(6.))
                                     .border_1()
                                     .border_color(cx.theme().border.opacity(0.5))
-                                    .bg(palette::surface(cx))
+                                    .bg(if is_dark { palette::surface(cx) } else { cx.theme().background })
                                     .children(protocol_chips),
                             ),
                     ),
@@ -2613,24 +2817,49 @@ impl ClashPanel {
 
     /// 目标走向的彩色徽标（如 DIRECT、REJECT、节点选择 等）。
     fn render_target_badge(&self, target: &str, cx: &App) -> AnyElement {
+        let is_dark = cx.theme().is_dark();
         let (bg, border, text): (Hsla, Hsla, Hsla) = if target.eq_ignore_ascii_case("DIRECT") {
-            (
-                gpui_kit::rgba(0x10b98126).into(),
-                gpui_kit::rgba(0x10b9814d).into(),
-                palette::green(),
-            )
+            if is_dark {
+                (
+                    gpui_kit::rgba(0x10b98126).into(),
+                    gpui_kit::rgba(0x10b9814d).into(),
+                    palette::green(),
+                )
+            } else {
+                (
+                    rgb(0xecfdf5).into(),
+                    rgb(0xa7f3d0).into(),
+                    rgb(0x047857).into(),
+                )
+            }
         } else if target.eq_ignore_ascii_case("REJECT") {
-            (
-                gpui_kit::rgba(0xef444426).into(),
-                gpui_kit::rgba(0xef44444d).into(),
-                palette::coral(),
-            )
+            if is_dark {
+                (
+                    gpui_kit::rgba(0xef444426).into(),
+                    gpui_kit::rgba(0xef44444d).into(),
+                    palette::coral(),
+                )
+            } else {
+                (
+                    rgb(0xfef2f2).into(),
+                    rgb(0xfecaca).into(),
+                    rgb(0xb91c1c).into(),
+                )
+            }
         } else if target.contains("节点") || target.contains("PROXY") || target.eq_ignore_ascii_case("GLOBAL") {
-            (
-                gpui_kit::rgba(0x06b6d426).into(),
-                gpui_kit::rgba(0x06b6d44d).into(),
-                palette::teal(),
-            )
+            if is_dark {
+                (
+                    gpui_kit::rgba(0x06b6d426).into(),
+                    gpui_kit::rgba(0x06b6d44d).into(),
+                    palette::teal(),
+                )
+            } else {
+                (
+                    palette::teal().opacity(0.15),
+                    palette::teal().opacity(0.4),
+                    rgb(0x0f766e).into(),
+                )
+            }
         } else {
             (
                 palette::surface_strong(cx),

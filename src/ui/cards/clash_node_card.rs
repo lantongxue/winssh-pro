@@ -147,48 +147,94 @@ fn parse_flag_and_name(name: &str) -> (String, String) {
 }
 
 /// 协议类型颜色配置（背景色、文本色、边框色）。
-fn protocol_colors(kind: &str) -> (Hsla, Hsla, Hsla) {
-    match kind.to_lowercase().as_str() {
-        "hysteria" | "hysteria2" => (
-            rgb(0x581c87).opacity(0.3).into(),
-            rgb(0xd8b4fe).into(),
-            rgb(0xa855f7).opacity(0.4).into(),
-        ),
-        "vless" => (
-            rgb(0x115e59).opacity(0.3).into(),
-            rgb(0x5eead4).into(),
-            rgb(0x14b8a6).opacity(0.4).into(),
-        ),
-        "trojan" => (
-            rgb(0x78350f).opacity(0.3).into(),
-            rgb(0xfcd34d).into(),
-            rgb(0xf59e0b).opacity(0.4).into(),
-        ),
-        "vmess" => (
-            rgb(0x1e3a8a).opacity(0.3).into(),
-            rgb(0x93c5fd).into(),
-            rgb(0x3b82f6).opacity(0.4).into(),
-        ),
-        "tuic" => (
-            rgb(0x831843).opacity(0.3).into(),
-            rgb(0xf472b6).into(),
-            rgb(0xec4899).opacity(0.4).into(),
-        ),
-        "wireguard" => (
-            rgb(0x312e81).opacity(0.3).into(),
-            rgb(0xa5b4fc).into(),
-            rgb(0x6366f1).opacity(0.4).into(),
-        ),
-        "ss" | "shadowsocks" => (
-            rgb(0x064e3b).opacity(0.3).into(),
-            rgb(0x6ee7b7).into(),
-            rgb(0x10b981).opacity(0.4).into(),
-        ),
-        _ => (
-            rgb(0x27272a).opacity(0.6).into(),
-            rgb(0xd4d4d8).into(),
-            rgb(0x3f3f46).opacity(0.5).into(),
-        ),
+fn protocol_colors(kind: &str, is_dark: bool) -> (Hsla, Hsla, Hsla) {
+    let k = kind.to_lowercase();
+    if is_dark {
+        match k.as_str() {
+            "hysteria" | "hysteria2" => (
+                rgb(0x581c87).opacity(0.3).into(),
+                rgb(0xd8b4fe).into(),
+                rgb(0xa855f7).opacity(0.4).into(),
+            ),
+            "vless" => (
+                rgb(0x115e59).opacity(0.3).into(),
+                rgb(0x5eead4).into(),
+                rgb(0x14b8a6).opacity(0.4).into(),
+            ),
+            "trojan" => (
+                rgb(0x78350f).opacity(0.3).into(),
+                rgb(0xfcd34d).into(),
+                rgb(0xf59e0b).opacity(0.4).into(),
+            ),
+            "vmess" => (
+                rgb(0x1e3a8a).opacity(0.3).into(),
+                rgb(0x93c5fd).into(),
+                rgb(0x3b82f6).opacity(0.4).into(),
+            ),
+            "tuic" => (
+                rgb(0x831843).opacity(0.3).into(),
+                rgb(0xf472b6).into(),
+                rgb(0xec4899).opacity(0.4).into(),
+            ),
+            "wireguard" => (
+                rgb(0x312e81).opacity(0.3).into(),
+                rgb(0xa5b4fc).into(),
+                rgb(0x6366f1).opacity(0.4).into(),
+            ),
+            "ss" | "shadowsocks" => (
+                rgb(0x064e3b).opacity(0.3).into(),
+                rgb(0x6ee7b7).into(),
+                rgb(0x10b981).opacity(0.4).into(),
+            ),
+            _ => (
+                rgb(0x27272a).opacity(0.6).into(),
+                rgb(0xd4d4d8).into(),
+                rgb(0x3f3f46).opacity(0.5).into(),
+            ),
+        }
+    } else {
+        match k.as_str() {
+            "hysteria" | "hysteria2" => (
+                rgb(0xf3e8ff).into(),
+                rgb(0x7e22ce).into(),
+                rgb(0xd8b4fe).into(),
+            ),
+            "vless" => (
+                rgb(0xccfbf1).into(),
+                rgb(0x0f766e).into(),
+                rgb(0x5eead4).into(),
+            ),
+            "trojan" => (
+                rgb(0xfef3c7).into(),
+                rgb(0xb45309).into(),
+                rgb(0xfcd34d).into(),
+            ),
+            "vmess" => (
+                rgb(0xdbeafe).into(),
+                rgb(0x1d4ed8).into(),
+                rgb(0x93c5fd).into(),
+            ),
+            "tuic" => (
+                rgb(0xfce7f3).into(),
+                rgb(0xbe185d).into(),
+                rgb(0xf472b6).into(),
+            ),
+            "wireguard" => (
+                rgb(0xe0e7ff).into(),
+                rgb(0x4338ca).into(),
+                rgb(0xa5b4fc).into(),
+            ),
+            "ss" | "shadowsocks" => (
+                rgb(0xd1fae5).into(),
+                rgb(0x047857).into(),
+                rgb(0x6ee7b7).into(),
+            ),
+            _ => (
+                rgb(0xf1f5f9).into(),
+                rgb(0x475569).into(),
+                rgb(0xcbd5e1).into(),
+            ),
+        }
     }
 }
 
@@ -225,8 +271,9 @@ fn transport_and_udp(kind: &str, name: &str) -> (&'static str, bool) {
 
 impl RenderOnce for ClashNodeCard {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let is_dark = cx.theme().is_dark();
         let (flags, display_name) = parse_flag_and_name(&self.name);
-        let (bg_color, fg_color, border_color) = protocol_colors(&self.kind);
+        let (bg_color, fg_color, border_color) = protocol_colors(&self.kind, is_dark);
         let (transport, has_udp) = transport_and_udp(&self.kind, &self.name);
 
         let on_select = self.on_select.clone();
@@ -239,7 +286,7 @@ impl RenderOnce for ClashNodeCard {
             _ => self.server.to_string(),
         };
 
-        // 延迟药丸样式计算
+        // 延迟药丸样式计算：明/暗模式各自适配对比度
         let (delay_text, dot_color, badge_bg, badge_border, text_color): (
             String,
             Hsla,
@@ -247,84 +294,178 @@ impl RenderOnce for ClashNodeCard {
             Hsla,
             Hsla,
         ) = if testing {
-            (
-                "测速中...".to_string(),
-                rgb(0x22d3ee).into(),
-                rgb(0x06b6d4).opacity(0.1).into(),
-                rgb(0x06b6d4).opacity(0.3).into(),
-                rgb(0x67e8f9).into(),
-            )
-        } else if let Some(ms) = self.delay {
-            if ms < 60 {
+            if is_dark {
                 (
-                    format!("{ms} ms"),
-                    rgb(0x34d399).into(),
-                    rgb(0x10b981).opacity(0.12).into(),
-                    rgb(0x10b981).opacity(0.35).into(),
-                    rgb(0x34d399).into(),
-                )
-            } else if ms < 140 {
-                (
-                    format!("{ms} ms"),
+                    "测速中...".to_string(),
                     rgb(0x22d3ee).into(),
                     rgb(0x06b6d4).opacity(0.12).into(),
                     rgb(0x06b6d4).opacity(0.35).into(),
-                    rgb(0x22d3ee).into(),
-                )
-            } else if ms < 300 {
-                (
-                    format!("{ms} ms"),
-                    rgb(0xfbbf24).into(),
-                    rgb(0xf59e0b).opacity(0.12).into(),
-                    rgb(0xf59e0b).opacity(0.35).into(),
-                    rgb(0xfbbf24).into(),
+                    rgb(0x67e8f9).into(),
                 )
             } else {
                 (
-                    format!("{ms} ms"),
+                    "测速中...".to_string(),
+                    rgb(0x0891b2).into(),
+                    rgb(0xecfeff).into(),
+                    rgb(0xa5f3fc).into(),
+                    rgb(0x0e7490).into(),
+                )
+            }
+        } else if let Some(ms) = self.delay {
+            if ms < 60 {
+                if is_dark {
+                    (
+                        format!("{ms} ms"),
+                        rgb(0x34d399).into(),
+                        rgb(0x10b981).opacity(0.12).into(),
+                        rgb(0x10b981).opacity(0.35).into(),
+                        rgb(0x34d399).into(),
+                    )
+                } else {
+                    (
+                        format!("{ms} ms"),
+                        rgb(0x059669).into(),
+                        rgb(0xecfdf5).into(),
+                        rgb(0xa7f3d0).into(),
+                        rgb(0x047857).into(),
+                    )
+                }
+            } else if ms < 140 {
+                if is_dark {
+                    (
+                        format!("{ms} ms"),
+                        rgb(0x22d3ee).into(),
+                        rgb(0x06b6d4).opacity(0.12).into(),
+                        rgb(0x06b6d4).opacity(0.35).into(),
+                        rgb(0x22d3ee).into(),
+                    )
+                } else {
+                    (
+                        format!("{ms} ms"),
+                        rgb(0x0891b2).into(),
+                        rgb(0xecfeff).into(),
+                        rgb(0xa5f3fc).into(),
+                        rgb(0x0e7490).into(),
+                    )
+                }
+            } else if ms < 300 {
+                if is_dark {
+                    (
+                        format!("{ms} ms"),
+                        rgb(0xfbbf24).into(),
+                        rgb(0xf59e0b).opacity(0.12).into(),
+                        rgb(0xf59e0b).opacity(0.35).into(),
+                        rgb(0xfbbf24).into(),
+                    )
+                } else {
+                    (
+                        format!("{ms} ms"),
+                        rgb(0xd97706).into(),
+                        rgb(0xfffbeb).into(),
+                        rgb(0xfde68a).into(),
+                        rgb(0xb45309).into(),
+                    )
+                }
+            } else {
+                if is_dark {
+                    (
+                        format!("{ms} ms"),
+                        rgb(0xf87171).into(),
+                        rgb(0xef4444).opacity(0.12).into(),
+                        rgb(0xef4444).opacity(0.35).into(),
+                        rgb(0xf87171).into(),
+                    )
+                } else {
+                    (
+                        format!("{ms} ms"),
+                        rgb(0xdc2626).into(),
+                        rgb(0xfef2f2).into(),
+                        rgb(0xfecaca).into(),
+                        rgb(0xb91c1c).into(),
+                    )
+                }
+            }
+        } else if self.tested {
+            if is_dark {
+                (
+                    "超时".to_string(),
                     rgb(0xf87171).into(),
                     rgb(0xef4444).opacity(0.12).into(),
                     rgb(0xef4444).opacity(0.35).into(),
                     rgb(0xf87171).into(),
                 )
+            } else {
+                (
+                    "超时".to_string(),
+                    rgb(0xdc2626).into(),
+                    rgb(0xfef2f2).into(),
+                    rgb(0xfecaca).into(),
+                    rgb(0xb91c1c).into(),
+                )
             }
-        } else if self.tested {
-            (
-                "超时".to_string(),
-                rgb(0xf87171).into(),
-                rgb(0xef4444).opacity(0.12).into(),
-                rgb(0xef4444).opacity(0.35).into(),
-                rgb(0xf87171).into(),
-            )
         } else {
-            (
-                "未测速".to_string(),
-                rgb(0x71717a).into(),
-                rgb(0x27272a).opacity(0.6).into(),
-                rgb(0x3f3f46).opacity(0.4).into(),
-                rgb(0xa1a1aa).into(),
-            )
+            if is_dark {
+                (
+                    "未测速".to_string(),
+                    rgb(0x71717a).into(),
+                    rgb(0x27272a).opacity(0.6).into(),
+                    rgb(0x3f3f46).opacity(0.4).into(),
+                    rgb(0xa1a1aa).into(),
+                )
+            } else {
+                (
+                    "未测速".to_string(),
+                    rgb(0x94a3b8).into(),
+                    rgb(0xf1f5f9).into(),
+                    rgb(0xe2e8f0).into(),
+                    rgb(0x64748b).into(),
+                )
+            }
         };
 
         let card_border: Hsla = if selected {
-            rgb(0x06b6d4).opacity(0.7).into()
+            if is_dark {
+                rgb(0x06b6d4).opacity(0.7).into()
+            } else {
+                rgb(0x0891b2).into()
+            }
         } else {
-            rgb(0x2c2c32).into()
+            cx.theme().border
         };
         let card_bg: Hsla = if selected {
-            rgb(0x22242b).into()
+            if is_dark {
+                rgb(0x1a262b).into()
+            } else {
+                rgb(0xf0fdfa).into()
+            }
         } else {
-            rgb(0x18181b).into()
+            if is_dark {
+                rgb(0x18181b).into()
+            } else {
+                rgb(0xffffff).into()
+            }
         };
         let text_title_color: Hsla = if selected {
-            rgb(0xffffff).into()
+            if is_dark {
+                rgb(0xffffff).into()
+            } else {
+                rgb(0x0f172a).into()
+            }
         } else {
-            rgb(0xe4e4e7).into()
+            cx.theme().foreground
         };
         let radio_border: Hsla = if selected {
-            rgb(0x22d3ee).into()
+            if is_dark {
+                rgb(0x22d3ee).into()
+            } else {
+                rgb(0x0891b2).into()
+            }
         } else {
-            rgb(0x52525b).into()
+            if is_dark {
+                rgb(0x52525b).into()
+            } else {
+                rgb(0x94a3b8).into()
+            }
         };
 
         let btn_id = (self.id.clone(), "test-node");
@@ -343,7 +484,11 @@ impl RenderOnce for ClashNodeCard {
             .bg(card_bg)
             .hover(|this| {
                 if !selected {
-                    this.bg(rgb(0x1e1e22)).border_color(rgb(0x383840))
+                    if is_dark {
+                        this.bg(rgb(0x1e1e22)).border_color(rgb(0x383840))
+                    } else {
+                        this.bg(rgb(0xf8fafc)).border_color(cx.theme().border)
+                    }
                 } else {
                     this
                 }
@@ -397,10 +542,10 @@ impl RenderOnce for ClashNodeCard {
                             .items_center()
                             .justify_center()
                             .when(selected, |this| {
-                                this.bg(rgb(0x06b6d4)).child(
+                                this.bg(if is_dark { rgb(0x06b6d4) } else { rgb(0x0891b2) }).child(
                                     Icon::new(IconName::Check)
                                         .with_size(px(11.))
-                                        .text_color(cx.theme().background),
+                                        .text_color(rgb(0xffffff)),
                                 )
                             }),
                     ),
@@ -435,33 +580,47 @@ impl RenderOnce for ClashNodeCard {
                                 .truncate()
                                 .font_family("monospace")
                                 .text_xs()
-                                .text_color(rgb(0xa1a1aa))
+                                .text_color(cx.theme().muted_foreground)
                                 .child(server_display),
                         )
                     })
                     .when(!transport.is_empty(), |this| {
+                        let transport_color: Hsla = if is_dark { rgb(0x71717a).into() } else { rgb(0x64748b).into() };
                         this.child(
                             div()
                                 .flex_shrink_0()
                                 .font_family("monospace")
                                 .text_xs()
-                                .text_color(rgb(0x71717a))
+                                .text_color(transport_color)
                                 .child(transport),
                         )
                     })
                     .when(has_udp, |this| {
+                        let (udp_bg, udp_border, udp_fg): (Hsla, Hsla, Hsla) = if is_dark {
+                            (
+                                rgb(0x581c87).opacity(0.3).into(),
+                                rgb(0xa855f7).opacity(0.3).into(),
+                                rgb(0xd8b4fe).into(),
+                            )
+                        } else {
+                            (
+                                rgb(0xf3e8ff).into(),
+                                rgb(0xd8b4fe).into(),
+                                rgb(0x7e22ce).into(),
+                            )
+                        };
                         this.child(
                             div()
                                 .flex_shrink_0()
                                 .px_1()
                                 .rounded(px(2.))
-                                .bg(rgb(0x581c87).opacity(0.3))
+                                .bg(udp_bg)
                                 .border_1()
-                                .border_color(rgb(0xa855f7).opacity(0.3))
+                                .border_color(udp_border)
                                 .font_family("monospace")
                                 .text_xs()
                                 .font_semibold()
-                                .text_color(rgb(0xd8b4fe))
+                                .text_color(udp_fg)
                                 .child("UDP"),
                         )
                     }),
@@ -474,7 +633,7 @@ impl RenderOnce for ClashNodeCard {
                     .justify_between()
                     .pt_1p5()
                     .border_t_1()
-                    .border_color(rgb(0x26262b))
+                    .border_color(cx.theme().border)
                     .child(
                         h_flex()
                             .items_center()

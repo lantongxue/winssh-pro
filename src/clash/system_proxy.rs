@@ -13,12 +13,12 @@
 //! 而"我改过你的系统代理"这句话换台机器就是句假话）。它落在
 //! `db::db_dir()/clash/system_proxy.json`，和实例的数据目录做邻居。
 //!
-//! 只做了 Windows。别的平台也有系统代理（Linux 是环境变量、macOS 是
-//! `networksetup`），但那是各自一套做法，没写过的平台一律如实说"这一档在这台
-//! 机器上还没有"（[`is_supported`]），而不是假装拨了一下。
+//! 做了 Windows（WinINET 注册表）与 macOS（`networksetup`，每个启用中的网络
+//! 服务各设一遍 HTTP / HTTPS / SOCKS 三种代理）。Linux 各桌面环境做法不一，
+//! 没写过的平台一律如实说"这一档在这台机器上还没有"（[`is_supported`]），
+//! 而不是假装拨了一下。
 
 use std::path::PathBuf;
-#[cfg(target_os = "windows")]
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
@@ -30,26 +30,38 @@ const SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settin
 
 /// `ProxyOverride` 的常规值：不带点的名字（内网机器名）直接连，不走代理。
 /// Windows 上各家代理客户端填的都是它。
+#[cfg(windows)]
 const LOCAL_BYPASS: &str = "<local>";
 
 /// 这台机器上有没有"系统代理"这一档可以拨。
 pub fn is_supported() -> bool {
-    cfg!(windows)
+    cfg!(any(windows, target_os = "macos"))
 }
 
 /// 拨上：把系统代理指到 `127.0.0.1:port`。
 ///
 /// 顺序是**先记后改**：中间任何一步失败或者崩溃，磁盘上那份"原本"都在，
 /// 复原得回来。
+///
+/// 已经有一份记录（这次是**重复拨开**，比如开关与整张卡片的点击各送了一次）
+/// 时**保留那份**、只更新端口：此刻读到的"现状"已经是我们自己拨上去的，
+/// 拿它覆盖记录，之后的"收掉"就再也还原不回用户原本的设置了。
 pub fn enable(port: u16) -> Result<()> {
     ensure_supported()?;
-    let previous = platform::read()?;
-    write_record(&Snapshot {
-        port,
-        proxy_enable: previous.proxy_enable,
-        proxy_server: previous.proxy_server,
-        proxy_override: previous.proxy_override,
-    })?;
+    let snapshot = match read_record()? {
+        Some(existing) => Snapshot { port, ..existing },
+        None => {
+            let previous = platform::read()?;
+            Snapshot {
+                port,
+                proxy_enable: previous.proxy_enable,
+                proxy_server: previous.proxy_server,
+                proxy_override: previous.proxy_override,
+                macos: previous.macos,
+            }
+        }
+    };
+    write_record(&snapshot)?;
     platform::apply(port)
 }
 
@@ -79,7 +91,7 @@ pub fn reconcile() -> Result<Option<u16>> {
     let Some(snapshot) = read_record()? else {
         return Ok(None);
     };
-    if platform::is_alive(snapshot.port) {
+    if is_alive(snapshot.port) {
         log::info!(
             "上一次的系统代理（127.0.0.1:{}）还在听，留给它",
             snapshot.port
@@ -110,6 +122,40 @@ struct Snapshot {
     proxy_enable: Option<u32>,
     proxy_server: Option<String>,
     proxy_override: Option<String>,
+    /// macOS：每个网络服务原本的三种代理。别的平台恒为空，旧记录里没有这一项。
+    #[serde(default)]
+    macos: Vec<MacService>,
+}
+
+/// 读出来的"现状"。各平台只填自己那几格，其余留空。
+struct Previous {
+    proxy_enable: Option<u32>,
+    proxy_server: Option<String>,
+    proxy_override: Option<String>,
+    macos: Vec<MacService>,
+}
+
+/// macOS 上一个网络服务（Wi-Fi、以太网……）原本的代理设置。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct MacService {
+    name: String,
+    web: MacProxy,
+    secure: MacProxy,
+    socks: MacProxy,
+}
+
+/// `networksetup -get*proxy` 读出来的一格：开没开、指向哪。
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+struct MacProxy {
+    enabled: bool,
+    server: String,
+    port: u16,
+}
+
+/// 那个端口上还有东西在听吗。上一次留下的实例成了孤儿时，它照样在服务。
+fn is_alive(port: u16) -> bool {
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300)).is_ok()
 }
 
 /// 记录文件：`db::db_dir()/clash/system_proxy.json`。
@@ -163,19 +209,13 @@ mod platform {
     use winreg::RegKey;
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 
-    /// 注册表里那三样，原样读出来。
-    pub(super) struct Previous {
-        pub proxy_enable: Option<u32>,
-        pub proxy_server: Option<String>,
-        pub proxy_override: Option<String>,
-    }
-
     pub(super) fn read() -> Result<Previous> {
         let key = open()?;
         Ok(Previous {
             proxy_enable: key.get_value("ProxyEnable").ok(),
             proxy_server: key.get_value("ProxyServer").ok(),
             proxy_override: key.get_value("ProxyOverride").ok(),
+            macos: Vec::new(),
         })
     }
 
@@ -203,12 +243,6 @@ mod platform {
         restore_value(&key, "ProxyOverride", snapshot.proxy_override.as_ref())?;
         notify();
         Ok(())
-    }
-
-    /// 那个端口上还有东西在听吗。上一次留下的实例成了孤儿时，它照样在服务。
-    pub(super) fn is_alive(port: u16) -> bool {
-        let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-        std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300)).is_ok()
     }
 
     fn restore_value<T>(key: &RegKey, name: &str, value: Option<&T>) -> Result<()>
@@ -256,21 +290,186 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+/// macOS：走系统自带的 `networksetup`。
+///
+/// 系统代理在 macOS 上是**按网络服务**（Wi-Fi、以太网、USB 网卡……）各存一份，
+/// 所以对每个启用中的服务各设一遍 HTTP、HTTPS、SOCKS —— mihomo 的混合端口
+/// 三种协议都认。设置之前把每个服务三种代理原本的样子读下来，收尾时照着还。
+#[cfg(target_os = "macos")]
 mod platform {
     use super::*;
 
-    pub(super) struct Previous {
-        pub proxy_enable: Option<u32>,
-        pub proxy_server: Option<String>,
-        pub proxy_override: Option<String>,
+    use std::process::Command;
+
+    /// 三种代理在 `networksetup` 里的子命令：读、设（带地址端口）、拨开关。
+    struct Kind {
+        get: &'static str,
+        set: &'static str,
+        state: &'static str,
     }
+
+    const WEB: Kind = Kind {
+        get: "-getwebproxy",
+        set: "-setwebproxy",
+        state: "-setwebproxystate",
+    };
+    const SECURE: Kind = Kind {
+        get: "-getsecurewebproxy",
+        set: "-setsecurewebproxy",
+        state: "-setsecurewebproxystate",
+    };
+    const SOCKS: Kind = Kind {
+        get: "-getsocksfirewallproxy",
+        set: "-setsocksfirewallproxy",
+        state: "-setsocksfirewallproxystate",
+    };
+
+    pub(super) fn read() -> Result<Previous> {
+        let mut macos = Vec::new();
+        for name in services()? {
+            macos.push(MacService {
+                web: get(&WEB, &name)?,
+                secure: get(&SECURE, &name)?,
+                socks: get(&SOCKS, &name)?,
+                name,
+            });
+        }
+        Ok(Previous {
+            proxy_enable: None,
+            proxy_server: None,
+            proxy_override: None,
+            macos,
+        })
+    }
+
+    /// 每个启用中的服务都指到 `127.0.0.1:port`。个别服务设不上（比如刚被拔掉的
+    /// 网卡）只记日志，**一个都没设上**才算失败。
+    pub(super) fn apply(port: u16) -> Result<()> {
+        let names = services()?;
+        let port_text = port.to_string();
+        let mut applied = 0usize;
+        let mut last_error = None;
+        for name in &names {
+            let outcome = [&WEB, &SECURE, &SOCKS].into_iter().try_for_each(|kind| {
+                // `-set*proxy` 在设地址的同时就把开关打开了。
+                networksetup(&[kind.set, name, "127.0.0.1", &port_text]).map(|_| ())
+            });
+            match outcome {
+                Ok(()) => applied += 1,
+                Err(error) => {
+                    log::warn!("给网络服务 {name} 设系统代理失败：{error:#}");
+                    last_error = Some(error);
+                }
+            }
+        }
+        match (applied, last_error) {
+            (0, Some(error)) => Err(error),
+            (0, None) => bail!("没有找到启用中的网络服务"),
+            _ => Ok(()),
+        }
+    }
+
+    /// 还原成记录里那份"原本"。某个服务这会儿已经不在了（网卡拔了、服务删了）
+    /// 不算失败，记一行日志继续还别的。
+    pub(super) fn restore(snapshot: &Snapshot) -> Result<()> {
+        for service in &snapshot.macos {
+            for (kind, previous) in [
+                (&WEB, &service.web),
+                (&SECURE, &service.secure),
+                (&SOCKS, &service.socks),
+            ] {
+                if let Err(error) = put_back(kind, &service.name, previous) {
+                    log::warn!("还原网络服务 {} 的系统代理失败：{error:#}", service.name);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn put_back(kind: &Kind, name: &str, previous: &MacProxy) -> Result<()> {
+        if previous.server.is_empty() || previous.port == 0 {
+            // 原本就没指向任何地方：只要把我们打开的开关关回去。
+            networksetup(&[kind.state, name, "off"])?;
+            return Ok(());
+        }
+        networksetup(&[kind.set, name, &previous.server, &previous.port.to_string()])?;
+        let state = if previous.enabled { "on" } else { "off" };
+        networksetup(&[kind.state, name, state])?;
+        Ok(())
+    }
+
+    /// 启用中的网络服务名。`networksetup` 的第一行是一句固定的说明，
+    /// 以 `*` 开头的行是被停用的服务。
+    fn services() -> Result<Vec<String>> {
+        let text = networksetup(&["-listallnetworkservices"])?;
+        Ok(text
+            .lines()
+            .map(str::trim)
+            .filter(|line| {
+                !line.is_empty()
+                    && !line.starts_with('*')
+                    && !line.starts_with("An asterisk")
+            })
+            .map(str::to_owned)
+            .collect())
+    }
+
+    fn get(kind: &Kind, name: &str) -> Result<MacProxy> {
+        Ok(parse_proxy(&networksetup(&[kind.get, name])?))
+    }
+
+    /// 读 `networksetup -get*proxy` 的回数：
+    /// `Enabled: Yes` / `Server: 127.0.0.1` / `Port: 7890`。
+    pub(super) fn parse_proxy(text: &str) -> MacProxy {
+        let mut proxy = MacProxy::default();
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
+            let value = value.trim();
+            match key.trim() {
+                "Enabled" => proxy.enabled = value.eq_ignore_ascii_case("yes") || value == "1",
+                "Server" => proxy.server = value.to_owned(),
+                "Port" => proxy.port = value.parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+        proxy
+    }
+
+    fn networksetup(args: &[&str]) -> Result<String> {
+        let output = Command::new("networksetup")
+            .args(args)
+            .output()
+            .context("运行 networksetup 失败")?;
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        // `networksetup` 出错时多半仍是退出码 0，错误话写在正文里，两样都看。
+        let failed = !output.status.success()
+            || stdout.contains("** Error:")
+            || stdout.contains("is not a recognized network service");
+        if failed {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "networksetup {} 失败：{}{}",
+                args.first().copied().unwrap_or_default(),
+                stdout.trim(),
+                stderr.trim()
+            );
+        }
+        Ok(stdout)
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+mod platform {
+    use super::*;
 
     pub(super) fn read() -> Result<Previous> {
         Ok(Previous {
             proxy_enable: None,
             proxy_server: None,
             proxy_override: None,
+            macos: Vec::new(),
         })
     }
 
@@ -280,10 +479,6 @@ mod platform {
 
     pub(super) fn restore(_snapshot: &Snapshot) -> Result<()> {
         ensure_supported()
-    }
-
-    pub(super) fn is_alive(_port: u16) -> bool {
-        false
     }
 }
 
@@ -308,17 +503,46 @@ mod tests {
             proxy_enable: None,
             proxy_server: None,
             proxy_override: None,
+            macos: Vec::new(),
         };
         let empty = Snapshot {
             port: 7890,
             proxy_enable: Some(0),
             proxy_server: Some(String::new()),
             proxy_override: Some(String::new()),
+            macos: Vec::new(),
         };
         assert_ne!(missing, empty);
         let round_trip: Snapshot =
             serde_json::from_str(&serde_json::to_string(&missing).unwrap()).unwrap();
         assert_eq!(round_trip, missing);
+    }
+
+    /// 旧记录（没有 macOS 那一项）照样读得进来。
+    #[test]
+    fn an_old_record_without_macos_services_still_loads() {
+        let old = r#"{"port":7890,"proxy_enable":0,"proxy_server":null,"proxy_override":null}"#;
+        let snapshot: Snapshot = serde_json::from_str(old).unwrap();
+        assert!(snapshot.macos.is_empty());
+    }
+
+    /// `networksetup -getwebproxy` 的回数怎么读。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn networksetup_output_is_parsed() {
+        let on = platform::parse_proxy(
+            "Enabled: Yes\nServer: 127.0.0.1\nPort: 7890\nAuthenticated Proxy Enabled: 0\n",
+        );
+        assert_eq!(
+            on,
+            MacProxy {
+                enabled: true,
+                server: "127.0.0.1".into(),
+                port: 7890
+            }
+        );
+        let off = platform::parse_proxy("Enabled: No\nServer: \nPort: 0\n");
+        assert!(!off.enabled && off.server.is_empty() && off.port == 0);
     }
 
     /// 不支持的平台上，两个开关都如实报错，而不是假装拨了一下。
