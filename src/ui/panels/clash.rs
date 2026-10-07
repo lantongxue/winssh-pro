@@ -38,7 +38,7 @@ use gpui_kit::component::{
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Editor, EditorState, Input, InputEvent, InputState},
     scroll::{ScrollableElement as _, ScrollbarAxis},
     switch::Switch,
     table::{Table, TableCell, TableHead, TableHeader, TableRow},
@@ -49,7 +49,7 @@ use gpui_kit::{
     FocusHandle, Focusable, PathPromptOptions,
     Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
     Size, Stateful, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px, rgb, size,
+    prelude::FluentBuilder as _, px, relative, rgb, size,
 };
 
 use crate::clash::{
@@ -264,6 +264,7 @@ pub struct ClashPanel {
     filtered_rule_indices: Vec<usize>,
     rule_query: String,
     node_query: String,
+    config_editor: Entity<EditorState>,
     focus_handle: FocusHandle,
 }
 
@@ -288,6 +289,12 @@ impl ClashPanel {
                 .placeholder(t!("clash.panel.route_search_placeholder"))
                 .default_value("github.com")
         });
+        let config_editor = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("yaml")
+                .line_number(true)
+                .default_value(subscription.config_yaml.to_string())
+        });
         let mut this = Self {
             subscription,
             outline,
@@ -311,6 +318,7 @@ impl ClashPanel {
             filtered_rule_indices: Vec::new(),
             rule_query: String::new(),
             node_query: String::new(),
+            config_editor,
             focus_handle: cx.focus_handle(),
         };
         this.subscribe_inputs(window, cx);
@@ -341,8 +349,20 @@ impl ClashPanel {
     }
 
     /// 换一条订阅来看。已经开着的那块面板点另一条订阅时走的就是这里。
-    pub fn show(&mut self, subscription: ClashSubscription, cx: &mut Context<Self>) {
+    pub fn show(
+        &mut self,
+        subscription: ClashSubscription,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.outline = subscription.outline();
+        if self.subscription.id != subscription.id
+            || self.subscription.config_yaml != subscription.config_yaml
+        {
+            self.config_editor.update(cx, |editor, cx| {
+                editor.set_value(subscription.config_yaml.clone(), window, cx);
+            });
+        }
         self.subscription = subscription;
         // 换了一条：上一次那条留下的错误不该再弹。
         self.shown_error = self.state.error.as_ref().map(|error| error.seq).unwrap_or(0);
@@ -1573,18 +1593,17 @@ impl ClashPanel {
                         ),
                 )
                 .child(
-                    v_flex()
+                    div()
                         .id("clash-panel-config-body")
                         .flex_1()
                         .min_h_0()
-                        .overflow_y_scrollbar()
-                        .p_3()
-                        .bg(palette::recessed(cx))
+                        .w_full()
                         .child(
-                            div()
-                                .font_family("monospace")
-                                .text_xs()
-                                .child(SharedString::from(body)),
+                            Editor::new(&self.config_editor)
+                                .w_full()
+                                .h(relative(1.))
+                                .bordered(false)
+                                .readonly(true),
                         ),
                 )
                 .into_any_element(),
@@ -3301,7 +3320,7 @@ mod tests {
             panel.on_state(Arc::new(RuntimeState::default()), window, cx);
             panel.node_scroll.set_offset(gpui_kit::point(px(0.), px(120.)));
             panel.rule_scroll.set_offset(gpui_kit::point(px(0.), px(120.)));
-            panel.show(subscription(), cx);
+            panel.show(subscription(), window, cx);
         });
 
         panel.read_with(cx, |panel, _| {

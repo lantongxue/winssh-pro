@@ -371,7 +371,7 @@ impl ClashView {
                 panel
             }
         };
-        panel.update(cx, |panel, cx| panel.show(subscription.clone(), cx));
+        panel.update(cx, |panel, cx| panel.show(subscription.clone(), window, cx));
         self.selected = Some(subscription.id.clone());
 
         let Some(area) = self.dock_area.upgrade() else {

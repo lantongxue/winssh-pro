@@ -6,8 +6,8 @@
 //! User-Agent 一行两列、标签分类与主题标识色一行两列、备注说明、协议支持
 //! 提示、底部按钮。这里按同样的顺序摆，两列区就是那两处。
 //!
-//! 正文（YAML）那一档原型的"直接粘贴 YAML"模式给的是一个多行文本域，这里
-//! 用组件库的 [`TextareaState`]。手敲正文的人少，但原型给了这条路就得给全。
+//! 正文（YAML）那一档原型的"直接粘贴 YAML"模式给的是一个代码编辑器，这里
+//! 用组件库的 [`EditorState`]。支持代码高亮与行号。手敲正文的人少，但原型给了这条路就得给全。
 //!
 //! 删除不在这张表上：列表里那个垃圾桶才是它的入口（同
 //! [`crate::ui::dialogs::SnippetFormDialog`]），一处入口比两处清楚。
@@ -19,7 +19,7 @@ use gpui_kit::component::{
     StyledExt as _, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
-    input::{Input, InputEvent, InputState, Textarea, TextareaState},
+    input::{Editor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState},
     select::{Select, SelectState},
     v_flex,
 };
@@ -137,9 +137,9 @@ fn render_header(title: SharedString, cx: &App) -> impl IntoElement {
 pub struct ClashFormDialog {
     name: Entity<InputState>,
     source_url: Entity<InputState>,
-    /// 直接粘贴 YAML 那一档的输入框。原型给它一个多行输入，这里用
-    /// [`TextareaState`]；编辑已导入的订阅时就是库里的那份正文。
-    yaml: Entity<TextareaState>,
+    /// 直接粘贴 YAML 那一档的输入框。支持代码高亮与行号，
+    /// 编辑已导入的订阅时就是库里的那份正文。
+    yaml: Entity<EditorState>,
     /// 导入方式：`true` 是远程订阅 URL，`false` 是直接粘贴 YAML。
     by_url: bool,
     /// 正文本身。"粘贴 YAML"那一档由输入框填，URL 那一档由"拉取"填进来。
@@ -334,8 +334,9 @@ impl ClashFormDialog {
                 )
         });
         let yaml = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .auto_grow(6, 12)
+            EditorState::new(window, cx)
+                .language("yaml")
+                .line_number(true)
                 .placeholder(SharedString::from(t!("clash.form.yaml_placeholder")))
                 .default_value(editing.map(|s| s.config_yaml.to_string()).unwrap_or_default())
         });
@@ -796,7 +797,10 @@ impl Render for ClashFormDialog {
             .when(!self.by_url, |this| {
                 this.child(field(
                     t!("clash.form.yaml").into(),
-                    Textarea::new(&self.yaml).w_full().h(px(140.)),
+                    Editor::new(&self.yaml)
+                        .w_full()
+                        .h(px(200.))
+                        .overflow_hidden(),
                     cx,
                 ))
             })
