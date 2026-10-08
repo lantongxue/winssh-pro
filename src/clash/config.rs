@@ -214,23 +214,35 @@ pub fn runtime_config(config_yaml: &str, ports: &RuntimePorts) -> Result<String>
     root.insert(Value::from("secret"), Value::from(ports.secret.clone()));
     root.insert(Value::from("allow-lan"), Value::from(false));
 
-    // TUN 那一块：正文里写了就照它的，缺哪一项补哪一项。
-    //
-    // 补的是"网卡建起来能用"所必需的那几样，而不是替用户拿主意：运行中拨
-    // TUN 开关走的是一句 `PATCH /configs`（见 [`crate::clash::runtime`]），
-    // 内核照的就是这份参数 —— 少了 `auto-route`，网卡是建起来了，可没有任何
-    // 流量会走进去，界面上开关亮着、网却是不通的，那种坏法最难查。
+    // TUN 那一块：用户后来在设置里改的参数（栈、网卡名、MTU、路由/出口自动）
+    // **盖过**订阅正文里写的那一份 —— 订阅正文是机场给的，用户的偏好是用户
+    // 后来敲的，两者之间用户那次赢。
     //
     // `enable` 出厂写成关：起一个实例不等于要接管整台机器的路由，那一步得
-    // 用户自己拨。
+    // 用户自己拨（也不让用户在设置里改 enable —— 那个开关的发球权归
+    // `PATCH /configs` 那一下现场操作）。
+    let prefs = super::tun_settings::current();
     let mut tun = match root.get("tun") {
         Some(Value::Mapping(mapping)) => mapping.clone(),
         _ => Mapping::new(),
     };
     fill(&mut tun, "enable", Value::from(false));
-    fill(&mut tun, "stack", Value::from("mixed"));
-    fill(&mut tun, "auto-route", Value::from(true));
-    fill(&mut tun, "auto-detect-interface", Value::from(true));
+    // 用户偏好盖订阅：用 insert 不用 fill。
+    tun.insert(Value::from("stack"), Value::from(prefs.stack.as_yaml()));
+    if !prefs.device.trim().is_empty() {
+        tun.insert(Value::from("device"), Value::from(prefs.device.clone()));
+    }
+    if prefs.mtu > 0 {
+        tun.insert(
+            Value::from("mtu"),
+            Value::from(u64::from(prefs.mtu)),
+        );
+    }
+    tun.insert(Value::from("auto-route"), Value::from(prefs.auto_route));
+    tun.insert(
+        Value::from("auto-detect-interface"),
+        Value::from(prefs.auto_detect_interface),
+    );
     fill(
         &mut tun,
         "dns-hijack",
@@ -541,40 +553,59 @@ rules:
 
     /// TUN 那一块：没写就补一份能用的，写了就一个键都不动。
     #[test]
-    fn the_tun_block_is_filled_in_but_never_overwritten() {
+    fn the_tun_block_is_filled_in_and_user_prefs_win_over_subscription() {
         let ports = RuntimePorts {
             mixed_port: 1080,
             api_port: 1081,
             secret: "x".to_owned(),
         };
 
-        // 正文里没有 tun：补上，而且是关着的 —— 起实例不等于接管路由。
+        // 正文里没有 tun：补上 —— stack/device/mtu 全部是设置里的当前
+        // （`tun_settings::current()`，默认档）。enable 由补丁拨，出厂关。
         let root = parse_root(&runtime_config("proxies: []\n", &ports).unwrap()).unwrap();
         let tun = match root.get("tun") {
             Some(Value::Mapping(tun)) => tun.clone(),
             other => panic!("该补出 tun 那一块：{other:?}"),
         };
         assert_eq!(tun.get("enable"), Some(&Value::from(false)));
-        assert_eq!(tun.get("stack"), Some(&Value::from("mixed")));
-        assert_eq!(tun.get("auto-route"), Some(&Value::from(true)));
-        assert_eq!(tun.get("auto-detect-interface"), Some(&Value::from(true)));
+        let prefs = crate::clash::tun_settings::current();
+        assert_eq!(
+            tun.get("stack"),
+            Some(&Value::from(prefs.stack.as_yaml())),
+            "栈从设置里来"
+        );
+        assert_eq!(
+            tun.get("device"),
+            Some(&Value::from(prefs.device.clone())),
+            "网卡名从设置里来"
+        );
+        assert_eq!(
+            tun.get("mtu"),
+            Some(&Value::from(u64::from(prefs.mtu))),
+            "MTU 从设置里来"
+        );
+        assert_eq!(tun.get("auto-route"), Some(&Value::from(prefs.auto_route)));
+        assert_eq!(
+            tun.get("auto-detect-interface"),
+            Some(&Value::from(prefs.auto_detect_interface))
+        );
         assert!(tun.get("dns-hijack").is_some());
 
-        // 正文里写了：照它的，缺的才补。
-        let yaml = "tun:\n  enable: true\n  stack: system\n  device: utun9\n";
+        // 订阅里写了：用户偏好依然赢 —— 订阅是机场给的，设置是用户后来敲的。
+        let yaml = "tun:\n  enable: true\n  stack: system\n  device: utun9\n  mtu: 9000\n";
         let root = parse_root(&runtime_config(yaml, &ports).unwrap()).unwrap();
         let tun = match root.get("tun") {
             Some(Value::Mapping(tun)) => tun,
             other => panic!("{other:?}"),
         };
+        // enable 留给订阅：它是"启动时拨不拨"，由补丁在运行时拨 ——
+        // 我们只在用户没写的时候补一份"关"。
         assert_eq!(tun.get("enable"), Some(&Value::from(true)), "用户说了算");
-        assert_eq!(tun.get("stack"), Some(&Value::from("system")));
-        assert_eq!(tun.get("device"), Some(&Value::from("utun9")));
-        assert_eq!(
-            tun.get("auto-route"),
-            Some(&Value::from(true)),
-            "缺的那几样补上"
-        );
+        // 其余几样被设置盖掉 —— 这三个字段是设置面板管的，订阅说了不算。
+        let prefs = crate::clash::tun_settings::current();
+        assert_eq!(tun.get("stack"), Some(&Value::from(prefs.stack.as_yaml())));
+        assert_eq!(tun.get("device"), Some(&Value::from(prefs.device.clone())));
+        assert_eq!(tun.get("mtu"), Some(&Value::from(u64::from(prefs.mtu))));
     }
 
     #[test]

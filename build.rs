@@ -43,6 +43,13 @@ fn main() {
         copy_wintun();
         copy_mihomo();
     }
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        copy_mihomo_macos();
+        // macOS 上 broker 是 launchd 守护（见 `src/bin/broker.rs` 的模块文档），
+        // `cargo run` / `cargo test` 时它要在 exe 旁边能找到 ——
+        // `clash::broker::broker_binary_path` 找的就是这两个位置。
+        copy_broker_sidecar();
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -112,6 +119,115 @@ fn copy_mihomo() {
         .join("windows")
         .join("mihomo-windows-amd64.exe");
     copy_sidecar(&source, "mihomo.exe", false);
+}
+
+/// macOS 那一份。和 Windows 同一个规矩：用户自己把 `third_party/mihomo/macos/<arch>/mihomo`
+/// 放进来，**我们不代它下载、不代它升级**（那是个会改本机网络设置的程序，哪一个版本、
+/// 从哪儿来，得用户自己清楚）。CPU 架构按当前构建目标挑：x86_64 拿 `amd64`，aarch64
+/// 拿 `arm64` —— mihomo to-date 没发射 arm64 之外的 Apple Silicon 命名。
+///
+/// 与 Windows 的另一个区别是这边**不带 `.exe` 后缀** —— macOS 的可执行文件
+/// 命名习惯；`binary_path` 在 Unix 平台查的也是这个名字。
+fn copy_mihomo_macos() {
+    let arch_dir = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("x86_64") => "amd64",
+        Ok("aarch64") => "arm64",
+        _ => return,
+    };
+    let source = Path::new("third_party")
+        .join("mihomo")
+        .join("macos")
+        .join(arch_dir)
+        .join("mihomo");
+    // Unix 上的 `copy_sidecar` 不会自带 +x —— `fs::write` 用的是默认 0644。
+    // 用户从下载站拷过来的那份大概率带 +x（chmod 是常规动作）；保险起见，
+    // 这边 source 没 +x 就跳过拷贝，让 `binary_path` 在 mihomo 目录里直接
+    // 拿原文件，免得拷过去的"可执行"既不可执行也跑不起来。
+    match std::fs::metadata(&source) {
+        Ok(meta) => {
+            use std::os::unix::fs::PermissionsExt as _;
+            if meta.permissions().mode() & 0o111 == 0 {
+                println!(
+                    "cargo:warning={} 缺少可执行权限，跳过拷贝（先 `chmod +x {}`）",
+                    source.display(),
+                    source.display()
+                );
+                return;
+            }
+        }
+        Err(_) => return,
+    }
+    copy_sidecar(&source, "mihomo", false);
+    // `copy_sidecar`.write 用的是默认 0644 —— 这里给它 +x。
+    if let Ok(out_dir) = std::env::var("OUT_DIR") {
+        // `<profile>/build/winssh-pro-<hash>/out` 往上数三层到 profile；
+        // 那里和 `deps/` 各摆一份（与 `copy_sidecar` 同一处讲究）。
+        let profile = Path::new(&out_dir)
+            .ancestors()
+            .nth(3)
+            .map(PathBuf::from);
+        if let Some(profile) = profile {
+            for candidate in [profile.join("mihomo"), profile.join("deps").join("mihomo")] {
+                let _ = chmod_plus_x(&candidate);
+            }
+        }
+    }
+}
+
+/// macOS 那一份。broker 被 `cargo build` 编出来之后由这里拷到 exe 旁边，
+/// 让 `clash::broker::broker_binary_path` 在开发期也能找到。它在打包出来
+/// 的 `.app` 里就不该用这个位置 —— 打包脚本（`scripts/bundle-macos.sh`）
+/// 会把它放到 `Contents/Library/LaunchServices/` 去，那才是 macOS 上
+/// helper 该在的位置（这块的位置约定见 `clash::broker::broker_binary_path`
+/// 的注释）。
+#[cfg(target_os = "macos")]
+fn copy_broker_sidecar() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let Ok(out_dir) = std::env::var("OUT_DIR") else {
+        return;
+    };
+    let Some(profile) = Path::new(&out_dir).ancestors().nth(3).map(PathBuf::from) else {
+        return;
+    };
+    let source = profile.join("winssh-broker");
+    // broker 还没编出来（首次构建）就跳过 —— `cargo build` 的依赖顺序会
+    // 在下一轮 build.rs 跑之前把它放到位，错过一轮不碍事。
+    if !source.is_file() {
+        return;
+    }
+    for candidate in [profile.join("winssh-broker"), profile.join("deps").join("winssh-broker")] {
+        // deps 那一份由 cargo 自然产出（`cargo test` 的产物就在那里），
+        // 不需要我们拷 —— 只补 profile 根目录下"货车旁边"那一份。
+        if candidate == source {
+            // 只补 +x。
+            if let Ok(meta) = std::fs::metadata(&source) {
+                let mut permissions = meta.permissions();
+                let current = permissions.mode();
+                permissions.set_mode(current | 0o111);
+                let _ = std::fs::set_permissions(&source, permissions);
+            }
+            continue;
+        }
+        // deps 那一份 cargo 会摆好。我们不拷、覆盖反而会把 cargo 的指纹搞乱。
+        let _ = candidate;
+    }
+}
+
+#[cfg(unix)]
+fn chmod_plus_x(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    if !path.is_file() {
+        return Ok(());
+    }
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    let mode = permissions.mode();
+    permissions.set_mode(mode | 0o111);
+    std::fs::set_permissions(path, permissions)
+}
+#[cfg(not(unix))]
+fn chmod_plus_x(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// 把一份随包带的文件拷到这次构建的 exe 旁边。

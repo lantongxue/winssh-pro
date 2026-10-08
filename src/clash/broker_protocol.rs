@@ -21,7 +21,10 @@ use serde::{Deserialize, Serialize};
 /// broker 认的那一个程序名。它跑在管理员权限下，**只**替 GUI 拉这一个
 /// 内核——"帮我把任意 exe 提权跑起来"那种指令必须在这层就死掉
 /// （Clash Verge 出过同类的提权漏洞，见其 issue #3428）。
+#[cfg(windows)]
 pub const KERNEL_EXE: &str = "mihomo.exe";
+#[cfg(not(windows))]
+pub const KERNEL_EXE: &str = "mihomo";
 
 /// GUI → broker 的指令。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,17 +163,27 @@ mod tests {
         #[cfg(windows)]
         let ok_cases = [r"C:\app\mihomo.exe", r"C:\app\MIHOMO.EXE"];
         #[cfg(not(windows))]
-        let ok_cases = ["/opt/clash/mihomo.exe"];
+        let ok_cases = ["/opt/clash/mihomo", "/opt/clash/MIHOMO"];
         for case in ok_cases {
             assert!(validate_start(case).is_ok(), "{case}");
         }
 
         // 反例：相对路径、别的程序、拿 mihomo 当目录名的花活。
-        assert!(validate_start("mihomo.exe").is_err());
-        assert!(validate_start(r".\mihomo.exe").is_err());
-        assert!(validate_start(r"C:\app\evil.exe").is_err());
-        assert!(validate_start(r"C:\app\mihomo.exe\..\evil.exe").is_err());
-        assert!(validate_start(r"C:\app\mihomo.exe ").is_err());
+        #[cfg(windows)]
+        {
+            assert!(validate_start("mihomo.exe").is_err());
+            assert!(validate_start(r".\mihomo.exe").is_err());
+            assert!(validate_start(r"C:\app\evil.exe").is_err());
+            assert!(validate_start(r"C:\app\mihomo.exe\..\evil.exe").is_err());
+            assert!(validate_start(r"C:\app\mihomo.exe ").is_err());
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(validate_start("mihomo").is_err());
+            assert!(validate_start("./mihomo").is_err());
+            assert!(validate_start("/opt/clash/evil").is_err());
+            assert!(validate_start("/opt/clash/mihomo/../evil").is_err());
+        }
         assert!(validate_start("").is_err());
     }
 

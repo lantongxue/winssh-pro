@@ -1673,6 +1673,85 @@ clash.runtime.write_config_failed:
 clash.runtime.reload_failed:
   en: "The core refused the new configuration: %{error}"
   zh-CN: "内核没收下这份新配置：%{error}"
+# TUN 设置弹窗（src/ui/dialogs/clash_tun_settings.rs）。
+clash.tun.title:
+  en: "Mihomo Settings"
+  zh-CN: "Mihomo 设置"
+clash.tun.cancel:
+  en: "Cancel"
+  zh-CN: "取消"
+clash.tun.save:
+  en: "Save"
+  zh-CN: "保存"
+clash.tun.helper_label:
+  en: "Privileged helper"
+  zh-CN: "系统特权助手"
+clash.tun.helper_caption_macos:
+  en: "A launchd daemon that creates the virtual NIC on demand. Remove it to stop using TUN entirely."
+  zh-CN: "常驻的 launchd 守护：拨 TUN 时替我们建虚拟网卡。彻底告别 TUN 时再卸。"
+clash.tun.helper_caption_windows:
+  en: "On Windows the helper is started on demand and exits with the app — nothing to install or remove here."
+  zh-CN: "Windows 上的助手是随用随起的，应用退出它也收走 —— 没有要装或要卸的东西。"
+clash.tun.helper_caption_linux:
+  en: "Linux helper is not available yet."
+  zh-CN: "Linux 上的助手还没接好，这一档用不了。"
+clash.tun.helper_installed:
+  en: "Installed"
+  zh-CN: "已安装"
+clash.tun.helper_missing:
+  en: "Not installed"
+  zh-CN: "未安装"
+clash.tun.helper_partial:
+  en: "Partially installed"
+  zh-CN: "装到一半"
+clash.tun.helper_install:
+  en: "Install"
+  zh-CN: "安装"
+clash.tun.helper_uninstall:
+  en: "Uninstall"
+  zh-CN: "卸载"
+clash.tun.helper_installing:
+  en: "Installing…"
+  zh-CN: "安装中…"
+clash.tun.helper_uninstalling:
+  en: "Uninstalling…"
+  zh-CN: "卸载中…"
+clash.tun.helper_install_canceled:
+  en: "Installation canceled."
+  zh-CN: "已取消安装。"
+clash.tun.helper_uninstall_canceled:
+  en: "Uninstall canceled."
+  zh-CN: "已取消卸载。"
+clash.tun.section_title:
+  en: "Virtual NIC (TUN)"
+  zh-CN: "虚拟网卡（TUN）"
+clash.tun.stack_label:
+  en: "Stack"
+  zh-CN: "协议栈"
+clash.tun.device_label:
+  en: "NIC name"
+  zh-CN: "网卡名"
+clash.tun.mtu_label:
+  en: "MTU"
+  zh-CN: "MTU"
+clash.tun.mtu_invalid:
+  en: "MTU must be an integer (got %{value})."
+  zh-CN: "MTU 必须是个整数（拿到的是 %{value}）。"
+clash.tun.mtu_out_of_range:
+  en: "MTU must be between %{min} and %{max}."
+  zh-CN: "MTU 要在 %{min} ~ %{max} 之间。"
+clash.tun.auto_route_label:
+  en: "Auto route"
+  zh-CN: "自动路由"
+clash.tun.auto_detect_label:
+  en: "Auto detect interface"
+  zh-CN: "自动选择出口"
+clash.tun.caption:
+  en: "These apply to every subscription. The change is picked up the next time an instance starts or the configuration is reloaded."
+  zh-CN: "这一份对整个应用生效，不分订阅。下一个实例启动或下一次重载配置时生效。"
+clash.view.tun_settings_tooltip:
+  en: "Mihomo settings (helper / TUN)"
+  zh-CN: "Mihomo 设置（助手 / 虚拟网卡）"
 # 订阅服务（src/service/clash_subscription_service.rs）。
 clash.missing:
   en: "This subscription is gone (%{id})."

@@ -24,10 +24,12 @@
 //!   就地译成我们自己的类型（[`snapshot`]），界面不认识 mihomo 的字段名。
 //! - **跑**（[`runtime`]）：本进程里**同时只有一个** mihomo 实例。起停、端口、
 //!   子进程的收尾、日志的尾巴、以及"此刻是什么状态"那份供界面订阅的快照，
-//!   都在那里。拨 TUN 要管理员权限时（Windows 上建 wintun 网卡），runtime 经
-//!   一次 UAC 拉起 `winssh-broker.exe` 代管内核（[`broker`] /
-//!   [`broker_protocol`]，本体在 `src/bin/broker.rs`），GUI 自己留在用户态；
-//!   broker 随 GUI 退出自动收走内核，不装服务、不留后台。
+//!   都在那里。拨 TUN 要管理员权限时（Windows 上建 wintun 网卡、macOS 上
+//!   开 `/dev/net/tun`、Linux 上建 TUN/TAP 设备），runtime 经一次系统
+//!   授权把 `winssh-broker` 拉起来代管内核（[`broker`] / [`broker_protocol`]，
+//!   本体在 `src/bin/broker.rs`；Windows 走 UAC，macOS 走 `osascript` 的
+//!   "输入密码授权"那一框，Linux 走 polkit 的 `pkexec`），GUI 自己留在
+//!   用户态；broker 随 GUI 退出自动收走内核，不装服务、不留后台。
 //! - **接**（[`system_proxy`]）：把系统代理指向那个混合端口，或者指向虚拟网卡
 //!   （后者由 mihomo 自己建网卡，我们只负责把它的 TUN 开关拨上去）。
 //!
@@ -38,15 +40,16 @@
 //! 订阅表单是 [`crate::ui::dialogs::ClashFormDialog`]。
 
 pub mod api;
-pub mod broker_protocol;
-#[cfg(windows)]
+#[cfg(any(windows, unix))]
 pub mod broker;
+pub mod broker_protocol;
 pub mod config;
 pub mod downloader;
 pub mod runtime;
 pub mod snapshot;
 pub mod subscription;
 pub mod system_proxy;
+pub mod tun_settings;
 
 /// 界面要的那几样，从各子模块抬到这一层 —— 外边（`src/ui/`）只认
 /// `crate::clash::X` 这一种写法，和 [`crate::easytier`] 那边一个规矩。
@@ -56,3 +59,4 @@ pub use downloader::ensure_binary;
 pub use runtime::{Action, Phase, RuntimeState, SubscriptionRef};
 pub use snapshot::{ConnectionSummary, LiveGroup, LiveNode};
 pub use subscription::{ClashSubscription, ClashSubscriptionDraft, FetchedBody, SubscriptionMeta};
+pub use tun_settings::{TunSettings, TunStack};

@@ -10,6 +10,7 @@
 
 mod backup_restore;
 mod clash_form;
+mod clash_tun_settings;
 mod command_history;
 mod command_palette;
 mod credential_form;
@@ -27,6 +28,8 @@ mod zmodem_transfer;
 pub use backup_restore::BackupRestoreDialog;
 
 pub use clash_form::{ClashFormDialog, ClashSavedHandler};
+#[allow(unused_imports)]
+pub use clash_tun_settings::{ClashTunSavedHandler, ClashTunSettingsDialog};
 pub use command_history::{CommandHistoryDialog, HistoryRunHandler, ShellIntegrationHandler};
 pub use command_palette::{CommandPaletteDialog, CommandPaletteEvent};
 pub use credential_form::{CredentialFormDialog, CredentialSavedHandler};

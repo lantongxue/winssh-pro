@@ -1120,15 +1120,34 @@ impl ClashView {
                                     ),
                             )
                             .child(
-                                div()
-                                    .px_1p5()
-                                    .py_0p5()
-                                    .rounded(px(4.))
-                                    .bg(palette::surface_strong(cx))
-                                    .font_family("monospace")
-                                    .text_xs()
-                                    .text_color(palette::sky())
-                                    .child(SharedString::from(version)),
+                                h_flex()
+                                    .gap_1()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .px_1p5()
+                                            .py_0p5()
+                                            .rounded(px(4.))
+                                            .bg(palette::surface_strong(cx))
+                                            .font_family("monospace")
+                                            .text_xs()
+                                            .text_color(palette::sky())
+                                            .child(SharedString::from(version)),
+                                    )
+                                    .child(
+                                        Button::new("clash-view-tun-settings")
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(Icon::new(gpui_kit::assets::IconName::Settings))
+                                            .tooltip(t!("clash.view.tun_settings_tooltip"))
+                                            .on_click(cx.listener(|_, _, window, cx| {
+                                                crate::ui::dialogs::ClashTunSettingsDialog::open(
+                                                    std::rc::Rc::new(|_, _| {}),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })),
+                                    ),
                             ),
                     )
                     .child(

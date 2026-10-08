@@ -38,7 +38,7 @@ use tokio::sync::{mpsc, watch};
 use serde_json::Value;
 
 use super::api::ApiClient;
-#[cfg(windows)]
+#[cfg(any(windows, unix))]
 use super::broker;
 use super::config::{self, RuntimePorts, SubscriptionOutline};
 use super::snapshot::{ConnectionSummary, LiveState, NodeFacts};
@@ -802,7 +802,7 @@ async fn run(
         token,
     };
 
-    #[cfg(windows)]
+    #[cfg(any(windows, unix))]
     let mut broker: Option<Arc<broker::BrokerSession>> = None;
     // 提权重启就是为把 TUN 拨上去：新内核就绪之后要补的那一拨。
     let mut want_tun_on_ready = false;
@@ -810,7 +810,7 @@ async fn run(
     let outcome = 'instance: loop {
         // ① 起内核：平时自己拉，broker 就位之后由它代拉（管理员权限）。
         let spawned = async {
-            #[cfg(windows)]
+            #[cfg(any(windows, unix))]
             if let Some(broker) = &broker {
                 let args = kernel_args(&dir, &config_path);
                 return broker
@@ -872,9 +872,9 @@ async fn run(
                     outcome_slot = reason;
                     break;
                 }
-                #[cfg(windows)]
+                #[cfg(any(windows, unix))]
                 Control::RestartElevated => {
-                    // ShellExecuteExW(runas) 会同步等到用户在 UAC 上点完（在
+                    // 各平台的提权器都会同步等到用户在授权框上点完（在
                     // spawn_blocking 里，见 broker::spawn），这里连它一起跟
                     // 抢占铃竞速：提权途中点了停止就当场取消。
                     let logs = session.logs.clone();
@@ -905,7 +905,7 @@ async fn run(
                         }
                         Some(Err(error)) => {
                             report(
-                                match error.downcast_ref::<broker::UacCancelled>() {
+                                match error.downcast_ref::<broker::ElevationCancelled>() {
                                     Some(_) => t!("clash.runtime.tun_elevation_canceled"),
                                     None => t!(
                                         "clash.runtime.tun_elevation_failed",
@@ -938,7 +938,7 @@ async fn run(
 }
 
 /// 给 broker 的那份命令行：与 [`spawn_direct`] 的 `-d` / `-f` 一模一样。
-#[cfg(windows)]
+#[cfg(any(windows, unix))]
 fn kernel_args(dir: &Path, config_path: &Path) -> Vec<String> {
     vec![
         "-d".to_owned(),
@@ -993,7 +993,7 @@ fn spawn_direct(
 /// `supervise` 的等与收只认这一层，不关心背后是谁。
 enum Kernel {
     Direct(tokio::process::Child),
-    #[cfg(windows)]
+    #[cfg(any(windows, unix))]
     Brokered {
         broker: Arc<broker::BrokerSession>,
         pid: u32,
@@ -1004,7 +1004,7 @@ impl Kernel {
     fn pid(&self) -> Option<u32> {
         match self {
             Kernel::Direct(child) => child.id(),
-            #[cfg(windows)]
+            #[cfg(any(windows, unix))]
             Kernel::Brokered { pid, .. } => Some(*pid),
         }
     }
@@ -1016,7 +1016,7 @@ impl Kernel {
                 Ok(Some(status)) => Some(status.to_string()),
                 _ => None,
             },
-            #[cfg(windows)]
+            #[cfg(any(windows, unix))]
             Kernel::Brokered { broker, .. } => broker.exited().map(exit_status_text),
         }
     }
@@ -1029,7 +1029,7 @@ impl Kernel {
                 .await
                 .map(|status| status.to_string())
                 .unwrap_or_default(),
-            #[cfg(windows)]
+            #[cfg(any(windows, unix))]
             Kernel::Brokered { broker, .. } => match broker.wait_exit().await {
                 Some(info) => exit_status_text(info),
                 // broker 没了而退出回执没来：它的 job 保险丝保证内核陪葬，
@@ -1047,7 +1047,7 @@ impl Kernel {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
             }
-            #[cfg(windows)]
+            #[cfg(any(windows, unix))]
             Kernel::Brokered { broker, .. } => {
                 broker.kill().await;
             }
@@ -1056,7 +1056,7 @@ impl Kernel {
 }
 
 /// Brokered 那头的退出回执 → 与 `ExitStatus` 同款风格的退出话。
-#[cfg(windows)]
+#[cfg(any(windows, unix))]
 fn exit_status_text(info: broker::ExitInfo) -> String {
     match info.code {
         Some(code) => format!("exit code: {code}"),
@@ -1308,7 +1308,7 @@ async fn supervise(
                 }
                 Some(action) => match act(action, session).await {
                     ActEffect::Continue => {}
-                    #[cfg(windows)]
+                    #[cfg(any(windows, unix))]
                     ActEffect::GoElevated => return Control::RestartElevated,
                 },
             },
@@ -1339,8 +1339,8 @@ enum Control {
     /// 收尾：`Some(原因)` = 败了，`None` = 干干净净地停。
     Done(Option<String>),
     /// 要把 TUN 拨上去而内核没有管理员权限：回 run() 的外层，
-    /// 经 UAC 起 broker、原地重启内核（见 [`run`] 的模块文档）。
-    #[cfg(windows)]
+    /// 经一次系统授权起 broker、原地重启内核（见 [`run`] 的模块文档）。
+    #[cfg(any(windows, unix))]
     RestartElevated,
 }
 
@@ -1350,7 +1350,7 @@ enum ActEffect {
     /// 办完了，会话接着跑。
     Continue,
     /// 这个指令得让内核换成管理员权限的跑法才能办（见 [`Control::RestartElevated`]）。
-    #[cfg(windows)]
+    #[cfg(any(windows, unix))]
     GoElevated,
 }
 
@@ -1514,11 +1514,11 @@ async fn act(action: Action, session: &mut Session) -> ActEffect {
         }
         Action::SetTun(on) => {
             // 内核没提权就别 PATCH 了：建网卡必败（wintun 与路由表都要
-            // 管理员），而 mihomo 还会回 204 把开关假点亮 —— 那是最难查的
-            // 坏法。直接去提权重启，UAC 弹窗就是那一下的确认框；用户取消
-            // 的话原实例原样接着跑（编排见 [`run`]）。应用本身就是管理员
-            // 跑的话，子进程天生提权，PATCH 就够。
-            #[cfg(windows)]
+            // 管理员；macOS 上 `/dev/net/tun` 也是 root），而 mihomo 还会回
+            // 204 把开关假点亮 —— 那是最难查的坏法。直接去提权重启，授权框
+            // 就是那一下的确认框；用户取消的话原实例原样接着跑（编排见
+            // [`run`]）。应用本身就是管理员跑的话，子进程天生提权，PATCH 就够。
+            #[cfg(any(windows, unix))]
             if on && !session.elevated && !broker::app_elevated() {
                 return ActEffect::GoElevated;
             }

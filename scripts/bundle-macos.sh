@@ -28,6 +28,25 @@ mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
 cp "${BIN_PATH}" "${MACOS_DIR}/winssh-pro"
 chmod +x "${MACOS_DIR}/winssh-pro"
 
+# 1.5 拷贝 mihomo 内核与 privileged helper（broker）。
+#    mihomo 该放的位置没有强制约定，跟主 exe 同目录就行（`binary_path` 找
+#    的就是 exe 旁边）。helper 的位置是 macOS  privileged helper 的约定
+#    （`Contents/Library/LaunchServices/`）—— `broker_binary_path` 在
+#    打包出来的 `.app` 里就是去那里找它。没编过 mihomo / broker 也无所谓：
+#    应用自己会说"没找到 mihomo / broker"。
+MIHOMO_BIN="target/${TARGET:+${TARGET}/}release/mihomo"
+BROKER_BIN="target/${TARGET:+${TARGET}/}release/winssh-broker"
+if [[ -f "${MIHOMO_BIN}" ]]; then
+    cp "${MIHOMO_BIN}" "${MACOS_DIR}/mihomo"
+    chmod +x "${MACOS_DIR}/mihomo"
+fi
+LAUNCH_SERVICES_DIR="${CONTENTS_DIR}/Library/LaunchServices"
+if [[ -f "${BROKER_BIN}" ]]; then
+    mkdir -p "${LAUNCH_SERVICES_DIR}"
+    cp "${BROKER_BIN}" "${LAUNCH_SERVICES_DIR}/winssh-broker"
+    chmod +x "${LAUNCH_SERVICES_DIR}/winssh-broker"
+fi
+
 # 2. 拷贝 Info.plist，版本号从 Cargo.toml 覆盖进去：plist 里手写的那份是兜底，
 #    不改代码就发版的话「关于」框会一直停在旧版本号上。
 cp assets/macos/Info.plist "${CONTENTS_DIR}/Info.plist"

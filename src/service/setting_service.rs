@@ -48,6 +48,9 @@ const CURSOR_BLINK_KEY: &str = "terminal.cursor_blink";
 const BACKUP_CONFIG_KEY: &str = "backup.config";
 /// ZMODEM 收发偏好在 `settings` 表里的键。存的是一份 JSON。
 const ZMODEM_CONFIG_KEY: &str = "terminal.zmodem";
+/// Clash 那一档 TUN 的偏好在 `settings` 表里的键。存的是一份 JSON
+/// （[`crate::clash::tun_settings::TunSettings`]）。
+const TUN_SETTINGS_KEY: &str = crate::clash::tun_settings::SETTING_KEY;
 
 /// 应用级偏好的业务入口。廉价克隆：界面各处各拿一份，共享同一条连接。
 #[derive(Clone)]
@@ -94,6 +97,7 @@ impl SettingService {
                 this.load_cursor_blink().await,
                 this.load_backup_config().await,
                 this.load_zmodem_config().await,
+                this.load_tun_settings().await,
             )
         });
         match loaded.0 {
@@ -123,6 +127,10 @@ impl SettingService {
         match loaded.6 {
             Ok(config) => zmodem_config::set_global(config),
             Err(error) => log::warn!("ZMODEM 设置读不出来，这次运行按出厂档处理：{error:#}"),
+        }
+        match loaded.7 {
+            Ok(settings) => crate::clash::tun_settings::set_current(settings),
+            Err(error) => log::warn!("Clash TUN 偏好读不出来，这次运行按出厂档处理：{error:#}"),
         }
     }
 
@@ -312,6 +320,36 @@ impl SettingService {
         db::run(async move {
             this.repo
                 .set(&this.db, ZMODEM_CONFIG_KEY, &encoded)
+                .await
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    /// 库里那份 Clash TUN 偏好。没写过就是出厂档（system / winssh-tun /
+    /// 1500 / 路由与出口自动）。
+    pub async fn load_tun_settings(&self) -> Result<crate::clash::TunSettings> {
+        let this = self.clone();
+        db::run(async move {
+            let raw = this.repo.get(&this.db, TUN_SETTINGS_KEY).await?;
+            match raw {
+                Some(json) if !json.trim().is_empty() => serde_json::from_str(&json)
+                    .context("解析 Clash TUN 偏好失败"),
+                _ => Ok(crate::clash::TunSettings::default()),
+            }
+        })
+        .await
+    }
+
+    /// 写回 Clash TUN 偏好，并同时换掉进程里那份缓存（`tun_settings::set_current`）。
+    /// 下一次起实例 / 下一次 `Reload` 就按新的拼 `config.yaml`。
+    pub async fn save_tun_settings(&self, settings: crate::clash::TunSettings) -> Result<()> {
+        crate::clash::tun_settings::set_current(settings.clone());
+        let this = self.clone();
+        let encoded = serde_json::to_string(&settings)?;
+        db::run(async move {
+            this.repo
+                .set(&this.db, TUN_SETTINGS_KEY, &encoded)
                 .await
                 .map_err(Into::into)
         })
