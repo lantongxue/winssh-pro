@@ -1,9 +1,9 @@
 # 这份 `gpui-pre` 与上游的差别
 
-`vendor/gpui-pre` 来自 crates.io 的 **gpui-pre 0.3.6**（Zed 的 `gpui` 在
-zed@bcf6582 的快照，由 gpui-kit 发布，Apache-2.0，`LICENSE-APACHE` 与
+`vendor/gpui-pre` 来自 crates.io 的 **gpui-pre 0.3.8**（Zed 的 `gpui` 的
+快照，由 gpui-kit 发布，Apache-2.0，`LICENSE-APACHE` 与
 `Cargo.toml.orig` 原样留着），`Cargo.toml` 里的 `[patch.crates-io]` 指着它。
-版本号必须和 gpui-kit 钉的 `=0.3.6` 一致，patch 才会生效。
+版本号必须和 gpui-kit 钉的 `=0.3.8` 一致，patch 才会生效。
 
 改动只有一件事：**让应用可以给一张光标位图，当真正的系统光标用**。
 平台那一半在 `vendor/gpui-pre-windows`（见那边的 PATCHES.md）。
@@ -46,7 +46,7 @@ hitbox 决定、再由平台层 `SetCursor`，应用插不进这条路。
 
 另外**删掉了 `examples/`**（4.5 MB，主要是示例图片）。作为依赖时 Cargo 不编
 示例，`Cargo.toml` 里那些 `[[example]]` 条目只在编示例时才会去找文件。其余文件
-与 crates.io 上的 0.3.6 逐字节相同（`diff -r` 对照即可）。
+与 crates.io 上的 0.3.8 逐字节相同（`diff -r` 对照即可）。
 
 ## 测试放在哪
 

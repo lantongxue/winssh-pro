@@ -3,3 +3,4 @@
 .DS_Store
 .zcode/
 /third_party/mihomo/
+vendor/gpui-pre-windows/target

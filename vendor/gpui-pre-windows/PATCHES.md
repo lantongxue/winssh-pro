@@ -1,7 +1,7 @@
 # 这份 `gpui-pre-windows` 与上游的差别
 
-`vendor/gpui-pre-windows` 逐字来自 crates.io 的 **gpui-pre-windows 0.3.6**
-（Zed 的 `gpui_windows` 在 zed@bcf6582 的快照，Apache-2.0，`LICENSE-APACHE` 与
+`vendor/gpui-pre-windows` 逐字来自 crates.io 的 **gpui-pre-windows 0.3.8**
+（Zed 的 `gpui_windows` 的快照，Apache-2.0，`LICENSE-APACHE` 与
 `Cargo.toml.orig` 原样留着），`Cargo.toml` 里的 `[patch.crates-io]` 指着它。
 
 它是 `vendor/gpui-pre` 那份补丁的 Windows 一半：把应用给的 `gpui::CursorImage`
@@ -47,7 +47,7 @@
 | `src/events.rs` | `handle_set_cursor` 记下这次是不是本窗口定的光标；`handle_cursor_changed` 在上面说的条件下立刻 `SetCursor`。 |
 | `src/window.rs` | `WindowsWindowState` 多一个 `cursor_under_pointer`。 |
 
-其余文件与 crates.io 上的 0.3.6 逐字节相同。单测跑法：
+其余文件与 crates.io 上的 0.3.8 逐字节相同。单测跑法：
 
 ```sh
 cargo test -p gpui-pre-windows --lib cursor_image
