@@ -629,6 +629,23 @@ impl ClashPanel {
         let tun_active = self.state.tun;
         let testing_all = self.testing_all;
 
+        // 当前活动代理组里选定的那台节点，显示在"一键测速"后面。名字长度随
+        // 服务器跳，但它所在的第二行用的不是 justify_between，伸多宽都不影响
+        // 同行其余卡片的位置 —— 这也是把它挪上来而不是留在节点组那一行的
+        // 原因（那行两端对齐，它一伸缩，左边的节点组标签整行都要重排）。
+        let selected_node = self
+            .state
+            .live
+            .as_ref()
+            .and_then(|live| {
+                self.active_group
+                    .as_ref()
+                    .and_then(|name| live.groups.iter().find(|g| &g.name == name))
+                    .or_else(|| live.groups.first())
+            })
+            .and_then(|group| group.now.clone())
+            .unwrap_or_else(|| "—".into());
+
         let current_mode = self.state.mode.as_ref();
         let modes = [
             ("rule", "规则 (Rule)"),
@@ -1113,6 +1130,32 @@ impl ClashPanel {
                                     this.send(Action::TestDelayAll);
                                 }
                             })),
+                    )
+                    // 当前选定节点：贴着"一键测速"。不动节点组那一行的布局。
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .flex_shrink_0()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(if is_dark { palette::idle(cx) } else { cx.theme().muted_foreground })
+                                    .child("当前选定:"),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded(px(4.))
+                                    .bg(palette::teal().opacity(0.15))
+                                    .border_1()
+                                    .border_color(palette::teal().opacity(if is_dark { 0.4 } else { 0.55 }))
+                                    .text_xs()
+                                    .font_semibold()
+                                    .text_color(if is_dark { palette::teal() } else { rgb(0x0d9488).into() })
+                                    .child(selected_node),
+                            ),
                     ),
             )
     }
@@ -1972,27 +2015,6 @@ impl ClashPanel {
             }
         });
 
-        let selected_node = self
-            .state
-            .live
-            .as_ref()
-            .and_then(|live| {
-                if let Some(active) = active_group_name {
-                    live.groups.iter().find(|g| &g.name == active).and_then(|g| g.now.clone())
-                } else {
-                    live.groups.iter().find_map(|group| group.now.clone())
-                }
-            })
-            .or_else(|| {
-                self.outline.as_ref().and_then(|outline| {
-                    outline
-                        .groups
-                        .iter()
-                        .find_map(|group| group.members.first().cloned())
-                })
-            })
-            .unwrap_or_else(|| "—".into());
-
         let is_dark = cx.theme().is_dark();
         let panel = cx.weak_entity();
         let group_chips: Vec<AnyElement> = groups
@@ -2150,14 +2172,14 @@ impl ClashPanel {
             .flex_shrink_0()
             .w_full()
             .child(
-                // Sub-bar 1: Group chips + Selected node tag
+                // Sub-bar 1: Group chips（独占整行，右侧不再放会随选中节点伸缩的
+                // 内容——那曾让整行 chip 的换行位置跟着节点名长短跳）
                 h_flex()
                     .w_full()
                     .px_3()
                     .py_2()
                     .gap_2()
                     .items_center()
-                    .justify_between()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .bg(palette::surface(cx))
@@ -2167,31 +2189,6 @@ impl ClashPanel {
                             .items_center()
                             .flex_wrap()
                             .children(group_chips),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_1p5()
-                            .items_center()
-                            .flex_shrink_0()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(if is_dark { palette::idle(cx) } else { cx.theme().muted_foreground })
-                                    .child("当前选定:"),
-                            )
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded(px(4.))
-                                    .bg(palette::teal().opacity(0.15))
-                                    .border_1()
-                                    .border_color(palette::teal().opacity(if is_dark { 0.4 } else { 0.55 }))
-                                    .text_xs()
-                                    .font_semibold()
-                                    .text_color(if is_dark { palette::teal() } else { rgb(0x0d9488).into() })
-                                    .child(selected_node.to_string()),
-                            ),
                     ),
             )
             .child(
