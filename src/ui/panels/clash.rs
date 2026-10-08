@@ -6,9 +6,11 @@
 //!
 //! 两处刻意的安排：
 //!
-//! * **关掉这块面板不停代理。** 它和终端、组网那些面板不一样（那几个一关就是
-//!   会话断了）：这里关掉只是不看，mihomo 照跑，系统代理照指。真要停，按
-//!   上面那颗"停止"。
+//! * **关掉这块面板就收掉它的代理。** 与终端、组网那几档同一条规矩：
+//!   标签页一关，台上跑的那条订阅就停 —— [`crate::clash::runtime::stop`]
+//!   那一档收尾会把系统代理还原、内核退掉（TUN 网卡跟着收走）、mihomo
+//!   进程杀掉。只当这块不是"台下挂着的预览"时才动手（见
+//!   [`ClashPanel::on_removed`]）。
 //! * **没跑起来时也有东西可看。** 节点与规则先从订阅正文里读一份（静态那一份），
 //!   跑起来之后换成内核报回来的实时那一份（带延迟、带此刻选中的是谁）。所以
 //!   刚导入完一条订阅、还没启动，也能先看看里面有什么。
@@ -265,13 +267,15 @@ pub struct ClashPanel {
     rule_query: String,
     node_query: String,
     config_editor: Entity<EditorState>,
+    /// 装着这块面板的那片坞。标题上那颗"关闭"靠它把自己摘出去。
+    dock_area: WeakEntity<gpui_kit::component::dock::DockArea>,
     focus_handle: FocusHandle,
 }
 
 impl ClashPanel {
     pub fn new(
         subscription: ClashSubscription,
-        _dock_area: WeakEntity<gpui_kit::component::dock::DockArea>,
+        dock_area: WeakEntity<gpui_kit::component::dock::DockArea>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -319,6 +323,7 @@ impl ClashPanel {
             rule_query: String::new(),
             node_query: String::new(),
             config_editor,
+            dock_area,
             focus_handle: cx.focus_handle(),
         };
         this.subscribe_inputs(window, cx);
@@ -612,6 +617,18 @@ impl ClashPanel {
     /// [`crate::clash::runtime::send`]。
     fn send(&mut self, action: Action) {
         runtime::send(action);
+    }
+
+    /// 标题上那颗"关闭"按下的同一档：把自己从坞里摘出去。摘出去会走
+    /// [`Self::on_removed`]，那一档里才真的停代理。
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dock_area) = self.dock_area.upgrade() else {
+            return;
+        };
+        let panel = cx.entity().clone();
+        window.defer(cx, move |window, cx| {
+            dock_area.update(cx, |area, cx| area.remove_panel(panel, window, cx));
+        });
     }
 
     /// 顶部控制条：代理总开关、当前生效订阅、系统代理、虚拟网卡 (TUN)、实时速率、一键测速、分流模式。
@@ -1015,7 +1032,19 @@ impl ClashPanel {
                                                         cx.theme().foreground
                                                     })
                                                     .child("虚拟网卡 (TUN)"),
-                                            ),
+                                            )
+                                            // 内核跑在管理员权限下时在标题旁亮一手：
+                                            // 它是经 UAC 的提权 broker 拉起来的（见
+                                            // `clash::broker`），TUN 靠的就是它。与标题
+                                            // 同行，免得这张卡比系统代理那张高。
+                                            .when(self.state.elevated, |this| {
+                                                this.child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .child("管理员"),
+                                                )
+                                            }),
                                     )
                                     .child(
                                         div()
@@ -2990,6 +3019,16 @@ impl BasePanel for ClashPanel {
         cx.focus_self(window);
         cx.notify();
     }
+
+    /// 标签页关掉了：这条订阅的代理也一起收。只在台上跑的真是它时动手
+    /// —— 台下那块只是被换下来、从没跑起来过，不动别人的会话。
+    /// 收尾（还原系统代理、内核退掉连同 TUN 网卡、kill mihomo）都在
+    /// [`crate::clash::runtime::stop`] 那一路。
+    fn on_removed(&mut self, _: &mut Window, _: &mut Context<Self>) {
+        if self.is_running() {
+            runtime::stop();
+        }
+    }
 }
 
 impl Panel for ClashPanel {
@@ -3015,6 +3054,18 @@ impl Panel for ClashPanel {
                     .min_w_0()
                     .truncate()
                     .child(self.subscription.name.clone()),
+            )
+            .child(
+                Button::new("clash-panel-close")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Close)
+                    .tooltip(t!("clash.panel.close_session"))
+                    .accessibility_id(t!("clash.panel.close_session"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.close(window, cx);
+                    })),
             )
     }
 

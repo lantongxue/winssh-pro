@@ -2183,6 +2183,9 @@ clash.panel.unreadable:
 clash.panel.unreadable_hint:
   en: "Edit the subscription and fetch it again, or import a fresh file."
   zh-CN: "去编辑这条订阅重新拉一次，或者导入一份新的文件。"
+clash.panel.close_session:
+  en: Close and stop proxy
+  zh-CN: 关闭并停止代理
 
 # ── 主机表单（新建 / 编辑主机的对话框） ──────────────────────────────────
 host_form.title_new:
