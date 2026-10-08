@@ -1628,6 +1628,24 @@ clash.runtime.exited_with_logs:
 clash.runtime.tun_failed:
   en: "Could not toggle the virtual NIC: %{error}"
   zh-CN: "虚拟网卡没拨动：%{error}"
+clash.runtime.tun_not_effective:
+  en: "The virtual NIC did not come up: %{reason}"
+  zh-CN: "虚拟网卡没有建起来：%{reason}"
+clash.runtime.tun_elevation_canceled:
+  en: "TUN needs the core to run as administrator: the UAC prompt was canceled, so the virtual NIC stays off."
+  zh-CN: "TUN 需要内核以管理员权限运行：已取消授权，虚拟网卡没有开启。"
+clash.runtime.tun_elevation_failed:
+  en: "Could not restart the core as administrator: %{error}"
+  zh-CN: "以管理员权限重启内核失败：%{error}"
+clash.runtime.elevated_restart_failed:
+  en: "The elevated core did not come up: %{error}"
+  zh-CN: "提权的内核没起来：%{error}"
+clash.runtime.broker_missing:
+  en: "Could not find winssh-broker.exe next to the application."
+  zh-CN: "应用旁边找不到 winssh-broker.exe。"
+clash.runtime.broker_lost:
+  en: "the elevation broker went away"
+  zh-CN: "提权 broker 走开了"
 clash.runtime.system_proxy_failed:
   en: "Could not toggle the system proxy: %{error}"
   zh-CN: "系统代理没拨动：%{error}"

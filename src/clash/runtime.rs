@@ -38,6 +38,8 @@ use tokio::sync::{mpsc, watch};
 use serde_json::Value;
 
 use super::api::ApiClient;
+#[cfg(windows)]
+use super::broker;
 use super::config::{self, RuntimePorts, SubscriptionOutline};
 use super::snapshot::{ConnectionSummary, LiveState, NodeFacts};
 use super::subscription::ClashSubscription;
@@ -164,6 +166,9 @@ pub struct RuntimeState {
     pub system_proxy: bool,
     /// 虚拟网卡此刻是不是开着。
     pub tun: bool,
+    /// 内核此刻是不是经提权 broker 跑在管理员权限下（见 [`crate::clash::broker`]）。
+    /// 拨 TUN 触发的提权重启成功之后翻真，实例收掉回假。
+    pub elevated: bool,
     /// 内核版本，起来了才有。
     pub version: SharedString,
     /// 节点与规则。起来了才有。
@@ -193,6 +198,7 @@ impl Default for RuntimeState {
             mode: "rule".into(),
             system_proxy: false,
             tun: false,
+            elevated: false,
             version: SharedString::default(),
             live: None,
             traffic_up: SharedString::default(),
@@ -263,6 +269,7 @@ pub fn start(subscription: &ClashSubscription) -> Result<()> {
         stop: stop.clone(),
         pid: None,
         token,
+        elevated: false,
     });
     publish(|state| {
         state.phase = Phase::Starting;
@@ -278,6 +285,7 @@ pub fn start(subscription: &ClashSubscription) -> Result<()> {
         state.logs.clear();
         state.system_proxy = false;
         state.tun = false;
+        state.elevated = false;
         state.delay_tests = 0;
         state.traffic_up = SharedString::default();
         state.traffic_down = SharedString::default();
@@ -331,15 +339,24 @@ pub fn clear_logs() {
 ///
 /// 子进程收不掉也不算错：下一次启动的 [`super::system_proxy::reconcile`] 会
 /// 发现那个口还活着，把网留给它。
+///
+/// **提权内核例外**：它跑在管理员权限下，用户态的 `taskkill` 够不着它
+/// （UIPI）。那份收尾归 broker 的三层保险丝 —— 我们这个进程一退出，它的
+/// 父进程 watch 当场触发，job 的 KILL_ON_JOB_CLOSE 连带收走内核
+/// （见 `src/bin/broker.rs`）。
 pub fn shutdown() {
     if state().system_proxy
         && let Err(error) = super::system_proxy::disable()
     {
         log::warn!("退出时还原系统代理失败：{error:#}");
     }
-    let pid = current().as_ref().and_then(|running| running.pid);
-    if let Some(pid) = pid {
-        kill_pid(pid);
+    let target = current()
+        .as_ref()
+        .map(|running| (running.pid, running.elevated));
+    match target {
+        Some((Some(pid), false)) => kill_pid(pid),
+        Some((_, true)) => log::info!("提权内核交给 broker 的保险丝收尾"),
+        _ => {}
     }
 }
 
@@ -558,6 +575,9 @@ struct Running {
     stop: Arc<tokio::sync::Notify>,
     pid: Option<u32>,
     token: u64,
+    /// 内核是不是经提权 broker 跑着。[`shutdown`] 靠它决定收不收得动 ——
+    /// 高权限进程我们杀不了（UIPI），那份收尾归 broker 的保险丝。
+    elevated: bool,
 }
 
 /// 进程级那一格，与它上面那把锁。
@@ -632,15 +652,16 @@ fn report(message: impl Into<SharedString>) {
     });
 }
 
-/// 把当前这次运行收掉并**等它真的收完**（最多等一秒）。
+/// 把当前这次运行收掉并**等它真的收完**（最多等三秒）。
 ///
 /// 起新实例之前必须等：上一个还攥着网卡和端口的话，新的那个起来就得跟它抢。
+/// 三秒是给提权实例留的：那边的收尾要多走一跳管道（GUI → broker → 内核）。
 fn stop_and_wait() {
     if current().is_none() {
         return;
     }
     stop();
-    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while current().is_some() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -693,6 +714,7 @@ fn finish(token: u64, outcome: Option<String>) {
     publish(|state| {
         state.system_proxy = false;
         state.tun = false;
+        state.elevated = false;
         state.delay_tests = 0;
         state.traffic_up = SharedString::default();
         state.traffic_down = SharedString::default();
@@ -711,11 +733,18 @@ fn finish(token: u64, outcome: Option<String>) {
 }
 
 /// 会话主体。返回 `Some(原因)` 就是出了事。
+///
+/// 外层那个 loop 撑的是**原地提权重启**：拨 TUN 而当前内核没有管理员权限
+/// 时，`supervise` 交回 [`Control::RestartElevated`]，这里先经 UAC 把 broker
+/// 拉起来（取消/失败就报错，原实例一根毛都不动，回 supervise 接着看），
+/// 成了才收掉旧内核，用**同一份端口、数据目录与配置**重新起 —— 系统代理
+/// 指的就是原来那个口，不断；只有活动连接会瞬断。提权通道本身的讲究见
+/// [`crate::clash::broker`] 与 `src/bin/broker.rs` 的模块文档。
 async fn run(
     subscription: &ClashSubscription,
-    _token: u64,
+    token: u64,
     input_tx: mpsc::UnboundedSender<Action>,
-    input_rx: mpsc::UnboundedReceiver<Action>,
+    mut input_rx: mpsc::UnboundedReceiver<Action>,
     stop: Arc<tokio::sync::Notify>,
 ) -> Option<String> {
     // 检查并准备 mihomo 可执行文件（若本地未找到则按系统架构自动下载并解压）
@@ -753,15 +782,188 @@ async fn run(
         state.api_port = Some(ports.api_port);
     });
 
+    let logs = Logs::new();
+    // 正文里那份顺序：界面照它摆节点与策略组（见 [`Session::publish_live`]）。
+    let outline = config::outline(&subscription.config_yaml).ok();
+
+    // 实时吞吐是条永不收尾的流，单独一个任务消费（见 [`ApiClient::traffic_stream`]），
+    // 不占会话循环。一份跨提权重启：重启那阵控制口死了流会断，它自己隔一秒
+    // 重连（见 [`stream_traffic`]），不必拆了重建。
+    let traffic_task = tokio::spawn(stream_traffic(api.clone()));
+
+    let mut session = Session {
+        api,
+        input: input_tx,
+        dir: dir.clone(),
+        ports,
+        logs,
+        outline,
+        elevated: false,
+        token,
+    };
+
+    #[cfg(windows)]
+    let mut broker: Option<Arc<broker::BrokerSession>> = None;
+    // 提权重启就是为把 TUN 拨上去：新内核就绪之后要补的那一拨。
+    let mut want_tun_on_ready = false;
+
+    let outcome = 'instance: loop {
+        // ① 起内核：平时自己拉，broker 就位之后由它代拉（管理员权限）。
+        let spawned = async {
+            #[cfg(windows)]
+            if let Some(broker) = &broker {
+                let args = kernel_args(&dir, &config_path);
+                return broker
+                    .start(&binary, &args, &dir)
+                    .await
+                    .map(|pid| Kernel::Brokered {
+                        broker: Arc::clone(broker),
+                        pid,
+                    })
+                    .map_err(|error| {
+                        t!(
+                            "clash.runtime.elevated_restart_failed",
+                            error => format!("{error:#}")
+                        )
+                        .to_string()
+                    });
+            }
+            spawn_direct(&binary, &dir, &config_path, &session.logs)
+        }
+        .await;
+        let mut kernel = match spawned {
+            Ok(kernel) => kernel,
+            Err(reason) => break 'instance Some(reason),
+        };
+        if let Some(running) = current().as_mut() {
+            running.pid = kernel.pid();
+        }
+        // 重启这一遍要抹掉的正是 start() 那份清单里"跟着内核走"的几样；
+        // subscription、端口、系统代理与日志**不动** —— 它们跨重启连续。
+        publish(|state| {
+            state.phase = Phase::Starting;
+            state.version = SharedString::default();
+            state.live = None;
+            state.connections.clear();
+            state.tun = false;
+            state.delay_tests = 0;
+            state.traffic_up = SharedString::default();
+            state.traffic_down = SharedString::default();
+        });
+
+        // ② 看住它。`RestartElevated` 时先起 broker 再收旧内核 ——
+        // UAC 是可以取消的，取消了指望原实例还在原地跑。
+        let mut restart_elevated = false;
+        let mut outcome_slot: Option<String> = None;
+        loop {
+            // `biased`：抢占铃优先。点了停止就不再等任何一件在飞的事，
+            // supervise 的 future 被丢掉（里面在等的 HTTP 随之取消）。
+            let control = tokio::select! {
+                biased;
+                _ = stop.notified() => {
+                    stopping();
+                    Control::Done(None)
+                }
+                control = supervise(&mut kernel, &mut session, &mut input_rx, want_tun_on_ready) => control,
+            };
+            want_tun_on_ready = false;
+            match control {
+                Control::Done(reason) => {
+                    outcome_slot = reason;
+                    break;
+                }
+                #[cfg(windows)]
+                Control::RestartElevated => {
+                    // ShellExecuteExW(runas) 会同步等到用户在 UAC 上点完（在
+                    // spawn_blocking 里，见 broker::spawn），这里连它一起跟
+                    // 抢占铃竞速：提权途中点了停止就当场取消。
+                    let logs = session.logs.clone();
+                    let launched = tokio::select! {
+                        biased;
+                        _ = stop.notified() => {
+                            stopping();
+                            None
+                        }
+                        result = broker::spawn(move |line| logs.push(line)) => Some(result),
+                    };
+                    match launched {
+                        // 提权途中被停止：照常收尾（outcome_slot 已是 None）。
+                        None => break,
+                        Some(Ok(launched)) => {
+                            if let Some(running) = current().as_mut() {
+                                running.elevated = true;
+                            }
+                            session.elevated = true;
+                            // 起不来得看**这一遍**的启动日志，别拿上一个内核
+                            // 留下的那段顶包。
+                            session.logs.begin_new_startup();
+                            broker = Some(Arc::new(launched));
+                            want_tun_on_ready = true;
+                            publish(|state| state.elevated = true);
+                            restart_elevated = true;
+                            break;
+                        }
+                        Some(Err(error)) => {
+                            report(
+                                match error.downcast_ref::<broker::UacCancelled>() {
+                                    Some(_) => t!("clash.runtime.tun_elevation_canceled"),
+                                    None => t!(
+                                        "clash.runtime.tun_elevation_failed",
+                                        error => format!("{error:#}")
+                                    ),
+                                },
+                            );
+                            // 原实例没动：回 supervise 接着看，TUN 开关保持关。
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ③ 收尾：两条路（结束 / 提权重启）都得先把手里这个内核收掉。
+        // Brokered 的那一下是一跳管道往返，broker 的 job 保险丝兜底。
+        kernel.kill().await;
+        if let Some(running) = current().as_mut() {
+            running.pid = None;
+        }
+        if restart_elevated {
+            continue 'instance;
+        }
+        break 'instance outcome_slot;
+    };
+
+    traffic_task.abort();
+    outcome
+}
+
+/// 给 broker 的那份命令行：与 [`spawn_direct`] 的 `-d` / `-f` 一模一样。
+#[cfg(windows)]
+fn kernel_args(dir: &Path, config_path: &Path) -> Vec<String> {
+    vec![
+        "-d".to_owned(),
+        dir.to_string_lossy().into_owned(),
+        "-f".to_owned(),
+        config_path.to_string_lossy().into_owned(),
+    ]
+}
+
+/// 自己把内核拉起来（非提权的老路）。日志两路照旧按行收进 [`Logs`]。
+fn spawn_direct(
+    binary: &Path,
+    dir: &Path,
+    config_path: &Path,
+    logs: &Logs,
+) -> Result<Kernel, String> {
     // 子进程：`-d` 是它的数据目录（cache.db、geo 数据都落这儿），`-f` 是那份
     // 现写的配置。`CREATE_NO_WINDOW` 是必须的 —— 少了它，一个黑框会跟着弹出来，
     // 而且会一直挂在那儿（见 `crate::service::local_file_service` 里同一处讲究）。
-    let mut command = tokio::process::Command::new(&binary);
+    let mut command = tokio::process::Command::new(binary);
     command
         .arg("-d")
-        .arg(&dir)
+        .arg(dir)
         .arg("-f")
-        .arg(&config_path)
+        .arg(config_path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -775,51 +977,91 @@ async fn run(
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            return Some(format!("起 mihomo 失败（{}）：{error}", binary.display()));
-        }
-    };
-    let pid = child.id();
-    if let Some(running) = current().as_mut() {
-        running.pid = pid;
-    }
-
-    let logs = Logs::new();
+    let mut child = command.spawn().map_err(|error| {
+        format!("起 mihomo 失败（{}）：{error}", binary.display())
+    })?;
     if let Some(stdout) = child.stdout.take() {
         tokio::spawn(read_lines(stdout, logs.clone()));
     }
     if let Some(stderr) = child.stderr.take() {
         tokio::spawn(read_lines(stderr, logs.clone()));
     }
+    Ok(Kernel::Direct(child))
+}
 
-    // 正文里那份顺序：界面照它摆节点与策略组（见 [`Session::publish_live`]）。
-    let outline = config::outline(&subscription.config_yaml).ok();
+/// 这一遍的内核是怎么拉起来的：自己拉的，还是提权之后 broker 代拉的。
+/// `supervise` 的等与收只认这一层，不关心背后是谁。
+enum Kernel {
+    Direct(tokio::process::Child),
+    #[cfg(windows)]
+    Brokered {
+        broker: Arc<broker::BrokerSession>,
+        pid: u32,
+    },
+}
 
-    // 实时吞吐是条永不收尾的流，单独一个任务消费（见 [`ApiClient::traffic_stream`]），
-    // 不占会话循环。
-    let traffic_task = tokio::spawn(stream_traffic(api.clone()));
-
-    // `biased`：抢占铃优先。点了停止就不再等任何一件在飞的事，
-    // supervise 的 future 被丢掉（里面在等的 HTTP 随之取消），直接去收子进程。
-    let outcome = tokio::select! {
-        biased;
-        _ = stop.notified() => {
-            stopping();
-            None
+impl Kernel {
+    fn pid(&self) -> Option<u32> {
+        match self {
+            Kernel::Direct(child) => child.id(),
+            #[cfg(windows)]
+            Kernel::Brokered { pid, .. } => Some(*pid),
         }
-        outcome = supervise(&mut child, api.clone(), &dir, ports, logs, outline, input_tx, input_rx) => outcome,
-    };
-    traffic_task.abort();
-
-    // 收尾：子进程先收掉。`kill` 在它已经退出时是空操作。
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-    if let Some(running) = current().as_mut() {
-        running.pid = None;
     }
-    outcome
+
+    /// 是不是已经死了。`Some(退出那句话)` = 死了。
+    fn try_wait(&mut self) -> Option<String> {
+        match self {
+            Kernel::Direct(child) => match child.try_wait() {
+                Ok(Some(status)) => Some(status.to_string()),
+                _ => None,
+            },
+            #[cfg(windows)]
+            Kernel::Brokered { broker, .. } => broker.exited().map(exit_status_text),
+        }
+    }
+
+    /// 一直看到它死为止，回退出那句话。
+    async fn wait(&mut self) -> String {
+        match self {
+            Kernel::Direct(child) => child
+                .wait()
+                .await
+                .map(|status| status.to_string())
+                .unwrap_or_default(),
+            #[cfg(windows)]
+            Kernel::Brokered { broker, .. } => match broker.wait_exit().await {
+                Some(info) => exit_status_text(info),
+                // broker 没了而退出回执没来：它的 job 保险丝保证内核陪葬，
+                // 这一遍就算内核死了。
+                None => t!("clash.runtime.broker_lost").to_string(),
+            },
+        }
+    }
+
+    /// 收掉。Brokered 那边等回执有期限（见 [`broker::BrokerSession::kill`]），
+    /// 到点不等 —— job 保险丝保证内核死定了。
+    async fn kill(&mut self) {
+        match self {
+            Kernel::Direct(child) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
+            #[cfg(windows)]
+            Kernel::Brokered { broker, .. } => {
+                broker.kill().await;
+            }
+        }
+    }
+}
+
+/// Brokered 那头的退出回执 → 与 `ExitStatus` 同款风格的退出话。
+#[cfg(windows)]
+fn exit_status_text(info: broker::ExitInfo) -> String {
+    match info.code {
+        Some(code) => format!("exit code: {code}"),
+        None => "terminated".to_owned(),
+    }
 }
 
 /// 在独立任务里把内核的吞吐流一份份发布到状态里。流断了（内核还没起来、
@@ -864,6 +1106,9 @@ fn publish_traffic(traffic: Value) {
 
 /// 一次运行里那几样不随采样变的东西：控制口、数据目录、端口、日志，外加正文
 /// 解读出来的那份**顺序**（见 [`Session::publish_live`]）。
+///
+/// 它由 run() 持有、**跨提权重启连续**：重启换掉的只有内核进程，控制口、
+/// 端口、日志与顺序都还是原来那份。
 struct Session {
     api: Arc<ApiClient>,
     /// 会话自己的指令入口：独立任务（测速）跑完后往里回送指令。
@@ -874,6 +1119,11 @@ struct Session {
     /// 正文里节点与策略组是按什么顺序写的。内核报回来的是 Go 的 map，
     /// 每次顺序都不一样，摆到界面上会自己跳位置 —— 有这份就照着它摆。
     outline: Option<SubscriptionOutline>,
+    /// 当前内核是不是经提权 broker 跑在管理员权限下。
+    elevated: bool,
+    /// 这一遍运行的号牌（见 [`Running::token`]）：事后校验的任务拿它认
+    /// "台上还是不是我"。
+    token: u64,
 }
 
 impl Session {
@@ -953,24 +1203,17 @@ const TEST_URL: &str = "http://www.gstatic.com/generate_204";
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 起来了之后的那一段：等控制口、然后一面向界面报状态、一面听指令。
+///
+/// 这个函数是**可重入**的：返回 [`Control::RestartElevated`] 而 UAC 又被
+/// 取消时，run() 会拿同一个内核再进来一遍 —— 多做一轮"等控制口 + 首采"，
+/// 都是幂等的，无害。`want_tun_on_ready` 是提权重启带进来的欠账：新内核
+/// 就绪后把 TUN 补拨上去（就是触发这次重启的那一下）。
 async fn supervise(
-    child: &mut tokio::process::Child,
-    api: Arc<ApiClient>,
-    dir: &Path,
-    ports: RuntimePorts,
-    logs: Logs,
-    outline: Option<SubscriptionOutline>,
-    input_tx: mpsc::UnboundedSender<Action>,
-    mut input_rx: mpsc::UnboundedReceiver<Action>,
-) -> Option<String> {
-    let mut session = Session {
-        api,
-        input: input_tx,
-        dir: dir.to_path_buf(),
-        ports,
-        logs,
-        outline,
-    };
+    kernel: &mut Kernel,
+    session: &mut Session,
+    input_rx: &mut mpsc::UnboundedReceiver<Action>,
+    want_tun_on_ready: bool,
+) -> Control {
     // 起来之前那一段自己拿一份：控制口与日志都是廉价克隆，
     // 之后要把 `session` 借出去（`act` 要 `&mut`），这里不留着借用。
     let api = session.api.clone();
@@ -996,16 +1239,18 @@ async fn supervise(
                 break;
             }
             Err(error) => {
-                if let Ok(Some(status)) = child.try_wait() {
-                    return Some(exited_early(status.to_string(), &logs));
+                if let Some(status) = kernel.try_wait() {
+                    return Control::Done(Some(exited_early(status, &logs)));
                 }
                 if tokio::time::Instant::now() >= deadline {
-                    return Some(t!(
-                        "clash.runtime.start_timeout",
-                        secs => START_TIMEOUT.as_secs(),
-                        error => format!("{error:#}"),
-                    )
-                    .to_string());
+                    return Control::Done(Some(
+                        t!(
+                            "clash.runtime.start_timeout",
+                            secs => START_TIMEOUT.as_secs(),
+                            error => format!("{error:#}"),
+                        )
+                        .to_string(),
+                    ));
                 }
             }
         }
@@ -1014,26 +1259,31 @@ async fn supervise(
         // 等下一轮，或者等用户/子进程先说话。
         tokio::select! {
             _ = tokio::time::sleep(READY_INTERVAL) => {}
-            status = child.wait() => {
-                let status = status.map(|status| status.to_string()).unwrap_or_default();
-                return Some(exited_early(status, &logs));
+            status = kernel.wait() => {
+                return Control::Done(Some(exited_early(status, &logs)));
             }
             action = input_rx.recv() => {
                 match action {
                     // 还没起来就要停：走人，收尾归上面。
                     Some(Action::Stop) => {
                         stopping();
-                        return None;
+                        return Control::Done(None);
                     }
                     // 还没起来时的其它指令一律忽略：没有实例可说话。
                     Some(_) => {}
                     None => {
                         stopping();
-                        return None;
+                        return Control::Done(None);
                     }
                 }
             }
         }
+    }
+
+    // 提权重启的欠账：把触发那次重启的 TUN 拨上去（乐观点亮 + 事后校验，
+    // 见 [`set_tun`]）。
+    if want_tun_on_ready {
+        set_tun(session, true).await;
     }
 
     // 起来了：先取一份规则（它不会自己变，只在起的时候与手动刷新时取），
@@ -1054,17 +1304,16 @@ async fn supervise(
             action = input_rx.recv() => match action {
                 None | Some(Action::Stop) => {
                     stopping();
-                    return None;
+                    return Control::Done(None);
                 }
-                Some(action) => {
-                    if let Some(reason) = act(action, &mut session).await {
-                        return Some(reason);
-                    }
-                }
+                Some(action) => match act(action, session).await {
+                    ActEffect::Continue => {}
+                    #[cfg(windows)]
+                    ActEffect::GoElevated => return Control::RestartElevated,
+                },
             },
-            status = child.wait() => {
-                let status = status.map(|status| status.to_string()).unwrap_or_default();
-                return Some(exited_early(status, &logs));
+            status = kernel.wait() => {
+                return Control::Done(Some(exited_early(status, &logs)));
             }
             _ = ticker.tick() => {
                 // 取不到就**留着上一份**：一次本机 HTTP 打个喷嚏不该把界面
@@ -1085,6 +1334,89 @@ async fn supervise(
     }
 }
 
+/// `supervise` 一轮的结局。
+enum Control {
+    /// 收尾：`Some(原因)` = 败了，`None` = 干干净净地停。
+    Done(Option<String>),
+    /// 要把 TUN 拨上去而内核没有管理员权限：回 run() 的外层，
+    /// 经 UAC 起 broker、原地重启内核（见 [`run`] 的模块文档）。
+    #[cfg(windows)]
+    RestartElevated,
+}
+
+/// `act` 一道指令的结局。指令办砸了走 `report`（弹通知），实例照跑 ——
+/// 没有"一道指令把实例弄没"的那一档。
+enum ActEffect {
+    /// 办完了，会话接着跑。
+    Continue,
+    /// 这个指令得让内核换成管理员权限的跑法才能办（见 [`Control::RestartElevated`]）。
+    #[cfg(windows)]
+    GoElevated,
+}
+
+/// TUN 拨上去之后，隔多久看一眼日志里有没有失败标记。内核日志是异步到的，
+/// 实测失败那一行在 PATCH 之后一秒内就出现。
+const TUN_VERIFY_INTERVAL: Duration = Duration::from_millis(300);
+
+/// 失败标记看多久。首次装 wintun 驱动会慢一拍，给足三秒。
+const TUN_VERIFY_WINDOW: Duration = Duration::from_secs(3);
+
+/// mihomo 建网卡失败时打的那一行（v1.19 实测：
+/// `Start TUN listening error: configure tun interface: Access is denied.`）。
+const TUN_FAILURE_MARKER: &str = "Start TUN listening error";
+
+/// 拨/收 TUN。
+///
+/// 两件事要说清楚：
+///
+/// * **204 不算成功。** mihomo 建网卡失败时 `PATCH /configs` 照样回 204，
+///   原因只进内核日志（实测复现）。所以这里先把开关点亮，再挂一个校验
+///   任务盯着新日志：窗口里出现失败标记就把开关**撤回去**，把内核那句
+///   原样报出来 —— 界面亮着、网不通的那种坏法不能再有。
+/// * **要不要提权轮不到这里判**：`act` 的 `SetTun` 分支在 Windows 上会先
+///   把非提权内核的开灯请求拦去 [`ActEffect::GoElevated`]，走到这儿的
+///   PATCH 要么内核已提权、要么应用本身就是管理员跑的。
+async fn set_tun(session: &Session, on: bool) {
+    if let Err(error) = session
+        .api
+        .patch_configs(serde_json::json!({ "tun": { "enable": on } }))
+        .await
+    {
+        // 失败时内核那句话就是原因，原样摆出来。
+        report(t!("clash.runtime.tun_failed", error => format!("{error:#}")));
+        return;
+    }
+    publish(|state| state.tun = on);
+    if !on {
+        return;
+    }
+
+    let logs = session.logs.clone();
+    let mark = logs.mark();
+    let token = session.token;
+    tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + TUN_VERIFY_WINDOW;
+        loop {
+            tokio::time::sleep(TUN_VERIFY_INTERVAL).await;
+            if let Some(reason) = logs.scan_since(mark, TUN_FAILURE_MARKER) {
+                // 用户在这期间自己又关掉了的话，就别再撤开关、也别弹通知了。
+                if state().tun {
+                    publish(|state| state.tun = false);
+                    // 台上还是这一遍运行的话才报 —— 实例都收了还弹
+                    // "网卡没建起来"只会莫名其妙。
+                    if same_run(token) {
+                        report(t!("clash.runtime.tun_not_effective", reason => reason));
+                    }
+                }
+                return;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return;
+            }
+        }
+    });
+}
+
 /// 从 `GET /configs` 的回数里读出分流模式。
 fn mode_of(configs: &Value) -> Option<String> {
     configs
@@ -1093,20 +1425,21 @@ fn mode_of(configs: &Value) -> Option<String> {
         .map(|mode| mode.to_lowercase())
 }
 
-/// 办一道指令。`Some(原因)` 是"这一下把这个实例弄没了"。
-async fn act(action: Action, session: &mut Session) -> Option<String> {
+/// 办一道指令。[`ActEffect::GoElevated`] 是"这一下得换成管理员权限的内核
+/// 才办得成"，其余的成败都当场 `report`，会话接着跑。
+async fn act(action: Action, session: &mut Session) -> ActEffect {
     match action {
         // 上面已经拦掉了，这里只是把 `match` 补全。
-        Action::Stop => None,
+        Action::Stop => ActEffect::Continue,
         Action::Refresh => match session.api.proxies().await {
             Ok(nodes) => {
                 let rules = session.api.rules().await.ok();
                 session.publish_live(&nodes, rules.as_ref(), None);
-                None
+                ActEffect::Continue
             }
             Err(error) => {
                 report(t!("clash.runtime.refresh_failed", error => format!("{error:#}")));
-                None
+                ActEffect::Continue
             }
         },
         Action::DelayTestDone => {
@@ -1118,7 +1451,7 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
             }
             // 数据先出、计数后落：界面看到计数归零时，新数字已经在了。
             publish(|state| state.delay_tests = state.delay_tests.saturating_sub(1));
-            None
+            ActEffect::Continue
         }
         Action::TestDelayAll => {
             let groups = session
@@ -1142,7 +1475,7 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
                 }
                 let _ = input.send(Action::DelayTestDone);
             });
-            None
+            ActEffect::Continue
         }
         Action::CloseConnection(id) => {
             match session.api.close_connection(&id).await {
@@ -1153,18 +1486,18 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
                 }
                 Err(error) => report(t!("clash.runtime.connection_failed", error => format!("{error:#}"))),
             }
-            None
+            ActEffect::Continue
         }
         Action::CloseConnections => {
             match session.api.close_connections().await {
                 Ok(()) => publish(|state| state.connections.clear()),
                 Err(error) => report(t!("clash.runtime.connection_failed", error => format!("{error:#}"))),
             }
-            None
+            ActEffect::Continue
         }
         Action::ClearLogs => {
             session.clear_logs();
-            None
+            ActEffect::Continue
         }
         Action::SetMode(mode) => {
             match session
@@ -1177,20 +1510,20 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
                     report(t!("clash.runtime.mode_failed", error => format!("{error:#}")))
                 }
             }
-            None
+            ActEffect::Continue
         }
         Action::SetTun(on) => {
-            match session
-                .api
-                .patch_configs(serde_json::json!({ "tun": { "enable": on } }))
-                .await
-            {
-                Ok(()) => publish(|state| state.tun = on),
-                // TUN 要管理员权限（内核要建一块网卡），失败时内核那句话就是
-                // 原因，原样摆出来。
-                Err(error) => report(t!("clash.runtime.tun_failed", error => format!("{error:#}"))),
+            // 内核没提权就别 PATCH 了：建网卡必败（wintun 与路由表都要
+            // 管理员），而 mihomo 还会回 204 把开关假点亮 —— 那是最难查的
+            // 坏法。直接去提权重启，UAC 弹窗就是那一下的确认框；用户取消
+            // 的话原实例原样接着跑（编排见 [`run`]）。应用本身就是管理员
+            // 跑的话，子进程天生提权，PATCH 就够。
+            #[cfg(windows)]
+            if on && !session.elevated && !broker::app_elevated() {
+                return ActEffect::GoElevated;
             }
-            None
+            set_tun(session, on).await;
+            ActEffect::Continue
         }
         Action::SetSystemProxy(on) => {
             let outcome = match on {
@@ -1203,7 +1536,7 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
                     report(t!("clash.runtime.system_proxy_failed", error => format!("{error:#}")))
                 }
             }
-            None
+            ActEffect::Continue
         }
         Action::Select { group, node } => {
             match session.api.select(&group, &node).await {
@@ -1219,7 +1552,7 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
                     report(t!("clash.runtime.select_failed", error => format!("{error:#}")))
                 }
             }
-            None
+            ActEffect::Continue
         }
         Action::TestDelay(group) => {
             // 一个组里的节点要一个一个去连，要等几秒（见 [`TEST_TIMEOUT`]）。
@@ -1234,7 +1567,7 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
                 }
                 let _ = input.send(Action::DelayTestDone);
             });
-            None
+            ActEffect::Continue
         }
         Action::TestNodeDelay(node) => {
             // 单测一个节点：比整组快得多（内核只连那一个），同样放进独立任务。
@@ -1251,7 +1584,7 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
                 // 通不通结果都要重采一次：内核已经把这一笔记进历史了。
                 let _ = input.send(Action::DelayTestDone);
             });
-            None
+            ActEffect::Continue
         }
         Action::Reload(config_yaml) => {
             let path = session.dir.join("config.yaml");
@@ -1261,12 +1594,12 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
                 Ok(text) => text,
                 Err(error) => {
                     report(t!("clash.runtime.bad_config", error => format!("{error:#}")));
-                    return None;
+                    return ActEffect::Continue;
                 }
             };
             if let Err(error) = std::fs::write(&path, &text) {
                 report(t!("clash.runtime.write_config_failed", error => error.to_string()));
-                return None;
+                return ActEffect::Continue;
             }
             // 顺序也跟着新正文走：节点与策略组可能整套换了。
             session.outline = config::outline(&config_yaml).ok();
@@ -1274,6 +1607,12 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
             let path = path.to_string_lossy().to_string();
             match session.api.reload(&path).await {
                 Ok(()) => {
+                    // 我们现写的那份配置里 `tun.enable` 出厂是关的：强制
+                    // 重读会把正开着的网卡静默关掉，而界面开关还亮着。
+                    // 把它拨回去（校验与撤灯那套照走，见 [`set_tun`]）。
+                    if state().tun {
+                        set_tun(session, true).await;
+                    }
                     // 重读之后规则可能整套换了，立刻重采一份。
                     let rules = session.api.rules().await.ok();
                     match session.api.proxies().await {
@@ -1291,7 +1630,7 @@ async fn act(action: Action, session: &mut Session) -> Option<String> {
                     report(t!("clash.runtime.reload_failed", error => format!("{error:#}")));
                 }
             }
-            None
+            ActEffect::Continue
         }
     }
 }
@@ -1319,8 +1658,12 @@ struct Logs(Arc<Mutex<LogsInner>>);
 
 struct LogsInner {
     startup: Vec<SharedString>,
-    tail: VecDeque<SharedString>,
+    /// 尾巴带序号：TUN 的事后校验（[`set_tun`]）要圈出"拨开关之后
+    /// 新来的行"，靠的就是它。
+    tail: VecDeque<(u64, SharedString)>,
     warming: bool,
+    /// 发给下一行日志的序号，只增不减（`begin_new_startup` 也不清它）。
+    counter: u64,
 }
 
 impl Logs {
@@ -1329,6 +1672,7 @@ impl Logs {
             startup: Vec::new(),
             tail: VecDeque::new(),
             warming: true,
+            counter: 0,
         })))
     }
 
@@ -1341,15 +1685,43 @@ impl Logs {
         if inner.warming && inner.startup.len() < STARTUP_LIMIT {
             inner.startup.push(line.clone());
         }
+        inner.counter += 1;
+        let seq = inner.counter;
         if inner.tail.len() == LOG_LIMIT {
             inner.tail.pop_front();
         }
-        inner.tail.push_back(line);
+        inner.tail.push_back((seq, line));
     }
 
     /// 起来了：启动那一段到此为止。
     fn finish_startup(&self) {
         self.0.lock().unwrap_or_else(poisoned).warming = false;
+    }
+
+    /// 提权重启开新一遍：启动那一段重录。这一遍要是起不来，[`Logs::reason`]
+    /// 该用的是**这一遍**的启动日志，不能拿上一个内核留下的那段顶包。
+    /// 尾巴不动 —— 它就是"最近发生了什么"，跨重启连续才是对的。
+    fn begin_new_startup(&self) {
+        let mut inner = self.0.lock().unwrap_or_else(poisoned);
+        inner.startup.clear();
+        inner.warming = true;
+    }
+
+    /// 此刻的序号：之后 [`Logs::scan_since`] 圈新行用的界桩。
+    fn mark(&self) -> u64 {
+        self.0.lock().unwrap_or_else(poisoned).counter
+    }
+
+    /// `mark` 之后进来的行里，第一条含 `needle` 的（原文）。
+    fn scan_since(&self, mark: u64, needle: &str) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(poisoned)
+            .tail
+            .iter()
+            .filter(|(seq, _)| *seq > mark)
+            .find(|(_, line)| line.contains(needle))
+            .map(|(_, line)| line.to_string())
     }
 
     fn tail(&self) -> Vec<SharedString> {
@@ -1358,7 +1730,7 @@ impl Logs {
             .unwrap_or_else(poisoned)
             .tail
             .iter()
-            .cloned()
+            .map(|(_, line)| line.clone())
             .collect()
     }
 
@@ -1372,7 +1744,7 @@ impl Logs {
     fn reason(&self) -> String {
         let inner = self.0.lock().unwrap_or_else(poisoned);
         let source: Vec<&SharedString> = match inner.startup.is_empty() {
-            true => inner.tail.iter().collect(),
+            true => inner.tail.iter().map(|(_, line)| line).collect(),
             false => inner.startup.iter().collect(),
         };
         let start = source.len().saturating_sub(REASON_LINES);
@@ -1553,6 +1925,46 @@ mod tests {
         let fresh = Logs::new();
         fresh.push("   ".to_owned());
         assert!(fresh.tail().is_empty());
+    }
+
+    /// 提权重启开新一遍：`reason()` 该用**这一遍**的启动日志，
+    /// 不能拿上一个内核留下的那段顶包。
+    #[test]
+    fn a_new_startup_replaces_the_previous_one() {
+        let logs = Logs::new();
+        logs.push("old kernel: listening".to_owned());
+        logs.finish_startup();
+
+        logs.begin_new_startup();
+        logs.push("new kernel: config error".to_owned());
+        // 还没起来（warming），reason 用启动那段 —— 只有新一遍的行。
+        let reason = logs.reason();
+        assert!(reason.contains("config error"), "{reason}");
+        assert!(!reason.contains("old kernel"), "{reason}");
+
+        // 尾巴是"最近发生了什么"，跨重启连续：旧行还在。
+        assert_eq!(logs.tail().len(), 2);
+    }
+
+    /// TUN 校验圈行用的那对界桩：`mark` 之前的行不算，之后的才算。
+    #[test]
+    fn scan_since_only_sees_lines_after_the_mark() {
+        let logs = Logs::new();
+        logs.push("Start TUN listening error: 上一遍的旧账".to_owned());
+        let mark = logs.mark();
+        assert_eq!(logs.scan_since(mark, "Start TUN listening error"), None);
+
+        logs.push("info: all good".to_owned());
+        assert_eq!(logs.scan_since(mark, "Start TUN listening error"), None);
+
+        logs.push(
+            "Start TUN listening error: configure tun interface: Access is denied.".to_owned(),
+        );
+        let found = logs.scan_since(mark, "Start TUN listening error");
+        assert!(
+            found.as_ref().is_some_and(|line| line.contains("Access is denied")),
+            "{found:?}"
+        );
     }
 
     /// 字节每秒怎么说得短又准。画在顶栏上的是它，那个数字不能长出整格来。

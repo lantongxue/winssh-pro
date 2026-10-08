@@ -153,8 +153,11 @@ jobs:
             # wintun.dll 是虚拟网卡那一档（EasyTier TUN）按名字加载的驱动库，
             # 得和 exe 在同一个目录。build.rs 已按目标架构把它从 third_party/
             # 拷到了 exe 旁边，这里照原样一起打包；少了它 cp 直接失败。
+            # winssh-broker.exe 是 Clash 那一档拨 TUN 时经 UAC 拉起的提权小助手
+            # （见 src/bin/broker.rs），cargo 的必产物，与主 exe 同目录才能被找到。
             package_dir="$(mktemp -d)"
             cp "target/${{ matrix.target }}/release/winssh-pro${{ matrix.extension }}" \
+              "target/${{ matrix.target }}/release/winssh-broker${{ matrix.extension }}" \
               "target/${{ matrix.target }}/release/wintun.dll" \
               "$package_dir/"
             # mihomo.exe 是 Clash 那一档要的内核，由用户自己放进
@@ -164,10 +167,10 @@ jobs:
             if [[ -f "target/${{ matrix.target }}/release/mihomo.exe" ]]; then
               cp "target/${{ matrix.target }}/release/mihomo.exe" "$package_dir/"
               tar -czf "dist/$artifact.tar.gz" -C "$package_dir" \
-                "winssh-pro${{ matrix.extension }}" wintun.dll mihomo.exe
+                "winssh-pro${{ matrix.extension }}" winssh-broker${{ matrix.extension }} wintun.dll mihomo.exe
             else
               tar -czf "dist/$artifact.tar.gz" -C "$package_dir" \
-                "winssh-pro${{ matrix.extension }}" wintun.dll
+                "winssh-pro${{ matrix.extension }}" winssh-broker${{ matrix.extension }} wintun.dll
             fi
           fi
 

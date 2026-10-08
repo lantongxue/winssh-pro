@@ -5,6 +5,14 @@ edition = "2024"
 description = "A native cross-platform SSH client"
 license = "MIT"
 
+# Clash 那一档要的提权小助手（见 `src/bin/broker.rs`）：GUI 留在用户态，
+# 拨 TUN 时经 UAC 把它拉起来，由它代为启动/看住 mihomo。发版产物名用连字符
+# 与主程序对齐（`winssh-broker.exe`）。main.rs 那条不用显式声明 ——
+# autobins 照旧把它发现成 `winssh-pro`。
+[[bin]]
+name = "winssh-broker"
+path = "src/bin/broker.rs"
+
 [package.metadata.deb]
 maintainer = "WinSSH Pro contributors <noreply@github.com>"
 copyright = "2026 WinSSH Pro contributors"
@@ -356,7 +364,20 @@ aws-lc-rs = { version = "1.16.2", features = ["prebuilt-nasm"] }
 # `RegQueryValueExW` 那一套缓冲区），广播用 windows-sys 的 WinInet 那一档。
 # 两个版本都跟着图上已有那一份走；其余平台没有这一档，开关会说清楚。
 winreg = "0.56"
-windows-sys = { version = "0.61", features = ["Win32_Networking_WinInet", "Win32_Foundation"] }
+# 提权 broker 那一档（`src/clash/broker.rs` 与 `src/bin/broker.rs`）要用到：
+# ShellExecuteExW 的 runas（Win32_UI_Shell）、管道两端互认 PID（Win32_System_Pipes）、
+# 父进程死亡 watch（Win32_System_Threading）、job object 保险丝（Win32_System_JobObjects）、
+# 提权检测（Win32_Security）、spawn_blocking 里先 COM 初始化（Win32_System_Com）。
+windows-sys = { version = "0.61", features = [
+    "Win32_Networking_WinInet",
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_System_JobObjects",
+    "Win32_System_Com",
+    "Win32_Security",
+] }
 
 [dev-dependencies]
 # 让界面能在无窗口的测试里真的画一遍（`TestAppContext` + `window.draw`）。
