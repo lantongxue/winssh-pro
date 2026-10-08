@@ -37,15 +37,17 @@ use std::{rc::Rc, sync::Arc};
 use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Icon, IconName, Sizable as _, StyledExt as _,
     VirtualListScrollHandle, WindowExt as _, Disableable as _,
-    button::{Button, ButtonCustomVariant, ButtonVariants as _},
+    button::{Button, ButtonCustomVariant, ButtonVariants as _, DropdownButton},
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     h_flex,
     input::{Editor, EditorState, Input, InputEvent, InputState},
+    menu::PopupMenuItem,
     scroll::{ScrollableElement as _, ScrollbarAxis},
     switch::Switch,
     table::{Table, TableCell, TableHead, TableHeader, TableRow},
     v_flex, v_virtual_list,
 };
+use gpui_kit::Anchor;
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Div, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, PathPromptOptions,
@@ -146,6 +148,81 @@ fn safe_file_name(name: &str) -> String {
         value = "subscription".to_owned();
     }
     value
+}
+
+/// 一种终端的命令行壳子怎么写"走代理"。
+///
+/// 五种的语法真的各不一样，不能拿一份模板套：POSIX 两种是 `export 变量=值`，
+/// cmd 是 `set 变量=值`（不能带 export），PowerShell 两种是 `$env:变量="值"`。
+/// 这里只摆**设置**：撤销那一档（unset、删变量）不进这块 —— 复制走的那行
+/// 是"此刻开始走这台代理"。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShellKind {
+    Bash,
+    Zsh,
+    Cmd,
+    PowerShell,
+    PowerShell7,
+}
+
+impl ShellKind {
+    const ALL: [Self; 5] = [
+        Self::Bash,
+        Self::Zsh,
+        Self::Cmd,
+        Self::PowerShell,
+        Self::PowerShell7,
+    ];
+
+    /// 当前这台机器最常见的那个壳。macOS 从 Catalina 起 zsh 是默认登录壳、
+    /// Linux 各发行版 bash 占大头，Windows 上 PowerShell 7 是当下那个 —
+    /// 装它的人多半先抄它的语法；没装的人开的是 cmd 或旧 PowerShell，
+    /// 那就下拉里挑。
+    fn native() -> Self {
+        #[cfg(target_os = "windows")]
+        {
+            Self::PowerShell7
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Self::Zsh
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            Self::Bash
+        }
+    }
+
+    /// 格式标签上摆的那个名字。bash 与 zsh 同步法一样，
+    /// PowerShell 与 PowerShell 7 也一样 —— 合掌纸面上五种、
+    /// 行其实两种；但名字必须报各自的那一个，不然贴去 zsh 的用户
+    /// 会问 bash 那行凭什么复制到我这儿。
+    fn label(self) -> &'static str {
+        match self {
+            Self::Bash => "bash",
+            Self::Zsh => "zsh",
+            Self::Cmd => "cmd",
+            Self::PowerShell => "PowerShell",
+            Self::PowerShell7 => "PowerShell 7",
+        }
+    }
+
+    /// 走这台代理的一行命令。`host:port` 以参数进来而不是函内查：
+    /// 画法里那刻是这台代理就是这台，端口那刻还没报回来的拿兜底的混口。
+    fn command(self, host: &str, port: u16) -> String {
+        let target = format!("{host}:{port}");
+        match self {
+            Self::Bash | Self::Zsh => format!(
+                "export http_proxy=http://{target} https_proxy=http://{target} all_proxy=socks5://{target}"
+            ),
+            Self::Cmd => format!(
+                "set http_proxy=http://{target} && set https_proxy=http://{target}"
+            ),
+            Self::PowerShell | Self::PowerShell7 => format!(
+                "$env:http_proxy=\"http://{target}\"; $env:https_proxy=\"http://{target}\""
+            ),
+        }
+    }
 }
 
 /// 节点栏的一行。
@@ -632,6 +709,10 @@ impl ClashPanel {
     }
 
     /// 顶部控制条：代理总开关、当前生效订阅、系统代理、虚拟网卡 (TUN)、实时速率、一键测速、分流模式。
+    ///
+    /// 底下一行是"终端代理"那一档：收起时一颗徽章，点开横列五种壳的
+    /// "命令 + 复制钮"。放在总开关下面而不是右下角 —— 它是"这台代理
+    /// 对一个终端该说一声什么"，不在卡片那一排讲。
     fn render_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let is_dark = cx.theme().is_dark();
         let running = self.is_running();
@@ -1187,6 +1268,10 @@ impl ClashPanel {
                             ),
                     ),
             )
+            // 第三行：终端代理 —— 五种壳的"走这台代理"各拉一颗复制钮。
+            // 它讲的是"对一个终端该说一声什么"，放总开关那一块下面讲，
+            // 不挤进卡片那一排。
+            .child(self.render_shell_hint(cx))
     }
 
     /// 四栏的导航标签条。
@@ -1680,6 +1765,67 @@ impl ClashPanel {
                 )
                 .into_any_element(),
         }
+    }
+
+    /// 把一种壳的"走这台代理"那行命令写到剪贴板，同时弹一句"复制的是哪种"。
+    ///
+    /// 本地监听只认环回，代理主机永远写 `127.0.0.1`：内核的混合口
+    /// bind 的就是环回（见 [`crate::clash::config::runtime_config`]），
+    /// 各台机器上谁来复制都是它。
+    fn copy_shell_command(&self, shell: ShellKind, window: &mut Window, cx: &mut Context<Self>) {
+        let port = self.state.mixed_port.unwrap_or(7890);
+        cx.write_to_clipboard(ClipboardItem::new_string(shell.command("127.0.0.1", port)));
+        window.push_notification(t!("clash.panel.copied", shell => shell.label()), cx);
+    }
+
+    /// "终端代理" 那一颗分裂钮：左半边一键复制**当前系统那个壳**的命令
+    /// （macOS/Linux 是 zsh、Windows 是 PowerShell 7），右侧 caret 拉开一列
+    /// 五种壳随便挑。
+    ///
+    /// 菜单每一项只摆壳名，命令本体不进菜单 —— 一列 `export …` 拼起来
+    /// 比名字宽好几倍，把面板底下的节点卡片挤得挪位。名字就够了：挑
+    /// 哪种看名字，复制走的是哪种还是看名字。当前系统那一项打勾，
+    /// 与外面那颗"默认就是它"对上。
+    ///
+    /// 端口那刻还没报回来（没跑、或正起着）就用兜底的混口 7890：运行时的
+    /// 端口才是准的；没跑时也让人先抄一份备用。
+    fn render_shell_hint(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = ShellKind::native();
+        let label: SharedString =
+            format!("{} ({})", t!("clash.panel.shell_hint"), current.label()).into();
+        let panel = cx.weak_entity();
+
+        let button = Button::new("clash-shell-copy-native")
+            .ghost()
+            .xsmall()
+            .icon(AppIcon::Terminal)
+            .label(label)
+            .tooltip(t!("clash.panel.shell_copy"))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.copy_shell_command(current, window, cx);
+            }));
+
+        DropdownButton::new("clash-shell-copy-split")
+            .button(button)
+            .menu_accessibility_label(t!("clash.panel.shell_hint_menu"))
+            .dropdown_menu_with_anchor(Anchor::TopLeft, move |mut menu, _, _| {
+                for shell in ShellKind::ALL {
+                    let panel = panel.clone();
+                    let item = PopupMenuItem::new(shell.label())
+                        .icon(Icon::new(IconName::Check).text_color(if shell == current {
+                            palette::teal()
+                        } else {
+                            gpui_kit::transparent_black()
+                        }))
+                        .on_click(move |_, window, cx| {
+                            panel
+                                .update(cx, |this, cx| this.copy_shell_command(shell, window, cx))
+                                .ok();
+                        });
+                    menu = menu.item(item);
+                }
+                menu
+            })
     }
 
     fn export_config(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3121,14 +3267,23 @@ mod tests {
     }
 
     /// 开一块面板，正文用 [`subscription`]。窗口是测试那一档，一屏二十来行。
+    ///
+    /// 根视图是组件库的 [`Root`]：没有它，`window.push_notification` 找不到
+    /// `WindowState` 直接 panic（"终端代理"那一块点复制会走这条路）。
     fn open_panel(
         cx: &mut gpui_kit::TestAppContext,
     ) -> (Entity<ClashPanel>, &mut gpui_kit::VisualTestContext) {
+        use gpui_kit::component::Root;
+
         cx.update(gpui_kit::init);
-        cx.add_window_view(|window, cx| {
+        let mut panel = None;
+        let (_, cx) = cx.add_window_view(|window, cx| {
             let dock_area = cx.new(|cx| DockArea::new("clash-panel-test-dock", None, window, cx));
-            ClashPanel::new(subscription(), dock_area.downgrade(), window, cx)
-        })
+            let created = cx.new(|cx| ClashPanel::new(subscription(), dock_area.downgrade(), window, cx));
+            panel = Some(created.clone());
+            Root::new(created, window, cx)
+        });
+        (panel.expect("面板刚建出来"), cx)
     }
 
     /// 一份"像真的"的运行时读数：`groups` 个策略组、每组 `per_group` 个节点，
@@ -3406,6 +3561,68 @@ mod tests {
             });
             cx.update(|window, cx| window.draw(cx).clear(cx));
         }
+    }
+
+    /// "本机壳"与"画出来的 Label 名"这两个方法永远不漂 —— 合名残缺
+    /// 时 `render_shell_hint` 画出不存在的壳，复制出去的还是错的那一版。
+    #[test]
+    fn the_native_shell_reports_its_name() {
+        #[cfg(target_os = "windows")]
+        assert_eq!(ShellKind::native().label(), "PowerShell 7");
+        #[cfg(target_os = "macos")]
+        assert_eq!(ShellKind::native().label(), "zsh");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        assert_eq!(ShellKind::native().label(), "bash");
+    }
+
+    /// 五种壳的"走代理"那行命令各自的语法钉在这儿 —— 模板套不出来：
+    /// POSIX 是 `export`、cmd 是 `set`、PowerShell 是 `$env:`，地址与端口
+    /// 穿在同一条里。纯函数，不进 gpui 那一层问。
+    #[test]
+    fn the_shell_commands_follow_their_own_grammars() {
+        assert_eq!(
+            ShellKind::Bash.command("127.0.0.1", 7890),
+            "export http_proxy=http://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890 all_proxy=socks5://127.0.0.1:7890"
+        );
+        assert_eq!(
+            ShellKind::Zsh.command("127.0.0.1", 7890),
+            ShellKind::Bash.command("127.0.0.1", 7890),
+            "zsh 与 bash 同一套语法"
+        );
+        assert_eq!(
+            ShellKind::Cmd.command("127.0.0.1", 7891),
+            "set http_proxy=http://127.0.0.1:7891 && set https_proxy=http://127.0.0.1:7891"
+        );
+        assert_eq!(
+            ShellKind::PowerShell.command("127.0.0.1", 7892),
+            "$env:http_proxy=\"http://127.0.0.1:7892\"; $env:https_proxy=\"http://127.0.0.1:7892\""
+        );
+        assert_eq!(
+            ShellKind::PowerShell7.command("127.0.0.1", 7892),
+            ShellKind::PowerShell.command("127.0.0.1", 7892),
+            "pwsh 与 windows powershell 同一套语法"
+        );
+    }
+
+    /// 左半边那颗"复制本机壳的命令"真按下去：剪贴板上是**当前系统**那一版
+    /// 的语法 —— mac 上就是 zsh 的 `export`，Windows 上就是 pwsh 的 `$env:`。
+    /// 端口没跑起来那刻用兜底的 7890。
+    #[gpui_kit::test]
+    fn the_native_copy_writes_the_native_grammar(cx: &mut gpui_kit::TestAppContext) {
+        let (panel, cx) = open_panel(cx);
+        panel.update_in(cx, |this, window, cx| {
+            this.copy_shell_command(ShellKind::native(), window, cx);
+        });
+        let text = cx.read_from_clipboard().and_then(|item| item.text());
+        let port = 7890u16;
+        let target = format!("127.0.0.1:{port}");
+        #[cfg(target_os = "windows")]
+        let expect = format!("$env:http_proxy=\"http://{target}\"; $env:https_proxy=\"http://{target}\"");
+        #[cfg(not(target_os = "windows"))]
+        let expect = format!(
+            "export http_proxy=http://{target} https_proxy=http://{target} all_proxy=socks5://{target}"
+        );
+        assert_eq!(text.as_deref(), Some(expect.as_str()), "剪贴板上是当前系统那一版");
     }
 
     /// 这块面板一帧要多少 CPU。**平时不跑**（`#[ignore]`），要量的时候：

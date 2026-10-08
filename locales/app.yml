@@ -2038,6 +2038,18 @@ clash.panel.effective_subscription:
 clash.panel.start_failed:
   en: "Could not start: %{error}"
   zh-CN: "启动失败：%{error}"
+clash.panel.shell_hint:
+  en: Terminal proxy
+  zh-CN: 终端代理
+clash.panel.shell_hint_menu:
+  en: Choose a shell
+  zh-CN: 挑一种终端
+clash.panel.shell_copy:
+  en: Copy
+  zh-CN: 复制
+clash.panel.copied:
+  en: "%{shell} proxy command copied"
+  zh-CN: "已复制 %{shell} 的代理命令"
 clash.panel.start:
   en: Start
   zh-CN: 启动
