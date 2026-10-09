@@ -197,7 +197,7 @@ session_info.history:
   zh-CN: 命令历史
 session_info.history_tooltip:
   en: Commands run on this host (Alt+H)
-  zh-CN: 这台主机上跑过的命令（Alt+H）
+  zh-CN: 此主机上执行过的命令（Alt+H）
 session_info.copy_all:
   en: Copy all output
   zh-CN: 复制全部输出
@@ -220,7 +220,7 @@ command_history.loading:
 # 不然用户只会觉得功能坏了，并且把人引到底下那个开关上（它就是干这个的）。
 command_history.empty:
   en: No commands recorded yet. History needs the remote shell to emit OSC 133 marks (fish, powerlevel10k, bash-preexec and the iTerm2 / VS Code shell integrations all do). If yours doesn't, turn on the switch below.
-  zh-CN: 还没有记下命令。命令历史要对端 shell 自己打 OSC 133 标记才认得出来（fish、powerlevel10k、bash-preexec，以及 iTerm2 / VS Code 的 shell 集成都会打）。对端没装的话，打开底下那个开关。
+  zh-CN: 尚未记录命令。命令历史需远端 shell 输出 OSC 133 标记（fish、powerlevel10k、bash-preexec 以及 iTerm2 / VS Code 的 shell 集成均支持）。若对端未安装，请打开下方开关。
 command_history.no_match:
   en: Nothing matches
   zh-CN: 没有匹配的命令
@@ -242,19 +242,19 @@ command_history.close:
 # 说清楚"装什么、什么时候装、装了会看见什么"，比说得好听重要。
 shell_integration.label:
   en: Install shell integration on this host
-  zh-CN: 为这台主机装 shell 集成
+  zh-CN: 为此主机安装 shell 集成
 shell_integration.note_off:
   en: The remote shell emits no OSC 133 marks, so nothing gets recorded. Turn this on and WinSSH Pro types one line into the shell on every connect.
-  zh-CN: 对端 shell 不打 OSC 133 标记就一条也记不到。打开之后，每次连上这台机器都会替你往 shell 里敲一行命令。
+  zh-CN: 远端 shell 未输出 OSC 133 标记，无法记录命令。开启后，每次连接此主机时会自动在 shell 中输入一行命令。
 shell_integration.note_on:
   en: Installed on every connect (bash / zsh). Turning it off stops the next connect — the shell already running keeps its marks until you reconnect.
-  zh-CN: 每次连上都装（bash / zsh）。关掉只对下次连接有效 —— 已经装好的这条 shell 要重连才干净。
+  zh-CN: 每次连接均安装（bash / zsh）。关闭仅对下次连接生效 —— 已安装的 shell 需重连方可清除。
 shell_integration.confirm_title:
   en: Type this into the remote shell?
-  zh-CN: 要往对端 shell 里敲这行命令吗？
+  zh-CN: 是否向远端 shell 输入此命令？
 shell_integration.confirm_body:
   en: WinSSH Pro will run the line below in this session, and again on every future connect to this host. It only sets prompt hooks (PS0/PS1/PROMPT_COMMAND on bash 4.4+, precmd/preexec on zsh) so the shell reports where each command starts, ends and what it exited with. Nothing is written to disk, and it lasts only as long as the shell. Make sure the session is sitting at a prompt — the keystrokes go wherever the input goes.
-  zh-CN: WinSSH Pro 会在当前这条会话里跑下面这一行，以后每次连上这台主机也照跑一遍。它只设提示符钩子（bash 4.4+ 走 PS0/PS1/PROMPT_COMMAND，zsh 走 precmd/preexec），让 shell 自己报出每条命令的起止与退出码；不往磁盘写任何东西，shell 一关就没了。动手前请确认会话停在提示符上 —— 这些字符会进当前正在读输入的那个程序。
+  zh-CN: WinSSH Pro 会在当前会话中执行以下命令，并在以后每次连接此主机时自动执行。该命令仅设置提示符钩子（bash 4.4+ 走 PS0/PS1/PROMPT_COMMAND，zsh 走 precmd/preexec），使 shell 报告每条命令的起止与退出码；不写入磁盘，仅在 shell 生命周期内有效。执行前请确认会话处于提示符状态 —— 这些字符会进入当前正在读取输入的程序。
 shell_integration.script_caption:
   en: Sent verbatim, as one line
   zh-CN: 原样发送，就这一行
@@ -263,7 +263,7 @@ shell_integration.copy:
   zh-CN: 复制
 shell_integration.confirm_ok:
   en: Install
-  zh-CN: 装上
+  zh-CN: 安装
 shell_integration.confirm_cancel:
   en: Cancel
   zh-CN: 取消
@@ -294,7 +294,7 @@ session_status.capacity_detail:
   zh-CN: "%{subject} %{used} GiB / %{total} GiB"
 session_status.rate_tooltip:
   en: Send/receive rate of the remote NIC — throughput for the whole machine, not just this session
-  zh-CN: 对端网卡的收发速率，整台机器的吞吐，不只是这条会话
+  zh-CN: 对端网卡的收发速率，整机吞吐，非仅此会话
 
 # ── 主机信息面板 ─────────────────────────────────────────────────────────
 host_info.title:
@@ -302,7 +302,7 @@ host_info.title:
   zh-CN: 主机信息
 host_info.empty:
   en: Select a host to see its connection details
-  zh-CN: 选中一台主机后显示它的连接信息
+  zh-CN: 选中主机后显示其连接信息
 host_info.address:
   en: Address
   zh-CN: 地址
@@ -337,7 +337,7 @@ event_log.sample_agent_ready:
   zh-CN: 密钥代理已就绪：2 个可用身份
 event_log.sample_fingerprint_changed:
   en: Host key fingerprint for db-01 differs from the local record, awaiting confirmation
-  zh-CN: db-01 的主机密钥指纹与本地记录不同，等待确认
+  zh-CN: db-01 的主机密钥指纹与本地记录不符，等待确认
 event_log.sample_timeout:
   en: web-02 connection timed out (10s), no session established
   zh-CN: web-02 连接超时（10s），未建立会话
@@ -459,7 +459,7 @@ settings.assistant_vision:
   zh-CN: 支持图片输入
 settings.assistant_vision_hint:
   en: Turn on if this model can read images. You can then paste an image into the assistant and send it with your question. Text-only models reject requests that contain images.
-  zh-CN: 这个模型能看图时打开。打开后可以往助手里粘贴图片，随提问一起发给它。纯文本模型收到图片会直接报错。
+  zh-CN: 此模型支持图片时开启。开启后可向助手粘贴图片，随提问一起发送。纯文本模型收到图片会报错。
 settings.assistant_execution:
   en: Command Execution
   zh-CN: 命令执行
@@ -468,7 +468,7 @@ settings.assistant_auto:
   zh-CN: 全自动模式
 settings.assistant_auto_hint:
   en: Run server commands without asking for approval. Off means every command needs your confirmation.
-  zh-CN: 在服务器上执行命令不再逐条送审。关闭时每一条命令都要你确认。
+  zh-CN: 在服务器上执行命令不再逐条确认。关闭时每条命令均需确认。
 settings.tab_backup:
   en: Backup & Sync
   zh-CN: 备份同步
@@ -504,13 +504,13 @@ settings.backup_encrypt:
   zh-CN: 启用备份加密
 settings.backup_encrypt_desc:
   en: Without password, backup is unencrypted raw database. With password, encrypted using AES-256-GCM.
-  zh-CN: 不设置密码则直接裸备份，设置密码后使用 AES-256-GCM 进行加密
+  zh-CN: 不设置密码则明文备份，设置密码后使用 AES-256-GCM 加密。
 settings.backup_password:
   en: Encryption Password
   zh-CN: 备份密码
 settings.backup_password_placeholder:
   en: Enter encryption password (optional, raw backup if empty)
-  zh-CN: 输入备份密码（留空则为裸备份）
+  zh-CN: 输入备份密码（留空则明文备份）
 settings.backup_group_storage:
   en: Storage Server Configuration
   zh-CN: 存储服务器配置
@@ -624,7 +624,7 @@ backup_restore.success_title:
   zh-CN: 数据库恢复成功
 backup_restore.success_desc:
   en: "The database has been restored. The new data takes effect on the next launch — restart now, or later at your convenience."
-  zh-CN: "数据库已成功从云端恢复。新数据要等下次启动才会顶上去 —— 现在重启，或稍后自行重启都可以。"
+  zh-CN: "数据库已从云端恢复。新数据将在下次启动时生效 —— 可立即重启或稍后重启。"
 backup_restore.restart_now:
   en: Restart Now
   zh-CN: 立即重启
@@ -648,7 +648,7 @@ backup_restore.delete_title:
   zh-CN: 删除云端副本
 backup_restore.delete_confirm:
   en: "%{name} will be permanently removed from cloud storage. This cannot be undone."
-  zh-CN: "副本 %{name} 将从云端存储中永久删除，此操作无法撤销。"
+  zh-CN: "副本 %{name} 将从云端存储中永久删除，此操作不可撤销。"
 backup_restore.delete_ok:
   en: Delete
   zh-CN: 删除
@@ -759,7 +759,7 @@ local_menu.delete:
 # ── 工作区（标题栏与全局通知） ───────────────────────────────────────────
 workspace.host_db_failed:
   en: Could not open the host database; changes will only apply to this session.
-  zh-CN: 主机配置库打开失败，本次的改动只在当前会话里生效。
+  zh-CN: 主机配置库打开失败，本次改动仅在当前会话生效。
 workspace.local_shell:
   en: Local Shell
   zh-CN: 本地 Shell
@@ -826,7 +826,7 @@ host_explorer.delete_title:
   zh-CN: 删除主机
 host_explorer.delete_confirm:
   en: Delete “%{name}”? This cannot be undone.
-  zh-CN: 确定要删除“%{name}”吗？删除后无法恢复。
+  zh-CN: 确定要删除“%{name}”吗？此操作不可恢复。
 host_explorer.delete:
   en: Delete
   zh-CN: 删除
@@ -838,7 +838,7 @@ host_explorer.delete_failed:
   zh-CN: 删除主机失败：%{error}
 host_explorer.group_not_empty:
   en: Group “%{name}” still holds %{count} host(s). Move or delete them before deleting the group.
-  zh-CN: 分组“%{name}”下还有 %{count} 台主机，请先移出或删除这些主机，再删除分组。
+  zh-CN: 分组“%{name}”下仍有 %{count} 台主机，请先移出或删除这些主机，再删除分组。
 host_explorer.delete_group_failed:
   en: "Could not delete the group: %{error}"
   zh-CN: 删除分组失败：%{error}
@@ -859,10 +859,10 @@ host_explorer.delete_group:
   zh-CN: 删除分组
 host_explorer.group_empty:
   en: This group has no hosts yet.
-  zh-CN: 这个分组下还没有主机。
+  zh-CN: 此分组下尚无主机。
 host_explorer.no_match:
   en: No matching host.
-  zh-CN: 没有匹配的主机。
+  zh-CN: 暂无匹配的主机。
 
 # ── VNC 会话（协议层与中心区那块远端桌面，见 src/vnc/） ──────────────────
 vnc.connecting:
@@ -876,13 +876,13 @@ vnc.disconnected:
   zh-CN: VNC 会话已结束。
 vnc.auth_failed:
   en: "VNC authentication failed: wrong password."
-  zh-CN: VNC 认证失败：密码不对。
+  zh-CN: VNC 认证失败：密码错误。
 vnc.password_required:
   en: This server requires a VNC password; the host has none configured.
-  zh-CN: 这台服务器要求 VNC 密码，主机里没有配。
+  zh-CN: 此服务器要求 VNC 密码，主机未配置。
 vnc.handshake_failed:
   en: "VNC handshake failed: the server offered a security type we don't support (only no-auth and VNC password)."
-  zh-CN: VNC 握手失败：服务器只提供了我们不支持的认证方式（目前只支持无认证与 VNC 密码）。
+  zh-CN: VNC 握手失败：服务器仅提供了不支持的认证方式（目前仅支持无认证与 VNC 密码）。
 vnc.connect_failed:
   en: "Cannot reach the VNC server %{host}:%{port}."
   zh-CN: 连不上 VNC 服务器 %{host}:%{port}。
@@ -891,7 +891,7 @@ vnc.connect_failed_detail:
   zh-CN: VNC 连接失败：%{detail}
 vnc.connect_timeout:
   en: "The VNC server did not answer within %{seconds} s - it may not be running VNC."
-  zh-CN: VNC 服务器在 %{seconds} 秒内没有应答，那边跑的也许不是 VNC。
+  zh-CN: VNC 服务器在 %{seconds} 秒内未应答，可能未运行 VNC 服务。
 vnc.proxy_misconfigured:
   en: "Host %{host} has an incomplete proxy configuration: %{reason}"
   zh-CN: 主机 %{host} 的代理配置不完整：%{reason}
@@ -903,7 +903,7 @@ vnc.reconnect:
   zh-CN: 重连
 vnc.reconnect_tooltip:
   en: Close this session and dial the server again.
-  zh-CN: 结束当前会话，重新拨一次这台服务器。
+  zh-CN: 结束当前会话，重新连接服务器。
 vnc.close_session:
   en: Close desktop
   zh-CN: 关闭桌面
@@ -924,13 +924,13 @@ desktop_scale.actual:
   zh-CN: 实际 1:1
 desktop_scale.actual_tooltip:
   en: Show one remote pixel per display pixel. Use the scrollbars when the desktop is larger than the panel.
-  zh-CN: 一个远端像素对应一个显示像素；画面大于面板时可用滚动条查看。
+  zh-CN: 远程像素与显示像素 1:1 对应；画面超出面板时可用滚动条查看。
 desktop.link_latency_tooltip:
   en: Round-trip time to the server, measured by a TCP handshake probe every couple of seconds.
-  zh-CN: 到服务器的往返时延，每隔两秒用一次 TCP 握手探测量得。
+  zh-CN: 到服务器的往返时延，每隔两秒通过 TCP 握手探测一次。
 desktop.link_rate_tooltip:
   en: This session's own send / receive throughput on the wire, not the whole remote NIC.
-  zh-CN: 这条会话自己在线上收发字节的速率，不是对端整块网卡的吞吐。
+  zh-CN: 此会话自身的线上收发速率，非对端整机网卡吞吐。
 vnc.redraw:
   en: Redraw
   zh-CN: 刷新画面
@@ -942,22 +942,22 @@ vnc.resize_unavailable:
   zh-CN: 保持 1:1
 vnc.resize_not_supported:
   en: The server has not offered a resizable single-screen desktop. Keep 1:1 and use the scrollbars.
-  zh-CN: 远端尚未提供可调整的单屏桌面，画面保持 1:1，可通过滚动条查看。
+  zh-CN: 远端尚未提供可调整尺寸的单屏桌面，画面保持 1:1，可使用滚动条查看。
 vnc.resize_too_large:
   en: The canvas exceeds the supported desktop size. Reduce the window size to try again.
-  zh-CN: 画布超过可调整的尺寸上限，缩小窗口后会重试。
+  zh-CN: 画布超出可调整尺寸上限，缩小窗口后自动重试。
 vnc.resize_denied:
   en: The server rejected the resolution change. Automatic changes are stopped for this connection; reconnect to try again.
   zh-CN: 服务器拒绝调整分辨率，本次连接已停止自动调整；重连后可重试。
 vnc.resize_uncertain:
   en: The resolution change was not confirmed. Automatic changes are stopped; reconnect before trying again.
-  zh-CN: 远端未确认调整结果，已停止自动调整；请重连后再试。
+  zh-CN: 远端未确认调整结果，已停止自动调整；重连后可重试。
 vnc.resize_failed:
   en: The resolution could not be changed. Automatic changes are stopped for this connection; reconnect to try again.
   zh-CN: 调整分辨率失败，本次连接已停止自动调整；重连后可重试。
 vnc.redraw_tooltip:
   en: Ask the server for the whole screen again. Use it when part of the picture is stuck black or stale - the incremental updates only carry what changed, so a region that was never sent never comes back on its own.
-  zh-CN: 跟服务器重新要一整屏。画面有一块一直黑着或者停在旧内容时按它——增量更新只带回变过的区域，从没发过来的那一片不会自己回来。
+  zh-CN: 向服务器请求整屏重绘。当画面局部出现黑块或停顿时使用——增量更新仅传输变化区域，未发送过的区域不会自动恢复。
 vnc.depth_true32:
   en: True colour (32-bit)
   zh-CN: 真彩（32 位）
@@ -987,13 +987,13 @@ vnc.fps_60:
   zh-CN: 60 fps
 vnc.share_shared:
   en: Shared (others may watch)
-  zh-CN: 可共享（允许别人同看）
+  zh-CN: 可共享（允许其他查看者同时连接）
 vnc.share_exclusive:
   en: Exclusive (disconnect other viewers)
-  zh-CN: 独占（踢掉其他查看者）
+  zh-CN: 独占（断开其他查看者）
 vnc.charset_auto:
   en: Automatic (UTF-8, sniff GBK, else Latin-1)
-  zh-CN: 自动（UTF-8，嗅 GBK，再退 Latin-1）
+  zh-CN: 自动（UTF-8，嗅探 GBK，回退 Latin-1）
 vnc.charset_utf8:
   en: UTF-8 (Linux / macOS servers)
   zh-CN: UTF-8（Linux / macOS 服务器）
@@ -1011,7 +1011,7 @@ vnc.charset_euc_kr:
   zh-CN: EUC-KR（韩文 Windows）
 vnc.charset_latin1:
   en: Latin-1 (what RFC 6143 says)
-  zh-CN: Latin-1（规范字面那一档）
+  zh-CN: Latin-1（RFC 6143 规范定义）
 
 # ── RDP 会话（协议层与中心区那块远程桌面，见 src/rdp/） ──────────────────
 rdp.connecting:
@@ -1031,7 +1031,7 @@ rdp.session_ended:
   zh-CN: RDP 服务器结束了会话：%{detail}
 rdp.access_denied:
   en: "Login was denied: wrong user name or password, or this account is not allowed to sign in remotely."
-  zh-CN: 登录被拒绝：账号或密码不对，或者这个账号没有远程登录权限。
+  zh-CN: 登录被拒绝：账号或密码错误，或此账号无远程登录权限。
 rdp.auth_failed:
   en: "RDP authentication failed: %{detail}"
   zh-CN: RDP 认证失败：%{detail}
@@ -1076,10 +1076,10 @@ rdp.clipboard_failed:
   zh-CN: RDP 剪贴板出错：%{detail}
 rdp.files_too_many:
   en: "Too many files were copied (more than %{max} items); they were not offered to the remote side."
-  zh-CN: 复制的文件太多（超过 %{max} 项），没有发给远端。
+  zh-CN: 复制的文件过多（超过 %{max} 项），未发送至远端。
 rdp.files_collect_failed:
   en: "The copied files could not be offered to the remote side: %{error}"
-  zh-CN: 本地复制的文件没能发给远端：%{error}
+  zh-CN: 本地复制的文件未能发送至远端：%{error}
 rdp.files_offer_one:
   en: "Remote copied %{name} (%{size})"
   zh-CN: 远端复制了 %{name}（%{size}）
@@ -1127,7 +1127,7 @@ rdp.files_failed:
   zh-CN: 保存远端文件失败：%{error}
 rdp.files_gone:
   en: The remote clipboard has changed; copy the files again.
-  zh-CN: 远端剪贴板已经换了内容，请重新复制那些文件。
+  zh-CN: 远端剪贴板已更换内容，请重新复制文件。
 rdp.files_dir_missing:
   en: "The folder %{dir} does not exist."
   zh-CN: 目录 %{dir} 不存在。
@@ -1136,19 +1136,19 @@ rdp.files_too_large:
   zh-CN: "%{name} 超过 2 GiB，这台服务器不支持经剪贴板传这么大的文件。"
 rdp.files_remote_refused:
   en: "The remote side did not provide the contents of %{name}."
-  zh-CN: 远端没有提供 %{name} 的内容。
+  zh-CN: 远端未提供 %{name} 的内容。
 rdp.files_session_ended:
   en: The RDP session ended before the files were saved.
-  zh-CN: 文件还没存完，RDP 会话就结束了。
+  zh-CN: 文件尚未保存完成，RDP 会话已结束。
 rdp.files_write_failed:
   en: "Cannot write %{path}: %{error}"
-  zh-CN: 写不进 %{path}：%{error}
+  zh-CN: 无法写入 %{path}：%{error}
 rdp.reconnect:
   en: Reconnect
   zh-CN: 重连
 rdp.reconnect_tooltip:
   en: Close this session and dial the server again.
-  zh-CN: 结束当前会话，重新拨一次这台服务器。
+  zh-CN: 结束当前会话，重新连接服务器。
 rdp.close_session:
   en: Close desktop
   zh-CN: 关闭桌面
@@ -1157,7 +1157,7 @@ rdp.send_ctrl_alt_del:
   zh-CN: Ctrl+Alt+Del
 rdp.send_ctrl_alt_del_tooltip:
   en: Send the secure attention sequence to the remote machine. The local system swallows that chord, so it has to go through this button.
-  zh-CN: 给远端发一次安全注意序列。这个组合会被本地系统吃掉，只能从这颗按钮走。
+  zh-CN: 给远端发送安全注意序列。此组合会被本地系统拦截，只能通过此按钮发送。
 rdp.security_auto:
   en: Automatic (TLS + NLA)
   zh-CN: 自动（TLS + NLA）
@@ -1195,37 +1195,37 @@ easytier.access_tun_device:
   zh-CN: "虚拟网卡 %{device}"
 easytier.check_no_peer:
   en: "Add at least one peer address, or accept incoming peers so other nodes can connect in."
-  zh-CN: "至少填一个节点地址，或者开启监听让别的节点连进来。"
+  zh-CN: "至少填写一个节点地址，或开启监听以接收其他节点连接。"
 easytier.check_socks5_port:
   en: "The SOCKS5 port must be between 1 and 65535."
-  zh-CN: "SOCKS5 端口要在 1 到 65535 之间。"
+  zh-CN: "SOCKS5 端口须在 1 至 65535 之间。"
 easytier.check_listen_port:
   en: "The listening port must be between 1 and 65535."
-  zh-CN: "监听端口要在 1 到 65535 之间。"
+  zh-CN: "监听端口须在 1 至 65535 之间。"
 easytier.check_port_clash:
   en: "The SOCKS5 port %{port} is one of the ports opened by listening on %{listen} (tcp/udp use it as is, wg/ws +1, quic/wss +2); pick another SOCKS5 port."
-  zh-CN: "SOCKS5 端口 %{port} 和监听端口 %{listen} 展开出来的某个口撞了（tcp / udp 用原号，wg / ws +1，quic / wss +2），换一个 SOCKS5 端口。"
+  zh-CN: "SOCKS5 端口 %{port} 与监听端口 %{listen} 展开的某个端口冲突（tcp/udp 使用原端口号，wg/ws +1，quic/wss +2），请更换 SOCKS5 端口。"
 easytier.check_peer_invalid:
   en: "Not a peer address: %{peer} (expected something like tcp://public.easytier.cn:11010)"
-  zh-CN: "这不是节点地址：%{peer}（应形如 tcp://public.easytier.cn:11010）"
+  zh-CN: "无效节点地址：%{peer}（应形如 tcp://public.easytier.cn:11010）"
 easytier.check_peer_scheme:
   en: "%{peer}: unsupported protocol; use one of %{schemes}"
-  zh-CN: "%{peer}：不认得这个协议，可用的有 %{schemes}"
+  zh-CN: "%{peer}：不支持的协议，可用协议：%{schemes}"
 easytier.check_peer_host:
   en: "%{peer}: a host is required"
   zh-CN: "%{peer}：要写明主机"
 easytier.check_ipv4:
   en: "Not a virtual IPv4 address: %{ipv4} (e.g. 10.144.144.10 or 10.144.144.10/24; leave it empty to get one from the network)"
-  zh-CN: "虚拟地址不对：%{ipv4}（应形如 10.144.144.10 或 10.144.144.10/24；留空由网络分配）"
+  zh-CN: "无效虚拟地址：%{ipv4}（应形如 10.144.144.10 或 10.144.144.10/24；留空则由网络分配）"
 easytier.check_subnet_invalid:
   en: "Not a subnet: %{subnet} (e.g. 192.168.1.0/24, or 192.168.1.0/24->10.1.1.0/24 to map it)"
-  zh-CN: "子网写得不对：%{subnet}（应形如 192.168.1.0/24，要映射就写 192.168.1.0/24->10.1.1.0/24）"
+  zh-CN: "无效子网：%{subnet}（应形如 192.168.1.0/24，需映射时写 192.168.1.0/24->10.1.1.0/24）"
 easytier.check_subnet_host_bits:
   en: "%{subnet} is a host address, not a subnet. Did you mean %{network}?"
-  zh-CN: "%{subnet} 是一台主机的地址，不是网段 —— 是不是想写 %{network}？"
+  zh-CN: "%{subnet} 为主机地址，非网段 —— 是否要写 %{network}？"
 easytier.check_subnet_mapped_len:
   en: "%{subnet}: both sides of the mapping must be the same size (same prefix length)"
-  zh-CN: "%{subnet}：映射前后的网段得一样大（前缀长度相同）"
+  zh-CN: "%{subnet}：映射前后网段须相同前缀长度"
 easytier.check_network_name:
   en: "Enter the network name."
   zh-CN: "请填写网络名称。"
@@ -1330,13 +1330,13 @@ easytier.log_stopped:
   zh-CN: "已退出网络"
 easytier.runtime_failed:
   en: "Could not start the network runtime: %{error}"
-  zh-CN: "起不来组网运行时：%{error}"
+  zh-CN: "组网运行时启动失败：%{error}"
 easytier.start_failed:
   en: "Could not join the network: %{error}"
   zh-CN: "加入网络失败：%{error}"
 easytier.start_failed_tun:
   en: "Could not join the network: %{error}. The virtual NIC mode needs WinSSH Pro to run as administrator (root), and wintun.dll next to the program on Windows; if that is not possible, switch the host to user space (SOCKS5 proxy)."
-  zh-CN: "加入网络失败：%{error}。虚拟网卡模式要以管理员（root）身份运行 WinSSH Pro，Windows 上还要 wintun.dll 在程序旁边；做不到的话，在主机设置里换成「用户态（SOCKS5 代理）」。"
+  zh-CN: "加入网络失败：%{error}。虚拟网卡模式需以管理员（root）身份运行 WinSSH Pro，Windows 上还需 wintun.dll 与程序同目录；若不可行，请在主机设置中切换为「用户态（SOCKS5 代理）」。"
 easytier.start_timeout:
   en: "The node did not start within %{secs} seconds"
   zh-CN: "%{secs} 秒内节点没能启动"
@@ -1349,25 +1349,25 @@ easytier.thread_crashed:
 # 经组网连别的主机（src/easytier/portal.rs）：拨号前等那张网就绪时的几种说法。
 easytier.portal_not_joined:
   en: "The EasyTier network this host goes through is not joined, and there is nothing here to join it."
-  zh-CN: "这台主机经的组网没连上，也没有地方替它加入。"
+  zh-CN: "此主机经由的组网未连接，且无法自动加入。"
 easytier.portal_failed:
   en: "The EasyTier network %{name} did not come up: %{reason}"
-  zh-CN: "组网「%{name}」没连上：%{reason}"
+  zh-CN: "组网「%{name}」未连通：%{reason}"
 easytier.portal_left:
   en: "The EasyTier network %{name} was left while this host was connecting through it."
-  zh-CN: "组网「%{name}」在这台主机连接途中退出了。"
+  zh-CN: "组网「%{name}」在此主机连接过程中退出。"
 easytier.portal_join_timeout:
   en: "Waited %{secs} seconds, and the EasyTier network %{name} is still not joined."
-  zh-CN: "等了 %{secs} 秒，组网「%{name}」还没连上。"
+  zh-CN: "已等待 %{secs} 秒，组网「%{name}」仍未加入。"
 easytier.portal_join_timeout_unnamed:
   en: "Waited %{secs} seconds, and the EasyTier network this host goes through is still not joined."
-  zh-CN: "等了 %{secs} 秒，这台主机经的组网还没连上。"
+  zh-CN: "已等待 %{secs} 秒，此主机经由的组网仍未加入。"
 easytier.portal_no_route:
   en: "Waited %{secs} seconds, and the EasyTier network %{name} still has no route to %{target}: that machine is probably offline, or not in this network (and no node proxies its subnet)."
-  zh-CN: "组网「%{name}」里等了 %{secs} 秒也没有到 %{target} 的路由：那台机器多半不在线，或者不在这张网里（也没有节点代理它所在的网段）。"
+  zh-CN: "组网「%{name}」中等待 %{secs} 秒仍无到 %{target} 的路由：目标机器可能离线，或不在本网络中（也没有节点代理其所在网段）。"
 easytier.portal_missing:
   en: "The EasyTier network this host goes through is no longer in the host list (deleted, or changed to another connection type). Pick one again under Advanced in the host's settings."
-  zh-CN: "这台主机经的组网已经不在主机列表里了（删掉了，或者改成了别的连接类型）。去主机配置的「高级」页重新选一张。"
+  zh-CN: "此主机经由的组网已不在主机列表中（已删除，或改为了其他连接类型）。请在主机配置的「高级」页重新选择。"
 easytier.status_starting:
   en: "Joining…"
   zh-CN: "正在加入…"
@@ -1388,13 +1388,13 @@ easytier.disconnect:
   zh-CN: "断开"
 easytier.disconnect_tooltip:
   en: "Leave this network and stop the local node"
-  zh-CN: "退出这张网，停掉本机节点"
+  zh-CN: "退出此网络并停止本机节点"
 easytier.reconnect:
   en: "Rejoin"
   zh-CN: "重新连接"
 easytier.reconnect_tooltip:
   en: "Join this network again"
-  zh-CN: "重新加入这张网"
+  zh-CN: "重新加入此网络"
 easytier.rate_tooltip:
   en: "Traffic between this node and all of its direct peers"
   zh-CN: "本机与所有直连节点之间的流量"
@@ -1412,7 +1412,7 @@ easytier.socks5_copied:
   zh-CN: "已复制 %{address}"
 easytier.socks5_hint:
   en: "Other hosts reach this network through the SOCKS5 entry %{address}: in their settings choose Advanced → Proxy → Via EasyTier network and pick this one (it is joined automatically when they connect), and use a virtual IP as the hostname. The machine on the other end must join with a virtual NIC (or share a subnet proxy); a node in user space can reach others but cannot be reached by its virtual IP."
-  zh-CN: "别的主机经 SOCKS5 入口 %{address} 就能进这张网：在它的「高级 → 代理」里选「经 EasyTier 组网」、挑这一张（连接时它没连上会自动加入），主机名直接写对方的虚拟 IP。对方要以虚拟网卡接入（或开了子网代理）—— 用户态的节点能访问别人，自己却不能经虚拟 IP 被访问。"
+  zh-CN: "别的主机经 SOCKS5 入口 %{address} 可进入此网络：在它的「高级 → 代理」里选「经 EasyTier 组网」、指定此网络（连接时若未加入会自动加入），主机名直接填对方虚拟 IP。对方须以虚拟网卡接入（或开启子网代理）—— 用户态节点可访问其他节点，但无法经虚拟 IP 被访问。"
 easytier.local_title:
   en: "This node"
   zh-CN: "本机节点"
@@ -1451,10 +1451,10 @@ easytier.peers_count:
   zh-CN: "%{count} 个"
 easytier.peers_empty:
   en: "No other node yet. Make sure the network name and secret match the other nodes."
-  zh-CN: "还没有找到别的节点。确认网络名称与密钥和其他节点一致。"
+  zh-CN: "未找到其他节点。请确认网络名称与密钥与其他节点一致。"
 easytier.peers_offline:
   en: "Not in the network."
-  zh-CN: "不在网络里。"
+  zh-CN: "不在网络中。"
 easytier.public_server:
   en: "Public server"
   zh-CN: "公共服务器"
@@ -1490,7 +1490,7 @@ easytier.log_title:
   zh-CN: "事件"
 easytier.log_empty:
   en: "Nothing yet."
-  zh-CN: "暂无事件。"
+  zh-CN: "尚无事件。"
 
 # ── Clash 订阅（协议层在 src/clash/，界面上是侧边栏那一栏 + 中心区那块详情） ──
 # 订阅正文本身（YAML）的解读与报错。
@@ -1506,16 +1506,16 @@ clash.config.not_a_mapping:
 # 拉取订阅（src/clash/subscription.rs）。
 clash.fetch.no_url:
   en: "There is no subscription address to fetch from."
-  zh-CN: "没有订阅地址可拉。"
+  zh-CN: "无订阅地址。"
 clash.fetch.not_http:
   en: "The subscription address must start with http:// or https://."
-  zh-CN: "订阅地址要以 http:// 或 https:// 开头。"
+  zh-CN: "订阅地址须以 http:// 或 https:// 开头。"
 clash.fetch.failed:
   en: "Could not reach the subscription: %{url}"
   zh-CN: "拉取订阅失败：%{url}"
 clash.fetch.interrupted:
   en: "The connection broke off while fetching the subscription."
-  zh-CN: "拉取订阅时连接中断了。"
+  zh-CN: "拉取订阅时连接中断。"
 clash.fetch.status:
   en: "The subscription answered %{status}: %{url}"
   zh-CN: "订阅地址返回 %{status}：%{url}"
@@ -1524,28 +1524,28 @@ clash.fetch.not_utf8:
   zh-CN: "订阅正文不是 UTF-8 文本：%{url}"
 clash.fetch.empty:
   en: "The subscription came back empty: %{url}"
-  zh-CN: "订阅拉回来是空的：%{url}"
+  zh-CN: "订阅返回为空：%{url}"
 clash.fetch.too_large:
   en: "The subscription is larger than %{mb} MB — that is not a configuration."
-  zh-CN: "订阅正文超过 %{mb} MB —— 那不是一份配置。"
+  zh-CN: "订阅正文超过 %{mb} MB，非合法配置。"
 # 跟本机 mihomo 的外部控制口说话（src/clash/api.rs）。
 clash.api.unreachable:
   en: "The mihomo control port did not answer (%{path})."
-  zh-CN: "mihomo 的控制口没有应答（%{path}）。"
+  zh-CN: "mihomo 控制口无应答（%{path}）。"
 clash.api.status:
   en: "The control port answered %{status} for %{path}."
   zh-CN: "控制口对 %{path} 返回 %{status}。"
 clash.api.bad_json:
   en: "Unreadable answer from the control port (%{path})."
-  zh-CN: "控制口回来的东西读不动（%{path}）。"
+  zh-CN: "控制口返回数据无法解析（%{path}）。"
 # 系统代理（src/clash/system_proxy.rs）。
 clash.system_proxy.unsupported:
   en: "System proxy is not wired up on this platform yet."
-  zh-CN: "这台机器上还没有接系统代理这一档。"
+  zh-CN: "当前平台暂不支持系统代理。"
 # 运行中的那个实例（src/clash/runtime.rs）。
 clash.runtime.empty_config:
   en: "This subscription has no body to start from."
-  zh-CN: "这条订阅还没有正文，起不了。"
+  zh-CN: "此订阅无正文，无法启动。"
 clash.runtime.no_binary:
   en: "mihomo was not found (%{name})."
   zh-CN: "未找到 mihomo 内核（%{name}）。"
@@ -1564,7 +1564,7 @@ clash.download.subtitle:
   zh-CN: "启动代理需要 mihomo 核心程序支持"
 clash.download.confirm_desc:
   en: "The mihomo executable was not found locally. Would you like to automatically download it from GitHub Releases?"
-  zh-CN: "未在本地找到 mihomo 内核。启动代理需要该程序，是否从 GitHub Releases 自动下载并解压配置？"
+  zh-CN: "本地未找到 mihomo 内核。启动代理需要该程序，是否从 GitHub Releases 自动下载？"
 clash.download.version:
   en: "Core Version"
   zh-CN: "内核版本"
@@ -1603,76 +1603,76 @@ clash.download.connecting:
   zh-CN: "正在连接 GitHub Releases..."
 clash.download.unpacking:
   en: "Unpacking and configuring binary permissions..."
-  zh-CN: "下载完成，正在解压并配置内核文件..."
+  zh-CN: "正在解压并配置内核文件..."
 clash.download.done_title:
   en: "Mihomo Core Ready"
   zh-CN: "mihomo 内核已就绪"
 clash.download.done_desc:
   en: "The core was installed successfully. You can start the proxy whenever you want."
-  zh-CN: "内核程序已下载并配置完成，可手动启动代理。"
+  zh-CN: "内核已安装完成，可手动启动代理。"
 clash.download.failed_title:
   en: "Download Failed"
   zh-CN: "下载 mihomo 内核失败"
 clash.runtime.not_meta:
   en: "This is not the Meta (mihomo) core: rules and the virtual NIC are unavailable."
-  zh-CN: "这不是 Meta（mihomo）内核：分流规则与虚拟网卡用不了。"
+  zh-CN: "非 Meta（mihomo）内核：分流规则与虚拟网卡不可用。"
 clash.runtime.start_timeout:
   en: "mihomo did not come up within %{secs}s: %{error}"
-  zh-CN: "mihomo 在 %{secs} 秒内没有起来：%{error}"
+  zh-CN: "mihomo 在 %{secs} 秒内未启动：%{error}"
 clash.runtime.exited:
   en: "mihomo exited on its own (%{status})."
-  zh-CN: "mihomo 自己退出了（%{status}）。"
+  zh-CN: "mihomo 已退出（%{status}）。"
 clash.runtime.exited_with_logs:
   en: "mihomo exited on its own (%{status}): %{logs}"
-  zh-CN: "mihomo 自己退出了（%{status}）：%{logs}"
+  zh-CN: "mihomo 已退出（%{status}）：%{logs}"
 clash.runtime.tun_failed:
   en: "Could not toggle the virtual NIC: %{error}"
-  zh-CN: "虚拟网卡没拨动：%{error}"
+  zh-CN: "虚拟网卡切换失败：%{error}"
 clash.runtime.tun_not_effective:
   en: "The virtual NIC did not come up: %{reason}"
-  zh-CN: "虚拟网卡没有建起来：%{reason}"
+  zh-CN: "虚拟网卡未生效：%{reason}"
 clash.runtime.tun_elevation_canceled:
   en: "TUN needs the core to run as administrator: the UAC prompt was canceled, so the virtual NIC stays off."
-  zh-CN: "TUN 需要内核以管理员权限运行：已取消授权，虚拟网卡没有开启。"
+  zh-CN: "TUN 需要内核以管理员权限运行：已取消授权，虚拟网卡未启用。"
 clash.runtime.tun_elevation_failed:
   en: "Could not restart the core as administrator: %{error}"
   zh-CN: "以管理员权限重启内核失败：%{error}"
 clash.runtime.elevated_restart_failed:
   en: "The elevated core did not come up: %{error}"
-  zh-CN: "提权的内核没起来：%{error}"
+  zh-CN: "提权内核启动失败：%{error}"
 clash.runtime.broker_missing:
   en: "Could not find winssh-broker.exe next to the application."
   zh-CN: "应用旁边找不到 winssh-broker.exe。"
 clash.runtime.broker_lost:
   en: "the elevation broker went away"
-  zh-CN: "提权 broker 走开了"
+  zh-CN: "提权 broker 已断开"
 clash.runtime.system_proxy_failed:
   en: "Could not toggle the system proxy: %{error}"
-  zh-CN: "系统代理没拨动：%{error}"
+  zh-CN: "系统代理切换失败：%{error}"
 clash.runtime.refresh_failed:
   en: "Could not read the node list: %{error}"
-  zh-CN: "读节点表失败：%{error}"
+  zh-CN: "读取节点列表失败：%{error}"
 clash.runtime.mode_failed:
   en: "Could not switch the mode: %{error}"
-  zh-CN: "换分流模式失败：%{error}"
+  zh-CN: "切换分流模式失败：%{error}"
 clash.runtime.select_failed:
   en: "Could not switch to that node: %{error}"
-  zh-CN: "切不到这个节点：%{error}"
+  zh-CN: "切换节点失败：%{error}"
 clash.runtime.delay_failed:
   en: "Could not test this group: %{error}"
-  zh-CN: "这个组测不了速：%{error}"
+  zh-CN: "测速失败：%{error}"
 clash.runtime.connection_failed:
   en: "Could not close the connection: %{error}"
   zh-CN: "关闭连接失败：%{error}"
 clash.runtime.bad_config:
   en: "This configuration cannot be applied: %{error}"
-  zh-CN: "这份配置用不了：%{error}"
+  zh-CN: "配置无法应用：%{error}"
 clash.runtime.write_config_failed:
   en: "Could not write the configuration file: %{error}"
   zh-CN: "写配置文件失败：%{error}"
 clash.runtime.reload_failed:
   en: "The core refused the new configuration: %{error}"
-  zh-CN: "内核没收下这份新配置：%{error}"
+  zh-CN: "内核拒绝加载新配置：%{error}"
 # TUN 设置弹窗（src/ui/dialogs/clash_tun_settings.rs）。
 clash.tun.title:
   en: "Mihomo Settings"
@@ -1688,13 +1688,13 @@ clash.tun.helper_label:
   zh-CN: "系统特权助手"
 clash.tun.helper_caption_macos:
   en: "A launchd daemon that creates the virtual NIC on demand. Remove it to stop using TUN entirely."
-  zh-CN: "常驻的 launchd 守护：拨 TUN 时替我们建虚拟网卡。彻底告别 TUN 时再卸。"
+  zh-CN: "常驻 launchd 守护进程，拨 TUN 时创建虚拟网卡。不再使用 TUN 时卸载。"
 clash.tun.helper_caption_windows:
   en: "A Windows system service (SCM) that creates the virtual NIC on demand. Installed once; remove it to stop using TUN entirely."
-  zh-CN: "常驻的 Windows 系统服务（SCM）：拨 TUN 时替我们建虚拟网卡。装一次，之后都在；彻底告别 TUN 时再卸。"
+  zh-CN: "常驻 Windows 系统服务（SCM），拨 TUN 时创建虚拟网卡。安装一次即常驻，不再使用 TUN 时卸载。"
 clash.tun.helper_caption_linux:
   en: "Linux helper is not available yet."
-  zh-CN: "Linux 上的助手还没接好，这一档用不了。"
+  zh-CN: "Linux 暂不支持特权助手。"
 clash.tun.helper_installed:
   en: "Installed"
   zh-CN: "已安装"
@@ -1703,7 +1703,7 @@ clash.tun.helper_missing:
   zh-CN: "未安装"
 clash.tun.helper_partial:
   en: "Partially installed"
-  zh-CN: "装到一半"
+  zh-CN: "安装未完成"
 clash.tun.helper_install:
   en: "Install"
   zh-CN: "安装"
@@ -1736,10 +1736,10 @@ clash.tun.mtu_label:
   zh-CN: "MTU"
 clash.tun.mtu_invalid:
   en: "MTU must be an integer (got %{value})."
-  zh-CN: "MTU 必须是个整数（拿到的是 %{value}）。"
+  zh-CN: "MTU 必须为整数（当前值 %{value}）。"
 clash.tun.mtu_out_of_range:
   en: "MTU must be between %{min} and %{max}."
-  zh-CN: "MTU 要在 %{min} ~ %{max} 之间。"
+  zh-CN: "MTU 须在 %{min} ~ %{max} 之间。"
 clash.tun.auto_route_label:
   en: "Auto route"
   zh-CN: "自动路由"
@@ -1748,17 +1748,17 @@ clash.tun.auto_detect_label:
   zh-CN: "自动选择出口"
 clash.tun.caption:
   en: "These apply to every subscription. The change is picked up the next time an instance starts or the configuration is reloaded."
-  zh-CN: "这一份对整个应用生效，不分订阅。下一个实例启动或下一次重载配置时生效。"
+  zh-CN: "对整个应用生效，不分订阅。下次实例启动或重载配置时生效。"
 clash.view.tun_settings_tooltip:
   en: "Mihomo settings (helper / TUN)"
   zh-CN: "Mihomo 设置（助手 / 虚拟网卡）"
 # 订阅服务（src/service/clash_subscription_service.rs）。
 clash.missing:
   en: "This subscription is gone (%{id})."
-  zh-CN: "这条订阅没了（%{id}）。"
+  zh-CN: "此订阅已不存在（%{id}）。"
 clash.no_source:
   en: "This subscription has no address to fetch from."
-  zh-CN: "这条订阅没有订阅地址，拉不了。"
+  zh-CN: "此订阅无订阅地址。"
 # 订阅表单（新建 / 编辑订阅的对话框）。
 clash.form.subtitle:
   en: "Subscription"
@@ -1783,7 +1783,7 @@ clash.form.url_placeholder:
   zh-CN: https://example.com/api/v1/client/subscribe?token=…
 clash.form.url_required:
   en: Fill in the subscription address first.
-  zh-CN: 先填订阅地址。
+  zh-CN: 请先填写订阅地址。
 clash.form.body:
   en: Configuration
   zh-CN: 配置正文
@@ -1810,19 +1810,19 @@ clash.form.import_prompt:
   zh-CN: 挑一份订阅文件
 clash.form.import_failed:
   en: "Could not read that file: %{error}"
-  zh-CN: "那个文件读不出来：%{error}"
+  zh-CN: "无法读取该文件：%{error}"
 clash.form.name_required:
   en: Give the subscription a name.
-  zh-CN: 给这条订阅起个名字。
+  zh-CN: 请填写订阅名称。
 clash.form.source_required:
   en: "Fill in a subscription address, or import a configuration file."
-  zh-CN: "填一个订阅地址，或者导入一份配置文件。"
+  zh-CN: "请填写订阅地址，或导入配置文件。"
 clash.form.config_required:
   en: "The subscription has no body yet — fetch it, or import a file."
-  zh-CN: "这条订阅还没有正文 —— 拉一次，或者从文件导入。"
+  zh-CN: "此订阅暂无正文 —— 拉取或从文件导入。"
 clash.form.not_a_config:
   en: "This body is not a usable Clash configuration."
-  zh-CN: "这份正文不是一份能用的 Clash 配置。"
+  zh-CN: "此正文非有效的 Clash 配置。"
 clash.form.tag:
   en: Tag
   zh-CN: 分组标签
@@ -1891,7 +1891,7 @@ clash.form.save:
   zh-CN: 保存
 clash.form.save_failed:
   en: "Could not save the subscription: %{error}"
-  zh-CN: "订阅没存上：%{error}"
+  zh-CN: "订阅保存失败：%{error}"
 # 侧边栏那一栏（订阅列表）。
 clash.view.title:
   en: CLASH.Meta subscription
@@ -1904,16 +1904,16 @@ clash.view.new:
   zh-CN: 新建订阅
 clash.view.empty:
   en: No subscriptions yet.
-  zh-CN: 还没有订阅。
+  zh-CN: 尚无订阅。
 clash.view.empty_hint:
   en: "Add one with the address your provider gave you, or import a yml file."
-  zh-CN: "填上机场给的订阅地址加一条，或者导入一份 yml 文件。"
+  zh-CN: "填入机场提供的订阅地址，或导入 yml 文件。"
 clash.view.no_match:
   en: Nothing matches.
-  zh-CN: 没有符合条件的订阅。
+  zh-CN: 尚无符合条件的订阅。
 clash.view.load_failed:
   en: "Could not read the subscriptions: %{error}"
-  zh-CN: "订阅列表读不出来：%{error}"
+  zh-CN: "读取订阅列表失败：%{error}"
 clash.view.nodes:
   en: "%{count} nodes"
   zh-CN: "%{count} 个节点"
@@ -2006,10 +2006,10 @@ clash.view.delete_title:
   zh-CN: 删除订阅
 clash.view.delete_confirm:
   en: "Delete “%{name}”? Its configuration goes with it."
-  zh-CN: "删掉「%{name}」？它那份配置也一起没了。"
+  zh-CN: "删除「%{name}」？其配置将一并删除。"
 clash.view.delete_failed:
   en: "Could not delete: %{error}"
-  zh-CN: "删不掉：%{error}"
+  zh-CN: "删除失败：%{error}"
 clash.view.cancel:
   en: Cancel
   zh-CN: 取消
@@ -2076,7 +2076,7 @@ clash.panel.route_detector:
   zh-CN: "分流探测器:"
 clash.panel.idle_hint:
   en: "Start it and the system proxy and virtual NIC switches appear here."
-  zh-CN: "启动之后，系统代理与虚拟网卡两个开关就摆在这儿。"
+  zh-CN: "启动后显示系统代理与虚拟网卡开关。"
 clash.panel.mixed_port:
   en: "mixed port %{port}"
   zh-CN: "混合端口 %{port}"
@@ -2193,10 +2193,10 @@ clash.panel.tab_config:
   zh-CN: 配置源码
 clash.panel.config_hint:
   en: The configuration YAML as stored
-  zh-CN: 当前这份订阅的原始 YAML 配置
+  zh-CN: 此订阅的原始 YAML 配置
 clash.panel.config_empty:
   en: No configuration yet.
-  zh-CN: 还没有正文。
+  zh-CN: 暂无正文。
 clash.panel.copy_config:
   en: Copy YAML
   zh-CN: 复制 YAML
@@ -2243,19 +2243,19 @@ clash.panel.col_target:
   zh-CN: 策略
 clash.panel.static_hint:
   en: "From the configuration itself — start it to see what the core reports."
-  zh-CN: "这是正文里写的 —— 启动之后看内核报回来的那一份。"
+  zh-CN: "源自配置正文 —— 启动后显示内核实际返回的数据。"
 clash.panel.no_nodes:
   en: This subscription has no nodes.
-  zh-CN: 这份订阅里没有节点。
+  zh-CN: 此订阅无节点。
 clash.panel.no_matching_nodes:
   en: No nodes match the current filters.
   zh-CN: 没有符合当前筛选条件的节点。
 clash.panel.no_rules:
   en: This subscription has no rules.
-  zh-CN: 这份订阅里没有分流规则。
+  zh-CN: 此订阅无分流规则。
 clash.panel.no_logs:
   en: Nothing logged yet.
-  zh-CN: 还没有日志。
+  zh-CN: 尚无日志。
 clash.panel.delay_ms:
   en: "%{ms} ms"
   zh-CN: "%{ms} ms"
@@ -2267,10 +2267,10 @@ clash.panel.delay_untested:
   zh-CN: "—"
 clash.panel.unreadable:
   en: This configuration cannot be read.
-  zh-CN: 这份正文读不出来。
+  zh-CN: 此正文无法解析。
 clash.panel.unreadable_hint:
   en: "Edit the subscription and fetch it again, or import a fresh file."
-  zh-CN: "去编辑这条订阅重新拉一次，或者导入一份新的文件。"
+  zh-CN: "编辑此订阅重新拉取，或导入新文件。"
 clash.panel.close_session:
   en: Close and stop proxy
   zh-CN: 关闭并停止代理
@@ -2404,7 +2404,7 @@ host_form.field_vnc_charset:
   zh-CN: 剪贴板字符集
 host_form.vnc_hint:
   en: "High compression (Tight) only applies in 32-bit true colour; other depths fall back to Zrle. Exclusive disconnects viewers already on this desktop. The clipboard charset only matters for servers without the extended clipboard: RFB's plain cut text carries no charset, so a Windows server uses its own ANSI code page - pick GBK for a Simplified Chinese one if pasted Chinese comes out garbled."
-  zh-CN: "高压缩（Tight）只在真彩 32 位下生效，其余深度自动落回 Zrle；独占会踢掉已在该桌面上的其他查看者。剪贴板字符集只对没有扩展剪贴板的服务器起作用：RFB 的经典正文不带字符集，Windows 上的服务器用的是它自己的 ANSI 代码页 —— 复制中文乱码时，简体中文那台点 GBK。"
+  zh-CN: "高压缩（Tight）仅在真彩 32 位下生效，其余深度自动回退 Zrle；独占模式会断开已连接的其他查看者。剪贴板字符集仅对不支持扩展剪贴板的服务器生效：RFB 经典文本不带字符集，Windows 服务器使用本地 ANSI 代码页 —— 复制中文出现乱码时，简体中文服务器请选择 GBK。"
 host_form.field_rdp_security:
   en: Security
   zh-CN: 安全档
@@ -2434,7 +2434,7 @@ host_form.option_off:
   zh-CN: 关
 host_form.rdp_hint:
   en: "Automatic offers both TLS and NLA and lets the server pick; NLA required refuses servers without it. The certificate is not verified (same as the IronRDP default), so use this on networks you trust. Narrow band turns off wallpaper, themes and cursor shadows on the remote side."
-  zh-CN: "自动档同时报 TLS 与 NLA、由服务器挑；NLA 强制会拒绝不支持 NLA 的服务器。证书不验证（IronRDP 的出厂取舍），请在信得过的网络里用。窄带档会让远端关掉壁纸、主题与光标阴影。"
+  zh-CN: "自动模式同时尝试 TLS 与 NLA，由服务器选择；NLA 强制会拒绝不支持 NLA 的服务器。证书不验证（IronRDP 默认行为），请在可信网络中使用。窄带模式会关闭远端壁纸、主题与光标阴影。"
 host_form.field_serial_device:
   en: Serial device
   zh-CN: 串口设备
@@ -2476,7 +2476,7 @@ host_form.field_serial_local_echo:
   zh-CN: 本地回显
 host_form.serial_hint:
   en: "Leave DTR and RTS at their default unless the device needs them driven: asserting DTR can reset some boards, and clearing RTS can stop some devices from sending at all. Local echo is for devices that never echo your typing back."
-  zh-CN: "DTR / RTS 除非设备需要，否则留在默认档：拉高 DTR 会把某些开发板复位，拉低 RTS 会让某些设备不再回数据。本地回显给的是“对端不回显你敲的字”的裸设备。"
+  zh-CN: "DTR / RTS 除非设备需要，否则保持默认值：拉高 DTR 会复位某些开发板，拉低 RTS 会导致某些设备停止发送数据。本地回显适用于不回显输入的裸设备。"
 host_form.field_easytier_network:
   en: "Network name *"
   zh-CN: "网络名称 *"
@@ -2488,7 +2488,7 @@ host_form.field_easytier_secret:
   zh-CN: "网络密钥"
 host_form.easytier_secret_hint:
   en: "Every node in the network uses the same name and secret; leave it empty only if the network has none."
-  zh-CN: "网里每个节点的网络名称与密钥都要一致；网络没设密钥才留空。"
+  zh-CN: "网络中每个节点的网络名称与密钥须一致；网络无密钥时才留空。"
 host_form.field_easytier_peers:
   en: "Peer addresses"
   zh-CN: "节点地址"
@@ -2503,10 +2503,10 @@ host_form.easytier_proxy_networks_placeholder:
   zh-CN: "192.168.1.0/24"
 host_form.easytier_proxy_networks_hint:
   en: "One per line, like easytier-core -n: other nodes reach these subnets (usually the LAN this computer is on) through this node, e.g. 192.168.1.0/24. If a subnet clashes with someone else's, map it, e.g. 192.168.1.0/24->10.1.1.0/24, and the others use the latter. Either access mode can act as the gateway, but forwarding ping for others needs WinSSH Pro to run as administrator (TCP and UDP are not affected). Leave it empty to share nothing."
-  zh-CN: "一行一个，写法同 easytier-core -n：别的节点经本机访问这些网段（多半是本机所在的局域网），如 192.168.1.0/24。和别人的网段重名时加映射，如 192.168.1.0/24->10.1.1.0/24，别人用后者访问。两种接入方式都能当网关，但替别人转发 ping 要以管理员身份运行 WinSSH Pro（TCP / UDP 不受影响）。留空就不代理。"
+  zh-CN: "一行一个，写法同 easytier-core -n：其他节点经本机访问这些网段（通常为本机所在局域网），如 192.168.1.0/24。与他人的网段冲突时需加映射，如 192.168.1.0/24->10.1.1.0/24，其他节点使用后者访问。两种接入方式均可作为网关，但替其他节点转发 ping 须以管理员身份运行 WinSSH Pro（TCP/UDP 不受影响）。留空则不代理。"
 host_form.easytier_peers_hint:
   en: "One per line: a public server or any node that listens, e.g. tcp://public.easytier.cn:11010. Every EasyTier tunnel works (tcp, udp, ws, wss, quic, wg), as do discovery addresses (txt://, srv://, http(s)://); the port may be left out. faketcp is not built in: it needs raw sockets and, on Windows, Npcap."
-  zh-CN: "一行一个：公共服务器，或者任何一台开着监听的节点，如 tcp://public.easytier.cn:11010。EasyTier 的隧道都能用（tcp、udp、ws、wss、quic、wg），节点发现地址（txt://、srv://、http(s)://）也行；端口可以不写。faketcp 没有编进来：它要原始套接字权限，Windows 上还要装 Npcap。"
+  zh-CN: "一行一个：公共服务器或任何监听中的节点，如 tcp://public.easytier.cn:11010。EasyTier 的隧道均可用（tcp、udp、ws、wss、quic、wg），节点发现地址（txt://、srv://、http(s)://）同样支持；端口可省略。faketcp 未编入：需要原始套接字权限，Windows 上还需安装 Npcap。"
 host_form.field_easytier_ipv4:
   en: "Virtual IPv4"
   zh-CN: "虚拟地址"
@@ -2533,13 +2533,13 @@ host_form.field_easytier_listen_port:
   zh-CN: "监听端口"
 host_form.easytier_listen_hint:
   en: "Expanded the same way as easytier-core -l: tcp and udp use this port, wg and ws use +1, quic and wss use +2."
-  zh-CN: "和 easytier-core -l 一样展开：tcp、udp 用这个端口，wg、ws 用 +1，quic、wss 用 +2。"
+  zh-CN: "与 easytier-core -l 一致：tcp、udp 用此端口，wg、ws 用 +1，quic、wss 用 +2。"
 host_form.easytier_access_socks5_hint:
   en: "User space needs no administrator rights: the node opens a SOCKS5 entry on 127.0.0.1, and hosts in this app reach the network by choosing Via EasyTier network as their proxy. Other nodes cannot reach this computer by its virtual IP in this mode."
-  zh-CN: "用户态不要管理员权限：本机在 127.0.0.1 上开一个 SOCKS5 入口，本应用里的主机把代理选成「经 EasyTier 组网」就能进这张网。这一档别的节点访问不到本机的虚拟 IP。"
+  zh-CN: "用户态无需管理员权限：本机在 127.0.0.1 上开放 SOCKS5 入口，本应用中的主机将代理设为「经 EasyTier 组网」即可进入此网络。此模式下其他节点无法通过虚拟 IP 访问本机。"
 host_form.easytier_access_tun_hint:
   en: "A virtual NIC lets every program on this computer reach the network, but WinSSH Pro must run as administrator (root), and on Windows wintun.dll must sit next to the program."
-  zh-CN: "虚拟网卡让本机所有程序都能直接访问这张网，但 WinSSH Pro 要以管理员（root）身份运行，Windows 上还要 wintun.dll 在程序旁边。"
+  zh-CN: "虚拟网卡让本机所有程序都能直接访问此网络，但 WinSSH Pro 须以管理员（root）身份运行，Windows 上还需 wintun.dll 与程序同目录。"
 host_form.field_easytier_latency_first:
   en: "Latency-first routing"
   zh-CN: "延迟优先选路"
@@ -2548,7 +2548,7 @@ host_form.field_easytier_encryption:
   zh-CN: "加密"
 host_form.easytier_routing_hint:
   en: "Latency-first picks the fastest relay path instead of the fewest hops. Encryption must match across the whole network: a node with it off cannot talk to one with it on."
-  zh-CN: "延迟优先按时延而不是跳数挑中继路径。加密要全网一致 —— 关了加密的节点和开着的谈不拢。"
+  zh-CN: "延迟优先按延迟而非跳数选择中继路径。加密须全网一致 —— 关闭加密的节点无法与开启加密的节点通信。"
 serial.parity_none:
   en: None
   zh-CN: 无
@@ -2578,7 +2578,7 @@ serial.line_clear:
   zh-CN: 拉低
 serial.open_failed:
   en: "Could not open the serial port %{device}"
-  zh-CN: "打不开串口 %{device}"
+  zh-CN: 无法打开串口 %{device}
 serial.line_failed:
   en: "Could not set %{line} on %{device}"
   zh-CN: "设置 %{line} 失败（%{device}）"
@@ -2686,13 +2686,13 @@ host_form.proxy_optional:
   zh-CN: 可留空
 host_form.proxy_auth_hint:
   en: Leave the username empty when the proxy needs no authentication. The target address is resolved by the proxy, not locally.
-  zh-CN: 代理不要认证的话，用户名留空即可；目标地址交给代理去解析，不在本机解。
+  zh-CN: 代理无需认证时，用户名留空即可；目标地址由代理解析，非本地解析。
 host_form.proxy_global_on:
   en: "Currently following the global proxy: %{proxy}"
   zh-CN: "当前的全局代理：%{proxy}"
 host_form.proxy_global_off:
   en: No global proxy is set up yet, so this host connects directly. Configure one under Preferences → Network Proxy.
-  zh-CN: 还没配全局代理，这台主机会直连。要配的话去偏好设置 → 网络代理。
+  zh-CN: 未配置全局代理，此主机将直连。请在偏好设置 → 网络代理中配置。
 host_form.field_proxy_network:
   en: Network
   zh-CN: 组网
@@ -2704,16 +2704,16 @@ host_form.proxy_network_placeholder:
   zh-CN: 选一张组网
 host_form.proxy_network_socks5_hint:
   en: "Connects through the SOCKS5 entry %{address} of %{name}. If that network is not joined yet, its tab opens and joins it first, then this host connects."
-  zh-CN: "连接时经「%{name}」的 SOCKS5 入口 %{address}。这张网没连上时，会先打开它的标签页加入，再连这台主机。"
+  zh-CN: "连接时经由「%{name}」的 SOCKS5 入口 %{address}。若该网络未加入，会先打开其标签页加入，再连接此主机。"
 host_form.proxy_network_tun_hint:
   en: "%{name} joins with a virtual NIC, so this host connects directly and the system routes it into the network. If that network is not joined yet, its tab opens and joins it first, then this host connects."
-  zh-CN: "「%{name}」以虚拟网卡接入：连接时直连，系统路由经网卡进网。这张网没连上时，会先打开它的标签页加入，再连这台主机。"
+  zh-CN: "「%{name}」以虚拟网卡接入：连接时直连，系统路由经网卡进入网络。若该网络未加入，会先打开其标签页加入，再连接此主机。"
 host_form.proxy_network_none:
   en: There is no EasyTier host yet. Create a host whose connection type is EasyTier first, then pick it here.
-  zh-CN: 还没有组网主机。先新建一台连接类型为 EasyTier 的主机，再回来选它。
+  zh-CN: 尚无组网主机。请先新建一台连接类型为 EasyTier 的主机，再返回选择。
 host_form.proxy_network_pick:
   en: Pick a network to connect through. If it is not joined yet, it is joined automatically first.
-  zh-CN: 选一张组网：连接时经它进网，它没连上时会先自动加入。
+  zh-CN: 选择一张组网：连接时经它进入网络，若未加入会先自动加入。
 
 # ── 代理模型（src/proxy.rs） ─────────────────────────────────────────────
 proxy.mode_disabled:
@@ -2727,7 +2727,7 @@ proxy.mode_custom:
   zh-CN: 配置代理
 proxy.check_host:
   en: The proxy server address is empty.
-  zh-CN: 代理服务器地址没填。
+  zh-CN: 代理服务器地址未填写。
 proxy.check_port:
   en: The proxy port is not a valid port number.
   zh-CN: 代理端口不是一个有效的端口号。
@@ -2736,7 +2736,7 @@ proxy.mode_easytier:
   zh-CN: 经 EasyTier 组网
 proxy.check_network:
   en: No EasyTier network is picked to connect through.
-  zh-CN: 没选经哪张 EasyTier 组网。
+  zh-CN: 未选择经哪张 EasyTier 组网。
 
 # ── 凭据模型（src/credential.rs） ────────────────────────────────────────
 credential.kind_password:
@@ -2854,7 +2854,7 @@ vault.delete_title:
   zh-CN: 删除这条凭据？
 vault.delete_confirm:
   en: "“%{name}” will be removed from the vault. Hosts that already took a copy keep working — they hold their own copy of the secret."
-  zh-CN: "“%{name}”会从保险箱里移除。此前从它取用过的主机不受影响 —— 那份内容已经存在主机自己身上。"
+  zh-CN: "“%{name}”会从保险箱中移除。此前取用过该凭据的主机不受影响 —— 相关内容已保存在主机自身。"
 vault.delete_failed:
   en: Could not delete the credential
   zh-CN: 删除凭据失败
@@ -2872,19 +2872,19 @@ vault.load_failed:
   zh-CN: 读取保险箱失败
 vault.empty:
   en: The vault is empty.
-  zh-CN: 保险箱还是空的。
+  zh-CN: 保险箱为空。
 vault.empty_hint:
   en: Passwords, SSH keys and API tokens stored here can be pulled into a host form with one click.
-  zh-CN: 存在这里的账号密码、SSH 私钥与 API 令牌，可以在主机表单里一键取用。
+  zh-CN: 此处存储的账号密码、SSH 私钥与 API 令牌可在主机表单中一键取用。
 vault.no_match:
   en: No credential matches.
-  zh-CN: 没有符合条件的凭据。
+  zh-CN: 尚无匹配的凭据。
 vault.updated_at:
   en: updated %{at}
   zh-CN: 更新于 %{at}
 vault.storage_note:
   en: "Stored in the local database file — not encrypted yet, and never sent anywhere."
-  zh-CN: 存在本机的库文件里 —— 暂未加密，也不会发往任何地方。
+  zh-CN: 存储在本机数据库中 —— 暂未加密，不会上传至任何地方。
 vault.open_window:
   en: Open the vault in its own window
   zh-CN: 在独立窗口中打开保险箱
@@ -2899,7 +2899,7 @@ vault.export_title:
   zh-CN: 导出整个保险箱？
 vault.export_confirm:
   en: "All %{count} credentials go into one JSON file, secrets in the clear — that is what makes the backup usable, and what makes the file worth guarding. Anyone who opens it holds every password and private key in here."
-  zh-CN: "%{count} 条凭据会写进一个 JSON 文件，其中的密码与私钥都是明文 —— 这正是这份备份能用来重建保险箱的原因，也是它必须收好的原因。拿到这个文件的人就拿到了这里的每一段秘密。"
+  zh-CN: "%{count} 条凭据会写入一个 JSON 文件，密码与私钥均为明文 —— 此文件可用于重建保险箱，务必妥善保管。任何获取此文件的人均可读取其中的全部密码与私钥。"
 vault.export_done:
   en: The vault backup has been written to %{path}.
   zh-CN: 保险箱备份已写入 %{path}。
@@ -2908,7 +2908,7 @@ vault.export_failed:
   zh-CN: 导出保险箱备份失败
 vault.export_empty:
   en: The vault is empty — there is nothing to back up yet.
-  zh-CN: 保险箱还是空的，暂时没有东西可以导出。
+  zh-CN: 保险箱为空，暂无可导出内容。
 
 # ── 保险箱窗口（独立窗口里的全屏保险箱） ─────────────────────────────────
 vault_window.window_title:
@@ -2940,7 +2940,7 @@ vault_window.count:
   zh-CN: 共 %{count} 条凭据
 vault_window.no_match_hint:
   en: Widen the search or pick another kind on the left, or add a new credential.
-  zh-CN: 可以放宽搜索词、换一个左栏的分类，或者直接新建一条凭据。
+  zh-CN: 可放宽搜索词、切换左栏分类，或直接新建一条凭据。
 vault_window.new_now:
   en: New credential
   zh-CN: 立即新建凭据
@@ -3035,19 +3035,19 @@ credential_form.notes_placeholder:
   zh-CN: 关联哪些服务器、多久轮换一次……
 credential_form.required_name:
   en: Give this credential a name.
-  zh-CN: 请给这条凭据起个名字。
+  zh-CN: 请给这条凭据命名。
 credential_form.required_password:
   en: A password credential needs a password.
-  zh-CN: 账号密码这一档得填上密码。
+  zh-CN: 账号密码类型须填写密码。
 credential_form.required_private_key:
   en: A key credential needs the private key itself.
-  zh-CN: SSH 私钥这一档得填上私钥内容。
+  zh-CN: SSH 私钥类型须填写私钥内容。
 credential_form.required_token:
   en: A token credential needs the token.
-  zh-CN: API 令牌这一档得填上令牌。
+  zh-CN: API 令牌类型须填写令牌。
 credential_form.key_invalid:
   en: "That private key does not decode: %{error}"
-  zh-CN: 这份私钥解不开：%{error}
+  zh-CN: 此私钥无法解码：%{error}
 credential_form.save_failed:
   en: Could not save the credential
   zh-CN: 保存凭据失败
@@ -3167,7 +3167,7 @@ snippet_vault.delete_title:
   zh-CN: 删除这条片段？
 snippet_vault.delete_confirm:
   en: "“%{name}” will be removed from the list. Commands already sent to a session are not affected."
-  zh-CN: "“%{name}”会从列表里移除。已经发到会话里的命令不受影响。"
+  zh-CN: "“%{name}”会从列表中移除。已发送至会话的命令不受影响。"
 snippet_vault.delete_failed:
   en: Could not delete the snippet
   zh-CN: 删除命令片段失败
@@ -3176,16 +3176,16 @@ snippet_vault.load_failed:
   zh-CN: 读取命令片段失败
 snippet_vault.no_session:
   en: No session is in front — open one, or switch to its tab, and send again.
-  zh-CN: 当前前面没有会话，开一条或者切到它那个标签页再发送。
+  zh-CN: 当前无会话。请打开一个标签页或切换到已有标签页后再发送。
 snippet_vault.empty:
   en: No snippets yet.
-  zh-CN: 还没有命令片段。
+  zh-CN: 尚无命令片段。
 snippet_vault.empty_hint:
   en: "Save a command you keep retyping — one click sends it to the current session, and any {{name}} in it is asked for first."
-  zh-CN: "把总要重打的那条命令存下来 —— 一键发到当前会话，命令里的 {{name}} 会先问你。"
+  zh-CN: "将总要重新输入的命令保存下来 —— 一键发送至当前会话，命令中的 {{name}} 会先弹出输入框。"
 snippet_vault.no_match:
   en: No snippet matches.
-  zh-CN: 没有符合条件的片段。
+  zh-CN: 尚无符合条件的片段。
 
 # ── 命令片段表单（新建 / 编辑片段的对话框） ──────────────────────────────
 snippet_form.title_new:
@@ -3196,7 +3196,7 @@ snippet_form.title_edit:
   zh-CN: 编辑命令片段
 snippet_form.subtitle:
   en: Reusable commands and scripts, sent to a session in one click
-  zh-CN: 可复用的命令与脚本，一键发到会话里
+  zh-CN: 可复用的命令与脚本，一键发送至会话
 snippet_form.presets:
   en: Templates
   zh-CN: 快速模板
@@ -3247,10 +3247,10 @@ snippet_form.description_placeholder:
   zh-CN: 一句话说清这条命令干什么
 snippet_form.required_title:
   en: Give the snippet a title.
-  zh-CN: 片段名称还没填。
+  zh-CN: 片段名称未填写。
 snippet_form.required_command:
   en: The command is still empty.
-  zh-CN: 命令还没填。
+  zh-CN: 命令未填写。
 snippet_form.save_failed:
   en: Could not save the snippet
   zh-CN: 保存命令片段失败
@@ -3287,7 +3287,7 @@ password_generator.title:
   zh-CN: 随机密码生成器
 password_generator.subtitle:
   en: Every ticked class is guaranteed to appear at least once.
-  zh-CN: 勾上的每一类字符都保证至少出现一次。
+  zh-CN: 勾选的每一类字符均保证至少出现一次。
 password_generator.length:
   en: "Length: %{count}"
   zh-CN: "长度：%{count}"
@@ -3305,7 +3305,7 @@ password_generator.symbols:
   zh-CN: 特殊符号 (!@#$)
 password_generator.avoid_ambiguous:
   en: Leave out look-alikes (1 l I 0 O)
-  zh-CN: 排除易混淆字符 (1 l I 0 O)
+  zh-CN: 排除易混淆字符（1 l I 0 O）
 password_generator.strength:
   en: "Strength: %{label}"
   zh-CN: 强度：%{label}
@@ -3328,7 +3328,7 @@ key_generator.title:
   zh-CN: 生成 SSH 密钥对
 key_generator.subtitle:
   en: A real key pair, the same one `ssh-keygen` would produce
-  zh-CN: 真的生成一对密钥，和 `ssh-keygen` 出来的是同一种
+  zh-CN: 生成一对真实密钥，与 `ssh-keygen` 产出一致
 key_generator.field_name:
   en: Name
   zh-CN: 密钥名称
@@ -3349,16 +3349,16 @@ key_generator.field_passphrase:
   zh-CN: 私钥口令(可选)
 key_generator.note:
   en: The SHA256 fingerprint is worked out and the pair goes straight into the vault. RSA 4096 takes a few seconds.
-  zh-CN: 生成后会算出 SHA256 指纹并直接存进保险箱。RSA 4096 那一档要算几秒。
+  zh-CN: 生成后会计算 SHA256 指纹并直接存入保险箱。RSA 4096 需数秒。
 key_generator.required_name:
   en: Give this key a name.
-  zh-CN: 请给这把密钥起个名字。
+  zh-CN: 请为此密钥命名。
 key_generator.generate:
   en: Generate and store
-  zh-CN: 立即生成并入库
+  zh-CN: 生成并入库
 key_generator.generating:
   en: Working out the key pair…
-  zh-CN: 计算密钥对中……
+  zh-CN: 正在计算密钥对……
 key_generator.failed:
   en: Could not generate the key pair
   zh-CN: 生成密钥对失败
@@ -3411,25 +3411,25 @@ sftp_form.cancel:
   zh-CN: 取消
 sftp_form.hint_new_file:
   en: An empty file is created and the editor opens right after. An existing file with the same name is never overwritten.
-  zh-CN: 新建的是空文件，创建完直接进编辑器。同名文件已存在时不会覆盖。
+  zh-CN: 新建空文件，创建后直接进入编辑器。同名文件已存在时不覆盖。
 sftp_form.hint_new_folder:
   en: The folder is created in this level only; intermediate levels are not filled in.
-  zh-CN: 只在当前这一层建目录，不会顺路补出中间层级。
+  zh-CN: 仅在当前层级创建目录，不会自动补出中间层级。
 sftp_form.hint_rename:
   en: Renaming applies within this level only; if an entry with the new name already exists, the remote rejects the rename.
-  zh-CN: 重命名只在当前这一层生效；新名字已经有同名条目时，对端会拒绝这次改名。
+  zh-CN: 重命名仅在当前层级生效；若新名称已有同名条目，远端将拒绝改名。
 sftp_form.header_note:
   en: This acts directly on the remote file system.
-  zh-CN: 这一步会直接作用在远端的文件系统上。
+  zh-CN: 此操作直接作用于远端文件系统。
 sftp_form.error_empty:
   en: The entry name cannot be empty.
-  zh-CN: 条目名不能是空的。
+  zh-CN: 条目名不能为空。
 sftp_form.error_slash:
   en: "The entry name cannot contain `/`: this only changes a name inside one directory."
   zh-CN: "条目名里不能有 `/`：这里改的只是一个目录内的名字。"
 sftp_form.error_dot:
   en: "`.` and `..` mean the directory itself and its parent; they cannot be used as an entry name."
-  zh-CN: "`/.` 和 `..` 指的是目录本身与上级，不能当条目名。"
+  zh-CN: “.”和“..”指目录自身与上级，不能用作条目名。
 
 # ── SFTP 文本编辑对话框 ──────────────────────────────────────────────────
 sftp_editor.copy_path_tooltip:
@@ -3461,7 +3461,7 @@ sftp_editor.close_dirty_title:
   zh-CN: 有未保存的更改
 sftp_editor.close_dirty_confirm:
   en: "“%{name}” has unsaved changes. Save before closing?"
-  zh-CN: 「%{name}」有未保存的更改，关闭前要保存吗？
+  zh-CN: “%{name}”有未保存的更改，关闭前是否保存？
 sftp_editor.close_save:
   en: Save & close
   zh-CN: 保存并关闭
@@ -3478,7 +3478,7 @@ sftp_chmod.title:
   zh-CN: 修改权限
 sftp_chmod.header_note:
   en: The remote receives this setstat immediately and the listing refreshes right after.
-  zh-CN: 远端会立刻收到这次 setstat，改完列表跟着刷新。
+  zh-CN: 远端会立即收到这次 setstat，完成后列表自动刷新。
 sftp_chmod.cancel:
   en: Cancel
   zh-CN: 取消
@@ -3490,7 +3490,7 @@ sftp_chmod.placeholder:
   zh-CN: 例如 644 或 755
 sftp_chmod.invalid:
   en: Permissions must be 3–4 octal digits (each no greater than 7), e.g. 644 or 755.
-  zh-CN: 权限得是 3~4 位八进制数字（每一位不超过 7），例如 644 或 755。
+  zh-CN: 权限须为 3~4 位八进制数字（每位不超过 7），例如 644 或 755。
 sftp_chmod.target:
   en: "Target:"
   zh-CN: 目标：
@@ -3549,22 +3549,22 @@ forward.pipe_dynamic:
   zh-CN: SOCKS5 代理
 forward.tagline_local:
   en: Map a service only the remote can reach onto a port on this machine
-  zh-CN: 把远端才能访问的服务，映到本机的一个端口上
+  zh-CN: 把远端可访问的服务映射到本机端口
 forward.tagline_remote:
   en: Expose a service on this machine to the remote side
-  zh-CN: 把本机的服务，开给远端那边访问
+  zh-CN: 将本机服务暴露给远端访问
 forward.tagline_dynamic:
   en: Open a SOCKS5 proxy locally and browse through the remote machine
-  zh-CN: 本机开一个 SOCKS5 代理，整台远端当跳板上网
+  zh-CN: 本机开放 SOCKS5 代理，经由远端转发流量
 forward.detail_local:
   en: Some service on the remote (or inside its private network) is not reachable from here. Turn this on and this machine gains a port; connecting to it is the same as connecting to that service. Remote databases, Redis and web consoles all go through this one.
-  zh-CN: 远端（或它内网里）的某个服务，你本机直连不到。起了这一档，本机就多出一个端口，连它就等于连那个服务。访问远端的数据库、Redis、Web 面板都走这一档。
+  zh-CN: 远端（或其内网）的某个服务无法从本机直接访问。开启后本机增加一个端口，连接该端口等同于连接目标服务。访问远端数据库、Redis、Web 面板等均适用。
 forward.detail_remote:
   en: The other direction — ask the remote to open a port, and traffic arriving there comes back to a service on this machine. Use it when a program or a colleague on the remote side needs something on your machine and you would rather not expose it to the internet. Without GatewayPorts on the remote sshd, only the remote itself can reach that port.
-  zh-CN: 方向反过来：请远端开一个端口，远端那边连上来的流量回到本机的服务上。想让远端的程序或同事访问你机器上的东西，又不愿把电脑暴露到公网时用它。远端 sshd 没开 GatewayPorts 的话，那个端口只有远端自己连得上。
+  zh-CN: 反向：请求远端开放一个端口，远端连入的流量将转发到本机的服务上。适用于远端程序或同事需要访问本机服务，且不愿将电脑暴露到公网的场景。若远端 sshd 未开启 GatewayPorts，则该端口仅远端本身可访问。
 forward.detail_dynamic:
   en: No target needed — this machine opens a SOCKS5 proxy port, and once a browser or tool points at it, every address it asks for is fetched by the remote instead. It is the same as sitting on that remote machine.
-  zh-CN: 不用指定目标：本机开一个 SOCKS5 代理端口，浏览器或工具配上它之后，访问哪个地址都由远端代为发出 —— 相当于坐在远端那台机器上上网。
+  zh-CN: 无需指定目标：本机开放 SOCKS5 代理端口，浏览器或工具配置后，所有地址请求均由远端代为发出 —— 相当于在远端机器上上网。
 forward.example_local:
   en: "e.g. local 15432 → 10.0.4.15:5432 on the remote network; point the database client at 127.0.0.1:15432"
   zh-CN: "例：本机 15432 → 远端内网的 10.0.4.15:5432，数据库客户端填 127.0.0.1:15432 即可"
@@ -3582,19 +3582,19 @@ forward.listen_label_local:
   zh-CN: 本地监听端口
 forward.check_no_name:
   en: Give this forward a name so you can pick it out of the list.
-  zh-CN: 给这条转发起个名字，列表里要认得出它。
+  zh-CN: 给这条转发起个名字，便于在列表中识别。
 forward.check_listen_port:
   en: The listen port must be a number between 1 and 65535.
-  zh-CN: 监听端口要填 1~65535 之间的一个数。
+  zh-CN: 监听端口须为 1~65535 之间的数字。
 forward.check_bind_address:
   en: The listen address cannot be empty; 127.0.0.1 is the usual choice for a local listener.
-  zh-CN: 监听地址不能空着，本机监听一般填 127.0.0.1。
+  zh-CN: 监听地址不能为空，本机监听通常填 127.0.0.1。
 forward.check_target_host:
   en: The target address cannot be empty.
   zh-CN: 目标地址不能空着。
 forward.check_target_port:
   en: The target port must be a number between 1 and 65535.
-  zh-CN: 目标端口要填 1~65535 之间的一个数。
+  zh-CN: 目标端口须为 1~65535 之间的数字。
 forward.preset_mysql:
   en: Remote MySQL 3306 mapped to this machine
   zh-CN: 远端 MySQL 3306 映到本机
@@ -3606,7 +3606,7 @@ forward.preset_redis:
   zh-CN: 远端 Redis 6379 映到本机
 forward.preset_socks5:
   en: SOCKS5 proxy on local 1080, the whole machine as a jump box
-  zh-CN: 本机 1080 上的 SOCKS5 代理，整台机器当跳板
+  zh-CN: 本机 1080 上的 SOCKS5 代理，整台机器作为跳板
 
 # ── 端口转发对话框 ───────────────────────────────────────────────────────
 port_forward.title:
@@ -3620,19 +3620,19 @@ port_forward.close:
   zh-CN: 关闭
 port_forward.start_failed:
   en: "%{name} could not start: %{error}"
-  zh-CN: "%{name} 起不来：%{error}"
+  zh-CN: "%{name} 启动失败：%{error}"
 port_forward.name_placeholder:
   en: e.g. Prod database or K8s dashboard
   zh-CN: 例如 生产库 或 K8s 面板
 port_forward.form_closed:
   en: The form is not open
-  zh-CN: 表单没开着
+  zh-CN: 表单未打开
 port_forward.port_taken:
   en: "%{endpoint} already has a forward on it."
   zh-CN: "%{endpoint} 上已经有一条转发了。"
 port_forward.running_stop_first:
   en: This forward came back up; press Stop before saving your changes.
-  zh-CN: 这条转发又跑起来了，先按 Stop 停下再保存改动。
+  zh-CN: 此转发已重新运行，请先停止再保存修改。
 port_forward.draft_title_edit:
   en: Edit this forwarding rule
   zh-CN: 修改这条转发规则
@@ -3665,10 +3665,10 @@ port_forward.save_new:
   zh-CN: 保存并启用
 port_forward.editing_cannot_start:
   en: This one is being edited; save or cancel before starting it
-  zh-CN: 正在改这一条，存下或取消之后再起
+  zh-CN: 正在编辑此条，请先保存或取消后再启动
 port_forward.stop_before_edit:
   en: Press Stop on this forward before editing it
-  zh-CN: 要改先按 Stop 停下这条转发
+  zh-CN: 编辑前请先停止此转发
 port_forward.edit_rule:
   en: Edit this forwarding rule
   zh-CN: 修改这条转发规则
@@ -3692,7 +3692,7 @@ port_forward.test_port:
   zh-CN: 测试端口
 port_forward.test_port_tooltip:
   en: Connect to this port once and see whether the tunnel carries
-  zh-CN: 连一次这个端口，看隧道通不通
+  zh-CN: 连接此端口一次，检查隧道是否畅通
 port_forward.copy_cli:
   en: Copy CLI
   zh-CN: 复制 CLI
@@ -3704,13 +3704,13 @@ port_forward.empty_title:
   zh-CN: 这台主机还没有端口转发规则
 port_forward.empty_body:
   en: Map a remote database or web console onto this machine, or open a local service to the remote network — all over the SSH connection you already authenticated, without opening another port to the outside.
-  zh-CN: 把远端的数据库、Web 面板映到本机，或者把本机的服务开给远端网络 —— 都走这条已经认证过的 SSH 连接，不必再开一个端口给外面。
+  zh-CN: 将远端数据库、Web 面板映射到本机，或将本机服务暴露给远端网络 —— 均通过已认证的 SSH 连接，无需额外开放端口。
 port_forward.empty_add:
   en: Create the first forwarding rule
   zh-CN: 建第一条转发规则
 port_forward.running_count:
   en: "%{count} running"
-  zh-CN: "%{count} 条在跑"
+  zh-CN: "%{count} 条运行中"
 port_forward.host_line:
   en: "%{name} (%{address})"
   zh-CN: "%{name}（%{address}）"
@@ -3735,20 +3735,20 @@ terminal.close_session:
   zh-CN: 关闭会话
 terminal.forwards_failed:
   en: "%{count} port forward(s) did not start — %{reasons}"
-  zh-CN: 有 %{count} 条端口转发没起来 —— %{reasons}
+  zh-CN: 有 %{count} 条端口转发未启动 —— %{reasons}
 terminal.forward_failure_item:
   en: "%{name}: %{error}"
   zh-CN: "%{name}：%{error}"
 terminal.forwards_need_ssh:
   en: SSH is not connected yet; port forwarding has to wait for the connection.
-  zh-CN: SSH 还没连上，端口转发要等连接建好。
+  zh-CN: SSH 尚未连接，端口转发需等待连接建立。
 terminal.save_forwards_failed:
   en: "Could not save the port forwarding rules: %{error}"
   zh-CN: 保存端口转发规则失败：%{error}
 # 装是装上了（那一行已经敲进去了），只是没记住"下次也装"。
 terminal.save_shell_integration_failed:
   en: "Shell integration is active in this session, but the setting could not be saved: %{error}"
-  zh-CN: shell 集成在当前会话里已经生效，但这个开关没存下来：%{error}
+  zh-CN: shell 集成在当前会话中已生效，但开关未保存：%{error}
 terminal.banner_local_ready:
   en: Local shell is ready.
   zh-CN: 本机 Shell 已就绪。
@@ -3763,10 +3763,10 @@ terminal.banner_ssh_failed:
   zh-CN: SSH 连接失败：%{error}
 terminal.banner_fell_back:
   en: Fell back to the local shell (the demo stays usable)
-  zh-CN: 已回退到本机 Shell（演示继续可用）
+  zh-CN: 已回退到本机 Shell（演示仍可用）
 terminal.banner_ssh_hint:
   en: "Hint: check the host address, port, user name and password/key; the remote needs sshd running."
-  zh-CN: 提示：检查主机地址、端口、用户名与密码/密钥是否正确；远端需开启 SSH 服务。
+  zh-CN: 提示：检查主机地址、端口、用户名与密码/密钥；远端需运行 SSH 服务。
 terminal.ssh_failed_notify:
   en: "SSH connection to %{name} failed, fell back to this machine: %{error}"
   zh-CN: SSH 连接 %{name} 失败，已回退到本机：%{error}
@@ -3781,16 +3781,16 @@ terminal.banner_serial_failed:
   zh-CN: 串口打开失败：%{error}
 terminal.banner_serial_hint:
   en: "Hint: check the device path. The device may be unplugged, already in use by another program, or the account may lack access to it."
-  zh-CN: 提示：检查设备路径；设备可能未插好、被其他程序占用，或当前账号没有访问权限。
+  zh-CN: 提示：检查设备路径；设备可能未插好、被其他程序占用，或当前账号无访问权限。
 terminal.banner_telnet_failed:
   en: "Telnet connection failed: %{error}"
   zh-CN: Telnet 连接失败：%{error}
 terminal.banner_telnet_hint:
   en: "Hint: check the host address and port; the remote needs a telnetd listening on the port."
-  zh-CN: 提示：检查主机地址与端口是否正确；远端需开启 telnetd 服务。
+  zh-CN: 提示：检查主机地址与端口；远端需开启 telnetd 服务。
 terminal.banner_telnet_login:
   en: "Type the account and password at the remote's login prompt."
-  zh-CN: 请按对端 login 提示输入账号与密码。
+  zh-CN: 请按远端 login 提示输入账号与密码。
 terminal.telnet_failed_notify:
   en: "Telnet connection to %{name} failed, fell back to this machine: %{error}"
   zh-CN: Telnet 连接 %{name} 失败，已回退到本机：%{error}
@@ -3802,10 +3802,10 @@ terminal.banner_opening_second:
   zh-CN: 正在 %{name} 上打开第二个 Shell...
 terminal.banner_second_failed:
   en: "Could not open a new shell: %{error}"
-  zh-CN: 开不出新的 Shell：%{error}
+  zh-CN: 无法打开新的 Shell：%{error}
 terminal.banner_max_sessions:
   en: The remote may cap the number of sessions on one connection (sshd's MaxSessions).
-  zh-CN: 对端可能限制了一条连接上的会话数（sshd 的 MaxSessions）。
+  zh-CN: 对端可能限制了单连接的会话数（sshd 的 MaxSessions）。
 terminal.banner_connected:
   en: ✓ Connected to %{name}
   zh-CN: ✓ 已连接到 %{name}
@@ -3835,7 +3835,7 @@ terminal.search_close:
   zh-CN: 关闭（Esc）
 terminal.session_failed:
   en: This session could not be started
-  zh-CN: 这条会话开不起来
+  zh-CN: 此会话无法启动
 
 # ── 监控面板 ─────────────────────────────────────────────────────────────
 monitor.filter_placeholder:
@@ -3855,13 +3855,13 @@ monitor.tab_diagnostics:
   zh-CN: 诊断
 monitor.interval_not_integer:
   en: The sampling interval has to be a whole number of seconds.
-  zh-CN: 采集间隔要填一个整数秒。
+  zh-CN: 采集间隔须为整数秒。
 monitor.no_host_config:
   en: A local shell has no host configuration; this change only applies to the current session.
-  zh-CN: 本机 Shell 没有主机配置，这次改动只在当前会话里生效。
+  zh-CN: 本机 Shell 无主机配置，此修改仅在当前会话生效。
 monitor.intervals_saved:
   en: Sampling interval saved to this host.
-  zh-CN: 采集频率已保存到这台主机。
+  zh-CN: 采集频率已保存至此主机。
 monitor.intervals_save_failed:
   en: "Could not save the sampling interval: %{error}"
   zh-CN: 保存采集频率失败：%{error}
@@ -3888,22 +3888,22 @@ monitor.collapse:
   zh-CN: 收起监控面板（Alt+M）
 monitor.empty_no_remote_title:
   en: This session has no remote to sample
-  zh-CN: 这条会话没有可采的对端
+  zh-CN: 此会话无可采集的远端
 monitor.empty_no_remote_detail:
   en: The monitor reads the remote's /proc. Sampling starts on its own once SSH connects; a local shell has no remote.
-  zh-CN: 监控读的是远端的 /proc。SSH 连上之后这里会自动开始采集；本地 Shell 没有对端。
+  zh-CN: 监控读取远端 /proc。SSH 连接后自动开始采集；本地 Shell 无远端。
 monitor.empty_failed_title:
   en: Sampling failed
   zh-CN: 采集失败
 monitor.empty_failed_detail:
   en: The line above is the reason the remote gave. Fix it and press refresh, or wait for the next automatic retry.
-  zh-CN: 上面那条是对端给的原因。修好之后按刷新，或者等下一次自动重试。
+  zh-CN: 上面那条为远端返回的原因。修复后请刷新，或等待下次自动重试。
 monitor.empty_sampling_title:
   en: Sampling…
   zh-CN: 正在采集…
 monitor.empty_sampling_detail:
   en: The first sample runs a sampling window; give it a moment.
-  zh-CN: 第一次采集要跑一段采样窗口，稍等一下。
+  zh-CN: 首次采集需运行采样窗口，请稍候。
 monitor.settings_tooltip:
   en: Sampling settings
   zh-CN: 采集设置
@@ -3912,34 +3912,34 @@ monitor.processes_sampling:
   zh-CN: 正在采集进程列表…
 monitor.processes_none_returned:
   en: This sample did not return a process list
-  zh-CN: 这次采集没有拿到进程列表
+  zh-CN: 本次采集未返回进程列表
 monitor.processes_no_match:
   en: No matching process
   zh-CN: 没有匹配的进程
 monitor.settings_note:
   en: The sampling interval follows this host; it will still be this rhythm next time you open it.
-  zh-CN: 采集频率跟着这台主机走，下次打开还是这个节奏。
+  zh-CN: 采集频率跟随此主机，下次打开时保持相同节奏。
 monitor.interval_panel_title:
   en: Monitor panel
   zh-CN: 监控面板
 monitor.interval_panel_hint:
   en: "While this pane is open the full sample runs: charts and the process table."
-  zh-CN: 这一栏展开着的时候采全量：曲线、进程表。
+  zh-CN: 此栏展开时采集全量数据：曲线与进程表。
 monitor.interval_status_title:
   en: Terminal status bar
   zh-CN: 终端状态栏
 monitor.interval_status_hint:
   en: Once this pane is collapsed only the light sample runs, feeding the status bar along the bottom of the terminal.
-  zh-CN: 这一栏收起之后只采轻量的一份，喂终端下沿那条状态栏。
+  zh-CN: 此栏收起后仅采集轻量数据，供终端底部状态栏使用。
 monitor.save:
   en: Save
   zh-CN: 保存
 monitor.interval_integer_hint:
   en: The interval must be a whole number of seconds.
-  zh-CN: 间隔要填整数秒。
+  zh-CN: 间隔须为整数秒。
 monitor.no_host_config_hint:
   en: A local shell has no host configuration; changes here only apply to the current session.
-  zh-CN: 本机 Shell 没有主机配置，这里改的只在当前会话里生效。
+  zh-CN: 本机 Shell 无主机配置，此处修改仅在当前会话生效。
 monitor.seconds:
   en: s
   zh-CN: 秒
@@ -3948,10 +3948,10 @@ monitor.seconds_range:
   zh-CN: "%{low}–%{high} 秒"
 monitor.probe_incomplete:
   en: The sampling script did not finish (the remote may have cut the command short)
-  zh-CN: 采集脚本没有跑完（对端可能中断了这条命令）
+  zh-CN: 采集脚本未执行完成（远端可能中断了该命令）
 monitor.probe_no_meminfo:
   en: The remote cannot read /proc/meminfo; monitoring only supports Linux hosts
-  zh-CN: 远端读不到 /proc/meminfo，监控只支持 Linux 主机
+  zh-CN: 远端无法读取 /proc/meminfo，监控仅支持 Linux 主机
 
 # ── 传输队列状态 ─────────────────────────────────────────────────────────
 transfer.status_queued:
@@ -4048,7 +4048,7 @@ sftp.deleted_many:
   zh-CN: 已删除 %{count} 项
 sftp.delete_remote_body:
   en: "%{names} will be removed from the remote file system. Directories are deleted recursively with everything inside them, and this cannot be undone."
-  zh-CN: "%{names} 会从远端文件系统里去掉。目录会连同里面的所有内容一并递归删除，这一步不可恢复。"
+  zh-CN: "“%{names}”会从远端文件系统中删除。目录将连同内容递归删除，此操作不可恢复。"
 sftp.delete:
   en: Delete
   zh-CN: 删除
@@ -4081,7 +4081,7 @@ sftp.delete_local_many_title:
   zh-CN: 删除本地这 %{count} 个条目？
 sftp.delete_local_body:
   en: "%{names} will be deleted from your computer outright, not moved to the trash. This cannot be undone, and directories go with everything inside them."
-  zh-CN: "%{names} 会从你的电脑上直接删掉，不进回收站。这一步不可逆；目录会连同里面的所有内容一并删除。"
+  zh-CN: "“%{names}”会从本机直接删除，不进回收站。此操作不可逆；目录连同内容一并删除。"
 sftp.names_and_more:
   en: "%{head} and %{count} more"
   zh-CN: "%{head} 等 %{count} 项"
@@ -4129,13 +4129,13 @@ sftp.side_by_side:
   zh-CN: 两栏并排
 sftp.hide_dotfiles:
   en: Hide entries starting with a dot
-  zh-CN: 藏掉点开头的条目
+  zh-CN: 隐藏点开头的条目
 sftp.show_dotfiles:
   en: Show entries starting with a dot
-  zh-CN: 画出点开头的条目
+  zh-CN: 显示点开头的条目
 sftp.shrink_pane:
   en: Shrink this pane
-  zh-CN: 压扁这一栏
+  zh-CN: 收缩此栏
 sftp.expand_pane:
   en: Expand this pane
   zh-CN: 展开这一栏
@@ -4174,7 +4174,7 @@ sftp.parent_row:
   zh-CN: "[上级目录]"
 sftp.hint:
   en: Double-click a file to edit it; Ctrl/Shift-click to select several; drag between the panes to upload or download; right-click a row for more.
-  zh-CN: 双击文件即可打开编辑；Ctrl/Shift 点选可多选；支持左右栏双向拖拽上传/下载；右键一行看更多操作。
+  zh-CN: 双击文件打开编辑；Ctrl/Shift 点击多选；支持左右栏拖拽上传/下载；右键查看更多操作。
 sftp.transfers_active:
   en: Transfers (%{active}/%{total})
   zh-CN: 传输（%{active}/%{total}）
@@ -4233,28 +4233,28 @@ queue.pause_all:
   zh-CN: 暂停全部
 queue.resume_all_tooltip:
   en: Carry on with every transfer that is sitting still
-  zh-CN: 把停着的传输都接着搬
+  zh-CN: 恢复所有暂停的传输
 queue.pause_all_tooltip:
   en: Hold the running transfers; queued ones wait for their turn
-  zh-CN: 停住在跑的传输；排队的等轮到它再说
+  zh-CN: 暂停所有运行中的传输；排队中的等待轮到
 queue.clear_finished:
   en: Clear finished
   zh-CN: 清除已完成
 queue.clear_finished_tooltip:
   en: Drop the rows that are done; running ones have to be cancelled first
-  zh-CN: 清掉已经完事的行；还在跑的得先取消
+  zh-CN: 清除已完成的行；运行中的需先取消
 queue.collapse:
   en: Collapse the queue
   zh-CN: 收起队列
 queue.empty:
   en: No transfers yet — drag files into the right pane, or pick upload / download from an entry's menu.
-  zh-CN: 还没有传输任务；把文件拖进右栏，或在条目菜单里选上传 / 下载。
+  zh-CN: 尚无传输任务；将文件拖入右栏，或在条目菜单中选择上传/下载。
 queue.child_files:
   en: Child files
   zh-CN: 子项文件
 queue.resume_one:
   en: Carry on
-  zh-CN: 接着搬
+  zh-CN: 继续
 queue.pause_one:
   en: Pause this one
   zh-CN: 暂停这一条
@@ -4263,7 +4263,7 @@ queue.cancel_one:
   zh-CN: 取消这次传输
 queue.remove_one:
   en: Remove from the list
-  zh-CN: 从列表里去掉
+  zh-CN: 从列表中移除
 queue.section_head:
   en: "%{name} · directory contents (%{count} items)"
   zh-CN: "%{name} · 目录内容（%{count} 项）"
@@ -4423,7 +4423,7 @@ sftp_err.overwrite_local:
   zh-CN: 覆盖本地文件 %{path} 失败
 sftp_err.move_into_place:
   en: Could not move %{from} into place as %{to}
-  zh-CN: 把 %{from} 落成 %{to} 失败
+  zh-CN: 将 %{from} 移动为 %{to} 失败
 
 # ── 主机配置服务 ─────────────────────────────────────────────────────────
 host_service.no_data_dir:
@@ -4437,7 +4437,7 @@ host_service.host_missing:
   zh-CN: 主机 %{id} 不存在
 host_service.group_not_empty:
   en: Group “%{name}” still holds %{count} host(s)
-  zh-CN: 分组“%{name}”下还有 %{count} 台主机
+  zh-CN: 分组“%{name}”下仍有 %{count} 台主机
 host_service.duplicate_suffix:
   en: "%{name} copy"
   zh-CN: "%{name} 副本"
@@ -4638,28 +4638,28 @@ ssh_forward.remote_refused:
   zh-CN: "对端拒绝在 %{bind}:%{port} 上监听"
 ssh_forward.remote_no_port:
   en: The remote accepted the forwarding request but did not tell us the port
-  zh-CN: 对端接受了转发请求但没有告诉我们端口
+  zh-CN: 对端接受了转发请求但未告知端口
 ssh_forward.channel_failed:
   en: The forwarding channel could not be opened
-  zh-CN: 转发通道开不出来
+  zh-CN: 转发通道无法打开
 ssh_forward.channel_target:
   en: "%{reason} (target %{host}:%{port})"
   zh-CN: "%{reason}（目标 %{host}:%{port}）"
 ssh_forward.reject_prohibited:
   en: The remote does not allow this forward
-  zh-CN: 对端不允许这次转发
+  zh-CN: 对端不允许此转发
 ssh_forward.reject_connect_failed:
   en: The remote could not reach the target
-  zh-CN: 对端连不上目标
+  zh-CN: 对端无法连接目标
 ssh_forward.reject_unknown_type:
   en: The remote does not recognise this channel type
-  zh-CN: 对端不认识这种通道
+  zh-CN: 对端不认识此通道类型
 ssh_forward.reject_resource:
   en: The remote is short on resources
   zh-CN: 对端资源不足
 ssh_forward.reject_other:
   en: The remote refused this forward
-  zh-CN: 对端拒绝了这次转发
+  zh-CN: 对端拒绝了此转发
 ssh_forward.socks_read_greeting:
   en: Reading the SOCKS5 method negotiation failed
   zh-CN: 读 SOCKS5 方法协商失败
@@ -4706,13 +4706,13 @@ ssh_sftp.handshake_failed:
   zh-CN: SFTP 协议握手失败
 ssh_sftp.subsystem_refused:
   en: "The remote refused to start the SFTP subsystem (no `Subsystem sftp` in sshd_config, or the remote only allows a shell)"
-  zh-CN: "远端拒绝启动 SFTP 子系统（sshd_config 里没有 `Subsystem sftp`，或对端只允许 Shell）"
+  zh-CN: "远端拒绝启动 SFTP 子系统（sshd_config 中无 `Subsystem sftp`，或远端仅允许 Shell）"
 ssh_sftp.closed_early:
   en: The remote closed the channel before the SFTP subsystem started
-  zh-CN: 远端在启动 SFTP 子系统之前关掉了通道
+  zh-CN: 远端在启动 SFTP 子系统前关闭了通道
 ssh_sftp.disconnected:
   en: The connection dropped while waiting for the SFTP subsystem to answer
-  zh-CN: 等待 SFTP 子系统回音时连接已断开
+  zh-CN: 等待 SFTP 子系统响应时连接断开
 
 # ── 远端命令执行 ─────────────────────────────────────────────────────────
 ssh_exec.exit_status:
@@ -4720,7 +4720,7 @@ ssh_exec.exit_status:
   zh-CN: 远端命令退出码 %{status}
 ssh_exec.no_output:
   en: The remote command produced neither output nor an exit code
-  zh-CN: 远端命令没有输出也没有退出码
+  zh-CN: 远端命令无输出且无退出码
 ssh_exec.timeout:
   en: The remote command did not return within %{seconds} s
   zh-CN: 远端命令超过 %{seconds} 秒未返回
@@ -4787,7 +4787,7 @@ assistant.empty_title:
   zh-CN: WinSSH Pro 智能助手
 assistant.empty_hint:
   en: I can run commands on the session you currently have open to diagnose and fix issues — switch tabs and I follow you there. Every command asks for your approval before it runs; I never touch local files.
-  zh-CN: 我可以在你当前打开的这条会话上执行命令，帮你排查和处理问题 —— 换个标签页我就跟到哪台机器上。每条命令执行前都会先请你审核；我不会碰这台电脑上的本地文件。
+  zh-CN: 我可以在当前打开的会话上执行命令，帮你排查和处理问题 —— 切换标签页即跟随到对应机器。每条命令执行前均需审核；不会触碰本机文件。
 assistant.current_session:
   en: 'Current session:'
   zh-CN: 当前会话：
@@ -4817,13 +4817,13 @@ assistant.status_denied:
   zh-CN: 已拒绝
 assistant.run_failed:
   en: 'This run failed: %{error}'
-  zh-CN: 这一场运行失败了：%{error}
+  zh-CN: 运行失败：%{error}
 assistant.client_failed:
   en: Could not build the model provider client
-  zh-CN: 模型供应商客户端建不起来
+  zh-CN: 模型供应商客户端构建失败
 assistant.missing_conversation:
   en: This conversation no longer exists.
-  zh-CN: 这段对话已经不存在了。
+  zh-CN: 此对话已不存在。
 assistant.untitled:
   en: New chat
   zh-CN: 新对话
@@ -4836,31 +4836,31 @@ assistant.remove_image:
   zh-CN: 移除图片
 assistant.vision_off:
   en: This model isn’t set up for images. Turn on Image input in Settings → AI Assistant.
-  zh-CN: 当前模型没有开启图片支持，可以在「设置 → AI 助手」里打开「支持图片输入」。
+  zh-CN: 此模型未开启图片支持，可在「设置 → AI 助手」中开启「支持图片输入」。
 assistant.no_clipboard_image:
   en: There’s no image on the clipboard.
-  zh-CN: 剪贴板里没有图片。
+  zh-CN: 剪贴板中无图片。
 assistant.too_many_images:
   en: A message can carry at most %{count} images.
   zh-CN: 一条提问最多带 %{count} 张图片。
 assistant.image_preparing:
   en: Images are still being processed. Send again in a moment.
-  zh-CN: 图片还在处理，稍等一下再发。
+  zh-CN: 图片仍在处理，请稍后再发送。
 assistant.image_failed:
   en: 'Couldn’t use that image: %{error}'
-  zh-CN: 这张图片用不了：%{error}
+  zh-CN: 此图片无法使用：%{error}
 assistant.image_unknown:
   en: Unrecognized image format
-  zh-CN: 认不出的图片格式
+  zh-CN: 无法识别的图片格式
 assistant.image_undecodable:
   en: 'The image can’t be decoded (%{error})'
   zh-CN: 图片解不开（%{error}）
 assistant.image_too_large:
   en: The image is too large
-  zh-CN: 图片太大了
+  zh-CN: 图片过大
 assistant.image_unreadable:
   en: 'Couldn’t read %{path}'
-  zh-CN: 读不出 %{path}
+  zh-CN: 无法读取 %{path}
 
 # ── 主机信任确认弹窗 ──────────────────────────────────────────────────────────
 host_trust.title:
@@ -4880,7 +4880,7 @@ host_trust.label_fingerprint:
   zh-CN: 密钥指纹
 host_trust.safety_note:
   en: 'Ask the server administrator to confirm this fingerprint matches the server. Accepting an incorrect key may expose your credentials to a man-in-the-middle attack.'
-  zh-CN: 请向服务器管理员确认该指纹与服务器一致。信任错误的密钥可能使你的凭据暴露于中间人攻击。
+  zh-CN: 请向服务器管理员确认该指纹与服务器一致。信任错误的密钥可能导致凭据遭受中间人攻击。
 host_trust.save_checkbox:
   en: 'Save to trusted hosts (do not ask again)'
   zh-CN: 保存到可信主机（下次连接不再提示）
@@ -4912,13 +4912,13 @@ trusted_hosts.last_seen:
   zh-CN: 最近使用
 trusted_hosts.empty_title:
   en: Nothing trusted yet
-  zh-CN: 还没有信任任何主机
+  zh-CN: 尚未信任任何主机
 trusted_hosts.loading:
   en: Loading…
   zh-CN: 加载中…
 trusted_hosts.empty:
   en: No trusted hosts yet. Host keys are saved automatically on first connection.
-  zh-CN: 暂无可信主机记录。首次连接服务器时，密钥会自动保存到此处。
+  zh-CN: 暂无可信主机记录。首次连接服务器时，密钥将自动保存至此。
 trusted_hosts.close:
   en: Close
   zh-CN: 关闭
@@ -4940,10 +4940,10 @@ terminal.banner_trust_rejected:
 # ── 终端里的 rz / sz 文件收发（ZMODEM，见 src/zmodem/） ───────────────────────
 zmodem.bad_file_name:
   en: 'Cannot take a file name from: %{path}'
-  zh-CN: 无法从路径里取文件名：%{path}
+  zh-CN: 无法从路径中提取文件名：%{path}
 zmodem.stat_failed:
   en: 'Cannot read file metadata: %{path}'
-  zh-CN: 读不到文件信息：%{path}
+  zh-CN: 无法读取文件信息：%{path}
 zmodem.too_large:
   en: 'The file exceeds the 4 GiB ZMODEM limit: %{path}'
   zh-CN: 文件超过 ZMODEM 的 4 GiB 上限：%{path}
@@ -4952,28 +4952,28 @@ zmodem.no_files:
   zh-CN: 没有可发送的文件
 zmodem.no_pending_file:
   en: No file is waiting for a destination
-  zh-CN: 没有等着落点的文件
+  zh-CN: 无待保存文件
 zmodem.no_open_file:
   en: No target file is open
-  zh-CN: 没有打开的目标文件
+  zh-CN: 无待打开的目标文件
 zmodem.open_read_failed:
   en: 'Cannot open the file to send: %{path}'
-  zh-CN: 打不开要发送的文件：%{path}
+  zh-CN: 无法打开发送文件：%{path}
 zmodem.read_short:
   en: 'The file shrank while being sent: %{path}'
-  zh-CN: 文件在发送途中变短了：%{path}
+  zh-CN: 文件在发送过程中变小了：%{path}
 zmodem.create_failed:
   en: 'Cannot create the target file: %{path}'
-  zh-CN: 建不了目标文件：%{path}
+  zh-CN: 无法创建目标文件：%{path}
 zmodem.mkdir_failed:
   en: 'Cannot create the destination directory: %{path}'
-  zh-CN: 建不了落点目录：%{path}
+  zh-CN: 无法创建目标目录：%{path}
 zmodem.unnamed_file:
   en: unnamed
   zh-CN: 未命名文件
 zmodem.backlog:
   en: Incoming data piled up faster than it could be processed; transfer aborted
-  zh-CN: 对端送来的数据积压过多，已中止这次传输
+  zh-CN: 对端送来的数据积压过多，已中止传输
 zmodem.peer_aborted:
   en: The peer aborted the transfer
   zh-CN: 对端中止了传输
@@ -4993,7 +4993,7 @@ zmodem.send_title:
   zh-CN: 发送文件（rz）
 zmodem.send_hint:
   en: The remote side is waiting to receive files. Pick them to start.
-  zh-CN: 远端正在等待接收文件，选择要上传的文件后开始。
+  zh-CN: 远端正在等待接收文件，选择文件后开始。
 zmodem.file_name:
   en: 'File'
   zh-CN: 文件名
@@ -5019,7 +5019,7 @@ zmodem.choose_files:
 # 终端里的进度条（TerminalPane）
 zmodem.strip_waiting:
   en: waiting for the remote side…
-  zh-CN: 等待远端…
+  zh-CN: 等待远端……
 
 # 完成 / 中止的通知
 zmodem.notify_received:
@@ -5039,10 +5039,10 @@ zmodem.notify_cancelled:
   zh-CN: ZMODEM 传输已取消
 zmodem.notify_timeout:
   en: Gave up waiting for a confirmation (remote rz/sz likely timed out)
-  zh-CN: 等待确认超时，已放弃这次 rz / sz
+  zh-CN: 等待确认超时，已放弃本次 rz / sz
 zmodem.notify_peer_gone:
   en: The remote rz/sz went silent; transfer aborted
-  zh-CN: 对端 rz / sz 已无响应，传输中止
+  zh-CN: 对端 rz / sz 无响应，传输中止
 zmodem.notify_failed:
   en: 'ZMODEM transfer failed: %{error}'
   zh-CN: ZMODEM 传输失败：%{error}
@@ -5076,7 +5076,7 @@ sftp_host.close_session:
   zh-CN: 关闭会话
 sftp_host.trust_rejected:
   en: Connection cancelled — you chose not to trust this host
-  zh-CN: 连接已取消 —— 你拒绝信任这台主机
+  zh-CN: 连接已取消 —— 已拒绝信任此主机
 
 # ── 独立 FTP 会话（HostKind::Ftp 开出来的那个标签页，见 src/ui/panels/ftp_host.rs） ──
 ftp_host.close_session:
