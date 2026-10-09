@@ -28,18 +28,14 @@ mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
 cp "${BIN_PATH}" "${MACOS_DIR}/winssh-pro"
 chmod +x "${MACOS_DIR}/winssh-pro"
 
-# 1.5 拷贝 mihomo 内核与 privileged helper（broker）。
-#    mihomo 该放的位置没有强制约定，跟主 exe 同目录就行（`binary_path` 找
-#    的就是 exe 旁边）。helper 的位置是 macOS  privileged helper 的约定
+# 1.5 拷贝 privileged helper（broker）。
+#    helper 的位置是 macOS privileged helper 的约定
 #    （`Contents/Library/LaunchServices/`）—— `broker_binary_path` 在
-#    打包出来的 `.app` 里就是去那里找它。没编过 mihomo / broker 也无所谓：
-#    应用自己会说"没找到 mihomo / broker"。
-MIHOMO_BIN="target/${TARGET:+${TARGET}/}release/mihomo"
+#    打包出来的 `.app` 里就是去那里找它。没编过 broker 也无所谓：
+#    应用自己会说"没找到 broker"。
+#    mihomo 内核不在这里摆 —— 订阅页会引导用户下载到用户数据目录
+#    （见 `src/clash/downloader.rs`），`clash::runtime::binary_path` 会去那里找。
 BROKER_BIN="target/${TARGET:+${TARGET}/}release/winssh-broker"
-if [[ -f "${MIHOMO_BIN}" ]]; then
-    cp "${MIHOMO_BIN}" "${MACOS_DIR}/mihomo"
-    chmod +x "${MACOS_DIR}/mihomo"
-fi
 LAUNCH_SERVICES_DIR="${CONTENTS_DIR}/Library/LaunchServices"
 if [[ -f "${BROKER_BIN}" ]]; then
     mkdir -p "${LAUNCH_SERVICES_DIR}"

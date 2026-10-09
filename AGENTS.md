@@ -19,10 +19,13 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
   `build.rs` 按目标架构拷到 exe 旁边（`cargo run` / `cargo test` 都找得到），
   发版 workflow 把它和 exe 一起打包
 - Clash 订阅（mihomo）：**不嵌库**，起一个子进程，通过它的 RESTful API 控制
-  （见 `src/clash/`）。那份内核是用户自己放进 `third_party/mihomo/windows/` 的
-  （`mihomo-windows-amd64.exe`），仓库里不跟踪它、我们也不代它下载或升级；
-  没有它应用照跑，只有 Clash 那一档会说"没找到 mihomo"。它要和 `wintun.dll`
-  落在同一个目录里 —— 虚拟网卡那一档是内核自己按名字加载那个 dll。
+  （见 `src/clash/`）。那份内核**不由我们发、也不在构建期摆**：订阅页在缺内核时
+  引导用户从官方 GitHub Releases 下载到用户数据目录（见 `src/clash/downloader.rs`
+  与 `src/ui/dialogs/mihomo_download.rs`），`clash::runtime::binary_path` 会去那里找。
+  没有它应用照跑，只有 Clash 那一档会说"没找到 mihomo"。mihomo 建虚拟网卡时
+  按名字加载 `wintun.dll`，所以下载目录要和 `wintun.dll` 落在同一处 ——
+  `clash::downloader` 下完内核后会把 exe 旁边的 `wintun.dll` 一并拷到
+  mihomo 目录里（见 `copy_wintun_if_needed`）。
   拨 TUN 要管理员权限：Windows 上拨开关时应用经一次 UAC 拉起自带的
   `winssh-broker.exe`（`src/bin/broker.rs`）代管内核，GUI 留在用户态；
   broker 随 GUI 退出自动收走内核，不装服务、不留后台，发版与主 exe 同目录打包

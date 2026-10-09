@@ -155,23 +155,15 @@ jobs:
             # 拷到了 exe 旁边，这里照原样一起打包；少了它 cp 直接失败。
             # winssh-broker.exe 是 Clash 那一档拨 TUN 时经 UAC 拉起的提权小助手
             # （见 src/bin/broker.rs），cargo 的必产物，与主 exe 同目录才能被找到。
+            # mihomo.exe 不在这里打包 —— 订阅页会引导用户下载到用户数据目录
+            # （见 src/clash/downloader.rs），clash::runtime::binary_path 会去那里找。
             package_dir="$(mktemp -d)"
             cp "target/${{ matrix.target }}/release/winssh-pro${{ matrix.extension }}" \
               "target/${{ matrix.target }}/release/winssh-broker${{ matrix.extension }}" \
               "target/${{ matrix.target }}/release/wintun.dll" \
               "$package_dir/"
-            # mihomo.exe 是 Clash 那一档要的内核，由用户自己放进
-            # third_party/mihomo/（见 build.rs 的 copy_mihomo）：仓库里不跟踪它，
-            # 流水线上多半没有。有就一起打包，没有就照没有打包 —— 应用那边
-            # 只会说一句"没找到 mihomo"，其余功能不受影响。
-            if [[ -f "target/${{ matrix.target }}/release/mihomo.exe" ]]; then
-              cp "target/${{ matrix.target }}/release/mihomo.exe" "$package_dir/"
-              tar -czf "dist/$artifact.tar.gz" -C "$package_dir" \
-                "winssh-pro${{ matrix.extension }}" winssh-broker${{ matrix.extension }} wintun.dll mihomo.exe
-            else
-              tar -czf "dist/$artifact.tar.gz" -C "$package_dir" \
-                "winssh-pro${{ matrix.extension }}" winssh-broker${{ matrix.extension }} wintun.dll
-            fi
+            tar -czf "dist/$artifact.tar.gz" -C "$package_dir" \
+              "winssh-pro${{ matrix.extension }}" winssh-broker${{ matrix.extension }} wintun.dll
           fi
 
       - name: Upload release artifact

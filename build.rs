@@ -1,6 +1,11 @@
 //! Windows 构建要补的几件事：把主线程的栈开大；把虚拟网卡要的 `wintun.dll`
-//! 摆到 exe 旁边；把 Clash 那一档要的 `mihomo.exe` 也摆过去（后两件见
-//! [`copy_wintun`] 与 [`copy_mihomo`]）。图标与版本信息那段 `winres` 不必解释。
+//! 摆到 exe 旁边（见 [`copy_wintun`]）。图标与版本信息那段 `winres` 不必解释。
+//!
+//! Clash 那一档要的 mihomo 内核**不在这里摆** —— 订阅页会在缺内核时引导用户
+//! 下载到用户数据目录（见 `src/clash/downloader.rs` 与
+//! `src/ui/dialogs/mihomo_download.rs`），`clash::runtime::binary_path` 会去那里找。
+//! 构建期不掺和：那份二进制体积大、更新快，还是用户按自己的判断挑的版本，
+//! 塞进安装包既不合适也管不过来。
 //!
 //! ## 主线程的栈
 //!
@@ -42,15 +47,13 @@ fn main() {
     #[cfg(target_os = "windows")]
     {
         copy_wintun();
-        copy_mihomo();
     }
-    // 这两个函数本体被 `#[cfg(target_os = "macos")]` 门掉（里面用的是
+    // 这个函数本体被 `#[cfg(target_os = "macos")]` 门掉（里面用的是
     // unix-only 的权限接口），所以调用点也得用同样的 cfg —— 用运行时
     // `CARGO_CFG_TARGET_OS` 判断的话，代码在 Windows 上仍会被编译，
     // 只会在链接期才找不到函数。
     #[cfg(target_os = "macos")]
     {
-        copy_mihomo_macos();
         // macOS 上 broker 是 launchd 守护（见 `src/bin/broker.rs` 的模块文档），
         // `cargo run` / `cargo test` 时它要在 exe 旁边能找到 ——
         // `clash::broker::broker_binary_path` 找的就是这两个位置。
@@ -107,85 +110,7 @@ fn copy_wintun() {
         }
     };
     let source = Path::new("third_party").join(arch).join("wintun.dll");
-    copy_sidecar(&source, "wintun.dll", true);
-}
-
-/// 把 Clash 那一档要的 `mihomo.exe` 拷到 exe 旁边。
-///
-/// **这份二进制不由我们发。** 它体积大（六十多 MB）、更新快，还是用户按自己的
-/// 判断挑的版本，所以放在 `third_party/mihomo/` 里由用户自己放进去，仓库里
-/// 不跟踪它。没有它，应用照跑 —— 只有 Clash 那一档会说"没找到 mihomo"
-/// （见 `src/clash/runtime.rs` 的 `binary_path`）。
-///
-/// 正因为它可有可无，这里**读不到源文件时只警告一句就走**，绝不 panic：
-/// 一 panic，所有没放这份二进制的人（包括发版流水线上的机器）都编不过。
-///
-/// 它和 `wintun.dll` 必须落在同一个目录里：mihomo 建虚拟网卡时按名字加载
-/// `wintun.dll`，第一站就是它自己所在的那个目录。
-#[cfg(target_os = "windows")]
-fn copy_mihomo() {
-    match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
-        // 手里这份是 Windows 的 x86_64 构建；别的架构上先不摆，让它去说
-        // 那句"没找到 mihomo"。
-        Ok("x86_64") => {}
-        _ => return,
-    }
-    let source = Path::new("third_party")
-        .join("mihomo")
-        .join("windows")
-        .join("mihomo-windows-amd64.exe");
-    copy_sidecar(&source, "mihomo.exe", false);
-}
-
-/// macOS 那一份。和 Windows 同一个规矩：用户自己把 `third_party/mihomo/macos/<arch>/mihomo`
-/// 放进来，**我们不代它下载、不代它升级**（那是个会改本机网络设置的程序，哪一个版本、
-/// 从哪儿来，得用户自己清楚）。CPU 架构按当前构建目标挑：x86_64 拿 `amd64`，aarch64
-/// 拿 `arm64` —— mihomo to-date 没发射 arm64 之外的 Apple Silicon 命名。
-///
-/// 与 Windows 的另一个区别是这边**不带 `.exe` 后缀** —— macOS 的可执行文件
-/// 命名习惯；`binary_path` 在 Unix 平台查的也是这个名字。
-#[cfg(target_os = "macos")]
-fn copy_mihomo_macos() {
-    let arch_dir = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
-        Ok("x86_64") => "amd64",
-        Ok("aarch64") => "arm64",
-        _ => return,
-    };
-    let source = Path::new("third_party")
-        .join("mihomo")
-        .join("macos")
-        .join(arch_dir)
-        .join("mihomo");
-    // Unix 上的 `copy_sidecar` 不会自带 +x —— `fs::write` 用的是默认 0644。
-    // 用户从下载站拷过来的那份大概率带 +x（chmod 是常规动作）；保险起见，
-    // 这边 source 没 +x 就跳过拷贝，让 `binary_path` 在 mihomo 目录里直接
-    // 拿原文件，免得拷过去的"可执行"既不可执行也跑不起来。
-    match std::fs::metadata(&source) {
-        Ok(meta) => {
-            use std::os::unix::fs::PermissionsExt as _;
-            if meta.permissions().mode() & 0o111 == 0 {
-                println!(
-                    "cargo:warning={} 缺少可执行权限，跳过拷贝（先 `chmod +x {}`）",
-                    source.display(),
-                    source.display()
-                );
-                return;
-            }
-        }
-        Err(_) => return,
-    }
-    copy_sidecar(&source, "mihomo", false);
-    // `copy_sidecar`.write 用的是默认 0644 —— 这里给它 +x。
-    if let Ok(out_dir) = std::env::var("OUT_DIR") {
-        // `<profile>/build/winssh-pro-<hash>/out` 往上数三层到 profile；
-        // 那里和 `deps/` 各摆一份（与 `copy_sidecar` 同一处讲究）。
-        let profile = Path::new(&out_dir).ancestors().nth(3).map(PathBuf::from);
-        if let Some(profile) = profile {
-            for candidate in [profile.join("mihomo"), profile.join("deps").join("mihomo")] {
-                let _ = chmod_plus_x(&candidate);
-            }
-        }
-    }
+    copy_sidecar(&source, "wintun.dll");
 }
 
 /// macOS 那一份。broker 被 `cargo build` 编出来之后由这里拷到 exe 旁边，
@@ -231,45 +156,28 @@ fn copy_broker_sidecar() {
     }
 }
 
-/// 唯一的调用方是 `copy_mihomo_macos`，所以与它同一条 cfg：别的平台上
-/// 不存在，也就不留"never used"的死代码。
-#[cfg(target_os = "macos")]
-fn chmod_plus_x(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    if !path.is_file() {
-        return Ok(());
-    }
-    let mut permissions = std::fs::metadata(path)?.permissions();
-    let mode = permissions.mode();
-    permissions.set_mode(mode | 0o111);
-    std::fs::set_permissions(path, permissions)
-}
-
 /// 把一份随包带的文件拷到这次构建的 exe 旁边。
 ///
 /// 拷两处：`target/[<triple>/]<profile>/`（`cargo run` 与发版打包拿的 exe 在
 /// 这儿）和它下面的 `deps/`（`cargo test` 起的测试 exe 在这儿）。输出目录没有
 /// 环境变量可读，从 `OUT_DIR`（`<profile>/build/winssh-pro-<hash>/out`）往上数
-/// 三层是通行做法。内容没变就不重写：应用开着时那份文件被映射着（dll）或者
-/// 正被跑着（exe），写不进去。
+/// 三层是通行做法。内容没变就不重写：应用开着时那份文件被映射着（dll），
+/// 写不进去。
 ///
-/// `required` 见 [`copy_mihomo`] 的文档。`rerun-if-changed` 只在源文件真的在
-/// 时才发：指向一个不存在的路径，cargo 会当它每次都在变，于是每回构建都要重跑
-/// 一遍这个脚本。
-fn copy_sidecar(source: &Path, name: &str, required: bool) {
+/// 唯一的调用方是 [`copy_wintun`]，那份 dll 是**必须有**的（缺了虚拟网卡那
+/// 一档直接跑不起来），所以读不到源文件就 panic —— 让构建当场失败，比默默
+/// 少一份文件、到用户手里才炸要好。
+///
+/// `rerun-if-changed` 只在源文件真的在时才发：指向一个不存在的路径，cargo
+/// 会当它每次都在变，于是每回构建都要重跑一遍这个脚本。
+#[cfg(target_os = "windows")]
+fn copy_sidecar(source: &Path, name: &str) {
     let bytes = match std::fs::read(source) {
         Ok(bytes) => {
             println!("cargo:rerun-if-changed={}", source.display());
             bytes
         }
-        Err(error) if required => panic!("读不到 {}：{error}", source.display()),
-        Err(error) => {
-            println!(
-                "cargo:warning=没有 {}（{error}）：Clash 那一档在这台机器上找不到内核，其余功能不受影响",
-                source.display()
-            );
-            return;
-        }
+        Err(error) => panic!("读不到 {}：{error}", source.display()),
     };
 
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo 总会给构建脚本 OUT_DIR"));

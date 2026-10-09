@@ -512,11 +512,14 @@ pub fn clash_dir() -> Result<PathBuf> {
 
 /// mihomo 那个可执行文件在哪儿。
 ///
-/// 排在前面的两处是**发出去的样子**：构建脚本把它拷到 exe 旁边
-/// （`build.rs` 的 `copy_sidecar`），`cargo test` 起的测试 exe 在 `deps/` 里，
-/// 所以父目录也看一眼。最后那条是开发时的原处 —— 只有 debug 构建才认，
-/// 发布出去的 exe 旁边那一行 `CARGO_MANIFEST_DIR` 指的是构建机的目录，
-/// 拿它去找文件等于碰运气。
+/// 三处都看：
+///
+/// 1. **exe 旁边与它的父目录** —— 便携安装的用户可能手动把 mihomo 摆在这儿；
+///    `cargo test` 起的测试 exe 在 `deps/` 里，所以父目录也看一眼。
+/// 2. **用户数据目录 `clash/bin/`** —— 订阅页引导用户下载的那一份就落在这儿
+///    （见 `crate::clash::downloader`），这是**发出去的主路径**。
+/// 3. **debug 构建才认的开发时原处** —— 发布出去的 exe 旁边那一行
+///    `CARGO_MANIFEST_DIR` 指的是构建机的目录，拿它去找文件等于碰运气。
 pub fn binary_path() -> Result<PathBuf> {
     let name = MIHOMO_EXE;
     if let Ok(exe) = std::env::current_exe()
@@ -553,7 +556,9 @@ pub const MIHOMO_EXE: &str = "mihomo.exe";
 #[cfg(not(windows))]
 pub const MIHOMO_EXE: &str = "mihomo";
 
-/// 开发时到哪儿去找那份二进制（用户自己放进来的，见 `third_party/mihomo/`）。
+/// 开发时到哪儿去找那份二进制。正常流程是走订阅页下载到 `clash_dir()/bin/`；
+/// 这几条只是给"已经手动把 mihomo 放进仓库 `third_party/mihomo/` 的开发机"留的
+/// 捷径 —— 免得为了跑一次 Clash 还得先走一遍下载。
 #[cfg(debug_assertions)]
 const DEV_CANDIDATES: [&str; 3] = [
     "third_party/mihomo/windows/mihomo-windows-amd64.exe",
