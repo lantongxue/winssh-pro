@@ -1,9 +1,13 @@
 //! 提权 broker 在 GUI 这头的半边。
 //!
 //! 对面那个进程见 `src/bin/broker.rs`：拨 TUN 需要管理员权限时，这里拉起
-//! 一个**永驻的系统助手**（macOS 是 launchd 守护、Windows 是命名管道那一头），
-//! 之后 mihomo 由它代拉代管，两边只有一条管道（NDJSON，协议在
-//! [`super::broker_protocol`]）。GUI 自己留在用户态。
+//! 一个**永驻的系统助手**（macOS 是 launchd 守护、Windows 是 SCM 服务、
+//! Linux 是 systemd 单元），之后 mihomo 由它代拉代管，两边只有一条进程间
+//! 管道（NDJSON，协议在 [`super::broker_protocol`]）。GUI 自己留在用户态。
+//!
+//! 三条平台是**同一个模型**：一个装进系统服务管理器的常驻助手（macOS 的
+//! launchd 守护、Windows 的 SCM 服务、Linux 的 systemd 单元），GUI 与它
+//! 之间一根进程间管道。装的时候弹一次系统授权框，之后都不再弹。
 //!
 //! ## macOS 这边的做法
 //!
@@ -25,14 +29,21 @@
 //!
 //! ## Windows 这边的做法
 //!
-//! 第一次拨 TUN 时经 UAC（`ShellExecuteExW(runas)`）把 broker 拉起来，
-//! 管道两头互认 PID（`GetNamedPipeClientProcessId` / `GetNamedPipeServerProcessId`）。
-//! 具体见 `imp::windows`。
+//! 第一次拨 TUN 时弹**一次** UAC（`ShellExecuteExW(runas)` 拉起 broker 自己
+//! 跑 `--install-service`）：把 broker 注册成 SCM 服务 `WinSSHProBroker`
+//! （LocalSystem、随失败自动重启），binPath 指向 exe 旁边那份。之后所有
+//! `spawn` 都直连固定命名管道 `\\.\pipe\winssh-broker`。
+//!
+//! 正身核对在服务端：每条新连接拿 `GetNamedPipeClientProcessId` 的 pid 去
+//! `QueryFullProcessImageNameW`，只放行正身是 `winssh-pro.exe`（或带
+//! ` (<n>)` 版本后缀的它）的客户端；不是立刻断开。管道是固定公共名，这只
+//! 是其中一道闸——`validate_start`（只放 mihomo）与新连接 fencing 另外两
+//! 道一直在。
 //!
 //! ## Linux 这边的做法
 //!
-//! 用 `pkexec` 检验授权后由 polkit 拉起 broker —— 机制跟 macOS 完全不同，
-//! 但这半边共用同一份"固定路径 UDS"的代码。其余平台暂不支持。
+//! 用 `pkexec` 检验授权后把 broker 装成 systemd 服务（模型同另外两边）——
+//! 今天还没接，只在类型与文案上留着位置。其余平台暂不支持。
 //!
 //! ## 事件的走法（不做同步 RPC）
 //!
@@ -62,12 +73,26 @@ const START_TIMEOUT: Duration = Duration::from_secs(15);
 /// 只是我们不等回执。
 const KILL_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// launchd / 命名管道重新拨号的间隔。
+/// launchd 重新拨号的间隔与总期限。macOS 装了守护之后等它把 socket 摆出来。
+#[cfg(target_os = "macos")]
 const RECONNECT_INTERVAL: Duration = Duration::from_millis(200);
-
-/// 等 broker 出现的总期限。launchd 加载 + 它自己起 bind 监听要几百毫秒，
-/// 给足十秒兜住慢机器。
+#[cfg(target_os = "macos")]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// SCM 把服务拉起来、它把管道 listening 起来之前的重新拨号间隔。
+#[cfg(windows)]
+const PIPE_RECONNECT_INTERVAL: Duration = Duration::from_millis(120);
+/// 从这一刻起到放弃等服务的总期限。SCM 服务启动超时默认 30 秒，给 15 秒
+/// 兜住慢机器：过了这个点管道还没listening，多半不是慢而是服务起不来，
+/// 迟退不如早退把错误摆给用户。
+#[cfg(windows)]
+const PIPE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// 等 `--install-service` / `--uninstall-service` 那个提权进程收尾的期限。
+/// 比拨管道宽：装的那一头是同步的 SCM 调用串，重装时要"停旧服务 → 等它真
+/// 的从 SCM 里摘掉 → 建新的"，两段各有 10 秒上限（见 `bin/broker.rs` 的
+/// `stop_service_blocking` 与 `wait_until_service_gone`）。
+#[cfg(windows)]
+const INSTALL_EXIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 用户在授权框上点了"取消"。与"没拉起来"是两句话，界面上分开说。
 #[derive(Clone, Copy, Debug)]
@@ -149,75 +174,34 @@ pub fn broker_binary_path() -> Result<PathBuf> {
 ///
 /// 装好之后（launchd 守护起来、socket 通）就不会再弹授权框；后面所有
 /// `spawn` 调用都走"直连 socket"那一档。
-pub async fn spawn(
-    on_log: impl Fn(String) + Send + Sync + 'static,
-) -> Result<BrokerSession> {
+pub async fn spawn(on_log: impl Fn(String) + Send + Sync + 'static) -> Result<BrokerSession> {
     imp::ensure_running().await?;
-    imp::connect_with_retry().await.map(|stream| BrokerSession::attach(stream, on_log))
+    imp::connect_with_retry()
+        .await
+        .map(|stream| BrokerSession::attach(stream, on_log))
 }
 
-/// helper 装没装。三个平台各自的探测：
-/// * **macOS**：plist 文件 + 二进制文件都在才算装了（见 `imp::status`）。
-/// * **Windows**：broker 不是永驻的，"装没装"这一档不存在 —— 总是回报
-///   已装（用户不需要在它身上做任何一键操作）。
+/// helper 装没装。三个平台都问"系统服务在不在"：
+/// * **macOS**：plist + 二进制两个文件都在。
+/// * **Windows**：SCM 里能查到 `WinSSHProBroker`。查不到有两种：`ERROR_SERVICE_DOES_NOT_EXIST`
+///   （真的没装）与别的错（SCM 自己都开不了，多半是权限/系统问题）——
+///   两者都按"没装"算：装/卸按钮本来就要重试，`QueryServiceStatus` 那一下
+///   失败在界面上藏不住多久，不该为了一个无法操作的中间态造新文案。
 /// * **Linux**：还没接，永远回报"没装"。
 pub fn status() -> HelperStatus {
-    #[cfg(target_os = "macos")]
-    {
-        imp::status()
-    }
-    #[cfg(windows)]
-    {
-        HelperStatus {
-            installed: true,
-            plist_present: true,
-            binary_present: true,
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        imp::status()
-    }
+    imp::status()
 }
 
 /// 同步版 helper 安装入口。**从 GPUI 那一边调用就用这个**——它不开 tokio
 /// 的工，GPUI 的 background executor 上跑得住。tokio 那一头（`runtime.rs`
 /// 的会话线程）走 [`spawn`] 那条 async 路。
-///
-/// 不弹独立的框：它等价于「装 helper + 等 socket 能上」，本来就是
-/// `install_via_osascript` 那一发。
 pub fn ensure_helper() -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        imp::ensure_running_blocking()
-    }
-    #[cfg(windows)]
-    {
-        // Windows 上的 broker 是会话级的，不需要装 helper —— dialog 那个
-        // 按钮在这个平台上根本不显示。这里只是设计上的一处收口。
-        Ok(())
-    }
-    #[cfg(target_os = "linux")]
-    {
-        anyhow::bail!("Linux 的 privileged helper 还没接")
-    }
+    imp::ensure_running_blocking()
 }
 
 /// 同步版 helper 卸载入口。同 [`ensure_helper`]，不开 tokio 的工。
-/// Windows 上空操作；Linux 还没接。
 pub fn remove_helper() -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        imp::uninstall_blocking()
-    }
-    #[cfg(windows)]
-    {
-        Ok(())
-    }
-    #[cfg(target_os = "linux")]
-    {
-        anyhow::bail!("Linux 的 privileged helper 还没接")
-    }
+    imp::uninstall_blocking()
 }
 
 // ---------- macOS 半边 ----------
@@ -484,10 +468,8 @@ mod imp {
                 Ok(stream) => return Ok(stream),
                 Err(error) => {
                     if std::time::Instant::now() >= deadline {
-                        return Err(error).context(format!(
-                            "连 helper 守护的 socket 失败（{}）",
-                            SOCKET_PATH
-                        ));
+                        return Err(error)
+                            .context(format!("连 helper 守护的 socket 失败（{}）", SOCKET_PATH));
                     }
                     tokio::time::sleep(RECONNECT_INTERVAL).await;
                 }
@@ -679,7 +661,10 @@ mod imp {
             assert_eq!(shell_quote_for_script("foo"), "'foo'");
             assert_eq!(shell_quote_for_script("with space"), "'with space'");
             assert_eq!(shell_quote_for_script("don't"), "'don'\\''t'");
-            assert_eq!(shell_quote_for_script("it's a 'test'"), "'it'\\''s a '\\''test'\\'''");
+            assert_eq!(
+                shell_quote_for_script("it's a 'test'"),
+                "'it'\\''s a '\\''test'\\'''"
+            );
         }
 
         /// AppleScript 的 escape 集只有 `"` 与 `\`。
@@ -704,10 +689,18 @@ mod imp {
     use anyhow::{Context as _, Result, bail};
     use tokio::net::UnixStream;
 
-    /// Linux 这半边没做完 —— polkit 的「写规则到 /etc/polkit-1」跟 macOS 的
-    /// 「弹一次窗之后永驻」模型不同，得另起一篇 FK。今天的做法是退到
-    /// 「每次都要授权框」的旧路：保持现状不可用，让 `SetTun` 直接报错。
+    /// Linux 这半边没做完 —— systemd（`--unit-file` + `systemctl enable`）与
+    /// macOS 的 launchd 完全同构，但这条路的代码还没写。今天的做法是保留
+    /// 旧文案让 `SetTun` 直接报错，而不是造一份半成品。
     pub async fn ensure_running() -> Result<()> {
+        bail!("Linux 的 privileged helper 还没接")
+    }
+
+    pub fn ensure_running_blocking() -> Result<()> {
+        bail!("Linux 的 privileged helper 还没接")
+    }
+
+    pub fn uninstall_blocking() -> Result<()> {
         bail!("Linux 的 privileged helper 还没接")
     }
 
@@ -729,99 +722,176 @@ mod imp {
             binary_present: false,
         }
     }
-
 }
 
 // ---------- Windows 半边 ----------
+//
+// broker 是一份 SCM 系统服务（`WinSSHProBroker`、LocalSystem），GUI 与它的
+// 关系跟 macOS 的 launchd 守护完全同构：第一次拨 TUN 时弹一次 UAC 装好，
+// 之后都直连固定管道 `\\.\pipe\winssh-broker`，两端靠对端 PID + 镜像路径
+// 互认正身（见服务实现 `src/bin/broker.rs` 的 imp 模块文档）。
 
 #[cfg(windows)]
 mod imp {
     use std::ffi::{OsStr, c_void};
     use std::os::windows::ffi::OsStrExt as _;
-    use std::path::Path;
-    use std::time::Duration;
+    use std::path::{Path, PathBuf};
 
     use anyhow::{Context as _, Result, anyhow, bail};
-    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
-    use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_CANCELLED, GetLastError, HANDLE};
+    use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_CANCELLED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, GENERIC_READ,
+        GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
     use windows_sys::Win32::Security::{
         GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
     };
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
     use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
-    use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
-    use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetCurrentProcessId, GetProcessId, OpenProcessToken,
+    use windows_sys::Win32::System::Services::{
+        CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_MANAGER_CONNECT,
+        SERVICE_QUERY_STATUS, SERVICE_STATUS,
     };
-    use windows_sys::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcessToken, WaitForSingleObject,
+    };
+    use windows_sys::Win32::UI::Shell::{
+        SEE_MASK_NO_CONSOLE, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
+    };
 
-    use super::ElevationCancelled;
+    use super::{
+        ElevationCancelled, INSTALL_EXIT_TIMEOUT, PIPE_CONNECT_TIMEOUT, PIPE_RECONNECT_INTERVAL,
+    };
 
-    /// 等 broker 连上管道的期限。UAC 点完之后它就该立刻到。
-    const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+    // 管道路径与服务名与 broker 那边硬同步（整个 crate 只此一份）。改任何
+    // 一颗，两边必须跟着一起改，不然就是装得上连不上。
+    pub const PIPE_PATH: &str = r"\\.\pipe\winssh-broker";
+    pub const SERVICE_NAME: &str = "WinSSHProBroker";
 
+    // ---------- ensure_running ----------
+
+    /// 第一次拨 TUN 的入口：装得上就连，装不上先装再连。之后所有 `spawn`
+    /// 都走"直连"那一档。
     pub async fn ensure_running() -> Result<()> {
-        // Windows 上 broker 不是永驻的：它由 `connect_with_retry` 那一发
-        // `ShellExecuteExW(runas)` 拉起来，跟这个会话绑定。Windows 半边
-        // 直接由 launch_elevated 起名字 + 等连接。
+        if try_connect().await.is_ok() {
+            return Ok(());
+        }
+        install_via_runas().await?;
+        wait_for_service_ready().await
+    }
+
+    /// 同步版 [`ensure_running`]，GPUI background executor 用（那个线程上没
+    /// tokio reactor）。装就是 UAC 那一下，几十秒的事，用标准命名管道等就行。
+    pub fn ensure_running_blocking() -> Result<()> {
+        if try_connect_blocking(PIPE_CONNECT_TIMEOUT).is_ok() {
+            return Ok(());
+        }
+        let exe = super::broker_binary_path()?;
+        let handle = shell_execute_runas(&exe, "--install-service", "装 broker 服务")?;
+        let code = wait_process_exit_blocking(handle, INSTALL_EXIT_TIMEOUT)?;
+        if code != 0 {
+            let tail = read_log_tail();
+            bail!(
+                "broker 服务的安装进程退出了（退出码 {code}）。{}",
+                if tail.is_empty() {
+                    "日志没拿到更多线索。".to_owned()
+                } else {
+                    format!("日志尾巴：{tail}")
+                }
+            );
+        }
+        try_connect_blocking(PIPE_CONNECT_TIMEOUT)
+            .map(|_| ())
+            .context("服务装好了，可管道没上线")
+    }
+
+    // ---------- status / uninstall（GUI 设置面板那两颗按钮） ----------
+
+    /// 服务在不在 SCM 里。只问 SCM，不真连管道——用户要的是"装没装"，
+    /// 不是"现在通不通"。SCM 打不开（权限问题、系统坏了）按没装处理：
+    /// 装/卸按钮本来就要重试，不该为一个无法操作的中间态造文案。
+    pub fn status() -> super::HelperStatus {
+        let installed = service_exists();
+        super::HelperStatus {
+            installed,
+            plist_present: installed,
+            binary_present: installed,
+        }
+    }
+
+    fn service_exists() -> bool {
+        unsafe {
+            let scm = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
+            if scm.is_null() {
+                return false;
+            }
+            let mut wide = to_wide(OsStr::new(SERVICE_NAME));
+            let service = OpenServiceW(scm, wide.as_mut_ptr(), SERVICE_QUERY_STATUS);
+            CloseServiceHandle(scm);
+            if service.is_null() {
+                return false;
+            }
+            let mut state: SERVICE_STATUS = std::mem::zeroed();
+            let ok = QueryServiceStatus(service, &mut state) != 0;
+            CloseServiceHandle(service);
+            ok
+        }
+    }
+
+    pub fn uninstall_blocking() -> Result<()> {
+        let exe = super::broker_binary_path()?;
+        let handle = shell_execute_runas(&exe, "--uninstall-service", "卸 broker 服务")?;
+        wait_process_exit_blocking(handle, INSTALL_EXIT_TIMEOUT)
+            .map(|_| ())
+            .context("卸载 broker 服务")
+    }
+
+    // ---------- 装：弹一次 UAC，让 broker 自己注册 ----------
+
+    async fn install_via_runas() -> Result<()> {
+        let exe = super::broker_binary_path()?;
+        // `--install-service` 里的 service install + start 全在那一个进程里做，
+        // UAC 点"是"之后只需要等它收尾。它自己退的时候服务已经起来了。
+        let code = tokio::task::spawn_blocking(move || {
+            let handle = shell_execute_runas(&exe, "--install-service", "装 broker 服务")?;
+            wait_process_exit_blocking(handle, INSTALL_EXIT_TIMEOUT)
+        })
+        .await
+        .context("提权任务没跑完")??;
+        if code != 0 {
+            let tail = read_log_tail();
+            bail!(
+                "broker 服务的安装进程退出了（退出码 {code}）。{}",
+                if tail.is_empty() {
+                    "日志没拿到更多线索。".to_owned()
+                } else {
+                    format!("日志尾巴：{tail}")
+                }
+            );
+        }
         Ok(())
     }
 
-    /// Windows 上"连"其实是"先建服务端管道，再 UAC 拉起 broker，再等它连进来"。
-    pub async fn connect_with_retry() -> Result<NamedPipeServer> {
-        let exe = super::broker_binary_path()?;
-
-        // 管道先建好再拉 broker：它起来第一眼就要能连上。名字带 128 位随机
-        // 与本进程 pid；`first_pipe_instance` 保证名字被抢注时这里直接失败。
-        let pipe_name = format!(
-            "winssh-broker-{:016x}-{:08x}",
-            rand::random::<u64>(),
-            std::process::id()
-        );
-        let server = ServerOptions::new()
-            .first_pipe_instance(true)
-            .create(format!(r"\\.\pipe\{pipe_name}"))
-            .context("建 broker 管道失败")?;
-
-        // runas 会同步阻塞到 UAC 出结果 —— 挪去阻塞池，别占会话 runtime 的 worker。
-        let launched = tokio::task::spawn_blocking({
-            let exe = exe.clone();
-            let pipe_name = pipe_name.clone();
-            move || launch_elevated(&exe, &pipe_name)
-        })
-        .await
-        .context("提权任务没跑完")?;
-        let broker_pid = launched?;
-
-        // 等它连进来，然后验明正身：对面必须正是我们刚拉起的那个 pid。
-        tokio::time::timeout(HANDSHAKE_TIMEOUT, server.connect())
-            .await
-            .context("等 broker 连管道超时")?
-            .context("broker 连管道失败")?;
-        verify_peer_is_broker(&server, broker_pid)?;
-        Ok(server)
-    }
-
-    /// 经 UAC 拉起 broker，返回它的 pid。只许在 `spawn_blocking` 里调。
-    fn launch_elevated(exe: &Path, pipe_name: &str) -> Result<u32> {
+    /// ShellExecuteExW(runas) 的一个薄封装：只负责把命令递出去、把 result
+    /// 门关上（取消/失败）译成 anyhow。拿到的是不再属于我们的进程句柄。
+    fn shell_execute_runas(exe: &Path, params: &str, what: &str) -> Result<HANDLE> {
         unsafe {
-            // ShellExecuteEx 可能路过 shell 扩展，先把 COM 初始化掉。
-            // 已经初始化过（或失败）都不碍事，不看返回值。
+            // ShellExecuteEx 可能路过 shell 扩展，先把 COM 初始化掉；初始化
+            // 失败或已经初始化过都不碍事，不看返回值。
             CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32);
 
             let exe_w = to_wide(exe.as_os_str());
-            let params = format!("--pipe {pipe_name} --parent {}", GetCurrentProcessId());
-            let params_w = to_wide(OsStr::new(&params));
+            let params_w = to_wide(OsStr::new(params));
             let verb_w = to_wide(OsStr::new("runas"));
 
-            let mut info: SHELLEXEUTEINFOW = std::mem::zeroed();
+            let mut info: SHELLEXECUTEINFOW = std::mem::zeroed();
             info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-            info.fMask = SEE_MASK_NOCLOSEPROCESS;
+            info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NO_CONSOLE;
             info.lpVerb = verb_w.as_ptr();
             info.lpFile = exe_w.as_ptr();
             info.lpParameters = params_w.as_ptr();
-            // SW_HIDE(0)：broker 没有窗口可 show。常量本体在
-            // Win32_UI_WindowsAndMessaging 里，为一个 0 多开一档 feature 不值。
+            // SW_HIDE(0)：broker 没有窗口可 show。常量本体在 Win32_UI_WindowsAndMessaging
+            // 里，为一个 0 多开一档 feature 不值。
             info.nShow = 0;
 
             if ShellExecuteExW(&mut info) == 0 {
@@ -829,31 +899,166 @@ mod imp {
                 if code == ERROR_CANCELLED {
                     return Err(anyhow!(ElevationCancelled));
                 }
-                bail!("ShellExecuteExW(runas) 失败：Win32 错误 {code}");
+                bail!("{what}：ShellExecuteExW(runas) 失败，Win32 错误 {code}");
             }
             if info.hProcess.is_null() {
-                bail!("ShellExecuteExW(runas) 没回进程句柄");
+                bail!("{what}：ShellExecuteExW(runas) 没回进程句柄");
             }
-            let pid = GetProcessId(info.hProcess);
-            CloseHandle(info.hProcess);
-            if pid == 0 {
-                bail!("拿不到 broker 的 pid");
-            }
-            Ok(pid)
+            Ok(info.hProcess)
         }
     }
 
-    /// 验对面那个 pid 是不是我们刚拉起的 broker。
-    fn verify_peer_is_broker(server: &NamedPipeServer, broker_pid: u32) -> Result<()> {
-        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
-        let mut client_pid = 0u32;
-        let ok = unsafe {
-            GetNamedPipeClientProcessId(server.as_handle().as_raw_handle() as HANDLE, &mut client_pid)
-        };
-        if ok == 0 || client_pid != broker_pid {
-            bail!("管道对面不是我们拉起的 broker（pid {client_pid} ≠ {broker_pid}）");
+    fn wait_process_exit_blocking(handle: HANDLE, timeout: std::time::Duration) -> Result<u32> {
+        use windows_sys::Win32::System::Threading::GetExitCodeProcess;
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let mut exit_code: u32 = 0;
+            let state = unsafe { WaitForSingleObject(handle, 0) };
+            if state == WAIT_OBJECT_0 {
+                let ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+                unsafe { CloseHandle(handle) };
+                if ok == 0 {
+                    bail!(
+                        "拿安装进程的退出码失败：{}",
+                        std::io::Error::last_os_error()
+                    );
+                }
+                return Ok(exit_code);
+            }
+            if state == WAIT_TIMEOUT && std::time::Instant::now() < deadline {
+                std::thread::sleep(PIPE_RECONNECT_INTERVAL);
+                continue;
+            }
+            unsafe { CloseHandle(handle) };
+            bail!("等安装进程退出超时（{timeout:?}）");
         }
-        Ok(())
+    }
+
+    /// 装完之后等服务把管道 listening 起来。这边用"能不能连上"当哨兵 ——
+    /// SCM 的 SERVICE_RUNNING 与"管道真的接受连接"之间还有 broker 自己的
+    /// 初始化那一小段，连上了才算装好。
+    async fn wait_for_service_ready() -> Result<()> {
+        match tokio::time::timeout(PIPE_CONNECT_TIMEOUT, try_connect()).await {
+            Ok(Ok(stream)) => {
+                drop(stream);
+                Ok(())
+            }
+            Ok(Err(error)) => Err(error).context("broker 服务装好了，可还是连不上管道"),
+            Err(_) => {
+                let tail = read_log_tail();
+                bail!(
+                    "broker 服务的管道 {PIPE_PATH} 在 {PIPE_CONNECT_TIMEOUT:?} 内没上线。{}",
+                    if tail.is_empty() {
+                        "".to_owned()
+                    } else {
+                        format!("服务日志尾巴：{tail}")
+                    }
+                )
+            }
+        }
+    }
+
+    // ---------- 直连：装好之后的每一次 ----------
+
+    /// 装好服务之后所有 `spawn` 的入口：直连固定管道。连不上就是服务没在跑，
+    /// 用户得回设置面板看一眼 —— 消息里给足线索（Win32 错误 + 日志尾巴）。
+    pub async fn connect_with_retry() -> Result<NamedPipeClient> {
+        let deadline = std::time::Instant::now() + (PIPE_CONNECT_TIMEOUT / 12);
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            match try_connect().await {
+                Ok(stream) => return Ok(stream),
+                Err(error) if error.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) => {
+                    // 管道设备都不在 = 服务根本没起：这是"坏了"而不是"还没起"，
+                    // 直接报，别死等满 15 秒再把同样的话再说一遍。
+                    return Err(error).context(format!(
+                        "连不上 {PIPE_PATH}：管道设备本身不存在，broker 服务多半没装或没启动。{}",
+                        log_hint()
+                    ));
+                }
+                Err(error) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(error).context(format!(
+                            "连不上 {PIPE_PATH}（第 {attempt} 次拨号后放弃）。{}",
+                            log_hint()
+                        ));
+                    }
+                    tokio::time::sleep(PIPE_RECONNECT_INTERVAL).await;
+                }
+            }
+        }
+    }
+
+    /// 同步地探一下管道通不通，通了立刻关掉。
+    ///
+    /// **不能用 tokio 的 `ClientOptions::open`**：它 `CreateFileW` 成功之后要把
+    /// 句柄注册进 mio 的 reactor，而这个入口是给 GPUI background executor 用的，
+    /// 那条线程上没有 tokio runtime，`NamedPipeClient::from_raw_handle` 会直接
+    /// panic（`there is no reactor running`）。以前撞不上，是因为 `CreateFileW`
+    /// 先被管道 SD 挡在 ACCESS_DENIED 上、根本没走到注册那步。这里下裸的
+    /// `CreateFileW`，要的访问位与 tokio 客户端一字不差（`GENERIC_READ |
+    /// GENERIC_WRITE`），所以"能不能连"的答案是同一个。
+    fn try_connect_blocking(timeout: std::time::Duration) -> Result<()> {
+        let deadline = std::time::Instant::now() + timeout;
+        let name_w = to_wide(OsStr::new(PIPE_PATH));
+        loop {
+            let handle = unsafe {
+                CreateFileW(
+                    name_w.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    0,
+                    std::ptr::null(),
+                    OPEN_EXISTING,
+                    0,
+                    std::ptr::null_mut(),
+                )
+            };
+            if handle != INVALID_HANDLE_VALUE {
+                unsafe { CloseHandle(handle) };
+                return Ok(());
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(ERROR_PIPE_BUSY as i32) {
+                return Err(error).context("连管道失败");
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(error).context("等管道有空实例超时");
+            }
+            std::thread::sleep(PIPE_RECONNECT_INTERVAL);
+        }
+    }
+
+    async fn try_connect() -> std::io::Result<NamedPipeClient> {
+        ClientOptions::new().open(PIPE_PATH)
+    }
+
+    // ---------- 共享小件 ----------
+
+    /// 那根 OTA 小日志最近四行。跟 broker 那边 `append_broker_log` 的"留 4 行"
+    /// 配套；文件不存在/读不来就回空串，调用方才不管为什么。
+    fn read_log_tail() -> String {
+        let path = broker_log_path();
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return String::new();
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        let start = lines.len().saturating_sub(4);
+        lines[start..].join("\n")
+    }
+
+    /// 报错里给用户的那句"去这儿看日志"。重复拼同一条路径不如放一处。
+    fn log_hint() -> String {
+        format!("服务日志在 {}。", broker_log_path().display())
+    }
+
+    /// broker 日志落的地方。`bin/broker.rs` 里 `broker_log_path` 用的是同一颗
+    /// 常量算出来的——整个 crate 只有这里一份 ProgramData 拼法。
+    pub fn broker_log_path() -> PathBuf {
+        let base = std::env::var_os("PROGRAMDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+        base.join("winssh-pro").join("broker.log")
     }
 
     pub fn detect_elevated() -> bool {
@@ -882,19 +1087,19 @@ mod imp {
 }
 
 #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
-use imp::detect_elevated;
+use imp::*;
 
 #[cfg(windows)]
-type Stream = tokio::net::windows::named_pipe::NamedPipeServer;
+type Stream = tokio::net::windows::named_pipe::NamedPipeClient;
 #[cfg(unix)]
 type Stream = tokio::net::UnixStream;
 
 /// 连上了的 broker 会话：下指令、等事件。
 ///
-/// drop 时尽力递一条 `Shutdown`（写任务会把它排出去再散）。在 macOS 上
-/// broker 是永驻守护，`Shutdown` 会让它清空手上那个内核然后接着跑，**不是**
-/// 让守护自退 —— launchd 会立刻把它再拉起来，那条命令在这边只起"归还"
-/// 作用。Windows 那半边照旧是"对端走人"。
+/// drop 时尽力递一条 `Shutdown`（写任务会把它排出去再散）。三个平台上
+/// broker 都是常驻服务，`Shutdown` 只起"归还"作用：把手上那个内核收掉、
+/// 然后断开这条连接，服务本体**不退**（macOS 的 launchd、Windows 的 SCM、
+/// 将来 Linux 的 systemd 都会把它看着）。
 pub struct BrokerSession {
     commands: mpsc::UnboundedSender<Command>,
     started_tx: watch::Sender<Option<u32>>,
@@ -909,10 +1114,7 @@ pub struct BrokerSession {
 
 impl BrokerSession {
     /// 接上管道，挂好写任务与事件泵。
-    fn attach(
-        stream: Stream,
-        on_log: impl Fn(String) + Send + Sync + 'static,
-    ) -> Self {
+    fn attach(stream: Stream, on_log: impl Fn(String) + Send + Sync + 'static) -> Self {
         let (read_half, write_half) = tokio::io::split(stream);
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<Command>();
@@ -949,14 +1151,8 @@ impl BrokerSession {
         args: &[String],
         cwd: &std::path::Path,
     ) -> Result<u32> {
-        let exe = exe
-            .to_str()
-            .context("内核路径不是合法 UTF-8")?
-            .to_owned();
-        let cwd = cwd
-            .to_str()
-            .context("数据目录不是合法 UTF-8")?
-            .to_owned();
+        let exe = exe.to_str().context("内核路径不是合法 UTF-8")?.to_owned();
+        let cwd = cwd.to_str().context("数据目录不是合法 UTF-8")?.to_owned();
         let mut started_rx = self.started_tx.subscribe();
         let mut error_rx = self.error_tx.subscribe();
         let mut alive_rx = self.alive_rx.clone();

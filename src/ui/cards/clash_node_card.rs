@@ -93,7 +93,8 @@ fn parse_flag_and_name(name: &str) -> (String, String) {
         (flags.trim().to_string(), rest.trim().to_string())
     } else {
         let lower = trimmed.to_lowercase();
-        let flag = if lower.contains("香港") || lower.contains("hk") || lower.contains("hongkong") {
+        let flag = if lower.contains("香港") || lower.contains("hk") || lower.contains("hongkong")
+        {
             "🇭🇰 🇭🇰"
         } else if lower.contains("东京")
             || lower.contains("日本")
@@ -513,12 +514,7 @@ impl RenderOnce for ClashNodeCard {
                             .items_center()
                             .gap_1p5()
                             .when(!flags.is_empty(), |this| {
-                                this.child(
-                                    div()
-                                        .flex_shrink_0()
-                                        .text_xs()
-                                        .child(flags),
-                                )
+                                this.child(div().flex_shrink_0().text_xs().child(flags))
                             })
                             .child(
                                 div()
@@ -542,7 +538,12 @@ impl RenderOnce for ClashNodeCard {
                             .items_center()
                             .justify_center()
                             .when(selected, |this| {
-                                this.bg(if is_dark { rgb(0x06b6d4) } else { rgb(0x0891b2) }).child(
+                                this.bg(if is_dark {
+                                    rgb(0x06b6d4)
+                                } else {
+                                    rgb(0x0891b2)
+                                })
+                                .child(
                                     Icon::new(IconName::Check)
                                         .with_size(px(11.))
                                         .text_color(rgb(0xffffff)),
@@ -585,7 +586,11 @@ impl RenderOnce for ClashNodeCard {
                         )
                     })
                     .when(!transport.is_empty(), |this| {
-                        let transport_color: Hsla = if is_dark { rgb(0x71717a).into() } else { rgb(0x64748b).into() };
+                        let transport_color: Hsla = if is_dark {
+                            rgb(0x71717a).into()
+                        } else {
+                            rgb(0x64748b).into()
+                        };
                         this.child(
                             div()
                                 .flex_shrink_0()
@@ -644,12 +649,7 @@ impl RenderOnce for ClashNodeCard {
                             .border_1()
                             .border_color(badge_border)
                             .bg(badge_bg)
-                            .child(
-                                div()
-                                    .size(px(6.))
-                                    .rounded_full()
-                                    .bg(dot_color),
-                            )
+                            .child(div().size(px(6.)).rounded_full().bg(dot_color))
                             .child(
                                 div()
                                     .font_family("monospace")

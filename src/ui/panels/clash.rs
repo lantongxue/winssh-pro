@@ -34,9 +34,10 @@
 
 use std::{rc::Rc, sync::Arc};
 
+use gpui_kit::Anchor;
 use gpui_kit::component::{
-    ActiveTheme as _, Colorize as _, Icon, IconName, Sizable as _, StyledExt as _,
-    VirtualListScrollHandle, WindowExt as _, Disableable as _,
+    ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, Sizable as _,
+    StyledExt as _, VirtualListScrollHandle, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _, DropdownButton},
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     h_flex,
@@ -47,12 +48,11 @@ use gpui_kit::component::{
     table::{Table, TableCell, TableHead, TableHeader, TableRow},
     v_flex, v_virtual_list,
 };
-use gpui_kit::Anchor;
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Div, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, PathPromptOptions,
-    Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
-    Size, Stateful, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
+    FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
+    PathPromptOptions, Pixels, Render, SharedString, Size, Stateful,
+    StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px, relative, rgb, size,
 };
 
@@ -62,7 +62,10 @@ use crate::clash::{
 };
 use crate::ui::cards::{CLASH_NODE_CARD_HEIGHT, ClashNodeCard};
 use crate::ui::dialogs::MihomoDownloadDialog;
-use crate::{service::LocalFileService, ui::theme::{AppIcon, palette}};
+use crate::{
+    service::LocalFileService,
+    ui::theme::{AppIcon, palette},
+};
 use rust_i18n::t;
 
 /// 标签页上那颗状态点的直径。和终端、组网那几档是同一个数。
@@ -142,7 +145,13 @@ fn format_bytes(bytes: u64) -> String {
 fn safe_file_name(name: &str) -> String {
     let mut value: String = name
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect();
     if value.trim_matches('_').is_empty() {
         value = "subscription".to_owned();
@@ -215,12 +224,12 @@ impl ShellKind {
             Self::Bash | Self::Zsh => format!(
                 "export http_proxy=http://{target} https_proxy=http://{target} all_proxy=socks5://{target}"
             ),
-            Self::Cmd => format!(
-                "set http_proxy=http://{target} && set https_proxy=http://{target}"
-            ),
-            Self::PowerShell | Self::PowerShell7 => format!(
-                "$env:http_proxy=\"http://{target}\"; $env:https_proxy=\"http://{target}\""
-            ),
+            Self::Cmd => {
+                format!("set http_proxy=http://{target} && set https_proxy=http://{target}")
+            }
+            Self::PowerShell | Self::PowerShell7 => {
+                format!("$env:http_proxy=\"http://{target}\"; $env:https_proxy=\"http://{target}\"")
+            }
         }
     }
 }
@@ -411,22 +420,30 @@ impl ClashPanel {
 
     fn subscribe_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let node_search = self.node_search.clone();
-        cx.subscribe_in(&node_search, window, |this, _, event: &InputEvent, _, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.node_query = this.node_search.read(cx).value().trim().to_lowercase();
-                this.rebuild_rows();
-                cx.notify();
-            }
-        })
+        cx.subscribe_in(
+            &node_search,
+            window,
+            |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.node_query = this.node_search.read(cx).value().trim().to_lowercase();
+                    this.rebuild_rows();
+                    cx.notify();
+                }
+            },
+        )
         .detach();
         let rule_search = self.rule_search.clone();
-        cx.subscribe_in(&rule_search, window, |this, _, event: &InputEvent, _, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.rule_query = this.rule_search.read(cx).value().trim().to_lowercase();
-                this.rebuild_rows();
-                cx.notify();
-            }
-        })
+        cx.subscribe_in(
+            &rule_search,
+            window,
+            |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.rule_query = this.rule_search.read(cx).value().trim().to_lowercase();
+                    this.rebuild_rows();
+                    cx.notify();
+                }
+            },
+        )
         .detach();
     }
 
@@ -447,7 +464,12 @@ impl ClashPanel {
         }
         self.subscription = subscription;
         // 换了一条：上一次那条留下的错误不该再弹。
-        self.shown_error = self.state.error.as_ref().map(|error| error.seq).unwrap_or(0);
+        self.shown_error = self
+            .state
+            .error
+            .as_ref()
+            .map(|error| error.seq)
+            .unwrap_or(0);
         self.rebuild_rows();
         // 面板是复用的，滚动位置也跟着上一条留着 —— 新的一条一打开就停在
         // 半中间会很怪。
@@ -604,7 +626,10 @@ impl ClashPanel {
             return false;
         }
         if self.selected_protocol != "ALL"
-            && !node.kind.to_lowercase().contains(&self.selected_protocol.to_lowercase())
+            && !node
+                .kind
+                .to_lowercase()
+                .contains(&self.selected_protocol.to_lowercase())
         {
             return false;
         }
@@ -619,7 +644,9 @@ impl ClashPanel {
             _ => ["", "", ""],
         };
         let name = node.name.to_lowercase();
-        region.iter().any(|mark| !mark.is_empty() && name.contains(&mark.to_lowercase()))
+        region
+            .iter()
+            .any(|mark| !mark.is_empty() && name.contains(&mark.to_lowercase()))
     }
 
     /// 此刻该摆的那份规则：实时那一份优先，其次是正文那一份。**行数、行体、
@@ -845,19 +872,16 @@ impl ClashPanel {
                                                 "代理已停止"
                                             }),
                                     )
-                                    .child(
-                                        div()
-                                            .size(px(7.))
-                                            .rounded_full()
-                                            .bg(if running {
-                                                rgb(0xffffff)
-                                            } else if is_dark {
-                                                rgb(0x71717a)
-                                            } else {
-                                                rgb(0x94a3b8)
-                                            }),
-                                    )
-                                    .on_click(cx.listener(|this, _, window, cx| this.start_or_stop(window, cx))),
+                                    .child(div().size(px(7.)).rounded_full().bg(if running {
+                                        rgb(0xffffff)
+                                    } else if is_dark {
+                                        rgb(0x71717a)
+                                    } else {
+                                        rgb(0x94a3b8)
+                                    }))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.start_or_stop(window, cx)
+                                    })),
                             )
                             // 当前生效订阅两行描述
                             .child(
@@ -871,14 +895,15 @@ impl ClashPanel {
                                                 div()
                                                     .text_xs()
                                                     .font_medium()
-                                                    .text_color(if is_dark { palette::idle(cx) } else { cx.theme().muted_foreground })
+                                                    .text_color(if is_dark {
+                                                        palette::idle(cx)
+                                                    } else {
+                                                        cx.theme().muted_foreground
+                                                    })
                                                     .child("当前生效订阅"),
                                             )
                                             .child(
-                                                div()
-                                                    .size(px(5.))
-                                                    .rounded_full()
-                                                    .bg(rgb(0x06b6d4)),
+                                                div().size(px(5.)).rounded_full().bg(rgb(0x06b6d4)),
                                             ),
                                     )
                                     .child(
@@ -920,12 +945,28 @@ impl ClashPanel {
                                 } else {
                                     cx.theme().muted_foreground
                                 };
-                                let icon_color = if selected { active_color } else { inactive_color };
+                                let icon_color = if selected {
+                                    active_color
+                                } else {
+                                    inactive_color
+                                };
                                 let icon_element = match mode_key {
-                                    "rule" => Icon::new(IconName::Settings2).with_size(px(12.)).text_color(icon_color).into_any_element(),
-                                    "global" => Icon::new(IconName::Globe).with_size(px(12.)).text_color(icon_color).into_any_element(),
-                                    "direct" => Icon::new(AppIcon::Zap).with_size(px(12.)).text_color(icon_color).into_any_element(),
-                                    _ => Icon::new(AppIcon::Terminal).with_size(px(12.)).text_color(icon_color).into_any_element(),
+                                    "rule" => Icon::new(IconName::Settings2)
+                                        .with_size(px(12.))
+                                        .text_color(icon_color)
+                                        .into_any_element(),
+                                    "global" => Icon::new(IconName::Globe)
+                                        .with_size(px(12.))
+                                        .text_color(icon_color)
+                                        .into_any_element(),
+                                    "direct" => Icon::new(AppIcon::Zap)
+                                        .with_size(px(12.))
+                                        .text_color(icon_color)
+                                        .into_any_element(),
+                                    _ => Icon::new(AppIcon::Terminal)
+                                        .with_size(px(12.))
+                                        .text_color(icon_color)
+                                        .into_any_element(),
                                 };
                                 h_flex()
                                     .id(format!("clash-mode-{mode_key}"))
@@ -956,11 +997,19 @@ impl ClashPanel {
                                         div()
                                             .text_xs()
                                             .font_semibold()
-                                            .text_color(if selected { active_color } else { inactive_color })
+                                            .text_color(if selected {
+                                                active_color
+                                            } else {
+                                                inactive_color
+                                            })
                                             .child(label),
                                     )
                                     .on_click(move |_, _, cx| {
-                                        panel.update(cx, |p, _| p.send(Action::SetMode(mode_key.into()))).ok();
+                                        panel
+                                            .update(cx, |p, _| {
+                                                p.send(Action::SetMode(mode_key.into()))
+                                            })
+                                            .ok();
                                     })
                             })),
                     ),
@@ -1013,7 +1062,11 @@ impl ClashPanel {
                                             .text_xs()
                                             .font_semibold()
                                             .text_color(if sys_proxy_active {
-                                                if is_dark { rgb(0x93c5fd).into() } else { rgb(0x1d4ed8).into() }
+                                                if is_dark {
+                                                    rgb(0x93c5fd).into()
+                                                } else {
+                                                    rgb(0x1d4ed8).into()
+                                                }
                                             } else {
                                                 cx.theme().foreground
                                             })
@@ -1024,7 +1077,11 @@ impl ClashPanel {
                                             .font_family("monospace")
                                             .text_xs()
                                             .text_color(if sys_proxy_active {
-                                                if is_dark { rgb(0x60a5fa).into() } else { rgb(0x2563eb).into() }
+                                                if is_dark {
+                                                    rgb(0x60a5fa).into()
+                                                } else {
+                                                    rgb(0x2563eb).into()
+                                                }
                                             } else {
                                                 cx.theme().muted_foreground
                                             })
@@ -1044,7 +1101,9 @@ impl ClashPanel {
                                     .color(rgb(0x3b82f6))
                                     .checked(sys_proxy_active)
                                     .disabled(!running)
-                                    .on_change(cx.listener(|this, on: &bool, _, _| this.send(Action::SetSystemProxy(*on)))),
+                                    .on_change(cx.listener(|this, on: &bool, _, _| {
+                                        this.send(Action::SetSystemProxy(*on))
+                                    })),
                             )
                             .on_click(cx.listener(|this, _, _, _| {
                                 if this.is_running() {
@@ -1098,7 +1157,11 @@ impl ClashPanel {
                                                 Icon::new(IconName::Network)
                                                     .with_size(px(12.))
                                                     .text_color(if tun_active {
-                                                        if is_dark { rgb(0x34d399).into() } else { rgb(0x059669).into() }
+                                                        if is_dark {
+                                                            rgb(0x34d399).into()
+                                                        } else {
+                                                            rgb(0x059669).into()
+                                                        }
                                                     } else {
                                                         cx.theme().muted_foreground
                                                     }),
@@ -1108,7 +1171,11 @@ impl ClashPanel {
                                                     .text_xs()
                                                     .font_semibold()
                                                     .text_color(if tun_active {
-                                                        if is_dark { rgb(0x6ee7b7).into() } else { rgb(0x047857).into() }
+                                                        if is_dark {
+                                                            rgb(0x6ee7b7).into()
+                                                        } else {
+                                                            rgb(0x047857).into()
+                                                        }
                                                     } else {
                                                         cx.theme().foreground
                                                     })
@@ -1132,11 +1199,19 @@ impl ClashPanel {
                                             .font_family("monospace")
                                             .text_xs()
                                             .text_color(if tun_active {
-                                                if is_dark { rgb(0x34d399).into() } else { rgb(0x059669).into() }
+                                                if is_dark {
+                                                    rgb(0x34d399).into()
+                                                } else {
+                                                    rgb(0x059669).into()
+                                                }
                                             } else {
                                                 cx.theme().muted_foreground
                                             })
-                                            .child(if tun_active { "Fake-IP / gVisor" } else { "未启用" }),
+                                            .child(if tun_active {
+                                                "Fake-IP / gVisor"
+                                            } else {
+                                                "未启用"
+                                            }),
                                     ),
                             )
                             .child(
@@ -1145,7 +1220,9 @@ impl ClashPanel {
                                     .color(rgb(0x10b981))
                                     .checked(tun_active)
                                     .disabled(!running)
-                                    .on_change(cx.listener(|this, on: &bool, _, _| this.send(Action::SetTun(*on)))),
+                                    .on_change(cx.listener(|this, on: &bool, _, _| {
+                                        this.send(Action::SetTun(*on))
+                                    })),
                             )
                             .on_click(cx.listener(|this, _, _, _| {
                                 if this.is_running() {
@@ -1178,11 +1255,23 @@ impl ClashPanel {
                                 h_flex()
                                     .gap_1()
                                     .items_center()
-                                    .child(Icon::new(IconName::ArrowUp).with_size(px(11.)).text_color(if is_dark { rgb(0x22d3ee) } else { rgb(0x0284c7) }))
+                                    .child(
+                                        Icon::new(IconName::ArrowUp).with_size(px(11.)).text_color(
+                                            if is_dark {
+                                                rgb(0x22d3ee)
+                                            } else {
+                                                rgb(0x0284c7)
+                                            },
+                                        ),
+                                    )
                                     .child(
                                         div()
                                             .font_semibold()
-                                            .text_color(if is_dark { rgb(0x22d3ee) } else { rgb(0x0284c7) })
+                                            .text_color(if is_dark {
+                                                rgb(0x22d3ee)
+                                            } else {
+                                                rgb(0x0284c7)
+                                            })
                                             .child(SharedString::from(up_display.to_string())),
                                     ),
                             )
@@ -1191,11 +1280,23 @@ impl ClashPanel {
                                 h_flex()
                                     .gap_1()
                                     .items_center()
-                                    .child(Icon::new(IconName::ArrowDown).with_size(px(11.)).text_color(if is_dark { rgb(0x34d399) } else { rgb(0x059669) }))
+                                    .child(
+                                        Icon::new(IconName::ArrowDown)
+                                            .with_size(px(11.))
+                                            .text_color(if is_dark {
+                                                rgb(0x34d399)
+                                            } else {
+                                                rgb(0x059669)
+                                            }),
+                                    )
                                     .child(
                                         div()
                                             .font_semibold()
-                                            .text_color(if is_dark { rgb(0x34d399) } else { rgb(0x059669) })
+                                            .text_color(if is_dark {
+                                                rgb(0x34d399)
+                                            } else {
+                                                rgb(0x059669)
+                                            })
                                             .child(SharedString::from(down_display.to_string())),
                                     ),
                             ),
@@ -1222,17 +1323,23 @@ impl ClashPanel {
                                     .hover(|this| this.bg(palette::surface(cx)))
                             })
                             .cursor_pointer()
-                            .child(
-                                Icon::new(AppIcon::Zap)
-                                    .with_size(px(13.))
-                                    .text_color(if is_dark { rgb(0xfbbf24) } else { rgb(0xd97706) }),
-                            )
+                            .child(Icon::new(AppIcon::Zap).with_size(px(13.)).text_color(
+                                if is_dark {
+                                    rgb(0xfbbf24)
+                                } else {
+                                    rgb(0xd97706)
+                                },
+                            ))
                             .child(
                                 div()
                                     .text_xs()
                                     .font_medium()
                                     .text_color(cx.theme().foreground)
-                                    .child(if testing_all { "测速中..." } else { "一键测速" }),
+                                    .child(if testing_all {
+                                        "测速中..."
+                                    } else {
+                                        "一键测速"
+                                    }),
                             )
                             .on_click(cx.listener(|this, _, _, _| {
                                 if this.is_running() && !this.testing_all {
@@ -1250,7 +1357,11 @@ impl ClashPanel {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(if is_dark { palette::idle(cx) } else { cx.theme().muted_foreground })
+                                    .text_color(if is_dark {
+                                        palette::idle(cx)
+                                    } else {
+                                        cx.theme().muted_foreground
+                                    })
                                     .child("当前选定:"),
                             )
                             .child(
@@ -1260,10 +1371,18 @@ impl ClashPanel {
                                     .rounded(px(4.))
                                     .bg(palette::teal().opacity(0.15))
                                     .border_1()
-                                    .border_color(palette::teal().opacity(if is_dark { 0.4 } else { 0.55 }))
+                                    .border_color(palette::teal().opacity(if is_dark {
+                                        0.4
+                                    } else {
+                                        0.55
+                                    }))
                                     .text_xs()
                                     .font_semibold()
-                                    .text_color(if is_dark { palette::teal() } else { rgb(0x0d9488).into() })
+                                    .text_color(if is_dark {
+                                        palette::teal()
+                                    } else {
+                                        rgb(0x0d9488).into()
+                                    })
                                     .child(selected_node),
                             ),
                     ),
@@ -1405,25 +1524,29 @@ impl ClashPanel {
                     .items_center()
                     .text_xs()
                     .font_family("monospace")
-                    .text_color(if is_dark { palette::idle(cx) } else { cx.theme().muted_foreground })
+                    .text_color(if is_dark {
+                        palette::idle(cx)
+                    } else {
+                        cx.theme().muted_foreground
+                    })
                     .child(format!("Clash.Meta 端口: {port_text}"))
                     .child("•")
                     .child(
-                        h_flex()
-                            .gap_1()
-                            .items_center()
-                            .child("TUN:")
-                            .child(
-                                div()
-                                    .text_color(if self.state.tun {
-                                        if is_dark { palette::green() } else { rgb(0x059669).into() }
-                                    } else if is_dark {
-                                        palette::idle(cx)
+                        h_flex().gap_1().items_center().child("TUN:").child(
+                            div()
+                                .text_color(if self.state.tun {
+                                    if is_dark {
+                                        palette::green()
                                     } else {
-                                        cx.theme().muted_foreground
-                                    })
-                                    .child(tun_text),
-                            ),
+                                        rgb(0x059669).into()
+                                    }
+                                } else if is_dark {
+                                    palette::idle(cx)
+                                } else {
+                                    cx.theme().muted_foreground
+                                })
+                                .child(tun_text),
+                        ),
                     ),
             )
     }
@@ -1495,8 +1618,17 @@ impl ClashPanel {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(Icon::new(AppIcon::Activity).with_size(px(14.)).text_color(palette::green()))
-                            .child(div().text_sm().font_semibold().child(t!("clash.panel.connections_title")))
+                            .child(
+                                Icon::new(AppIcon::Activity)
+                                    .with_size(px(14.))
+                                    .text_color(palette::green()),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_semibold()
+                                    .child(t!("clash.panel.connections_title")),
+                            )
                             .child(
                                 div()
                                     .px_1p5()
@@ -1506,7 +1638,9 @@ impl ClashPanel {
                                     .font_family("monospace")
                                     .text_xs()
                                     .text_color(palette::green())
-                                    .child(SharedString::from(self.state.connections.len().to_string())),
+                                    .child(SharedString::from(
+                                        self.state.connections.len().to_string(),
+                                    )),
                             ),
                     )
                     .child(
@@ -1530,8 +1664,12 @@ impl ClashPanel {
                     .p_2()
                     .gap_1()
                     .children(if rows.is_empty() {
-                        vec![self
-                            .render_note(SharedString::from(t!("clash.panel.no_connections")), cx)]
+                        vec![
+                            self.render_note(
+                                SharedString::from(t!("clash.panel.no_connections")),
+                                cx,
+                            ),
+                        ]
                     } else {
                         rows
                     }),
@@ -1554,8 +1692,17 @@ impl ClashPanel {
                                 h_flex()
                                     .gap_1p5()
                                     .items_center()
-                                    .child(Icon::new(AppIcon::Terminal).with_size(px(13.)).text_color(palette::idle(cx)))
-                                    .child(div().text_xs().font_semibold().child(t!("clash.panel.logs_title"))),
+                                    .child(
+                                        Icon::new(AppIcon::Terminal)
+                                            .with_size(px(13.))
+                                            .text_color(palette::idle(cx)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_semibold()
+                                            .child(t!("clash.panel.logs_title")),
+                                    ),
                             )
                             .child(
                                 Button::new("clash-panel-clear-logs")
@@ -1575,7 +1722,12 @@ impl ClashPanel {
                             .pb_2()
                             .gap_0p5()
                             .children(if logs.is_empty() {
-                                vec![self.render_note(SharedString::from(t!("clash.panel.no_logs")), cx)]
+                                vec![
+                                    self.render_note(
+                                        SharedString::from(t!("clash.panel.no_logs")),
+                                        cx,
+                                    ),
+                                ]
                             } else {
                                 logs
                             }),
@@ -1605,7 +1757,10 @@ impl ClashPanel {
         };
         let is_dark = cx.theme().is_dark();
         h_flex()
-            .id(ElementId::Name(SharedString::from(format!("clash-connection-{}", id))))
+            .id(ElementId::Name(SharedString::from(format!(
+                "clash-connection-{}",
+                id
+            ))))
             .w_full()
             .min_w_0()
             .gap_3()
@@ -1614,8 +1769,16 @@ impl ClashPanel {
             .py_1p5()
             .rounded(cx.theme().radius)
             .border_1()
-            .border_color(if is_dark { cx.theme().border.opacity(0.35) } else { cx.theme().border })
-            .bg(if is_dark { palette::surface(cx) } else { cx.theme().background })
+            .border_color(if is_dark {
+                cx.theme().border.opacity(0.35)
+            } else {
+                cx.theme().border
+            })
+            .bg(if is_dark {
+                palette::surface(cx)
+            } else {
+                cx.theme().background
+            })
             .child(
                 div()
                     .flex_1()
@@ -1640,7 +1803,11 @@ impl ClashPanel {
                     .min_w_0()
                     .truncate()
                     .text_xs()
-                    .text_color(if is_dark { palette::idle(cx) } else { cx.theme().muted_foreground })
+                    .text_color(if is_dark {
+                        palette::idle(cx)
+                    } else {
+                        cx.theme().muted_foreground
+                    })
                     .child(SharedString::from(if connection.rule_payload.is_empty() {
                         connection.rule.to_string()
                     } else {
@@ -1653,7 +1820,11 @@ impl ClashPanel {
                     .min_w_0()
                     .truncate()
                     .text_xs()
-                    .text_color(if is_dark { palette::teal() } else { rgb(0x0d9488).into() })
+                    .text_color(if is_dark {
+                        palette::teal()
+                    } else {
+                        rgb(0x0d9488).into()
+                    })
                     .child(chain),
             )
             .child(
@@ -1662,7 +1833,11 @@ impl ClashPanel {
                     .text_right()
                     .font_family("monospace")
                     .text_xs()
-                    .text_color(if is_dark { palette::green() } else { rgb(0x059669).into() })
+                    .text_color(if is_dark {
+                        palette::green()
+                    } else {
+                        rgb(0x059669).into()
+                    })
                     .child(SharedString::from(format!(
                         "↑ {} ↓ {}",
                         format_bytes(connection.upload),
@@ -1697,10 +1872,9 @@ impl ClashPanel {
     fn render_config(&self, cx: &mut Context<Self>) -> AnyElement {
         let body = self.subscription.config_yaml.to_string();
         match body.trim().is_empty() {
-            true => self.render_plain(self.render_note(
-                SharedString::from(t!("clash.panel.config_empty")),
-                cx,
-            )),
+            true => self.render_plain(
+                self.render_note(SharedString::from(t!("clash.panel.config_empty")), cx),
+            ),
             false => v_flex()
                 .id("clash-panel-config")
                 .flex_1()
@@ -1807,7 +1981,6 @@ impl ClashPanel {
 
         DropdownButton::new("clash-shell-copy-split")
             .button(button)
-            .menu_accessibility_label(t!("clash.panel.shell_hint_menu"))
             .dropdown_menu_with_anchor(Anchor::TopLeft, move |mut menu, _, _| {
                 for shell in ShellKind::ALL {
                     let panel = panel.clone();
@@ -1847,10 +2020,9 @@ impl ClashPanel {
             let path = dir.join(file_name);
             let result = LocalFileService::write_text(path.clone(), body).await;
             this.update_in(cx, |_, window, cx| match result {
-                Ok(()) => window.push_notification(
-                    t!("clash.panel.exported", path => path.display()),
-                    cx,
-                ),
+                Ok(()) => {
+                    window.push_notification(t!("clash.panel.exported", path => path.display()), cx)
+                }
                 Err(error) => window.push_notification(
                     t!("clash.panel.export_failed", error => format!("{error:#}")),
                     cx,
@@ -1910,10 +2082,12 @@ impl ClashPanel {
                     .flex_1()
                     .min_h_0()
                     .child(self.render_node_toolbar(cx))
-                    .child(self.render_plain(self.render_note(
-                        SharedString::from(t!("clash.panel.no_matching_nodes")),
-                        cx,
-                    )))
+                    .child(self.render_plain(
+                        self.render_note(
+                            SharedString::from(t!("clash.panel.no_matching_nodes")),
+                            cx,
+                        ),
+                    ))
                     .into_any_element();
             }
             return self.render_plain(match self.state.live.is_some() || self.outline.is_some() {
@@ -1929,15 +2103,14 @@ impl ClashPanel {
         let Some(live) = &self.state.live else {
             return Vec::new();
         };
-        let active_group_name = self.active_group.as_ref().or_else(|| {
-            live.groups.first().map(|g| &g.name)
-        });
+        let active_group_name = self
+            .active_group
+            .as_ref()
+            .or_else(|| live.groups.first().map(|g| &g.name));
         live.groups
             .iter()
             .enumerate()
-            .filter(|(_, group)| {
-                active_group_name.is_none_or(|active| active == &group.name)
-            })
+            .filter(|(_, group)| active_group_name.is_none_or(|active| active == &group.name))
             .flat_map(|(group, live_group)| {
                 live_group
                     .nodes
@@ -1953,9 +2126,10 @@ impl ClashPanel {
         let Some(outline) = &self.outline else {
             return Vec::new();
         };
-        let active_group_name = self.active_group.as_ref().or_else(|| {
-            outline.groups.first().map(|g| &g.name)
-        });
+        let active_group_name = self
+            .active_group
+            .as_ref()
+            .or_else(|| outline.groups.first().map(|g| &g.name));
         let mut indices: Vec<(usize, usize)> = Vec::new();
         for (group_idx, group) in outline.groups.iter().enumerate() {
             if active_group_name.is_some_and(|active| active != &group.name) {
@@ -1987,7 +2161,10 @@ impl ClashPanel {
             return false;
         }
         if self.selected_protocol != "ALL"
-            && !node.kind.to_lowercase().contains(&self.selected_protocol.to_lowercase())
+            && !node
+                .kind
+                .to_lowercase()
+                .contains(&self.selected_protocol.to_lowercase())
         {
             return false;
         }
@@ -2002,7 +2179,9 @@ impl ClashPanel {
             _ => ["", "", ""],
         };
         let name = node.name.to_lowercase();
-        region.iter().any(|mark| !mark.is_empty() && name.contains(&mark.to_lowercase()))
+        region
+            .iter()
+            .any(|mark| !mark.is_empty() && name.contains(&mark.to_lowercase()))
     }
 
     fn render_node_grid(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2013,10 +2192,8 @@ impl ClashPanel {
             self.outline_card_indices()
         };
 
-        let rows: Vec<Vec<(usize, usize)>> = indices
-            .chunks(3)
-            .map(|chunk| chunk.to_vec())
-            .collect();
+        let rows: Vec<Vec<(usize, usize)>> =
+            indices.chunks(3).map(|chunk| chunk.to_vec()).collect();
         let sizes = Rc::new(
             rows.iter()
                 .map(|_| size(px(0.), CLASH_NODE_CARD_HEIGHT))
@@ -2039,34 +2216,41 @@ impl ClashPanel {
                     .py_3()
                     .relative()
                     .child(
-                        v_virtual_list(cx.entity(), "clash-proxy-grid-rows", sizes, move |this, visible, _, cx| {
-                            visible
-                                .map(|ix| {
-                                    let row = rows_for_list.get(ix).cloned().unwrap_or_default();
-                                    let mut card_elements: Vec<AnyElement> = row
-                                        .into_iter()
-                                        .map(|(group, node)| {
-                                            if is_live {
-                                                this.render_live_card(group, node, cx)
-                                            } else {
-                                                this.render_outline_card(group, node, cx)
-                                            }
-                                        })
-                                        .collect();
-                                    while card_elements.len() < 3 {
-                                        card_elements.push(div().flex_1().min_w_0().into_any_element());
-                                    }
-                                    h_flex()
-                                        .id(("clash-proxy-grid-row", ix))
-                                        .w_full()
-                                        .h(CLASH_NODE_CARD_HEIGHT)
-                                        .flex_shrink_0()
-                                        .gap_2p5()
-                                        .children(card_elements)
-                                        .into_any_element()
-                                })
-                                .collect()
-                        })
+                        v_virtual_list(
+                            cx.entity(),
+                            "clash-proxy-grid-rows",
+                            sizes,
+                            move |this, visible, _, cx| {
+                                visible
+                                    .map(|ix| {
+                                        let row =
+                                            rows_for_list.get(ix).cloned().unwrap_or_default();
+                                        let mut card_elements: Vec<AnyElement> = row
+                                            .into_iter()
+                                            .map(|(group, node)| {
+                                                if is_live {
+                                                    this.render_live_card(group, node, cx)
+                                                } else {
+                                                    this.render_outline_card(group, node, cx)
+                                                }
+                                            })
+                                            .collect();
+                                        while card_elements.len() < 3 {
+                                            card_elements
+                                                .push(div().flex_1().min_w_0().into_any_element());
+                                        }
+                                        h_flex()
+                                            .id(("clash-proxy-grid-row", ix))
+                                            .w_full()
+                                            .h(CLASH_NODE_CARD_HEIGHT)
+                                            .flex_shrink_0()
+                                            .gap_2p5()
+                                            .children(card_elements)
+                                            .into_any_element()
+                                    })
+                                    .collect()
+                            },
+                        )
                         .flex_1()
                         .min_h_0()
                         .gap(px(10.))
@@ -2078,7 +2262,12 @@ impl ClashPanel {
     }
 
     fn render_live_card(&self, group: usize, node: usize, cx: &mut Context<Self>) -> AnyElement {
-        let Some(live_group) = self.state.live.as_ref().and_then(|live| live.groups.get(group)) else {
+        let Some(live_group) = self
+            .state
+            .live
+            .as_ref()
+            .and_then(|live| live.groups.get(group))
+        else {
             return div().h(CLASH_NODE_CARD_HEIGHT).into_any_element();
         };
         let Some(live_node) = live_group.nodes.get(node) else {
@@ -2132,7 +2321,12 @@ impl ClashPanel {
         div().flex_1().min_w_0().child(card).into_any_element()
     }
 
-    fn render_outline_card(&self, group: usize, node: usize, _cx: &mut Context<Self>) -> AnyElement {
+    fn render_outline_card(
+        &self,
+        group: usize,
+        node: usize,
+        _cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(outline) = &self.outline else {
             return div().h(CLASH_NODE_CARD_HEIGHT).into_any_element();
         };
@@ -2247,7 +2441,11 @@ impl ClashPanel {
                             .px_1p5()
                             .py_0p5()
                             .rounded(px(4.))
-                            .bg(if is_dark { palette::recessed(cx) } else { rgb(0xf1f5f9).into() })
+                            .bg(if is_dark {
+                                palette::recessed(cx)
+                            } else {
+                                rgb(0xf1f5f9).into()
+                            })
                             .font_family("monospace")
                             .text_xs()
                             .text_color(if is_selected {
@@ -2288,9 +2486,13 @@ impl ClashPanel {
                     }))
                     .when(selected, |button| {
                         if is_dark {
-                            button.bg(palette::surface_strong(cx)).text_color(cx.theme().foreground)
+                            button
+                                .bg(palette::surface_strong(cx))
+                                .text_color(cx.theme().foreground)
                         } else {
-                            button.bg(cx.theme().secondary).text_color(cx.theme().secondary_foreground)
+                            button
+                                .bg(cx.theme().secondary)
+                                .text_color(cx.theme().secondary_foreground)
                         }
                     })
                     .on_click(move |_, _, cx| {
@@ -2325,9 +2527,13 @@ impl ClashPanel {
                     .label(label)
                     .when(selected, |button| {
                         if is_dark {
-                            button.bg(palette::surface_strong(cx)).text_color(cx.theme().foreground)
+                            button
+                                .bg(palette::surface_strong(cx))
+                                .text_color(cx.theme().foreground)
                         } else {
-                            button.bg(cx.theme().secondary).text_color(cx.theme().secondary_foreground)
+                            button
+                                .bg(cx.theme().secondary)
+                                .text_color(cx.theme().secondary_foreground)
                         }
                     })
                     .on_click(move |_, _, cx| {
@@ -2377,18 +2583,19 @@ impl ClashPanel {
                     .justify_between()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .bg(if is_dark { palette::recessed(cx) } else { palette::surface(cx) })
+                    .bg(if is_dark {
+                        palette::recessed(cx)
+                    } else {
+                        palette::surface(cx)
+                    })
                     .child(
-                        h_flex()
-                            .flex_1()
-                            .max_w(px(380.))
-                            .child(
-                                Input::new(&self.node_search)
-                                    .small()
-                                    .cleanable(true)
-                                    .prefix(Icon::new(IconName::Search).with_size(px(13.)))
-                                    .w_full(),
-                            ),
+                        h_flex().flex_1().max_w(px(380.)).child(
+                            Input::new(&self.node_search)
+                                .small()
+                                .cleanable(true)
+                                .prefix(Icon::new(IconName::Search).with_size(px(13.)))
+                                .w_full(),
+                        ),
                     )
                     .child(
                         h_flex()
@@ -2401,7 +2608,11 @@ impl ClashPanel {
                                     .rounded(px(6.))
                                     .border_1()
                                     .border_color(cx.theme().border.opacity(0.5))
-                                    .bg(if is_dark { palette::surface(cx) } else { cx.theme().background })
+                                    .bg(if is_dark {
+                                        palette::surface(cx)
+                                    } else {
+                                        cx.theme().background
+                                    })
                                     .children(region_chips),
                             )
                             .child(
@@ -2411,7 +2622,11 @@ impl ClashPanel {
                                     .rounded(px(6.))
                                     .border_1()
                                     .border_color(cx.theme().border.opacity(0.5))
-                                    .bg(if is_dark { palette::surface(cx) } else { cx.theme().background })
+                                    .bg(if is_dark {
+                                        palette::surface(cx)
+                                    } else {
+                                        cx.theme().background
+                                    })
                                     .children(protocol_chips),
                             ),
                     ),
@@ -2475,7 +2690,10 @@ impl ClashPanel {
             }
             NodeRow::Member { group, node } => {
                 let live_group = live.and_then(|live| live.groups.get(group));
-                match (live_group, live_group.and_then(|group| group.nodes.get(node))) {
+                match (
+                    live_group,
+                    live_group.and_then(|group| group.nodes.get(node)),
+                ) {
                     (Some(group), Some(node)) => self.render_member(ix, group, node, cx),
                     _ => div().h(ROW_HEIGHT).into_any_element(),
                 }
@@ -2532,39 +2750,47 @@ impl ClashPanel {
     #[allow(dead_code)]
     fn render_live_group(&self, ix: usize, live_group: &LiveGroup, cx: &App) -> AnyElement {
         row_shell(GROUP_ROW_HEIGHT, ("clash-node-group", ix), cx)
-            .child(TableRow::new().xsmall().h_full().w_full().min_w_0().children([
-                cell(CHECK_WIDTH),
-                wide_cell().child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_sm()
-                        .font_semibold()
-                        .child(live_group.name.clone()),
-                ),
-                cell(KIND_WIDTH).child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(palette::idle(cx))
-                        .child(live_group.kind.clone()),
-                ),
-                cell(TAIL_WIDTH)
-                    .text_right()
-                    .when_some(live_group.now.clone(), |this, now| {
-                        this.child(
+            .child(
+                TableRow::new()
+                    .xsmall()
+                    .h_full()
+                    .w_full()
+                    .min_w_0()
+                    .children([
+                        cell(CHECK_WIDTH),
+                        wide_cell().child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_sm()
+                                .font_semibold()
+                                .child(live_group.name.clone()),
+                        ),
+                        cell(KIND_WIDTH).child(
                             div()
                                 .min_w_0()
                                 .truncate()
                                 .text_xs()
-                                .text_color(palette::teal())
-                                .child(SharedString::from(
-                                    t!("clash.panel.current", name => now),
-                                )),
-                        )
-                    }),
-            ]))
+                                .text_color(palette::idle(cx))
+                                .child(live_group.kind.clone()),
+                        ),
+                        cell(TAIL_WIDTH).text_right().when_some(
+                            live_group.now.clone(),
+                            |this, now| {
+                                this.child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_xs()
+                                        .text_color(palette::teal())
+                                        .child(SharedString::from(
+                                            t!("clash.panel.current", name => now),
+                                        )),
+                                )
+                            },
+                        ),
+                    ]),
+            )
             .into_any_element()
     }
 
@@ -2603,60 +2829,67 @@ impl ClashPanel {
                             .ok();
                     })
             })
-            .child(TableRow::new().xsmall().h_full().w_full().min_w_0().children([
-                self.check_cell(selected),
-                wide_cell().child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_sm()
-                        .child(live_node.name.clone()),
-                ),
-                cell(KIND_WIDTH).child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(palette::idle(cx))
-                        .child(live_node.kind.clone()),
-                ),
-                cell(TAIL_WIDTH).child(
-                    h_flex()
-                        .w_full()
-                        .justify_between()
-                        .items_center()
-                        .child(
+            .child(
+                TableRow::new()
+                    .xsmall()
+                    .h_full()
+                    .w_full()
+                    .min_w_0()
+                    .children([
+                        self.check_cell(selected),
+                        wide_cell().child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_sm()
+                                .child(live_node.name.clone()),
+                        ),
+                        cell(KIND_WIDTH).child(
                             div()
                                 .min_w_0()
                                 .truncate()
                                 .text_xs()
-                                .text_color(tone)
-                                .child(delay),
-                        )
-                        .child(
-                            Button::new(("clash-node-test", ix))
-                                .ghost()
-                                .xsmall()
-                                .icon(Icon::new(if testing {
-                                    IconName::LoaderCircle
-                                } else {
-                                    IconName::RotateCw
-                                }))
-                                .tooltip(t!("clash.panel.test_node"))
-                                .disabled(testing || !selectable)
-                                .on_click(move |_, _, cx| {
-                                    cx.stop_propagation();
-                                    let test_node = test_node.clone();
-                                    test_panel
-                                        .update(cx, |panel, _| {
-                                            panel.testing_node = Some(test_node.clone());
-                                            panel.send(Action::TestNodeDelay(test_node));
-                                        })
-                                        .ok();
-                                }),
+                                .text_color(palette::idle(cx))
+                                .child(live_node.kind.clone()),
                         ),
-                ),
-            ]))
+                        cell(TAIL_WIDTH).child(
+                            h_flex()
+                                .w_full()
+                                .justify_between()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_xs()
+                                        .text_color(tone)
+                                        .child(delay),
+                                )
+                                .child(
+                                    Button::new(("clash-node-test", ix))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(Icon::new(if testing {
+                                            IconName::LoaderCircle
+                                        } else {
+                                            IconName::RotateCw
+                                        }))
+                                        .tooltip(t!("clash.panel.test_node"))
+                                        .disabled(testing || !selectable)
+                                        .on_click(move |_, _, cx| {
+                                            cx.stop_propagation();
+                                            let test_node = test_node.clone();
+                                            test_panel
+                                                .update(cx, |panel, _| {
+                                                    panel.testing_node = Some(test_node.clone());
+                                                    panel.send(Action::TestNodeDelay(test_node));
+                                                })
+                                                .ok();
+                                        }),
+                                ),
+                        ),
+                    ]),
+            )
             .into_any_element()
     }
 
@@ -2665,36 +2898,43 @@ impl ClashPanel {
     #[allow(dead_code)]
     fn render_static_group(&self, ix: usize, summary: &GroupSummary, cx: &App) -> AnyElement {
         row_shell(GROUP_ROW_HEIGHT, ("clash-node-static-group", ix), cx)
-            .child(TableRow::new().xsmall().h_full().w_full().min_w_0().children([
-                cell(CHECK_WIDTH),
-                wide_cell().child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_sm()
-                        .font_semibold()
-                        .child(summary.name.clone()),
-                ),
-                cell(KIND_WIDTH).child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(palette::idle(cx))
-                        .child(summary.kind.clone()),
-                ),
-                cell(TAIL_WIDTH).text_right().child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(palette::idle(cx))
-                        .child(SharedString::from(t!(
-                            "clash.panel.members_count",
-                            count => summary.members.len(),
-                        ))),
-                ),
-            ]))
+            .child(
+                TableRow::new()
+                    .xsmall()
+                    .h_full()
+                    .w_full()
+                    .min_w_0()
+                    .children([
+                        cell(CHECK_WIDTH),
+                        wide_cell().child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_sm()
+                                .font_semibold()
+                                .child(summary.name.clone()),
+                        ),
+                        cell(KIND_WIDTH).child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(palette::idle(cx))
+                                .child(summary.kind.clone()),
+                        ),
+                        cell(TAIL_WIDTH).text_right().child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(palette::idle(cx))
+                                .child(SharedString::from(t!(
+                                    "clash.panel.members_count",
+                                    count => summary.members.len(),
+                                ))),
+                        ),
+                    ]),
+            )
             .into_any_element()
     }
 
@@ -2702,32 +2942,39 @@ impl ClashPanel {
     #[allow(dead_code)]
     fn render_plain_node(&self, ix: usize, summary: &NodeSummary, cx: &App) -> AnyElement {
         row_shell(ROW_HEIGHT, ("clash-node-plain", ix), cx)
-            .child(TableRow::new().xsmall().h_full().w_full().min_w_0().children([
-                cell(CHECK_WIDTH),
-                wide_cell().child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_sm()
-                        .child(summary.name.clone()),
-                ),
-                cell(KIND_WIDTH).child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(palette::idle(cx))
-                        .child(summary.kind.clone()),
-                ),
-                cell(TAIL_WIDTH).child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(palette::idle(cx))
-                        .child(summary.address()),
-                ),
-            ]))
+            .child(
+                TableRow::new()
+                    .xsmall()
+                    .h_full()
+                    .w_full()
+                    .min_w_0()
+                    .children([
+                        cell(CHECK_WIDTH),
+                        wide_cell().child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_sm()
+                                .child(summary.name.clone()),
+                        ),
+                        cell(KIND_WIDTH).child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(palette::idle(cx))
+                                .child(summary.kind.clone()),
+                        ),
+                        cell(TAIL_WIDTH).child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(palette::idle(cx))
+                                .child(summary.address()),
+                        ),
+                    ]),
+            )
             .into_any_element()
     }
 
@@ -2740,10 +2987,9 @@ impl ClashPanel {
             return self.render_plain(self.render_unreadable(cx));
         };
         if rules.is_empty() {
-            return self.render_plain(self.render_note(
-                SharedString::from(t!("clash.panel.no_rules")),
-                cx,
-            ));
+            return self.render_plain(
+                self.render_note(SharedString::from(t!("clash.panel.no_rules")), cx),
+            );
         }
 
         let sizes = self.rule_sizes.clone();
@@ -2784,7 +3030,9 @@ impl ClashPanel {
                 let payload = rule.payload.to_lowercase();
                 let matched = match rule.kind.as_ref() {
                     "DOMAIN" => domain == payload,
-                    "DOMAIN-SUFFIX" => domain == payload || domain.ends_with(&format!(".{payload}")),
+                    "DOMAIN-SUFFIX" => {
+                        domain == payload || domain.ends_with(&format!(".{payload}"))
+                    }
                     "DOMAIN-KEYWORD" => domain.contains(&payload),
                     "MATCH" => true,
                     // GEO/IP 与进程规则需要内核上下文；只在有明确域名匹配时
@@ -2867,20 +3115,34 @@ impl ClashPanel {
                             h_flex()
                                 .gap_2()
                                 .items_center()
-                                .child(Icon::new(IconName::Check).with_size(px(14.)).text_color(palette::teal()))
+                                .child(
+                                    Icon::new(IconName::Check)
+                                        .with_size(px(14.))
+                                        .text_color(palette::teal()),
+                                )
                                 .child(
                                     h_flex()
                                         .gap_1p5()
                                         .items_center()
-                                        .child(div().text_color(palette::idle(cx)).child("命中规则:"))
-                                        .child(div().font_semibold().font_family("monospace").child(rule.kind.clone()))
-                                        .child(div().font_family("monospace").text_color(palette::teal()).child(
-                                            if rule.payload.is_empty() {
-                                                SharedString::from("MATCH (全量匹配)")
-                                            } else {
-                                                rule.payload.clone()
-                                            }
-                                        )),
+                                        .child(
+                                            div().text_color(palette::idle(cx)).child("命中规则:"),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_semibold()
+                                                .font_family("monospace")
+                                                .child(rule.kind.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_family("monospace")
+                                                .text_color(palette::teal())
+                                                .child(if rule.payload.is_empty() {
+                                                    SharedString::from("MATCH (全量匹配)")
+                                                } else {
+                                                    rule.payload.clone()
+                                                }),
+                                        ),
                                 ),
                         )
                         .child(
@@ -2910,16 +3172,13 @@ impl ClashPanel {
                     .items_center()
                     .justify_between()
                     .child(
-                        h_flex()
-                            .flex_1()
-                            .max_w(px(360.))
-                            .child(
-                                Input::new(&self.rule_search)
-                                    .small()
-                                    .cleanable(true)
-                                    .prefix(Icon::new(IconName::Search).with_size(px(13.)))
-                                    .w_full(),
-                            ),
+                        h_flex().flex_1().max_w(px(360.)).child(
+                            Input::new(&self.rule_search)
+                                .small()
+                                .cleanable(true)
+                                .prefix(Icon::new(IconName::Search).with_size(px(13.)))
+                                .w_full(),
+                        ),
                     )
                     .child(
                         h_flex()
@@ -2951,7 +3210,10 @@ impl ClashPanel {
                     .text_color(palette::idle(cx))
                     .child(TableRow::new().h(HEADER_ROW_HEIGHT).children([
                         head_cell(SharedString::from("#"), RULE_INDEX_WIDTH),
-                        head_cell(SharedString::from(t!("clash.panel.col_kind")), RULE_KIND_WIDTH),
+                        head_cell(
+                            SharedString::from(t!("clash.panel.col_kind")),
+                            RULE_KIND_WIDTH,
+                        ),
                         wide_head(SharedString::from(t!("clash.panel.col_payload"))),
                         head_cell(SharedString::from(t!("clash.panel.col_target")), TAIL_WIDTH),
                     ])),
@@ -2987,31 +3249,38 @@ impl ClashPanel {
         };
 
         row_shell(ROW_HEIGHT, ("clash-rule", ix), cx)
-            .child(TableRow::new().xsmall().h_full().w_full().min_w_0().children([
-                cell(RULE_INDEX_WIDTH).child(
-                    div()
-                        .w_full()
-                        .font_family("monospace")
-                        .text_xs()
-                        .text_color(palette::idle(cx))
-                        .child(format!("{}", ix + 1)),
-                ),
-                cell(RULE_KIND_WIDTH).child(
-                    div()
-                        .px_1p5()
-                        .py_0p5()
-                        .rounded(px(4.))
-                        .bg(cx.theme().secondary.opacity(0.6))
-                        .border_1()
-                        .border_color(cx.theme().border.opacity(0.4))
-                        .font_family("monospace")
-                        .text_xs()
-                        .font_semibold()
-                        .child(rule.kind.clone()),
-                ),
-                wide_cell().child(payload_node),
-                cell(TAIL_WIDTH).child(self.render_target_badge(&rule.target, cx)),
-            ]))
+            .child(
+                TableRow::new()
+                    .xsmall()
+                    .h_full()
+                    .w_full()
+                    .min_w_0()
+                    .children([
+                        cell(RULE_INDEX_WIDTH).child(
+                            div()
+                                .w_full()
+                                .font_family("monospace")
+                                .text_xs()
+                                .text_color(palette::idle(cx))
+                                .child(format!("{}", ix + 1)),
+                        ),
+                        cell(RULE_KIND_WIDTH).child(
+                            div()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded(px(4.))
+                                .bg(cx.theme().secondary.opacity(0.6))
+                                .border_1()
+                                .border_color(cx.theme().border.opacity(0.4))
+                                .font_family("monospace")
+                                .text_xs()
+                                .font_semibold()
+                                .child(rule.kind.clone()),
+                        ),
+                        wide_cell().child(payload_node),
+                        cell(TAIL_WIDTH).child(self.render_target_badge(&rule.target, cx)),
+                    ]),
+            )
             .into_any_element()
     }
 
@@ -3046,7 +3315,10 @@ impl ClashPanel {
                     rgb(0xb91c1c).into(),
                 )
             }
-        } else if target.contains("节点") || target.contains("PROXY") || target.eq_ignore_ascii_case("GLOBAL") {
+        } else if target.contains("节点")
+            || target.contains("PROXY")
+            || target.eq_ignore_ascii_case("GLOBAL")
+        {
             if is_dark {
                 (
                     gpui_kit::rgba(0x06b6d426).into(),
@@ -3161,7 +3433,12 @@ impl BasePanel for ClashPanel {
         "ClashPanel"
     }
 
-    fn on_added_to(&mut self, _: WeakEntity<TabGroup>, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_added_to(
+        &mut self,
+        _: WeakEntity<TabGroup>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         cx.focus_self(window);
         cx.notify();
     }
@@ -3279,7 +3556,8 @@ mod tests {
         let mut panel = None;
         let (_, cx) = cx.add_window_view(|window, cx| {
             let dock_area = cx.new(|cx| DockArea::new("clash-panel-test-dock", None, window, cx));
-            let created = cx.new(|cx| ClashPanel::new(subscription(), dock_area.downgrade(), window, cx));
+            let created =
+                cx.new(|cx| ClashPanel::new(subscription(), dock_area.downgrade(), window, cx));
             panel = Some(created.clone());
             Root::new(created, window, cx)
         });
@@ -3297,7 +3575,9 @@ mod tests {
                 now: Some(SharedString::from(format!("节点 {group:02}-00"))),
                 nodes: (0..per_group)
                     .map(|node| LiveNode {
-                        name: SharedString::from(format!("节点 {group:02}-{node:02}-机场命名的那一串")),
+                        name: SharedString::from(format!(
+                            "节点 {group:02}-{node:02}-机场命名的那一串"
+                        )),
                         kind: "Shadowsocks".into(),
                         server: SharedString::from(format!("s{node}.example.com")),
                         port: Some(SharedString::from("443")),
@@ -3400,8 +3680,14 @@ mod tests {
             assert_eq!(delay_badge(&node(Some(500), true), cx).1, palette::amber());
             assert_eq!(delay_badge(&node(Some(2000), true), cx).1, palette::coral());
             // 测了不通与还没测过是两回事。
-            assert_eq!(delay_badge(&node(None, true), cx).0.as_ref(), t!("clash.panel.delay_timeout"));
-            assert_eq!(delay_badge(&node(None, false), cx).0.as_ref(), t!("clash.panel.delay_untested"));
+            assert_eq!(
+                delay_badge(&node(None, true), cx).0.as_ref(),
+                t!("clash.panel.delay_timeout")
+            );
+            assert_eq!(
+                delay_badge(&node(None, false), cx).0.as_ref(),
+                t!("clash.panel.delay_untested")
+            );
         });
     }
 
@@ -3498,7 +3784,12 @@ mod tests {
                 ]
             );
             assert_eq!(panel.rule_sizes.len(), 5);
-            assert!(panel.rule_sizes.iter().all(|size| size.height == ROW_HEIGHT));
+            assert!(
+                panel
+                    .rule_sizes
+                    .iter()
+                    .all(|size| size.height == ROW_HEIGHT)
+            );
         });
     }
 
@@ -3521,8 +3812,12 @@ mod tests {
         // 实例收掉了：摆回正文那一份，并把两条列表滚到半中间。
         panel.update_in(cx, |panel, window, cx| {
             panel.on_state(Arc::new(RuntimeState::default()), window, cx);
-            panel.node_scroll.set_offset(gpui_kit::point(px(0.), px(120.)));
-            panel.rule_scroll.set_offset(gpui_kit::point(px(0.), px(120.)));
+            panel
+                .node_scroll
+                .set_offset(gpui_kit::point(px(0.), px(120.)));
+            panel
+                .rule_scroll
+                .set_offset(gpui_kit::point(px(0.), px(120.)));
             panel.show(subscription(), window, cx);
         });
 
@@ -3617,12 +3912,17 @@ mod tests {
         let port = 7890u16;
         let target = format!("127.0.0.1:{port}");
         #[cfg(target_os = "windows")]
-        let expect = format!("$env:http_proxy=\"http://{target}\"; $env:https_proxy=\"http://{target}\"");
+        let expect =
+            format!("$env:http_proxy=\"http://{target}\"; $env:https_proxy=\"http://{target}\"");
         #[cfg(not(target_os = "windows"))]
         let expect = format!(
             "export http_proxy=http://{target} https_proxy=http://{target} all_proxy=socks5://{target}"
         );
-        assert_eq!(text.as_deref(), Some(expect.as_str()), "剪贴板上是当前系统那一版");
+        assert_eq!(
+            text.as_deref(),
+            Some(expect.as_str()),
+            "剪贴板上是当前系统那一版"
+        );
     }
 
     /// 这块面板一帧要多少 CPU。**平时不跑**（`#[ignore]`），要量的时候：
@@ -3674,12 +3974,15 @@ mod tests {
             ("中", 4, 20, 200),
             ("大", 10, 50, 5000),
         ];
-        for (label, groups, per_group, rules) in sizes
-        {
+        for (label, groups, per_group, rules) in sizes {
             for tab in [0usize, 1] {
                 panel.update_in(cx, |panel, window, cx| {
                     panel.tab = tab;
-                    panel.on_state(Arc::new(loaded_state(groups, per_group, rules, 0)), window, cx);
+                    panel.on_state(
+                        Arc::new(loaded_state(groups, per_group, rules, 0)),
+                        window,
+                        cx,
+                    );
                 });
                 // 预热两帧：第一帧建元素状态，行排版缓存还是冷的。
                 for _ in 0..2 {

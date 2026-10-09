@@ -422,9 +422,7 @@ pub(crate) fn link_stats_group(
                 .id("link-latency")
                 .flex_shrink_0()
                 .child(cell("RTT", latency_text, latency_tone, LATENCY_WIDTH, cx))
-                .tooltip(move |window, cx| {
-                    Tooltip::new(latency_tip.clone()).build(window, cx)
-                }),
+                .tooltip(move |window, cx| Tooltip::new(latency_tip.clone()).build(window, cx)),
         )
         .child(
             div()
@@ -441,9 +439,7 @@ pub(crate) fn link_stats_group(
                 .id("link-upload")
                 .flex_shrink_0()
                 .child(cell("↑", up, cx.theme().foreground, RATE_WIDTH, cx))
-                .tooltip(move |window, cx| {
-                    Tooltip::new(rate_tip.clone()).build(window, cx)
-                }),
+                .tooltip(move |window, cx| Tooltip::new(rate_tip.clone()).build(window, cx)),
         )
         .into_any_element()
 }

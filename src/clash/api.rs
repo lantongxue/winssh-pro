@@ -288,8 +288,7 @@ async fn read(response: reqwest::Response, path: &str) -> Result<Value> {
         // PUT / PATCH 成功时回的是 204 空正文。
         return Ok(Value::Null);
     }
-    serde_json::from_str(&body)
-        .with_context(|| t!("clash.api.bad_json", path => path).to_string())
+    serde_json::from_str(&body).with_context(|| t!("clash.api.bad_json", path => path).to_string())
 }
 
 /// 路径里的那一格：名字里有中文、空格、斜杠都可能（节点名什么都有），

@@ -1690,8 +1690,8 @@ clash.tun.helper_caption_macos:
   en: "A launchd daemon that creates the virtual NIC on demand. Remove it to stop using TUN entirely."
   zh-CN: "常驻的 launchd 守护：拨 TUN 时替我们建虚拟网卡。彻底告别 TUN 时再卸。"
 clash.tun.helper_caption_windows:
-  en: "On Windows the helper is started on demand and exits with the app — nothing to install or remove here."
-  zh-CN: "Windows 上的助手是随用随起的，应用退出它也收走 —— 没有要装或要卸的东西。"
+  en: "A Windows system service (SCM) that creates the virtual NIC on demand. Installed once; remove it to stop using TUN entirely."
+  zh-CN: "常驻的 Windows 系统服务（SCM）：拨 TUN 时替我们建虚拟网卡。装一次，之后都在；彻底告别 TUN 时再卸。"
 clash.tun.helper_caption_linux:
   en: "Linux helper is not available yet."
   zh-CN: "Linux 上的助手还没接好，这一档用不了。"
@@ -2041,9 +2041,6 @@ clash.panel.start_failed:
 clash.panel.shell_hint:
   en: Terminal proxy
   zh-CN: 终端代理
-clash.panel.shell_hint_menu:
-  en: Choose a shell
-  zh-CN: 挑一种终端
 clash.panel.shell_copy:
   en: Copy
   zh-CN: 复制

@@ -32,9 +32,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use rust_i18n::t;
-use zmodem2::{
-    Action, Error as ZmodemError, Event, FileInfo, Position, Receiver, Sender,
-};
+use zmodem2::{Action, Error as ZmodemError, Event, FileInfo, Position, Receiver, Sender};
 
 use crate::service::unique_local_path;
 
@@ -497,9 +495,7 @@ impl Session {
                             .file
                             .write_all(bytes)
                             .map(|()| dest.written += n as u64),
-                        None => Err(io::Error::other(
-                            t!("zmodem.no_open_file").to_string(),
-                        )),
+                        None => Err(io::Error::other(t!("zmodem.no_open_file").to_string())),
                     };
                     match written {
                         Ok(()) => {
@@ -613,7 +609,11 @@ impl Session {
                 None => (String::new(), 0, None),
             },
             Direction::Send => match &self.sending {
-                Some(sending) => (sending.name.clone(), sending.read_offset, Some(sending.size)),
+                Some(sending) => (
+                    sending.name.clone(),
+                    sending.read_offset,
+                    Some(sending.size),
+                ),
                 None => (String::new(), 0, None),
             },
         };
@@ -794,10 +794,8 @@ impl Session {
         let size = next.size;
         let file = File::open(&path)
             .with_context(|| t!("zmodem.open_read_failed", path => path.display()).to_string())?;
-        self.machine.start_file(FileInfo::new(
-            &name,
-            Some(Position::new(size as u32)),
-        ))?;
+        self.machine
+            .start_file(FileInfo::new(&name, Some(Position::new(size as u32))))?;
         self.queue.pop_front();
         self.sending = Some(OpenSend {
             file,
@@ -881,10 +879,8 @@ mod tests {
 
     /// 干净的一间临时房。
     fn fresh_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "winssh-pro-zmodem-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("winssh-pro-zmodem-{name}-{}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).expect("建临时目录");
         dir
@@ -977,7 +973,10 @@ mod tests {
             assert_completed(&sender, 1);
             match receiver.outcome() {
                 Some(Outcome::Completed {
-                    files, bytes, saved_to, ..
+                    files,
+                    bytes,
+                    saved_to,
+                    ..
                 }) => {
                     assert_eq!(*files, 1);
                     assert_eq!(*bytes, size as u64);
@@ -1025,7 +1024,10 @@ mod tests {
         let (mut sender, mut receiver) = linked_pair(vec![source]);
         shuttle(&mut sender, &mut receiver, &dest);
 
-        assert_eq!(std::fs::read(dest.join("report.txt")).unwrap(), b"old content");
+        assert_eq!(
+            std::fs::read(dest.join("report.txt")).unwrap(),
+            b"old content"
+        );
         assert_eq!(
             std::fs::read(dest.join("report (2).txt")).unwrap(),
             b"new content"
@@ -1074,7 +1076,10 @@ mod tests {
         for _ in 0..10 {
             pump_once(&mut sender, &mut receiver, None);
         }
-        assert!(matches!(receiver.offer(), Some(Offer::Receive { .. })), "等落点");
+        assert!(
+            matches!(receiver.offer(), Some(Offer::Receive { .. })),
+            "等落点"
+        );
 
         receiver.cancel();
         for _ in 0..200 {

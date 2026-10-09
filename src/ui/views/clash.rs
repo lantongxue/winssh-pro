@@ -143,9 +143,8 @@ impl ClashView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t!("clash.view.search_placeholder"))
-        });
+        let search = cx
+            .new(|cx| InputState::new(window, cx).placeholder(t!("clash.view.search_placeholder")));
         cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify())
             .detach();
 
@@ -395,7 +394,12 @@ impl ClashView {
         ClashFormDialog::open(self.service.clone(), on_saved, None, window, cx);
     }
 
-    fn edit(&mut self, subscription: &ClashSubscription, window: &mut Window, cx: &mut Context<Self>) {
+    fn edit(
+        &mut self,
+        subscription: &ClashSubscription,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let on_saved = self.saved_handler(cx);
         ClashFormDialog::open(
             self.service.clone(),
@@ -441,7 +445,12 @@ impl ClashView {
     ///
     /// 拉回来之后如果这条正在跑，还要让那个实例**重读一遍配置** ——
     /// 不然界面上写着"更新于刚刚"，跑着的却还是上一份节点。
-    fn refresh(&mut self, subscription: &ClashSubscription, window: &mut Window, cx: &mut Context<Self>) {
+    fn refresh(
+        &mut self,
+        subscription: &ClashSubscription,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let service = self.service.clone();
         let id = subscription.id.clone();
         let name = subscription.name.clone();
@@ -457,10 +466,7 @@ impl ClashView {
                         if runtime::state().is_current(&updated.id) {
                             runtime::send(runtime::Action::Reload(updated.config_yaml.clone()));
                         }
-                        window.push_notification(
-                            t!("clash.view.updated", name => name),
-                            cx,
-                        );
+                        window.push_notification(t!("clash.view.updated", name => name), cx);
                         this.reload(window, cx);
                     }
                     Err(error) => window.push_notification(
@@ -507,7 +513,12 @@ impl ClashView {
     }
 
     /// 删除前问一句。会丢东西的动作配危险色的按钮。
-    fn confirm_delete(&mut self, subscription: &ClashSubscription, window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm_delete(
+        &mut self,
+        subscription: &ClashSubscription,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let service = self.service.clone();
         let view = cx.weak_entity();
         let id = subscription.id.clone();
@@ -610,21 +621,17 @@ impl ClashView {
 
     /// 搜索框。
     fn render_filters(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .flex_shrink_0()
-            .px(GUTTER)
-            .py(GUTTER)
-            .child(
-                Input::new(&self.search)
-                    .cleanable(true)
-                    .prefix(
-                        Icon::new(IconName::Search)
-                            .with_size(ICON_SIZE)
-                            .text_color(palette::idle(cx)),
-                    )
-                    .w_full()
-                    .bg(palette::surface(cx)),
-            )
+        v_flex().flex_shrink_0().px(GUTTER).py(GUTTER).child(
+            Input::new(&self.search)
+                .cleanable(true)
+                .prefix(
+                    Icon::new(IconName::Search)
+                        .with_size(ICON_SIZE)
+                        .text_color(palette::idle(cx)),
+                )
+                .w_full()
+                .bg(palette::surface(cx)),
+        )
     }
 
     /// 列表：一行一条订阅。空了就说清楚是"还没有"还是"没筛到"。
@@ -636,7 +643,9 @@ impl ClashView {
         // 带出闭包体，而下面 `render_empty` 还要用一次 `cx`。
         let rows: Vec<AnyElement> = visible
             .into_iter()
-            .map(|(index, subscription)| self.render_card(index, subscription, cx).into_any_element())
+            .map(|(index, subscription)| {
+                self.render_card(index, subscription, cx).into_any_element()
+            })
             .collect();
 
         div()
@@ -817,7 +826,6 @@ impl ClashView {
                     menu
                 }
             });
-
 
         v_flex()
             .id(("clash-card", index))
@@ -1043,10 +1051,14 @@ impl ClashView {
                     .large()
                     .text_color(palette::idle(cx)),
             )
-            .child(div().text_sm().child(SharedString::from(match no_subscriptions {
-                true => t!("clash.view.empty"),
-                false => t!("clash.view.no_match"),
-            })))
+            .child(
+                div()
+                    .text_sm()
+                    .child(SharedString::from(match no_subscriptions {
+                        true => t!("clash.view.empty"),
+                        false => t!("clash.view.no_match"),
+                    })),
+            )
             .when(no_subscriptions, |this| {
                 this.child(
                     div()
@@ -1102,16 +1114,16 @@ impl ClashView {
                                 h_flex()
                                     .gap_1p5()
                                     .items_center()
-                                    .child(
-                                        div()
-                                            .size(px(7.))
-                                            .rounded_full()
-                                            .bg(match state.phase {
-                                                crate::clash::Phase::Running => palette::green(),
-                                                crate::clash::Phase::Starting | crate::clash::Phase::Stopping => gpui_kit::rgb(0xf59e0b).into(),
-                                                _ => palette::idle(cx),
-                                            }),
-                                    )
+                                    .child(div().size(px(7.)).rounded_full().bg(
+                                        match state.phase {
+                                            crate::clash::Phase::Running => palette::green(),
+                                            crate::clash::Phase::Starting
+                                            | crate::clash::Phase::Stopping => {
+                                                gpui_kit::rgb(0xf59e0b).into()
+                                            }
+                                            _ => palette::idle(cx),
+                                        },
+                                    ))
                                     .child(
                                         div()
                                             .text_xs()
@@ -1200,9 +1212,9 @@ impl ClashView {
                             }))
                             .label(t!("clash.view.refresh_all"))
                             .disabled(self.fetching_all || !has_sources)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.refresh_all(window, cx)
-                            })),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.refresh_all(window, cx)),
+                            ),
                     )
                     .child(
                         Button::new("clash-view-new")
@@ -1213,9 +1225,11 @@ impl ClashView {
                             .icon(IconName::Plus)
                             .label(t!("clash.view.new"))
                             .w_full()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.new_subscription(window, cx)
-                            })),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.new_subscription(window, cx)
+                                }),
+                            ),
                     ),
             )
     }

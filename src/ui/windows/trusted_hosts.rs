@@ -24,7 +24,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, AnyElement, Bounds, Context, Entity, FocusHandle, Focusable, Global,
+    AnyElement, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global,
     Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
     Styled as _, Subscription, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, div,
     px, size,
@@ -142,16 +142,17 @@ impl TrustedHostsWindow {
     /// 派一次异步加载。给"开窗时"与"点刷新按钮"两条路共用。
     fn spawn_reload(entity: Entity<Self>, window: &mut Window, cx: &mut App) {
         let service = entity.read(cx).service.clone();
-        window.spawn(cx, async move |cx| {
-            let result = service.load_all().await.unwrap_or_default();
-            let _ = entity.update(cx, |this: &mut Self, cx| {
-                this.hosts = result;
-                this.loading = false;
-                this.confirming = None;
-                cx.notify();
-            });
-        })
-        .detach();
+        window
+            .spawn(cx, async move |cx| {
+                let result = service.load_all().await.unwrap_or_default();
+                let _ = entity.update(cx, |this: &mut Self, cx| {
+                    this.hosts = result;
+                    this.loading = false;
+                    this.confirming = None;
+                    cx.notify();
+                });
+            })
+            .detach();
     }
 
     fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -169,15 +170,16 @@ impl TrustedHostsWindow {
         let entity = cx.entity().clone();
         self.confirming = None;
         cx.notify();
-        window.spawn(cx, async move |cx| {
-            service.delete(&id).await.ok();
-            let list = service.load_all().await.unwrap_or_default();
-            let _ = entity.update(cx, |this: &mut Self, cx| {
-                this.hosts = list;
-                cx.notify();
-            });
-        })
-        .detach();
+        window
+            .spawn(cx, async move |cx| {
+                service.delete(&id).await.ok();
+                let list = service.load_all().await.unwrap_or_default();
+                let _ = entity.update(cx, |this: &mut Self, cx| {
+                    this.hosts = list;
+                    cx.notify();
+                });
+            })
+            .detach();
     }
 
     fn render_title_bar(&self) -> impl IntoElement {
@@ -646,7 +648,10 @@ fn render_count_badge(count: usize, loading: bool) -> impl IntoElement {
 }
 
 /// `建档：2025-…` 那一小对（标签 + 值）。
-fn render_time_pair(label: std::borrow::Cow<'static, str>, value: &SharedString) -> impl IntoElement {
+fn render_time_pair(
+    label: std::borrow::Cow<'static, str>,
+    value: &SharedString,
+) -> impl IntoElement {
     h_flex()
         .gap_1()
         .items_baseline()
@@ -673,5 +678,5 @@ impl Render for TrustedHostsWindow {
             .child(self.render_title_bar())
             .child(self.render_header(cx))
             .child(self.render_body(cx))
-                }
+    }
 }

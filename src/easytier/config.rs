@@ -16,9 +16,7 @@
 use anyhow::{Context as _, Result};
 use easytier::common::config::{ConfigLoader as _, NetworkIdentity, PeerConfig, TomlConfig};
 
-use super::settings::{
-    EasyTierAccess, listener_urls, parse_ipv4, parse_peer, parse_proxy_network,
-};
+use super::settings::{EasyTierAccess, listener_urls, parse_ipv4, parse_peer, parse_proxy_network};
 use crate::host::Host;
 
 /// 实例名的前缀。EasyTier 用实例名区分同一进程里的几张网（日志、RPC 选择器
@@ -225,7 +223,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 ("192.168.1.0/24".to_string(), None),
-                ("192.168.2.0/24".to_string(), Some("10.1.2.0/24".to_string())),
+                (
+                    "192.168.2.0/24".to_string(),
+                    Some("10.1.2.0/24".to_string())
+                ),
             ],
             "照 `-n` 一条一条加进去"
         );

@@ -48,9 +48,7 @@ pub struct HostKeyInfo {
 #[derive(Clone)]
 pub enum TrustPolicy {
     /// 库里已有记录：与 `expected` 指纹比对，相同则通过，不同则报密钥变更。
-    Verify {
-        expected: String,
-    },
+    Verify { expected: String },
     /// 首次连接：捕获密钥后中止握手（`check_server_key` 返回错误），
     /// 调用方从 `capture` 里取出 `HostKeyInfo` 展示确认框。
     CaptureAndAbort {
@@ -66,7 +64,10 @@ pub enum TrustPolicy {
 impl std::fmt::Debug for TrustPolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Verify { expected } => f.debug_struct("Verify").field("expected", expected).finish(),
+            Self::Verify { expected } => f
+                .debug_struct("Verify")
+                .field("expected", expected)
+                .finish(),
             Self::CaptureAndAbort { .. } => f.write_str("CaptureAndAbort"),
             Self::TrustOnce => f.write_str("TrustOnce"),
             Self::Skip => f.write_str("Skip"),

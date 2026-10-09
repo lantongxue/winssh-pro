@@ -133,10 +133,7 @@ impl ActivityBar {
     }
 
     /// 打开密码库完整独立管理窗口。
-    pub fn on_open_vault(
-        mut self,
-        handler: impl Fn(&(), &mut Window, &mut App) + 'static,
-    ) -> Self {
+    pub fn on_open_vault(mut self, handler: impl Fn(&(), &mut Window, &mut App) + 'static) -> Self {
         self.on_open_vault = Some(Rc::new(handler));
         self
     }
@@ -202,8 +199,8 @@ impl ActivityBar {
 
         slot(
             None,
-            SettingsMenu::new("activity-bar-settings")
-                .on_action(move |action, window, cx| match action {
+            SettingsMenu::new("activity-bar-settings").on_action(move |action, window, cx| {
+                match action {
                     SettingsMenuAction::Settings => {
                         if let Some(on_action) = on_action.as_ref() {
                             on_action(&ActivityAction::Settings, window, cx);
@@ -219,7 +216,8 @@ impl ActivityBar {
                             on_open_trusted_hosts(&(), window, cx);
                         }
                     }
-                }),
+                }
+            }),
         )
     }
 }

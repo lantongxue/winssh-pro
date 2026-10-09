@@ -39,11 +39,17 @@ fn main() {
         println!("cargo:rustc-link-arg-bins=/STACK:8388608");
     }
 
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+    #[cfg(target_os = "windows")]
+    {
         copy_wintun();
         copy_mihomo();
     }
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+    // 这两个函数本体被 `#[cfg(target_os = "macos")]` 门掉（里面用的是
+    // unix-only 的权限接口），所以调用点也得用同样的 cfg —— 用运行时
+    // `CARGO_CFG_TARGET_OS` 判断的话，代码在 Windows 上仍会被编译，
+    // 只会在链接期才找不到函数。
+    #[cfg(target_os = "macos")]
+    {
         copy_mihomo_macos();
         // macOS 上 broker 是 launchd 守护（见 `src/bin/broker.rs` 的模块文档），
         // `cargo run` / `cargo test` 时它要在 exe 旁边能找到 ——
@@ -56,8 +62,14 @@ fn main() {
         let mut res = winres::WindowsResource::new();
         res.set_icon("assets/app-icon.ico");
         res.set("ProductName", "WinSSH Pro");
-        res.set("FileDescription", "WinSSH Pro - Native High-Performance SSH Client");
-        res.set("LegalCopyright", "Copyright (C) 2026 WinSSH Pro Contributors");
+        res.set(
+            "FileDescription",
+            "WinSSH Pro - Native High-Performance SSH Client",
+        );
+        res.set(
+            "LegalCopyright",
+            "Copyright (C) 2026 WinSSH Pro Contributors",
+        );
         if let Err(e) = res.compile() {
             eprintln!("cargo:warning=Failed to compile Windows resource: {e}");
         }
@@ -87,7 +99,9 @@ fn copy_wintun() {
         Ok("x86") => "i686",
         Ok("aarch64") => "arm64",
         other => {
-            println!("cargo:warning=没有 {other:?} 架构的 wintun.dll，虚拟网卡模式在这个目标上用不了");
+            println!(
+                "cargo:warning=没有 {other:?} 架构的 wintun.dll，虚拟网卡模式在这个目标上用不了"
+            );
             return;
         }
     };
@@ -128,6 +142,7 @@ fn copy_mihomo() {
 ///
 /// 与 Windows 的另一个区别是这边**不带 `.exe` 后缀** —— macOS 的可执行文件
 /// 命名习惯；`binary_path` 在 Unix 平台查的也是这个名字。
+#[cfg(target_os = "macos")]
 fn copy_mihomo_macos() {
     let arch_dir = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
         Ok("x86_64") => "amd64",
@@ -162,10 +177,7 @@ fn copy_mihomo_macos() {
     if let Ok(out_dir) = std::env::var("OUT_DIR") {
         // `<profile>/build/winssh-pro-<hash>/out` 往上数三层到 profile；
         // 那里和 `deps/` 各摆一份（与 `copy_sidecar` 同一处讲究）。
-        let profile = Path::new(&out_dir)
-            .ancestors()
-            .nth(3)
-            .map(PathBuf::from);
+        let profile = Path::new(&out_dir).ancestors().nth(3).map(PathBuf::from);
         if let Some(profile) = profile {
             for candidate in [profile.join("mihomo"), profile.join("deps").join("mihomo")] {
                 let _ = chmod_plus_x(&candidate);
@@ -196,7 +208,10 @@ fn copy_broker_sidecar() {
     if !source.is_file() {
         return;
     }
-    for candidate in [profile.join("winssh-broker"), profile.join("deps").join("winssh-broker")] {
+    for candidate in [
+        profile.join("winssh-broker"),
+        profile.join("deps").join("winssh-broker"),
+    ] {
         // deps 那一份由 cargo 自然产出（`cargo test` 的产物就在那里），
         // 不需要我们拷 —— 只补 profile 根目录下"货车旁边"那一份。
         if candidate == source {
@@ -214,7 +229,9 @@ fn copy_broker_sidecar() {
     }
 }
 
-#[cfg(unix)]
+/// 唯一的调用方是 `copy_mihomo_macos`，所以与它同一条 cfg：别的平台上
+/// 不存在，也就不留"never used"的死代码。
+#[cfg(target_os = "macos")]
 fn chmod_plus_x(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     if !path.is_file() {
@@ -224,10 +241,6 @@ fn chmod_plus_x(path: &Path) -> std::io::Result<()> {
     let mode = permissions.mode();
     permissions.set_mode(mode | 0o111);
     std::fs::set_permissions(path, permissions)
-}
-#[cfg(not(unix))]
-fn chmod_plus_x(_path: &Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 /// 把一份随包带的文件拷到这次构建的 exe 旁边。

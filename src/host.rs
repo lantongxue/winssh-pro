@@ -467,7 +467,10 @@ mod tests {
         assert_eq!(HostKind::from_str_or_default("Telnet"), HostKind::Telnet);
         assert_eq!(HostKind::from_str_or_default("serial"), HostKind::Serial);
         assert_eq!(HostKind::from_str_or_default("Serial "), HostKind::Serial);
-        assert_eq!(HostKind::from_str_or_default("EasyTier"), HostKind::EasyTier);
+        assert_eq!(
+            HostKind::from_str_or_default("EasyTier"),
+            HostKind::EasyTier
+        );
     }
 
     /// 远程桌面那一档（VNC / RDP）与 SSH 的分叉点：界面拿它决定

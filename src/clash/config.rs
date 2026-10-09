@@ -104,6 +104,9 @@ pub struct RuntimePorts {
     pub mixed_port: u16,
     /// 外部控制（RESTful API）端口，只有本机连它。
     pub api_port: u16,
+    /// DNS 监听口。订阅正文里那份 `dns.listen` 不能原样留（见 runtime_config
+    /// 里那一处注释）：同一份订阅的别的客户端会绑同一个口。
+    pub dns_port: u16,
     /// API 的密钥。每个实例现生一个，不写死、也不落库。
     pub secret: String,
 }
@@ -214,6 +217,43 @@ pub fn runtime_config(config_yaml: &str, ports: &RuntimePorts) -> Result<String>
     root.insert(Value::from("secret"), Value::from(ports.secret.clone()));
     root.insert(Value::from("allow-lan"), Value::from(false));
 
+    // DNS 监听口与上面删掉的几个端口同一个道理：订阅正文里那份 `dns.listen`
+    // （机场模板爱写 127.0.0.1:7874）原样留着，就会和跑着同一份订阅的别的
+    // 客户端（FlClash 之流）撞在同一个口上 —— 后起的那个 bind 失败、内核
+    // 直接退，界面上只看得见"TUN 拨不动/控制口没应答"。监听口由我们现挑。
+    let mut dns = match root.get("dns") {
+        Some(Value::Mapping(mapping)) => mapping.clone(),
+        _ => Mapping::new(),
+    };
+    dns.insert(
+        Value::from("listen"),
+        Value::from(format!("127.0.0.1:{}", ports.dns_port)),
+    );
+    // dns 上游里指向 loopback 的条目是**别的客户端**的私口：这份订阅就被
+    // FlClash 塞过 `proxy-server-nameserver: [udp://127.0.0.1:7874]`。它不在时
+    // 节点域名一个都解析不出来，表现正是"国内直连好好的、外网全超时"。
+    // 剔掉；剔空的键整个删掉，让 mihomo 回落到 nameserver 那一档。
+    for key in [
+        "nameserver",
+        "fallback",
+        "default-nameserver",
+        "proxy-server-nameserver",
+    ] {
+        let Some(Value::Sequence(items)) = dns.get(key).cloned() else {
+            continue;
+        };
+        let kept: Vec<Value> = items
+            .into_iter()
+            .filter(|item| !is_loopback_upstream(item))
+            .collect();
+        if kept.is_empty() {
+            dns.remove(key);
+        } else {
+            dns.insert(Value::from(key), Value::Sequence(kept));
+        }
+    }
+    root.insert(Value::from("dns"), Value::Mapping(dns));
+
     // TUN 那一块：用户后来在设置里改的参数（栈、网卡名、MTU、路由/出口自动）
     // **盖过**订阅正文里写的那一份 —— 订阅正文是机场给的，用户的偏好是用户
     // 后来敲的，两者之间用户那次赢。
@@ -233,10 +273,7 @@ pub fn runtime_config(config_yaml: &str, ports: &RuntimePorts) -> Result<String>
         tun.insert(Value::from("device"), Value::from(prefs.device.clone()));
     }
     if prefs.mtu > 0 {
-        tun.insert(
-            Value::from("mtu"),
-            Value::from(u64::from(prefs.mtu)),
-        );
+        tun.insert(Value::from("mtu"), Value::from(u64::from(prefs.mtu)));
     }
     tun.insert(Value::from("auto-route"), Value::from(prefs.auto_route));
     tun.insert(
@@ -261,22 +298,30 @@ pub fn runtime_config(config_yaml: &str, ports: &RuntimePorts) -> Result<String>
     fill(
         &mut geox,
         "geoip",
-        Value::from("https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb"),
+        Value::from(
+            "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geoip.metadb",
+        ),
     );
     fill(
         &mut geox,
         "geosite",
-        Value::from("https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat"),
+        Value::from(
+            "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/geosite.dat",
+        ),
     );
     fill(
         &mut geox,
         "mmdb",
-        Value::from("https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb"),
+        Value::from(
+            "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/country.mmdb",
+        ),
     );
     fill(
         &mut geox,
         "asn",
-        Value::from("https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb"),
+        Value::from(
+            "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release/GeoLite2-ASN.mmdb",
+        ),
     );
     root.insert(Value::from("geox-url"), Value::Mapping(geox));
     fill(&mut root, "geo-auto-update", Value::from(false));
@@ -287,6 +332,16 @@ pub fn runtime_config(config_yaml: &str, ports: &RuntimePorts) -> Result<String>
 }
 
 /// 映射表里没有这个键才写进去 —— 用户正文里写过的值一律不动。
+/// 一条 dns 上游是不是指向本机（`127.0.0.1` / `::1` / `localhost`，带不带
+/// `udp://` 之类的前缀都算）。这种条目是别的客户端给自己留的私口，继承过来
+/// 就是替别人问路。
+fn is_loopback_upstream(value: &Value) -> bool {
+    let Some(text) = value.as_str() else {
+        return false;
+    };
+    text.contains("127.0.0.1") || text.contains("::1") || text.contains("localhost")
+}
+
 fn fill(mapping: &mut Mapping, key: &str, value: Value) {
     if mapping.get(key).is_none() {
         mapping.insert(Value::from(key), value);
@@ -493,7 +548,10 @@ rules:
 
         let logical = &outline.rules[2];
         assert_eq!(logical.kind.as_ref(), "AND");
-        assert_eq!(logical.payload.as_ref(), "((DOMAIN-SUFFIX,a.com),(NETWORK,tcp))");
+        assert_eq!(
+            logical.payload.as_ref(),
+            "((DOMAIN-SUFFIX,a.com),(NETWORK,tcp))"
+        );
         assert_eq!(logical.target.as_ref(), "PROXY");
 
         // 没有内容的规则：内容空着，走谁照旧。
@@ -514,6 +572,7 @@ rules:
         let ports = RuntimePorts {
             mixed_port: 54321,
             api_port: 54322,
+            dns_port: 54323,
             secret: "s3cret".to_owned(),
         };
         let generated = runtime_config(SAMPLE, &ports).unwrap();
@@ -536,12 +595,15 @@ rules:
     }
 
     /// 单独写着 `port` / `socks-port` 的订阅：那几个口删掉，只留混合口。
+    /// 订阅自带的 `dns.listen` 也一样盖掉 —— 留着会和跑同一份订阅的别的
+    /// 客户端撞口（见 runtime_config 里那一处注释）。
     #[test]
     fn the_runtime_config_drops_the_other_listeners() {
-        let yaml = "port: 7890\nsocks-port: 7891\nredir-port: 7892\nproxies: []\n";
+        let yaml = "port: 7890\nsocks-port: 7891\nredir-port: 7892\ndns:\n  listen: 127.0.0.1:7874\n  enable: true\n  nameserver:\n  - 223.5.5.5\n  proxy-server-nameserver:\n  - udp://127.0.0.1:7874\nproxies: []\n";
         let ports = RuntimePorts {
             mixed_port: 1080,
             api_port: 1081,
+            dns_port: 1082,
             secret: "x".to_owned(),
         };
         let root = parse_root(&runtime_config(yaml, &ports).unwrap()).unwrap();
@@ -549,6 +611,25 @@ rules:
         assert!(root.get("socks-port").is_none());
         assert!(root.get("redir-port").is_none());
         assert_eq!(number_at(&root, "mixed-port"), Some(1080));
+        let dns = match root.get("dns") {
+            Some(Value::Mapping(dns)) => dns.clone(),
+            other => panic!("dns 那一块该在：{other:?}"),
+        };
+        assert_eq!(
+            dns.get("listen"),
+            Some(&Value::from("127.0.0.1:1082")),
+            "订阅自带的 listen 被盖掉"
+        );
+        assert_eq!(dns.get("enable"), Some(&Value::from(true)), "其余键不动");
+        assert_eq!(
+            dns.get("nameserver"),
+            Some(&Value::Sequence(vec![Value::from("223.5.5.5")])),
+            "非 loopback 的上游原样留着"
+        );
+        assert!(
+            dns.get("proxy-server-nameserver").is_none(),
+            "全是 loopback 的 proxy-server-nameserver 整个删掉"
+        );
     }
 
     /// TUN 那一块：没写就补一份能用的，写了就一个键都不动。
@@ -557,6 +638,7 @@ rules:
         let ports = RuntimePorts {
             mixed_port: 1080,
             api_port: 1081,
+            dns_port: 1082,
             secret: "x".to_owned(),
         };
 
@@ -625,7 +707,8 @@ rules:
     /// BOM 是记事本存的，不该让整份配置读不出来。
     #[test]
     fn a_byte_order_mark_does_not_break_the_first_key() {
-        let outline = outline("\u{feff}proxies:\n  - name: A\n    type: ss\n    server: s\n").unwrap();
+        let outline =
+            outline("\u{feff}proxies:\n  - name: A\n    type: ss\n    server: s\n").unwrap();
         assert_eq!(outline.nodes.len(), 1);
     }
 }

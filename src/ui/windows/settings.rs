@@ -15,8 +15,8 @@
 //! 只会把已开着的窗口激活置顶，不会重复开窗。
 
 use gpui_kit::component::{
-    ActiveTheme as _, Colorize as _, Icon, IconName, Root, Sizable as _, StyledExt as _,
-    ThemeMode, TitleBar, WindowExt as _,
+    ActiveTheme as _, Colorize as _, Icon, IconName, Root, Sizable as _, StyledExt as _, ThemeMode,
+    TitleBar, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     group_box::GroupBoxVariant,
     h_flex,
@@ -559,7 +559,12 @@ impl BackupInputs {
                 bucket: self.s3_bucket.read(cx).value().trim().to_string(),
                 root: self.s3_root.read(cx).value().trim().to_string(),
                 access_key_id: self.s3_access_key_id.read(cx).value().trim().to_string(),
-                secret_access_key: self.s3_secret_access_key.read(cx).value().trim().to_string(),
+                secret_access_key: self
+                    .s3_secret_access_key
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .to_string(),
                 path_style: cached.s3.path_style,
             },
             last_backup_at: cached.last_backup_at,
@@ -953,7 +958,7 @@ impl SettingsWindow {
                                     TerminalFont {
                                         size: font::parse_size(&label),
                                         ..font::global()
-                                     },
+                                    },
                                     cx,
                                 );
                             },
@@ -1325,24 +1330,26 @@ impl SettingsWindow {
             .title(t!("settings.backup_group_general"))
             .item(SettingItem::new(
                 t!("settings.backup_enabled"),
-                SettingField::switch(
-                    |_cx: &App| backup::global().enabled,
-                    {
-                        let inputs = inputs.clone();
-                        move |checked: bool, cx: &mut App| {
-                            let mut config = inputs.read(cx);
-                            config.enabled = checked;
-                            persist_backup(config, cx);
-                        }
-                    },
-                ),
+                SettingField::switch(|_cx: &App| backup::global().enabled, {
+                    let inputs = inputs.clone();
+                    move |checked: bool, cx: &mut App| {
+                        let mut config = inputs.read(cx);
+                        config.enabled = checked;
+                        persist_backup(config, cx);
+                    }
+                }),
             ))
             .item(SettingItem::new(
                 t!("settings.backup_protocol"),
                 SettingField::dropdown(
                     BackupProtocol::ALL
                         .into_iter()
-                        .map(|p| (SharedString::from(p.as_str()), SharedString::from(p.label())))
+                        .map(|p| {
+                            (
+                                SharedString::from(p.as_str()),
+                                SharedString::from(p.label()),
+                            )
+                        })
                         .collect(),
                     |_cx: &App| SharedString::from(backup::global().protocol.as_str()),
                     {
@@ -1394,17 +1401,14 @@ impl SettingsWindow {
             .item(
                 SettingItem::new(
                     t!("settings.backup_encrypt"),
-                    SettingField::switch(
-                        |_cx: &App| backup::global().encrypt,
-                        {
-                            let inputs = inputs.clone();
-                            move |checked: bool, cx: &mut App| {
-                                let mut config = inputs.read(cx);
-                                config.encrypt = checked;
-                                persist_backup(config, cx);
-                            }
-                        },
-                    ),
+                    SettingField::switch(|_cx: &App| backup::global().encrypt, {
+                        let inputs = inputs.clone();
+                        move |checked: bool, cx: &mut App| {
+                            let mut config = inputs.read(cx);
+                            config.encrypt = checked;
+                            persist_backup(config, cx);
+                        }
+                    }),
                 )
                 .description(SharedString::from(t!("settings.backup_encrypt_desc"))),
             );
@@ -1479,17 +1483,14 @@ impl SettingsWindow {
                     ))
                     .item(SettingItem::new(
                         t!("settings.backup_s3_path_style"),
-                        SettingField::switch(
-                            |_cx: &App| backup::global().s3.path_style,
-                            {
-                                let inputs = inputs.clone();
-                                move |checked: bool, cx: &mut App| {
-                                    let mut config = inputs.read(cx);
-                                    config.s3.path_style = checked;
-                                    persist_backup(config, cx);
-                                }
-                            },
-                        ),
+                        SettingField::switch(|_cx: &App| backup::global().s3.path_style, {
+                            let inputs = inputs.clone();
+                            move |checked: bool, cx: &mut App| {
+                                let mut config = inputs.read(cx);
+                                config.s3.path_style = checked;
+                                persist_backup(config, cx);
+                            }
+                        }),
                     ))
                     .item(SettingItem::new(
                         t!("settings.backup_s3_ak"),
@@ -1665,10 +1666,7 @@ impl SettingsWindow {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .child(
-                                        img("app-icon.png")
-                                            .size(px(64.)),
-                                    ),
+                                    .child(img("app-icon.png").size(px(64.))),
                             )
                             .child(div().text_lg().font_bold().child("WinSSH Pro"))
                             .child(
@@ -1704,7 +1702,7 @@ impl Render for SettingsWindow {
             .text_color(cx.theme().foreground)
             .child(self.render_title_bar())
             .child(div().flex_1().min_h_0().child(self.render_settings(cx)))
-                }
+    }
 }
 
 #[cfg(test)]

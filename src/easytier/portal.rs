@@ -451,7 +451,10 @@ mod tests {
                 .expect("失败了就该当场说")
                 .unwrap()
                 .expect_err("网没起来");
-            assert!(error.contains("家里") && error.contains("端口被占了"), "{error}");
+            assert!(
+                error.contains("家里") && error.contains("端口被占了"),
+                "{error}"
+            );
         });
     }
 
@@ -558,7 +561,9 @@ mod tests {
     #[test]
     fn a_dropped_ticket_counts_as_a_crash() {
         drop(open("portal-test-crash".into(), "家里".into()));
-        let state = entries().get("portal-test-crash").map(|entry| entry.state.clone());
+        let state = entries()
+            .get("portal-test-crash")
+            .map(|entry| entry.state.clone());
         assert!(
             matches!(&state, Some(State::Failed(reason)) if reason.as_ref() == t!("easytier.thread_crashed")),
             "{state:?}"

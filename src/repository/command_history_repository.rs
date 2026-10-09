@@ -1,6 +1,8 @@
 //! `command_history` 表的纯数据访问。
 
-use sea_orm::{ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DbErr, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
+};
 
 use crate::db::entities::command_history;
 

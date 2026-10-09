@@ -139,9 +139,7 @@ fn hydrate(row: trusted_host::Model) -> TrustedHost {
 }
 
 fn timestamp() -> String {
-    chrono::Local::now()
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string()
+    chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 fn next_id(hostname: &str) -> SharedString {

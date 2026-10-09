@@ -365,18 +365,28 @@ aws-lc-rs = { version = "1.16.2", features = ["prebuilt-nasm"] }
 # 两个版本都跟着图上已有那一份走；其余平台没有这一档，开关会说清楚。
 winreg = "0.56"
 # 提权 broker 那一档（`src/clash/broker.rs` 与 `src/bin/broker.rs`）要用到：
-# ShellExecuteExW 的 runas（Win32_UI_Shell）、管道两端互认 PID（Win32_System_Pipes）、
-# 父进程死亡 watch（Win32_System_Threading）、job object 保险丝（Win32_System_JobObjects）、
-# 提权检测（Win32_Security）、spawn_blocking 里先 COM 初始化（Win32_System_Com）。
+# 装服务那一次 UAC 的 ShellExecuteExW(runas)（Win32_UI_Shell）、
+# SCM 服务的装/起/停/卸（Win32_System_Services）、
+# 服务与用户进程的双向 AMSI（Win32_System_Services）、
+# 管道对端互认 PID（Win32_System_Pipes）、
+# GPUI 那条线程上探管道用的裸 CreateFileW（Win32_Storage_FileSystem）、
+# 客户端正身再造以进 job（Win32_System_Threading）、
+# job object 保险丝（Win32_System_JobObjects）、
+# 令牌查询与复制（Win32_Security）、
+# 服务那根管道的 SDDL 安全描述符（Win32_Security_Authorization）、
+# ShellExecuteExW 里的 COM 初始化（Win32_System_Com）。
 windows-sys = { version = "0.61", features = [
     "Win32_Networking_WinInet",
     "Win32_Foundation",
     "Win32_UI_Shell",
+    "Win32_Storage_FileSystem",
     "Win32_System_Pipes",
     "Win32_System_Threading",
     "Win32_System_JobObjects",
     "Win32_System_Com",
+    "Win32_System_Services",
     "Win32_Security",
+    "Win32_Security_Authorization",
 ] }
 
 [dev-dependencies]

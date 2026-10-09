@@ -22,9 +22,9 @@ use gpui_kit::component::{
     h_flex, v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    InteractiveElement as _, ParentElement as _, Render, SharedString, Styled as _, WeakEntity,
-    Window, div, px,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    WeakEntity, Window, div, px,
 };
 use rust_i18n::t;
 
@@ -204,7 +204,12 @@ impl BasePanel for DockedFtpPanel {
         "DockedFtpPanel"
     }
 
-    fn on_added_to(&mut self, _: WeakEntity<TabGroup>, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_added_to(
+        &mut self,
+        _: WeakEntity<TabGroup>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         cx.focus_self(window);
         cx.notify();
     }
@@ -264,6 +269,12 @@ impl Render for DockedFtpPanel {
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(cx.theme().background)
-            .child(div().flex_1().min_h_0().min_w_0().child(self.sftp_panel.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(self.sftp_panel.clone()),
+            )
     }
 }

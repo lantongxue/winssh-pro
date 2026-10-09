@@ -21,8 +21,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AnyElement, App, ClickEvent, ClipboardItem, CursorStyle, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Pixels, RenderOnce, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, prelude::FluentBuilder as _, px, rgb,
+    IntoElement, ParentElement as _, Pixels, RenderOnce, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    rgb,
 };
 
 use crate::ui::{
@@ -69,7 +70,11 @@ pub struct SessionInfoBar {
 
 impl SessionInfoBar {
     /// `address` 是 `user@host` 形式的登录身份，`directory` 是当前目录。
-    pub fn new(address: impl Into<SharedString>, host: impl Into<SharedString>, directory: impl Into<SharedString>) -> Self {
+    pub fn new(
+        address: impl Into<SharedString>,
+        host: impl Into<SharedString>,
+        directory: impl Into<SharedString>,
+    ) -> Self {
         Self {
             address: address.into(),
             host: host.into(),
@@ -425,10 +430,7 @@ impl RenderOnce for SessionInfoBar {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                     self.host.to_string(),
                                 ));
-                                window.push_notification(
-                                    t!("session_info.address_copied"),
-                                    cx,
-                                );
+                                window.push_notification(t!("session_info.address_copied"), cx);
                             })
                             .child(self.address)
                     })

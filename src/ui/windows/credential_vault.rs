@@ -842,7 +842,7 @@ impl Render for CredentialVaultWindow {
                     .child(self.render_rail(cx))
                     .child(self.render_main(window, cx)),
             )
-                }
+    }
 }
 
 #[cfg(test)]

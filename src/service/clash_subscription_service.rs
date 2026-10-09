@@ -89,9 +89,18 @@ impl ClashSubscriptionService {
                         user_agent: Set(stored.user_agent.clone()),
                         auto_update_hours: Set(stored.auto_update_hours as i32),
                         notes: Set(stored.notes.clone()),
-                        upload_bytes: Set(meta.as_ref().and_then(|meta| meta.upload_bytes).and_then(|v| i64::try_from(v).ok())),
-                        download_bytes: Set(meta.as_ref().and_then(|meta| meta.download_bytes).and_then(|v| i64::try_from(v).ok())),
-                        total_bytes: Set(meta.as_ref().and_then(|meta| meta.total_bytes).and_then(|v| i64::try_from(v).ok())),
+                        upload_bytes: Set(meta
+                            .as_ref()
+                            .and_then(|meta| meta.upload_bytes)
+                            .and_then(|v| i64::try_from(v).ok())),
+                        download_bytes: Set(meta
+                            .as_ref()
+                            .and_then(|meta| meta.download_bytes)
+                            .and_then(|v| i64::try_from(v).ok())),
+                        total_bytes: Set(meta
+                            .as_ref()
+                            .and_then(|meta| meta.total_bytes)
+                            .and_then(|v| i64::try_from(v).ok())),
                         expire_date: Set(meta.as_ref().and_then(|meta| meta.expire_date.clone())),
                         created_at: Set(now.clone()),
                         updated_at: Set(now.clone()),
@@ -273,8 +282,7 @@ impl ClashSubscriptionService {
             let url = existing.source_url.trim().to_owned();
             ensure!(!url.is_empty(), "{}", t!("clash.no_source"));
 
-            let fetched =
-                subscription::fetch_with_ua(&url, &existing.user_agent).await?;
+            let fetched = subscription::fetch_with_ua(&url, &existing.user_agent).await?;
             this.apply_fetched(&existing, &fetched).await
         })
         .await
@@ -337,7 +345,9 @@ impl ClashSubscriptionService {
                 if !due {
                     continue;
                 }
-                match subscription::fetch_with_ua(existing.source_url.trim(), &existing.user_agent).await {
+                match subscription::fetch_with_ua(existing.source_url.trim(), &existing.user_agent)
+                    .await
+                {
                     Ok(fetched) => match this.apply_fetched(&existing, &fetched).await {
                         Ok(subscription) => refreshed.push(subscription),
                         Err(error) => log::warn!("自动更新 {} 失败：{error:#}", existing.name),
@@ -646,15 +656,15 @@ mod tests {
             ..draft("机场 A", USABLE)
         };
         // 一份 base64 的节点列表不是配置；空正文更不是。
-        assert!(service.update(&row.id, rewrite("c3M6Ly9ZV1Z6TFRJMU5pMW5ZMjA2")).await.is_err());
-        assert!(service.update(&row.id, rewrite("   ")).await.is_err());
-        // 名字空着也不行。
         assert!(
             service
-                .insert(draft("   ", USABLE))
+                .update(&row.id, rewrite("c3M6Ly9ZV1Z6TFRJMU5pMW5ZMjA2"))
                 .await
                 .is_err()
         );
+        assert!(service.update(&row.id, rewrite("   ")).await.is_err());
+        // 名字空着也不行。
+        assert!(service.insert(draft("   ", USABLE)).await.is_err());
         // 库里那份一个字节没动。
         let all = service.load_all().await.unwrap();
         assert_eq!(all[0].config_yaml.as_ref(), USABLE);

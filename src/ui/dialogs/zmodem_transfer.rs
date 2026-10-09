@@ -74,10 +74,9 @@ impl ZmodemTransferBody {
         let Prompt::Receive { dir, error, .. } = &mut self.prompt else {
             return;
         };
-        match self
-            .emulator
-            .update(cx, |emulator, cx| emulator.zmodem_accept_save(dir.clone(), cx))
-        {
+        match self.emulator.update(cx, |emulator, cx| {
+            emulator.zmodem_accept_save(dir.clone(), cx)
+        }) {
             Ok(()) => window.close_dialog(cx),
             Err(failure) => {
                 *error = Some(SharedString::from(format!("{failure:#}")));
@@ -102,7 +101,10 @@ impl ZmodemTransferBody {
                 return;
             };
             _ = this.update_in(cx, |this, _, cx| {
-                if let Prompt::Receive { dir: target, error, .. } = &mut this.prompt {
+                if let Prompt::Receive {
+                    dir: target, error, ..
+                } = &mut this.prompt
+                {
                     *target = dir;
                     *error = None;
                 }
@@ -130,10 +132,9 @@ impl ZmodemTransferBody {
                 return;
             }
             _ = this.update_in(cx, |this, window, cx| {
-                match this
-                    .emulator
-                    .update(cx, |emulator, cx| emulator.zmodem_accept_send(files.clone(), cx))
-                {
+                match this.emulator.update(cx, |emulator, cx| {
+                    emulator.zmodem_accept_send(files.clone(), cx)
+                }) {
                     Ok(()) => window.close_dialog(cx),
                     Err(failure) => {
                         if let Prompt::Send { error } = &mut this.prompt {
@@ -221,25 +222,23 @@ impl ZmodemTransferBody {
                                     })),
                             ),
                     )
-                    .children(error.clone().map(|error| {
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().danger)
-                            .child(error)
-                    }))
+                    .children(
+                        error.clone().map(|error| {
+                            div().text_xs().text_color(cx.theme().danger).child(error)
+                        }),
+                    )
                     .into_any_element(),
             ),
-            Prompt::Send { error } => Some(
-                v_flex()
-                    .gap_2()
-                    .children(error.clone().map(|error| {
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().danger)
-                            .child(error)
-                    }))
-                    .into_any_element(),
-            ),
+            Prompt::Send { error } => {
+                Some(
+                    v_flex()
+                        .gap_2()
+                        .children(error.clone().map(|error| {
+                            div().text_xs().text_color(cx.theme().danger).child(error)
+                        }))
+                        .into_any_element(),
+                )
+            }
         }
     }
 }
@@ -285,7 +284,10 @@ impl ZmodemTransferDialog {
             },
             crate::zmodem::Offer::Send => Prompt::Send { error: None },
         };
-        let body = cx.new(|_| ZmodemTransferBody { emulator: emulator.clone(), prompt });
+        let body = cx.new(|_| ZmodemTransferBody {
+            emulator: emulator.clone(),
+            prompt,
+        });
 
         // 会话收场（对端没气了、等决策超时、被别处取消）时把框收掉：提议
         // 已经没了，框上那两颗按钮按下去只会报错。订阅跟着正文实体走，
@@ -349,11 +351,9 @@ impl ZmodemTransferDialog {
                                     false => t!("zmodem.choose_files"),
                                 })
                                 .on_click(move |_, window, cx| {
-                                    primary_body.update(cx, |this, cx| {
-                                        match receive {
-                                            true => this.save(window, cx),
-                                            false => this.pick_files(window, cx),
-                                        }
+                                    primary_body.update(cx, |this, cx| match receive {
+                                        true => this.save(window, cx),
+                                        false => this.pick_files(window, cx),
                                     });
                                 }),
                         ),
@@ -379,11 +379,13 @@ fn render_header(receive: bool, cx: &App) -> impl IntoElement {
                 .border_1()
                 .border_color(accent.opacity(0.3))
                 .text_color(accent)
-                .child(Icon::new(match receive {
-                    true => AppIcon::Download,
-                    false => AppIcon::Upload,
-                })
-                .with_size(px(16.))),
+                .child(
+                    Icon::new(match receive {
+                        true => AppIcon::Download,
+                        false => AppIcon::Upload,
+                    })
+                    .with_size(px(16.)),
+                ),
         )
         .child(
             div()
@@ -448,10 +450,8 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
 
         // 接收形态：真的推一场会话到文件宣布那一刻，提议里带着名字与大小。
-        let root = std::env::temp_dir().join(format!(
-            "winssh-pro-zmodem-dialog-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("winssh-pro-zmodem-dialog-{}", std::process::id()));
         std::fs::remove_dir_all(&root).ok();
         std::fs::create_dir_all(&root).expect("建临时目录");
         let source = root.join("report.pdf");

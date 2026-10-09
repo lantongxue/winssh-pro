@@ -18,7 +18,10 @@
 //! 由面板决定那意味着什么 —— 同一句"我要关掉"，在单屏时是关标签页，
 //! 分屏时只是收掉这一半。
 
-use std::{rc::Rc, sync::{Arc, Mutex}};
+use std::{
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 
 use alacritty_terminal::selection::SelectionType;
 use gpui_kit::component::{
@@ -40,8 +43,8 @@ use gpui_kit::{
 use crate::{
     command_history::CommandRun,
     host::Host,
-    sftp::human_size,
     service::TrustedHostService,
+    sftp::human_size,
     ssh::SshSession,
     terminal::{
         Emulator, EmulatorEvent, GridPoint, SearchQuery, TerminalBounds, cursor, font,
@@ -376,10 +379,7 @@ impl TerminalPane {
                                         let fp = info.fingerprint.clone();
                                         win.spawn(app, async move |cx| {
                                             if save {
-                                                TrustedHostService::open()
-                                                    .save(&info)
-                                                    .await
-                                                    .ok();
+                                                TrustedHostService::open().save(&info).await.ok();
                                             }
                                             let trust = if save {
                                                 TrustPolicy::Verify { expected: fp }
@@ -392,9 +392,7 @@ impl TerminalPane {
                                             let _ =
                                                 entity.update_in(cx, |this, _, cx| match outcome {
                                                     Ok(conn) => this.adopt(conn, cx),
-                                                    Err(e) => {
-                                                        this.handle_fallback(&e, &ph, cx)
-                                                    }
+                                                    Err(e) => this.handle_fallback(&e, &ph, cx),
                                                 });
                                         })
                                         .detach();
@@ -834,7 +832,10 @@ impl TerminalPane {
     /// 这一行不做"自动替你填用户名"的事，见 [`crate::telnet`] 的模块文档。
     fn telnet_banner(&self) -> String {
         let Host {
-            name, hostname, port, ..
+            name,
+            hostname,
+            port,
+            ..
         } = &self.host;
         format!(
             "\x1b[32m{}\x1b[0m\x1b[90m{}:{}\x1b[0m\r\n\x1b[90m{}\x1b[0m\r\n",
@@ -1502,14 +1503,7 @@ impl TerminalPane {
                     .with_size(px(14.))
                     .text_color(accent),
                 )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .child(name),
-                )
+                .child(div().flex_1().min_w_0().truncate().text_xs().child(name))
                 .child(
                     Progress::new(("zmodem-strip", cx.entity_id()))
                         .xsmall()
@@ -1518,24 +1512,20 @@ impl TerminalPane {
                         .loading(fraction.is_none())
                         .color(accent),
                 )
-                .children(
-                    percent.map(|percent| {
-                        div()
-                            .flex_none()
-                            .text_xs()
-                            .text_color(palette::idle(cx))
-                            .child(percent)
-                    }),
-                )
-                .children(
-                    speed.map(|speed| {
-                        div()
-                            .flex_none()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(speed)
-                    }),
-                )
+                .children(percent.map(|percent| {
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(palette::idle(cx))
+                        .child(percent)
+                }))
+                .children(speed.map(|speed| {
+                    div()
+                        .flex_none()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(speed)
+                }))
                 .child(
                     Button::new(("zmodem-strip-cancel", cx.entity_id()))
                         .ghost()
@@ -1775,7 +1765,11 @@ impl Render for TerminalPane {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Middle, cx.listener(Self::on_mouse_up))
-            .child(TerminalGridElement::new(emulator, focused, self.cursor_visible))
+            .child(TerminalGridElement::new(
+                emulator,
+                focused,
+                self.cursor_visible,
+            ))
             // 搜索栏与 ZMODEM 进度条浮在网格上（`absolute`），所以放在网格
             // 之后当兄弟画，而不是把网格顶下去 —— 顶下去会让终端重排，
             // 开关一次抖一屏。一个贴右上、一个贴左上，不打架。

@@ -226,9 +226,6 @@ mod tests {
         let mut prompt = [0u8; 7];
         stream.read_exact(&mut prompt).expect("阻塞读得到对端的话");
         assert_eq!(&prompt, b"login: ");
-        assert_eq!(
-            proxy.join().unwrap(),
-            ("switch.internal".to_string(), 2323)
-        );
+        assert_eq!(proxy.join().unwrap(), ("switch.internal".to_string(), 2323));
     }
 }

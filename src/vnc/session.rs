@@ -195,14 +195,7 @@ impl VncSession {
         })
         .await?;
 
-        db::runtime().spawn(run(
-            client,
-            input_rx,
-            events_tx,
-            settings,
-            counters,
-            peer,
-        ));
+        db::runtime().spawn(run(client, input_rx, events_tx, settings, counters, peer));
         Ok(Self {
             input_tx,
             events_rx: Some(events_rx),

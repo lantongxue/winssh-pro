@@ -250,9 +250,9 @@ mod platform {
         T: winreg::types::ToRegValue,
     {
         match value {
-            Some(value) => key.set_value(name, value).with_context(|| {
-                format!("复原 {name} 失败")
-            })?,
+            Some(value) => key
+                .set_value(name, value)
+                .with_context(|| format!("复原 {name} 失败"))?,
             // 原本就没有这一项：删掉我们写的那一份，而不是留个空串。
             None => {
                 if let Err(error) = key.delete_value(name)
@@ -406,9 +406,7 @@ mod platform {
             .lines()
             .map(str::trim)
             .filter(|line| {
-                !line.is_empty()
-                    && !line.starts_with('*')
-                    && !line.starts_with("An asterisk")
+                !line.is_empty() && !line.starts_with('*') && !line.starts_with("An asterisk")
             })
             .map(str::to_owned)
             .collect())

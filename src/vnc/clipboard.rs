@@ -115,10 +115,7 @@ impl ClipboardSync {
         let event = match &self.remote {
             Some(caps) if speaks_extended(caps) => {
                 if !within_limit(caps, text.len()) {
-                    log::warn!(
-                        "VNC 剪贴板文本 {} 字节超过对端上限，这条不同步",
-                        text.len(),
-                    );
+                    log::warn!("VNC 剪贴板文本 {} 字节超过对端上限，这条不同步", text.len(),);
                     return None;
                 }
                 X11Event::Clipboard(ExtendedClipboard::Notify {
@@ -150,9 +147,7 @@ impl ClipboardSync {
         if let Some(sniffed) = decoded.sniffed
             && self.sniffed != Some(sniffed)
         {
-            log::info!(
-                "VNC 剪贴板：对端的经典正文按 {sniffed:?} 解得通，这条会话往后也按它发"
-            );
+            log::info!("VNC 剪贴板：对端的经典正文按 {sniffed:?} 解得通，这条会话往后也按它发");
             self.sniffed = Some(sniffed);
         }
         self.local = Some(decoded.text.clone());
@@ -186,14 +181,13 @@ impl ClipboardSync {
             },
             ExtendedClipboard::Peek { formats } => Reaction {
                 // "你手上有多大"：报一声"有"就够了，数据等它来 Request。
-                reply: (formats & FORMAT_TEXT != 0
-                    && self.announced
-                    && self.local.is_some())
-                .then(|| {
-                    X11Event::Clipboard(ExtendedClipboard::Notify {
-                        formats: FORMAT_TEXT,
-                    })
-                }),
+                reply: (formats & FORMAT_TEXT != 0 && self.announced && self.local.is_some()).then(
+                    || {
+                        X11Event::Clipboard(ExtendedClipboard::Notify {
+                            formats: FORMAT_TEXT,
+                        })
+                    },
+                ),
                 clipboard: None,
             },
             ExtendedClipboard::Notify { formats } => Reaction {
@@ -308,7 +302,9 @@ pub(crate) fn classic_bytes(text: &str, charset: VncClipboardCharset) -> Vec<u8>
             .map(|c| if c as u32 <= 0xff { c as u8 } else { b'?' })
             .collect(),
         named => encode_with(
-            named.table().expect("自动与 Latin-1 之外的每一档都有一张表"),
+            named
+                .table()
+                .expect("自动与 Latin-1 之外的每一档都有一张表"),
             &text,
         ),
     }
@@ -322,7 +318,10 @@ fn encode_with(table: &'static Encoding, text: &str) -> Vec<u8> {
     if !unmappable {
         return bytes.into_owned();
     }
-    log::warn!("VNC 剪贴板：有字在 {} 里没有位置，换成问号发出去", table.name());
+    log::warn!(
+        "VNC 剪贴板：有字在 {} 里没有位置，换成问号发出去",
+        table.name()
+    );
     let mut out = Vec::with_capacity(text.len());
     let mut buffer = [0u8; 4];
     for character in text.chars() {
@@ -504,7 +503,10 @@ mod tests {
             ACTION_CAPS | ACTION_REQUEST | ACTION_NOTIFY | ACTION_PROVIDE,
         )));
         assert!(
-            matches!(reaction.reply, Some(X11Event::Clipboard(ExtendedClipboard::Caps(_)))),
+            matches!(
+                reaction.reply,
+                Some(X11Event::Clipboard(ExtendedClipboard::Caps(_)))
+            ),
             "对端递 Caps 该回敬一份 Caps",
         );
         sync
@@ -586,9 +588,10 @@ mod tests {
     fn a_character_the_named_charset_cannot_hold_becomes_a_question_mark() {
         assert_eq!(classic_bytes("hi😀", VncClipboardCharset::Gbk), b"hi?");
         // Latin-1 那一档同理（规范里就是一个字节一个码点）。
-        assert_eq!(classic_bytes("café 你", VncClipboardCharset::Latin1), vec![
-            0x63, 0x61, 0x66, 0xE9, 0x20, b'?'
-        ]);
+        assert_eq!(
+            classic_bytes("café 你", VncClipboardCharset::Latin1),
+            vec![0x63, 0x61, 0x66, 0xE9, 0x20, b'?']
+        );
     }
 
     /// 自动档的嗅探：一份 GBK 的中文 UTF-8 解不动，严格试 GBK 解得通，
@@ -640,7 +643,10 @@ mod tests {
     fn what_was_sniffed_on_the_way_in_is_used_on_the_way_out() {
         let mut sync = ClipboardSync::new(VncClipboardCharset::Auto);
         // 嗅之前：中文按 UTF-8 发（自动档的出厂行为）。
-        assert!(is_classic(sync.local_text("你好".into()), "你好".as_bytes()));
+        assert!(is_classic(
+            sync.local_text("你好".into()),
+            "你好".as_bytes()
+        ));
 
         // 对端复制了一份 GBK 的中文过来。
         assert_eq!(sync.on_classic(&[0xC4, 0xE3, 0xBA, 0xC3]), "你好");
@@ -715,7 +721,9 @@ mod tests {
         assert!(
             matches!(
                 reaction.reply,
-                Some(X11Event::Clipboard(ExtendedClipboard::Request { formats: FORMAT_TEXT }))
+                Some(X11Event::Clipboard(ExtendedClipboard::Request {
+                    formats: FORMAT_TEXT
+                }))
             ),
             "收到 Notify 该去要，实际 {:?}",
             reaction.reply,
@@ -743,7 +751,9 @@ mod tests {
         assert!(
             matches!(
                 reaction.reply,
-                Some(X11Event::Clipboard(ExtendedClipboard::Notify { formats: FORMAT_TEXT }))
+                Some(X11Event::Clipboard(ExtendedClipboard::Notify {
+                    formats: FORMAT_TEXT
+                }))
             ),
             "Peek 只是问有没有，回一声 Notify 就够，实际 {:?}",
             reaction.reply,
@@ -776,7 +786,10 @@ mod tests {
             FORMAT_HTML,
             ACTION_CAPS | ACTION_REQUEST | ACTION_NOTIFY | ACTION_PROVIDE,
         )));
-        assert!(is_classic(sync.local_text("你好".into()), "你好".as_bytes()));
+        assert!(is_classic(
+            sync.local_text("你好".into()),
+            "你好".as_bytes()
+        ));
     }
 
     #[test]

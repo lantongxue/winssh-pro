@@ -333,8 +333,9 @@ impl SettingService {
         db::run(async move {
             let raw = this.repo.get(&this.db, TUN_SETTINGS_KEY).await?;
             match raw {
-                Some(json) if !json.trim().is_empty() => serde_json::from_str(&json)
-                    .context("解析 Clash TUN 偏好失败"),
+                Some(json) if !json.trim().is_empty() => {
+                    serde_json::from_str(&json).context("解析 Clash TUN 偏好失败")
+                }
                 _ => Ok(crate::clash::TunSettings::default()),
             }
         })
@@ -502,7 +503,10 @@ mod tests {
             custom_cfg.password = "secret_pass123".to_string();
             custom_cfg.s3.bucket = "my-test-bucket".to_string();
 
-            service.save_backup_config(custom_cfg.clone()).await.unwrap();
+            service
+                .save_backup_config(custom_cfg.clone())
+                .await
+                .unwrap();
             assert_eq!(service.load_backup_config().await.unwrap(), custom_cfg);
             assert_eq!(backup::global(), custom_cfg, "全局缓存同步更新");
         });

@@ -261,8 +261,7 @@ where
             .with_context(|| "读取临时可执行文件权限失败")?
             .permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&temp_bin, perms)
-            .with_context(|| "设置可执行权限失败")?;
+        std::fs::set_permissions(&temp_bin, perms).with_context(|| "设置可执行权限失败")?;
     }
 
     // Windows 平台如果存在已有的目标文件，需先清理再移动
@@ -285,13 +284,12 @@ where
 
 /// 解压 .gz 文件（解压后内容直接为单个可执行二进制）。
 fn unpack_gz(src: &Path, dst: &Path) -> Result<()> {
-    let in_file = std::fs::File::open(src)
-        .with_context(|| format!("打开压缩文件失败: {}", src.display()))?;
+    let in_file =
+        std::fs::File::open(src).with_context(|| format!("打开压缩文件失败: {}", src.display()))?;
     let mut decoder = flate2::read::GzDecoder::new(in_file);
     let mut out_file = std::fs::File::create(dst)
         .with_context(|| format!("创建目标文件失败: {}", dst.display()))?;
-    std::io::copy(&mut decoder, &mut out_file)
-        .with_context(|| "解压 gzip 数据失败")?;
+    std::io::copy(&mut decoder, &mut out_file).with_context(|| "解压 gzip 数据失败")?;
     Ok(())
 }
 
@@ -299,18 +297,17 @@ fn unpack_gz(src: &Path, dst: &Path) -> Result<()> {
 fn unpack_zip(src: &Path, dst: &Path) -> Result<()> {
     let in_file = std::fs::File::open(src)
         .with_context(|| format!("打开 zip 文件失败: {}", src.display()))?;
-    let mut archive = zip::ZipArchive::new(in_file)
-        .with_context(|| "读取 zip 压缩包失败")?;
+    let mut archive = zip::ZipArchive::new(in_file).with_context(|| "读取 zip 压缩包失败")?;
 
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)
+        let mut file = archive
+            .by_index(i)
             .with_context(|| format!("读取 zip 内文件索引 {i} 失败"))?;
         let name = file.name().to_string();
         if name.ends_with(".exe") {
             let mut out_file = std::fs::File::create(dst)
                 .with_context(|| format!("创建目标文件失败: {}", dst.display()))?;
-            std::io::copy(&mut file, &mut out_file)
-                .with_context(|| "从 zip 提取 exe 失败")?;
+            std::io::copy(&mut file, &mut out_file).with_context(|| "从 zip 提取 exe 失败")?;
             return Ok(());
         }
     }
@@ -387,7 +384,9 @@ impl DownloadState {
     /// 已完成的比例，0.0 ~ 1.0。不知道总大小时是 `None`。
     pub fn fraction(&self) -> Option<f32> {
         match self.total {
-            Some(total) if total > 0 => Some((self.downloaded as f64 / total as f64).min(1.0) as f32),
+            Some(total) if total > 0 => {
+                Some((self.downloaded as f64 / total as f64).min(1.0) as f32)
+            }
             _ => None,
         }
     }
@@ -645,7 +644,8 @@ mod tests {
     async fn test_real_download_mihomo() {
         let res = download_mihomo(|event| {
             println!("Download event: {event:?}");
-        }).await;
+        })
+        .await;
         assert!(res.is_ok(), "download failed: {:?}", res.err());
         let bin = res.unwrap();
         assert!(bin.is_file());
@@ -655,7 +655,11 @@ mod tests {
     #[ignore] // 需要本地已安装/下载好 mihomo 内核，按需手动跑
     fn test_binary_path_finds_downloaded() {
         let path = super::super::runtime::binary_path();
-        assert!(path.is_ok(), "binary_path should locate the binary: {:?}", path.err());
+        assert!(
+            path.is_ok(),
+            "binary_path should locate the binary: {:?}",
+            path.err()
+        );
         let bin = path.unwrap();
         assert!(bin.is_file());
     }

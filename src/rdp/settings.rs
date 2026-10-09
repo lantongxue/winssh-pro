@@ -160,7 +160,10 @@ impl RdpPerformance {
     /// 这一档的 `INFO_PERF_FLAGS`。
     pub fn flags(&self) -> PerformanceFlags {
         match self {
-            Self::Lan => PerformanceFlags::ENABLE_DESKTOP_COMPOSITION | PerformanceFlags::ENABLE_FONT_SMOOTHING,
+            Self::Lan => {
+                PerformanceFlags::ENABLE_DESKTOP_COMPOSITION
+                    | PerformanceFlags::ENABLE_FONT_SMOOTHING
+            }
             Self::Balanced => PerformanceFlags::default(),
             Self::Wan => {
                 PerformanceFlags::default()
@@ -275,7 +278,9 @@ mod tests {
     fn security_flags_follow_the_chosen_floor() {
         assert!(RdpSecurity::Auto.enable_tls() && RdpSecurity::Auto.enable_credssp());
         assert!(RdpSecurity::TlsOnly.enable_tls() && !RdpSecurity::TlsOnly.enable_credssp());
-        assert!(!RdpSecurity::NlaRequired.enable_tls() && RdpSecurity::NlaRequired.enable_credssp());
+        assert!(
+            !RdpSecurity::NlaRequired.enable_tls() && RdpSecurity::NlaRequired.enable_credssp()
+        );
     }
 
     #[test]

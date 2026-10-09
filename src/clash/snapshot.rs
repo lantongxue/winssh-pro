@@ -157,8 +157,7 @@ impl LiveGroup {
                 .unwrap_or(usize::MAX)
         });
     }
-
-    }
+}
 
 /// 组内一个成员。
 ///
@@ -338,7 +337,13 @@ fn is_group(kind: &str) -> bool {
 /// `/rules` 里的一条。
 fn rule_of(entry: &Value) -> RuleSummary {
     RuleSummary {
-        kind: rule_type(entry.get("type").and_then(Value::as_str).unwrap_or_default()).into(),
+        kind: rule_type(
+            entry
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
+        .into(),
         payload: entry
             .get("payload")
             .and_then(Value::as_str)
@@ -471,7 +476,11 @@ mod tests {
 
         let live = live.ordered_by(&outline);
         let names: Vec<&str> = live.groups.iter().map(|g| g.name.as_ref()).collect();
-        assert_eq!(names, ["自动", "PROXY", "GLOBAL"], "正文里的在前，GLOBAL 沉底");
+        assert_eq!(
+            names,
+            ["自动", "PROXY", "GLOBAL"],
+            "正文里的在前，GLOBAL 沉底"
+        );
 
         let proxy = live.group("PROXY").unwrap();
         let members: Vec<&str> = proxy.nodes.iter().map(|n| n.name.as_ref()).collect();

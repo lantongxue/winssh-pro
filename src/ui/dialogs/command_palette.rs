@@ -362,7 +362,14 @@ fn action_commands() -> Vec<PaletteCommand> {
             CommandItem::new()
                 .label(t!("palette.open_settings_window"))
                 .icon(IconName::Settings)
-                .keywords(["settings", "preferences", "config", "设置", "偏好设置", "窗口"])
+                .keywords([
+                    "settings",
+                    "preferences",
+                    "config",
+                    "设置",
+                    "偏好设置",
+                    "窗口",
+                ])
                 .action(Box::new(OpenSettingsWindow)),
         ),
     ]

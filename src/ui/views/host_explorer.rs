@@ -32,11 +32,10 @@ use gpui_kit::component::{
     v_flex, v_virtual_list,
 };
 use gpui_kit::{
-    EntityId,
-    App, AppContext as _, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, Render,
-    SharedString, Size, StatefulInteractiveElement as _, Styled as _, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px, size,
+    App, AppContext as _, ClickEvent, Context, DragMoveEvent, Entity, EntityId, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
+    Point, Render, SharedString, Size, StatefulInteractiveElement as _, Styled as _, WeakEntity,
+    Window, div, prelude::FluentBuilder as _, px, size,
 };
 
 use super::{GUTTER, ICON_SIZE, SidebarView, collapse_button, view_header};
@@ -162,9 +161,15 @@ impl TrackedPanel {
     /// 时 `upgrade` 给回 `None`，那就是"不活着" —— 不该再点亮卡片上那颗点。
     fn alive(&self, cx: &gpui_kit::App) -> bool {
         match self {
-            Self::Terminal(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive(cx)),
-            Self::Sftp(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive(cx)),
-            Self::Ftp(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive(cx)),
+            Self::Terminal(panel) => panel
+                .upgrade()
+                .is_some_and(|panel| panel.read(cx).alive(cx)),
+            Self::Sftp(panel) => panel
+                .upgrade()
+                .is_some_and(|panel| panel.read(cx).alive(cx)),
+            Self::Ftp(panel) => panel
+                .upgrade()
+                .is_some_and(|panel| panel.read(cx).alive(cx)),
             Self::Vnc(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
             Self::Rdp(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
             Self::EasyTier(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
@@ -366,8 +371,8 @@ impl HostExplorerView {
         crate::easytier::portal::set_launcher(launcher);
         cx.spawn_in(window, async move |this, cx| {
             while let Some(network) = requests.next().await {
-                let served = this.update_in(cx, |this, window, cx| {
-                    match this.network_host(&network) {
+                let served =
+                    this.update_in(cx, |this, window, cx| match this.network_host(&network) {
                         Some(host) => {
                             this.join_network(&host, window, cx);
                             this.rebuild_rows(cx);
@@ -376,8 +381,7 @@ impl HostExplorerView {
                             network,
                             t!("easytier.portal_missing").into(),
                         ),
-                    }
-                });
+                    });
                 if served.is_err() {
                     break;
                 }
@@ -499,7 +503,9 @@ impl HostExplorerView {
         if host.kind == HostKind::EasyTier {
             let panel = self.join_network(host, window, cx);
             let id = PanelId::from(panel.entity_id());
-            _ = self.dock_area.update(cx, |area, cx| area.select_panel(id, window, cx));
+            _ = self
+                .dock_area
+                .update(cx, |area, cx| area.select_panel(id, window, cx));
             self.rebuild_rows(cx);
             return;
         }
@@ -523,26 +529,22 @@ impl HostExplorerView {
                 panel_handle(panel)
             }
             HostKind::Sftp => {
-                let panel =
-                    DockedSftpPanel::new(host.clone(), self.dock_area.clone(), window, cx);
+                let panel = DockedSftpPanel::new(host.clone(), self.dock_area.clone(), window, cx);
                 self.track_panel(host.id.clone(), &panel, TrackedPanel::Sftp, window, cx);
                 panel_handle(panel)
             }
             HostKind::Ftp => {
-                let panel =
-                    DockedFtpPanel::new(host.clone(), self.dock_area.clone(), window, cx);
+                let panel = DockedFtpPanel::new(host.clone(), self.dock_area.clone(), window, cx);
                 self.track_panel(host.id.clone(), &panel, TrackedPanel::Ftp, window, cx);
                 panel_handle(panel)
             }
             HostKind::Vnc => {
-                let panel =
-                    VncPanel::new(host.clone(), self.dock_area.clone(), window, cx);
+                let panel = VncPanel::new(host.clone(), self.dock_area.clone(), window, cx);
                 self.track_panel(host.id.clone(), &panel, TrackedPanel::Vnc, window, cx);
                 panel_handle(panel)
             }
             HostKind::Rdp => {
-                let panel =
-                    RdpPanel::new(host.clone(), self.dock_area.clone(), window, cx);
+                let panel = RdpPanel::new(host.clone(), self.dock_area.clone(), window, cx);
                 self.track_panel(host.id.clone(), &panel, TrackedPanel::Rdp, window, cx);
                 panel_handle(panel)
             }
@@ -570,7 +572,13 @@ impl HostExplorerView {
             return existing;
         }
         let panel = EasyTierPanel::new(network.clone(), self.dock_area.clone(), window, cx);
-        self.track_panel(network.id.clone(), &panel, TrackedPanel::EasyTier, window, cx);
+        self.track_panel(
+            network.id.clone(),
+            &panel,
+            TrackedPanel::EasyTier,
+            window,
+            cx,
+        );
         let handle = panel_handle(panel.clone());
         _ = self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(handle, DockPlacement::Center, None, window, cx);
@@ -597,10 +605,12 @@ impl HostExplorerView {
 
     /// 名册上这台组网主机还开着的那一扇（关掉了、被回收了的不算）。
     fn easytier_panel(&self, host: &SharedString) -> Option<Entity<EasyTierPanel>> {
-        self.sessions.iter().find_map(|session| match &session.panel {
-            TrackedPanel::EasyTier(panel) if &session.host == host => panel.upgrade(),
-            _ => None,
-        })
+        self.sessions
+            .iter()
+            .find_map(|session| match &session.panel {
+                TrackedPanel::EasyTier(panel) if &session.host == host => panel.upgrade(),
+                _ => None,
+            })
     }
 
     /// 把一扇会话窗记进名册，并盯着它的存亡。

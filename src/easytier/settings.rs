@@ -377,7 +377,10 @@ mod tests {
         assert_eq!(settings.peers, vec!["tcp://10.0.0.1:11010".to_string()]);
         assert_eq!(settings.socks5_port, DEFAULT_SOCKS5_PORT);
         assert!(settings.encryption);
-        assert!(settings.proxy_networks.is_empty(), "老库那一行不代理任何子网");
+        assert!(
+            settings.proxy_networks.is_empty(),
+            "老库那一行不代理任何子网"
+        );
     }
 
     /// `easytier-core -p` 认的，这里都认：每种隧道、节点发现、不写端口。
@@ -461,9 +464,8 @@ mod tests {
     #[test]
     fn a_proxy_network_reads_like_the_cli_flag() {
         let parsed = |raw: &str| {
-            parse_proxy_network(raw).map(|(real, mapped)| {
-                (real.to_string(), mapped.map(|mapped| mapped.to_string()))
-            })
+            parse_proxy_network(raw)
+                .map(|(real, mapped)| (real.to_string(), mapped.map(|mapped| mapped.to_string())))
         };
         assert_eq!(
             parsed(" 192.168.1.0/24 "),
@@ -471,12 +473,19 @@ mod tests {
         );
         assert_eq!(
             parsed("192.168.1.0/24 -> 10.1.1.0/24"),
-            Ok(("192.168.1.0/24".to_string(), Some("10.1.1.0/24".to_string()))),
+            Ok((
+                "192.168.1.0/24".to_string(),
+                Some("10.1.1.0/24".to_string())
+            )),
             "箭头两边的空格不算"
         );
         let (host, mapped) = parse_proxy_network("192.168.1.5").expect("只写 IP 也认");
         assert_eq!(
-            (host.first_address().to_string(), host.network_length(), mapped),
+            (
+                host.first_address().to_string(),
+                host.network_length(),
+                mapped
+            ),
             ("192.168.1.5".to_string(), 32, None),
             "只写 IP 是单台主机"
         );

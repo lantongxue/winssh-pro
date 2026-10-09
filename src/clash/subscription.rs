@@ -71,10 +71,7 @@ impl SubscriptionMeta {
     /// 机场给的头常有几种认不全的写法（小写拼错、漏大写、多一个结尾分号），
     /// 这里只一对一地抠数字，不试图读懂那一段的全部意思 —— 那没有意义。
     pub fn from_headers(headers: &reqwest::header::HeaderMap) -> Option<Self> {
-        let raw = headers
-            .get("subscription-userinfo")?
-            .to_str()
-            .ok()?;
+        let raw = headers.get("subscription-userinfo")?.to_str().ok()?;
         let mut meta = Self::default();
         for pair in raw.split(';') {
             let pair = pair.trim();
@@ -302,7 +299,8 @@ mod tests {
     use super::*;
 
     /// 一份能用的最小配置。
-    const USABLE: &str = "proxies:\n  - name: A\n    type: ss\n    server: s.example.com\n    port: 443\n";
+    const USABLE: &str =
+        "proxies:\n  - name: A\n    type: ss\n    server: s.example.com\n    port: 443\n";
 
     #[test]
     fn a_draft_needs_a_name_and_something_to_go_on() {
@@ -386,7 +384,10 @@ mod tests {
         use reqwest::header::{HeaderMap, HeaderValue};
         let headers = |value: &str| {
             let mut map = HeaderMap::new();
-            map.insert("subscription-userinfo", HeaderValue::from_str(value).unwrap());
+            map.insert(
+                "subscription-userinfo",
+                HeaderValue::from_str(value).unwrap(),
+            );
             map
         };
 
@@ -411,7 +412,10 @@ mod tests {
         // 尾巴多分号、空格、大小写（`Upload=` 这种机场自家拼法）都要认。
         let headers = |value: &str| {
             let mut map = HeaderMap::new();
-            map.insert("subscription-userinfo", HeaderValue::from_str(value).unwrap());
+            map.insert(
+                "subscription-userinfo",
+                HeaderValue::from_str(value).unwrap(),
+            );
             map
         };
         let loose = SubscriptionMeta::from_headers(&headers("Upload= 500;DOWNLOAD= 1000 ;"))

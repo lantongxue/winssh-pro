@@ -323,8 +323,7 @@ mod tests {
 
         let routed = scanner.route(&bytes);
         assert_eq!(
-            &*routed.terminal,
-            b"total 1\r\n-rw-r--r-- 1 u u 3 x\r\n",
+            &*routed.terminal, b"total 1\r\n-rw-r--r-- 1 u u 3 x\r\n",
             "签名前的输出照进屏幕，紧贴签名的 rz\\r 要剥掉"
         );
         let trigger = routed.trigger.expect("ZRQINIT 该开场");
@@ -373,7 +372,10 @@ mod tests {
         let routed = scanner.route(b"echo **");
         assert_eq!(&*routed.terminal, b"echo ", "两个星号扣住");
         let routed = scanner.route(b"* is fine\r\n");
-        assert_eq!(&*routed.terminal, b"*** is fine\r\n", "接不上，原样吐给屏幕");
+        assert_eq!(
+            &*routed.terminal, b"*** is fine\r\n",
+            "接不上，原样吐给屏幕"
+        );
         assert!(routed.trigger.is_none());
         assert!(!scanner.has_hold());
     }

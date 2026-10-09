@@ -3379,97 +3379,95 @@ impl SftpPanel {
             .size_full()
             .min_w_0()
             .overflow_hidden()
+            .child(
+                h_flex()
+                    .h(PANE_HEADER_HEIGHT)
+                    .flex_shrink_0()
+                    .px_2()
+                    .items_center()
+                    .gap_1p5()
                     .child(
-                        h_flex()
-                            .h(PANE_HEADER_HEIGHT)
-                            .flex_shrink_0()
-                            .px_2()
-                            .items_center()
-                            .gap_1p5()
-                            .child(
-                                Icon::new(AppIcon::Laptop)
-                                    .with_size(px(12.))
-                                    .text_color(palette::sky()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_semibold()
-                                    .child(SharedString::from(t!("sftp.local_workstation"))),
-                            )
-                            .child(self.render_quick_jump_menu(cx))
-                            .child(self.render_local_breadcrumb(cx)),
+                        Icon::new(AppIcon::Laptop)
+                            .with_size(px(12.))
+                            .text_color(palette::sky()),
                     )
                     .child(
                         div()
-                            .relative()
-                            .flex_1()
-                            .min_h_0()
+                            .text_xs()
+                            .font_semibold()
+                            .child(SharedString::from(t!("sftp.local_workstation"))),
+                    )
+                    .child(self.render_quick_jump_menu(cx))
+                    .child(self.render_local_breadcrumb(cx)),
+            )
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .on_drop(
+                        cx.listener(|this, dragged: &DraggedRemoteEntries, window, cx| {
+                            this.download_entries(&dragged.entries, window, cx);
+                        }),
+                    )
+                    .child(
+                        DataTable::new(&self.local_table)
+                            .xsmall()
+                            .bordered(false)
+                            .stripe(true),
+                    )
+                    .child(
+                        // 拖拽接收指示遮罩层（拖拽下载效果）
+                        div()
+                            .id("local-drop-overlay")
+                            .absolute()
+                            .inset_0()
+                            .m_1()
+                            .rounded_lg()
+                            .invisible()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .justify_center()
+                            .gap_2()
+                            .bg(cx.theme().background.opacity(0.92))
+                            .border_2()
+                            .border_dashed()
+                            .border_color(palette::sky())
+                            .shadow_lg()
+                            .drag_over::<DraggedRemoteEntries>(|style, _, _, _| style.visible())
                             .on_drop(cx.listener(
                                 |this, dragged: &DraggedRemoteEntries, window, cx| {
                                     this.download_entries(&dragged.entries, window, cx);
                                 },
                             ))
                             .child(
-                                DataTable::new(&self.local_table)
-                                    .xsmall()
-                                    .bordered(false)
-                                    .stripe(true),
+                                Icon::new(AppIcon::Download)
+                                    .with_size(px(36.))
+                                    .text_color(palette::sky()),
                             )
                             .child(
-                                // 拖拽接收指示遮罩层（拖拽下载效果）
                                 div()
-                                    .id("local-drop-overlay")
-                                    .absolute()
-                                    .inset_0()
-                                    .m_1()
-                                    .rounded_lg()
-                                    .invisible()
-                                    .flex()
-                                    .flex_col()
-                                    .items_center()
-                                    .justify_center()
-                                    .gap_2()
-                                    .bg(cx.theme().background.opacity(0.92))
-                                    .border_2()
-                                    .border_dashed()
-                                    .border_color(palette::sky())
-                                    .shadow_lg()
-                                    .drag_over::<DraggedRemoteEntries>(|style, _, _, _| {
-                                        style.visible()
-                                    })
-                                    .on_drop(cx.listener(
-                                        |this, dragged: &DraggedRemoteEntries, window, cx| {
-                                            this.download_entries(&dragged.entries, window, cx);
-                                        },
-                                    ))
-                                    .child(
-                                        Icon::new(AppIcon::Download)
-                                            .with_size(px(36.))
-                                            .text_color(palette::sky()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font_semibold()
-                                            .text_color(cx.theme().foreground)
-                                            .child(SharedString::from(t!("sftp.drop_to_download"))),
-                                    )
-                                    .child(
-                                        div()
-                                            .px_2()
-                                            .py_0p5()
-                                            .rounded(cx.theme().radius)
-                                            .bg(palette::recessed(cx))
-                                            .border_1()
-                                            .border_color(palette::sky().opacity(0.4))
-                                            .font_family(cx.theme().mono_font_family.clone())
-                                            .text_xs()
-                                            .text_color(palette::sky())
-                                            .child(SharedString::from(current_local_path)),
-                                    ),
+                                    .text_sm()
+                                    .font_semibold()
+                                    .text_color(cx.theme().foreground)
+                                    .child(SharedString::from(t!("sftp.drop_to_download"))),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded(cx.theme().radius)
+                                    .bg(palette::recessed(cx))
+                                    .border_1()
+                                    .border_color(palette::sky().opacity(0.4))
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_xs()
+                                    .text_color(palette::sky())
+                                    .child(SharedString::from(current_local_path)),
                             ),
-                    )
+                    ),
+            )
             .when(self.local.deleting, |this| {
                 this.child(
                     div()
@@ -3522,11 +3520,44 @@ impl SftpPanel {
             .overflow_hidden()
             .child(self.render_breadcrumb(cx))
             .children(self.render_parent_row(cx))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                        this.upload_paths(dropped_paths(paths), cx);
+                    }))
+                    .on_drop(cx.listener(|this, dragged: &DraggedLocalEntries, _, cx| {
+                        this.upload_paths(dragged_local_paths(dragged), cx);
+                    }))
                     .child(
+                        DataTable::new(&self.remote_table)
+                            .xsmall()
+                            .bordered(false)
+                            .stripe(true),
+                    )
+                    .child(
+                        // 拖拽接收指示遮罩层（类似网页拖拽上传效果）
                         div()
-                            .relative()
-                            .flex_1()
-                            .min_h_0()
+                            .id("remote-drop-overlay")
+                            .absolute()
+                            .inset_0()
+                            .m_1()
+                            .rounded_lg()
+                            .invisible()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .justify_center()
+                            .gap_2()
+                            .bg(cx.theme().background.opacity(0.92))
+                            .border_2()
+                            .border_dashed()
+                            .border_color(palette::teal())
+                            .shadow_lg()
+                            .drag_over::<DraggedLocalEntries>(|style, _, _, _| style.visible())
+                            .drag_over::<ExternalPaths>(|style, _, _, _| style.visible())
                             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                                 this.upload_paths(dropped_paths(paths), cx);
                             }))
@@ -3534,69 +3565,32 @@ impl SftpPanel {
                                 this.upload_paths(dragged_local_paths(dragged), cx);
                             }))
                             .child(
-                                DataTable::new(&self.remote_table)
-                                    .xsmall()
-                                    .bordered(false)
-                                    .stripe(true),
+                                Icon::new(AppIcon::Upload)
+                                    .with_size(px(36.))
+                                    .text_color(palette::teal()),
                             )
                             .child(
-                                // 拖拽接收指示遮罩层（类似网页拖拽上传效果）
                                 div()
-                                    .id("remote-drop-overlay")
-                                    .absolute()
-                                    .inset_0()
-                                    .m_1()
-                                    .rounded_lg()
-                                    .invisible()
-                                    .flex()
-                                    .flex_col()
-                                    .items_center()
-                                    .justify_center()
-                                    .gap_2()
-                                    .bg(cx.theme().background.opacity(0.92))
-                                    .border_2()
-                                    .border_dashed()
-                                    .border_color(palette::teal())
-                                    .shadow_lg()
-                                    .drag_over::<DraggedLocalEntries>(|style, _, _, _| {
-                                        style.visible()
-                                    })
-                                    .drag_over::<ExternalPaths>(|style, _, _, _| style.visible())
-                                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                                        this.upload_paths(dropped_paths(paths), cx);
-                                    }))
-                                    .on_drop(cx.listener(
-                                        |this, dragged: &DraggedLocalEntries, _, cx| {
-                                            this.upload_paths(dragged_local_paths(dragged), cx);
-                                        },
-                                    ))
-                                    .child(
-                                        Icon::new(AppIcon::Upload)
-                                            .with_size(px(36.))
-                                            .text_color(palette::teal()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .font_semibold()
-                                            .text_color(cx.theme().foreground)
-                                            .child(SharedString::from(t!("sftp.drop_to_upload"))),
-                                    )
-                                    .child(
-                                        div()
-                                            .px_2()
-                                            .py_0p5()
-                                            .rounded(cx.theme().radius)
-                                            .bg(palette::recessed(cx))
-                                            .border_1()
-                                            .border_color(palette::teal().opacity(0.4))
-                                            .font_family(cx.theme().mono_font_family.clone())
-                                            .text_xs()
-                                            .text_color(palette::teal())
-                                            .child(SharedString::from(current_remote_path)),
-                                    ),
+                                    .text_sm()
+                                    .font_semibold()
+                                    .text_color(cx.theme().foreground)
+                                    .child(SharedString::from(t!("sftp.drop_to_upload"))),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded(cx.theme().radius)
+                                    .bg(palette::recessed(cx))
+                                    .border_1()
+                                    .border_color(palette::teal().opacity(0.4))
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_xs()
+                                    .text_color(palette::teal())
+                                    .child(SharedString::from(current_remote_path)),
                             ),
-                    )
+                    ),
+            )
             .when(self.remote.deleting, |this| {
                 this.child(
                     div()
@@ -3724,85 +3718,84 @@ impl SftpPanel {
             .items_center()
             .gap_1()
             .overflow_x_scroll()
-            .children(
-                segments.into_iter().enumerate().map(|(ix, (label, path))| {
-                    let here = ix == last;
-                    let is_drive = is_windows_drive(&label);
-                    let panel_for_menu = panel.clone();
-                    let current_drive = label.clone();
+            .children(segments.into_iter().enumerate().map(|(ix, (label, path))| {
+                let here = ix == last;
+                let is_drive = is_windows_drive(&label);
+                let panel_for_menu = panel.clone();
+                let current_drive = label.clone();
 
-                    h_flex()
-                        .items_center()
-                        .gap_1()
-                        .flex_shrink_0()
-                        .when(ix > 0, |this| {
-                            this.child(
-                                Icon::new(IconName::ChevronRight)
-                                    .with_size(px(10.))
-                                    .text_color(palette::idle(cx)),
-                            )
-                        })
-                        .child(if is_drive {
-                            let drives = available_windows_drives();
-                            Button::new(SharedString::from(format!("local-crumb-drive-{}", ix)))
-                                .ghost()
-                                .xsmall()
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .label(SharedString::from(format!("{} ▾", label)))
-                                .tooltip(SharedString::from(path.clone()))
-                                .text_color(if here {
-                                    cx.theme().foreground
-                                } else {
-                                    palette::idle(cx)
-                                })
-                                .dropdown_menu(move |menu, _, _| {
-                                    drives.iter().fold(menu.min_w(px(110.)), |menu, drive| {
-                                        let is_curr = drive.eq_ignore_ascii_case(&current_drive);
-                                        let target_dir = PathBuf::from(format!("{}\\", drive));
-                                        let p = panel_for_menu.clone();
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .flex_shrink_0()
+                    .when(ix > 0, |this| {
+                        this.child(
+                            Icon::new(IconName::ChevronRight)
+                                .with_size(px(10.))
+                                .text_color(palette::idle(cx)),
+                        )
+                    })
+                    .child(if is_drive {
+                        let drives = available_windows_drives();
+                        Button::new(SharedString::from(format!("local-crumb-drive-{}", ix)))
+                            .ghost()
+                            .xsmall()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .label(SharedString::from(format!("{} ▾", label)))
+                            .tooltip(SharedString::from(path.clone()))
+                            .text_color(if here {
+                                cx.theme().foreground
+                            } else {
+                                palette::idle(cx)
+                            })
+                            .dropdown_menu(move |menu, _, _| {
+                                drives.iter().fold(menu.min_w(px(110.)), |menu, drive| {
+                                    let is_curr = drive.eq_ignore_ascii_case(&current_drive);
+                                    let target_dir = PathBuf::from(format!("{}\\", drive));
+                                    let p = panel_for_menu.clone();
 
-                                        let item = PopupMenuItem::new(SharedString::from(format!(
-                                            "{} \\",
-                                            drive
-                                        )))
-                                        .icon(
-                                            Icon::new(IconName::HardDrive)
-                                                .text_color(palette::amber()),
-                                        )
-                                        .checked(is_curr)
-                                        .on_click(move |_, window, app| {
+                                    let item = PopupMenuItem::new(SharedString::from(format!(
+                                        "{} \\",
+                                        drive
+                                    )))
+                                    .icon(
+                                        Icon::new(IconName::HardDrive).text_color(palette::amber()),
+                                    )
+                                    .checked(is_curr)
+                                    .on_click(
+                                        move |_, window, app| {
                                             let target = target_dir.clone();
                                             if let Some(panel) = p.upgrade() {
                                                 panel.update(app, |this, cx| {
                                                     this.list_local(target, window, cx);
                                                 });
                                             }
-                                        });
-                                        menu.item(item)
-                                    })
+                                        },
+                                    );
+                                    menu.item(item)
                                 })
-                                .into_any_element()
-                        } else {
-                            Button::new(SharedString::from(format!("local-crumb-{}", ix)))
-                                .ghost()
-                                .xsmall()
-                                .label(label)
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .disabled(here)
-                                .when(!here, |button| {
-                                    button
-                                        .text_color(palette::idle(cx))
-                                        .tooltip(SharedString::from(path.clone()))
-                                })
-                                .when(!here, |button| {
-                                    button.on_click(cx.listener(move |this, _, window, cx| {
-                                        this.list_local(PathBuf::from(path.clone()), window, cx);
-                                    }))
-                                })
-                                .into_any_element()
-                        })
-                })
-            )
+                            })
+                            .into_any_element()
+                    } else {
+                        Button::new(SharedString::from(format!("local-crumb-{}", ix)))
+                            .ghost()
+                            .xsmall()
+                            .label(label)
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .disabled(here)
+                            .when(!here, |button| {
+                                button
+                                    .text_color(palette::idle(cx))
+                                    .tooltip(SharedString::from(path.clone()))
+                            })
+                            .when(!here, |button| {
+                                button.on_click(cx.listener(move |this, _, window, cx| {
+                                    this.list_local(PathBuf::from(path.clone()), window, cx);
+                                }))
+                            })
+                            .into_any_element()
+                    })
+            }))
     }
 
     /// 面包屑那一行，右边带条目数与刚复制过的路径。
@@ -3833,55 +3826,46 @@ impl SftpPanel {
                     .gap_1()
                     .overflow_x_scroll()
                     .child(
-                                Button::new("sftp-panel-root")
+                        Button::new("sftp-panel-root")
+                            .ghost()
+                            .xsmall()
+                            .label("/")
+                            .tooltip(t!("sftp.root_dir"))
+                            .disabled(self.service.is_none())
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.load_remote("/", window, cx);
+                            })),
+                    )
+                    .children(segments.into_iter().enumerate().map(|(ix, (label, path))| {
+                        let here = ix == last;
+                        h_flex()
+                            .items_center()
+                            .gap_1()
+                            .flex_shrink_0()
+                            .child(
+                                Icon::new(IconName::ChevronRight)
+                                    .with_size(px(10.))
+                                    .text_color(palette::idle(cx)),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("sftp-panel-crumb-{path}")))
                                     .ghost()
                                     .xsmall()
-                                    .label("/")
-                                    .tooltip(t!("sftp.root_dir"))
-                                    .disabled(self.service.is_none())
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.load_remote("/", window, cx);
-                                    })),
+                                    .label(label)
+                                    .disabled(here)
+                                    .when(!here, |button| {
+                                        button
+                                            .text_color(palette::idle(cx))
+                                            .tooltip(SharedString::from(path.clone()))
+                                    })
+                                    .when(!here, |button| {
+                                        button.on_click(cx.listener(move |this, _, window, cx| {
+                                            this.load_remote(&path, window, cx);
+                                        }))
+                                    }),
                             )
-                            .children(segments.into_iter().enumerate().map(
-                                |(ix, (label, path))| {
-                                    let here = ix == last;
-                                    h_flex()
-                                        .items_center()
-                                        .gap_1()
-                                        .flex_shrink_0()
-                                        .child(
-                                            Icon::new(IconName::ChevronRight)
-                                                .with_size(px(10.))
-                                                .text_color(palette::idle(cx)),
-                                        )
-                                        .child(
-                                            Button::new(SharedString::from(format!(
-                                                "sftp-panel-crumb-{path}"
-                                            )))
-                                            .ghost()
-                                            .xsmall()
-                                            .label(label)
-                                            .disabled(here)
-                                            .when(!here, |button| {
-                                                button
-                                                    .text_color(palette::idle(cx))
-                                                    .tooltip(SharedString::from(path.clone()))
-                                            })
-                                            .when(
-                                                !here,
-                                                |button| {
-                                                    button.on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.load_remote(&path, window, cx);
-                                                        },
-                                                    ))
-                                                },
-                                            ),
-                                        )
-                                },
-                            )),
+                    })),
             )
             .child(
                 div()

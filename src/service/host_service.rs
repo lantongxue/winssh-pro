@@ -537,7 +537,7 @@ mod tests {
             key_passphrase: String::new(),
             jump_host_id: None,
             tags: Vec::new(),
-proxy: Default::default(),
+            proxy: Default::default(),
             vnc: Default::default(),
             rdp: Default::default(),
             serial: Default::default(),
@@ -569,7 +569,7 @@ proxy: Default::default(),
             key_passphrase: key_passphrase.into(),
             jump_host_id: None,
             tags: Vec::new(),
-proxy: Default::default(),
+            proxy: Default::default(),
             vnc: Default::default(),
             rdp: Default::default(),
             serial: Default::default(),
@@ -1343,7 +1343,10 @@ proxy: Default::default(),
 
         db::runtime().block_on(async {
             let service = service().await;
-            let host = service.insert_host("分组", draft("console-01")).await.unwrap();
+            let host = service
+                .insert_host("分组", draft("console-01"))
+                .await
+                .unwrap();
             assert_eq!(host.serial, SerialSettings::default(), "新主机拿出厂参数");
 
             let tuned = SerialSettings {
@@ -1384,7 +1387,10 @@ proxy: Default::default(),
 
         db::runtime().block_on(async {
             let service = service().await;
-            let host = service.insert_host("分组", draft("home-net")).await.unwrap();
+            let host = service
+                .insert_host("分组", draft("home-net"))
+                .await
+                .unwrap();
             assert_eq!(host.easytier, EasyTierSettings::default(), "新主机拿出厂档");
 
             let tuned = EasyTierSettings {
@@ -1428,32 +1434,48 @@ proxy: Default::default(),
 
             // 1. 插入并验证
             let host = service.insert_host("集群", draft1.clone()).await.unwrap();
-            assert_eq!(host.tags, vec![SharedString::from("K8s"), SharedString::from("生产")]);
+            assert_eq!(
+                host.tags,
+                vec![SharedString::from("K8s"), SharedString::from("生产")]
+            );
 
             let groups = service.load_groups().await.unwrap();
-            assert_eq!(groups[0].hosts[0].tags, vec![SharedString::from("K8s"), SharedString::from("生产")]);
+            assert_eq!(
+                groups[0].hosts[0].tags,
+                vec![SharedString::from("K8s"), SharedString::from("生产")]
+            );
 
             // 2. 更新 tags 并验证
             draft1.tags = vec!["K8s".into(), "测试".into(), "v1.30".into()];
             service.update_host(&host.id, "集群", draft1).await.unwrap();
 
             let groups = service.load_groups().await.unwrap();
-            assert_eq!(groups[0].hosts[0].tags, vec![
-                SharedString::from("K8s"),
-                SharedString::from("测试"),
-                SharedString::from("v1.30")
-            ]);
+            assert_eq!(
+                groups[0].hosts[0].tags,
+                vec![
+                    SharedString::from("K8s"),
+                    SharedString::from("测试"),
+                    SharedString::from("v1.30")
+                ]
+            );
 
             // 3. 复制主机并验证 tags 继承
             let duplicated = service.duplicate_host(&host.id).await.unwrap();
-            assert_eq!(duplicated.tags, vec![
-                SharedString::from("K8s"),
-                SharedString::from("测试"),
-                SharedString::from("v1.30")
-            ]);
+            assert_eq!(
+                duplicated.tags,
+                vec![
+                    SharedString::from("K8s"),
+                    SharedString::from("测试"),
+                    SharedString::from("v1.30")
+                ]
+            );
 
             let groups = service.load_groups().await.unwrap();
-            let dup_in_db = groups[0].hosts.iter().find(|h| h.id == duplicated.id).unwrap();
+            let dup_in_db = groups[0]
+                .hosts
+                .iter()
+                .find(|h| h.id == duplicated.id)
+                .unwrap();
             assert_eq!(dup_in_db.tags, duplicated.tags);
         });
     }

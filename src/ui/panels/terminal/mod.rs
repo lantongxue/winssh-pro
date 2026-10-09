@@ -31,8 +31,7 @@ use gpui_kit::component::{
     ActiveTheme as _, IconName, ResizableState, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{
-        BasePanel, DockArea, DockPlacement, PaneRef, Panel, PanelEvent, TabGroup,
-        panel_handle,
+        BasePanel, DockArea, DockPlacement, PaneRef, Panel, PanelEvent, TabGroup, panel_handle,
     },
     h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
 };

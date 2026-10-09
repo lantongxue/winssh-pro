@@ -66,7 +66,11 @@ impl SettingsMenuAction {
 
     pub fn shortcut(&self) -> Option<&'static str> {
         match self {
-            Self::Settings => Some(if cfg!(target_os = "macos") { "⌘," } else { "Ctrl+," }),
+            Self::Settings => Some(if cfg!(target_os = "macos") {
+                "⌘,"
+            } else {
+                "Ctrl+,"
+            }),
             Self::Vault => Some("Alt+3"),
             Self::TrustedHosts => Some("Alt+4"),
         }

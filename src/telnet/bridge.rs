@@ -138,7 +138,9 @@ impl LocalEcho {
             return false;
         }
         self.enabled.store(true, Ordering::Relaxed);
-        log::info!("telnet: 服务器在 {SILENCE_BEFORE_LOCAL_ECHO_MS} ms 内没有回应我们的输入，打开本地回显");
+        log::info!(
+            "telnet: 服务器在 {SILENCE_BEFORE_LOCAL_ECHO_MS} ms 内没有回应我们的输入，打开本地回显"
+        );
         true
     }
 
@@ -365,7 +367,9 @@ fn reader_task(
             Err(error)
                 if matches!(
                     error.kind(),
-                    io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
+                    io::ErrorKind::UnexpectedEof
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::BrokenPipe
                 ) =>
             {
                 // 对端关闭 / 我们主动 shutdown，都从这里退出。给终端一行
@@ -375,9 +379,8 @@ fn reader_task(
             }
             Err(error) => {
                 log::warn!("telnet: 读循环异常退出：{error}");
-                let _ = output_tx.send(
-                    format!("\r\n[telnet read error: {error}]\r\n").into_bytes(),
-                );
+                let _ =
+                    output_tx.send(format!("\r\n[telnet read error: {error}]\r\n").into_bytes());
                 return;
             }
         }
@@ -387,7 +390,11 @@ fn reader_task(
 /// writer 线程：只做一件事 —— 把 `input_rx` 里的用户字节按 Telnet 规则
 /// 送出去（IAC 要双写、裸 CR 要展成 CRLF）。协议协商不经过这一层，那是
 /// reader 线程的事。
-fn writer_task(mut stream: TcpStream, mut input_rx: UnboundedReceiver<Vec<u8>>, echo: Arc<LocalEcho>) {
+fn writer_task(
+    mut stream: TcpStream,
+    mut input_rx: UnboundedReceiver<Vec<u8>>,
+    echo: Arc<LocalEcho>,
+) {
     while let Some(data) = input_rx.blocking_recv() {
         // 记录"上一次送出字节的时刻"给本地回显的判定用。写在前面：即使
         // `write_escaped` 失败退出，这个时间戳也是准确的"用户尝试输入的时
@@ -680,7 +687,10 @@ mod tests {
         //   "a\r"    → 服务器应看到 a CRLF
         //   "b\r\n"  → 服务器应看到 b CRLF（不重复 LF）
         //   "c\rd"   → 服务器应看到 c CRLF d
-        bridge.input_tx.send(vec![b'a', 0x0d, b'b', 0x0d, 0x0a, b'c', 0x0d, b'd']).unwrap();
+        bridge
+            .input_tx
+            .send(vec![b'a', 0x0d, b'b', 0x0d, 0x0a, b'c', 0x0d, b'd'])
+            .unwrap();
 
         let start = Instant::now();
         let mut got = Vec::new();
@@ -844,7 +854,9 @@ mod tests {
         echo.note_recv();
         std::thread::sleep(Duration::from_millis(60));
         echo.note_sent();
-        std::thread::sleep(Duration::from_millis(SILENCE_BEFORE_LOCAL_ECHO_MS as u64 + 40));
+        std::thread::sleep(Duration::from_millis(
+            SILENCE_BEFORE_LOCAL_ECHO_MS as u64 + 40,
+        ));
         assert!(echo.should_echo(), "500 ms 静默之后应当打开本地回显");
     }
 
@@ -857,7 +869,9 @@ mod tests {
         echo.note_recv();
         std::thread::sleep(Duration::from_millis(60));
         echo.note_sent();
-        std::thread::sleep(Duration::from_millis(SILENCE_BEFORE_LOCAL_ECHO_MS as u64 + 40));
+        std::thread::sleep(Duration::from_millis(
+            SILENCE_BEFORE_LOCAL_ECHO_MS as u64 + 40,
+        ));
         assert!(echo.should_echo());
         // 之后再收到服务器一大段输出，也不该关掉。
         echo.note_recv();
@@ -870,7 +884,9 @@ mod tests {
     #[test]
     fn local_echo_does_not_fire_before_any_user_input() {
         let echo = LocalEcho::default();
-        std::thread::sleep(Duration::from_millis(SILENCE_BEFORE_LOCAL_ECHO_MS as u64 + 40));
+        std::thread::sleep(Duration::from_millis(
+            SILENCE_BEFORE_LOCAL_ECHO_MS as u64 + 40,
+        ));
         assert!(!echo.should_echo(), "没发过就没有'静默'可言");
     }
 }

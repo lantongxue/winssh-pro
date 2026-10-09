@@ -22,8 +22,8 @@ use gpui_kit::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, action
 use rust_i18n::t;
 
 use super::workspace::{
-    OpenLocalShell, OpenSettingsWindow, OpenTrustedHosts, OpenVaultWindow, NewHost,
-    ToggleCommandPalette, ToggleSidebar, Minimize, Zoom,
+    Minimize, NewHost, OpenLocalShell, OpenSettingsWindow, OpenTrustedHosts, OpenVaultWindow,
+    ToggleCommandPalette, ToggleSidebar, Zoom,
 };
 
 actions!(
@@ -49,17 +49,7 @@ actions!(
 // 系统直接调 `undo:` / `redo:` / `cut:` / `copy:` / `paste:` / `selectAll:`
 // 这些 AppKit selector。
 
-actions!(
-    edit_menu,
-    [
-        Undo,
-        Redo,
-        Cut,
-        Copy,
-        Paste,
-        SelectAll,
-    ]
-);
+actions!(edit_menu, [Undo, Redo, Cut, Copy, Paste, SelectAll,]);
 
 /// 建起 macOS 应用菜单，并挂上只属于应用外壳的动作。必须在 `gpui_kit::init` 之后调用。
 pub fn init(cx: &mut App) {
@@ -139,5 +129,12 @@ fn build_menus() -> Vec<Menu> {
         MenuItem::action(t!("menu.zoom"), Zoom),
     ]);
 
-    vec![app_menu, file_menu, edit_menu, view_menu, go_menu, window_menu]
+    vec![
+        app_menu,
+        file_menu,
+        edit_menu,
+        view_menu,
+        go_menu,
+        window_menu,
+    ]
 }

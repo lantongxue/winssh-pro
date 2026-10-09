@@ -199,7 +199,11 @@ pub fn exclusive_for_test() -> impl Drop {
             set_global(GlobalProxy::default());
         }
     }
-    Restore(SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    Restore(
+        SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
 }
 
 /// 拨号前为什么定不下来要经过谁。两种说法不一样，所以分开：

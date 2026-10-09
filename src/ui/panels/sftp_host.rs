@@ -37,9 +37,9 @@ use gpui_kit::component::{
     h_flex, v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    InteractiveElement as _, ParentElement as _, Render, SharedString, Styled as _, WeakEntity,
-    Window, div, px,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    WeakEntity, Window, div, px,
 };
 use rust_i18n::t;
 
@@ -151,7 +151,9 @@ impl DockedSftpPanel {
                 },
             };
 
-            let outcome = SshService::new().connect_session_trusted(&host, trust).await;
+            let outcome = SshService::new()
+                .connect_session_trusted(&host, trust)
+                .await;
 
             match outcome {
                 Ok(session) => {
@@ -217,7 +219,8 @@ impl DockedSftpPanel {
                     _ = panel.update(app, |this, cx| {
                         this.connecting = false;
                         this.sftp_panel.update(cx, |panel, cx| {
-                            panel.note_error(SharedString::from(t!("sftp_host.trust_rejected")), cx);
+                            panel
+                                .note_error(SharedString::from(t!("sftp_host.trust_rejected")), cx);
                         });
                         this.set_alive(false, cx);
                         cx.notify();
@@ -334,7 +337,12 @@ impl BasePanel for DockedSftpPanel {
         "DockedSftpPanel"
     }
 
-    fn on_added_to(&mut self, _: WeakEntity<TabGroup>, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_added_to(
+        &mut self,
+        _: WeakEntity<TabGroup>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         cx.focus_self(window);
         cx.notify();
     }
@@ -394,6 +402,12 @@ impl Render for DockedSftpPanel {
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(cx.theme().background)
-            .child(div().flex_1().min_h_0().min_w_0().child(self.sftp_panel.clone()))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(self.sftp_panel.clone()),
+            )
     }
 }

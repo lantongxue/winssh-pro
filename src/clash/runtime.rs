@@ -374,7 +374,9 @@ pub fn running_subscription() -> Option<SubscriptionRef> {
 /// 一条订阅一个目录，**不随每次启动换**：mihomo 把"某个策略组上次选中了哪个
 /// 节点"记在它自己的 `cache.db` 里，换目录就等于每次启动都把它忘掉。
 pub fn instance_dir(subscription_id: &str) -> Result<PathBuf> {
-    let dir = clash_dir()?.join("instances").join(safe_name(subscription_id));
+    let dir = clash_dir()?
+        .join("instances")
+        .join(safe_name(subscription_id));
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("建 mihomo 数据目录失败：{}", dir.display()))?;
     Ok(dir)
@@ -602,7 +604,9 @@ fn next_token() -> u64 {
 
 /// 台上这一格还是 `token` 那一次运行的吗。
 fn same_run(token: u64) -> bool {
-    current().as_ref().is_some_and(|running| running.token == token)
+    current()
+        .as_ref()
+        .is_some_and(|running| running.token == token)
 }
 
 fn current() -> MutexGuard<'static, Option<Running>> {
@@ -765,6 +769,7 @@ async fn run(
     let ports = RuntimePorts {
         mixed_port: free_port()?,
         api_port: free_port()?,
+        dns_port: free_port()?,
         secret: random_secret(),
     };
     let config_path = dir.join("config.yaml");
@@ -904,15 +909,13 @@ async fn run(
                             break;
                         }
                         Some(Err(error)) => {
-                            report(
-                                match error.downcast_ref::<broker::ElevationCancelled>() {
-                                    Some(_) => t!("clash.runtime.tun_elevation_canceled"),
-                                    None => t!(
-                                        "clash.runtime.tun_elevation_failed",
-                                        error => format!("{error:#}")
-                                    ),
-                                },
-                            );
+                            report(match error.downcast_ref::<broker::ElevationCancelled>() {
+                                Some(_) => t!("clash.runtime.tun_elevation_canceled"),
+                                None => t!(
+                                    "clash.runtime.tun_elevation_failed",
+                                    error => format!("{error:#}")
+                                ),
+                            });
                             // 原实例没动：回 supervise 接着看，TUN 开关保持关。
                             continue;
                         }
@@ -977,9 +980,9 @@ fn spawn_direct(
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = command.spawn().map_err(|error| {
-        format!("起 mihomo 失败（{}）：{error}", binary.display())
-    })?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("起 mihomo 失败（{}）：{error}", binary.display()))?;
     if let Some(stdout) = child.stdout.take() {
         tokio::spawn(read_lines(stdout, logs.clone()));
     }
@@ -1457,10 +1460,19 @@ async fn act(action: Action, session: &mut Session) -> ActEffect {
             let groups = session
                 .outline
                 .as_ref()
-                .map(|outline| outline.groups.iter().map(|group| group.name.clone()).collect::<Vec<_>>())
+                .map(|outline| {
+                    outline
+                        .groups
+                        .iter()
+                        .map(|group| group.name.clone())
+                        .collect::<Vec<_>>()
+                })
                 .or_else(|| {
                     state().live.as_ref().map(|live| {
-                        live.groups.iter().map(|group| group.name.clone()).collect::<Vec<_>>()
+                        live.groups
+                            .iter()
+                            .map(|group| group.name.clone())
+                            .collect::<Vec<_>>()
                     })
                 })
                 .unwrap_or_default();
@@ -1484,14 +1496,18 @@ async fn act(action: Action, session: &mut Session) -> ActEffect {
                         session.publish_connections(&connections);
                     }
                 }
-                Err(error) => report(t!("clash.runtime.connection_failed", error => format!("{error:#}"))),
+                Err(error) => {
+                    report(t!("clash.runtime.connection_failed", error => format!("{error:#}")))
+                }
             }
             ActEffect::Continue
         }
         Action::CloseConnections => {
             match session.api.close_connections().await {
                 Ok(()) => publish(|state| state.connections.clear()),
-                Err(error) => report(t!("clash.runtime.connection_failed", error => format!("{error:#}"))),
+                Err(error) => {
+                    report(t!("clash.runtime.connection_failed", error => format!("{error:#}")))
+                }
             }
             ActEffect::Continue
         }
@@ -1617,9 +1633,9 @@ async fn act(action: Action, session: &mut Session) -> ActEffect {
                     let rules = session.api.rules().await.ok();
                     match session.api.proxies().await {
                         Ok(nodes) => session.publish_live(&nodes, rules.as_ref(), None),
-                        Err(error) => {
-                            report(t!("clash.runtime.refresh_failed", error => format!("{error:#}")))
-                        }
+                        Err(error) => report(
+                            t!("clash.runtime.refresh_failed", error => format!("{error:#}")),
+                        ),
                     }
                 }
                 Err(error) => {
@@ -1875,7 +1891,10 @@ mod tests {
             assert!(!name.contains('/'), "{id:?} -> {name:?} 带出了路径");
             assert!(!name.contains('\\'), "{id:?} -> {name:?} 带出了路径");
             // `.` 与 `..` 是目录本身与上一层，必须被摁掉。
-            assert!(name.trim_matches('.') != "", "{id:?} -> {name:?} 是当前或上一层");
+            assert!(
+                name.trim_matches('.') != "",
+                "{id:?} -> {name:?} 是当前或上一层"
+            );
         }
         assert_eq!(safe_name("机场A"), "__A");
     }
@@ -1962,7 +1981,9 @@ mod tests {
         );
         let found = logs.scan_since(mark, "Start TUN listening error");
         assert!(
-            found.as_ref().is_some_and(|line| line.contains("Access is denied")),
+            found
+                .as_ref()
+                .is_some_and(|line| line.contains("Access is denied")),
             "{found:?}"
         );
     }

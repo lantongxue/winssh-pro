@@ -132,67 +132,74 @@ impl ClashTunSettingsDialog {
                 .title(render_header(t!("clash.tun.title").into(), cx))
                 .child(form.clone())
                 .footer(
-                    div().w_full().pt_3().border_t_1().border_color(cx.theme().border).child(
-                        h_flex()
-                            .w_full()
-                            .justify_end()
-                            .gap_2()
-                            .child(
-                                Button::new("clash-tun-cancel")
-                                    .ghost()
-                                    .label(t!("clash.tun.cancel"))
-                                    .on_click(|_, window, cx| window.close_dialog(cx)),
-                            )
-                            .child(
-                                Button::new("clash-tun-submit")
-                                    .custom(submit_variant)
-                                    .bg(blue)
-                                    .rounded(cx.theme().radius)
-                                    .label(t!("clash.tun.save"))
-                                    .disabled(form.read(cx).saving)
-                                    .on_click(move |_, window, cx| {
-                                        let outcome = submit_form.update(cx, |state, cx| {
-                                            state.build_settings(cx)
-                                        });
-                                        let settings = match outcome {
-                                            Ok(settings) => settings,
-                                            Err(message) => {
-                                                window.push_notification(message, cx);
-                                                return;
-                                            }
-                                        };
-                                        submit_form.update(cx, |state, cx| {
-                                            state.saving = true;
-                                            cx.notify();
-                                        });
-                                        let service = submit_form.read(cx).service.clone();
-                                        let saved_cb = submit_saved.clone();
-                                        submit_form.update(cx, |_, cx| {
-                                            cx.spawn_in(window, async move |this, cx| {
-                                                let save_result =
-                                                    service.save_tun_settings(settings).await;
-                                                let _ = this.update_in(cx, |state, window, cx| {
-                                                    state.saving = false;
-                                                    match save_result {
-                                                        Ok(()) => {
-                                                            saved_cb(window, cx);
-                                                            window.close_dialog(cx);
-                                                        }
-                                                        Err(error) => {
-                                                            window.push_notification(
-                                                                SharedString::from(format!("{error:#}")),
-                                                                cx,
-                                                            );
-                                                        }
-                                                    }
-                                                    cx.notify();
-                                                });
-                                            })
-                                            .detach();
-                                        });
-                                    }),
-                            ),
-                    ),
+                    div()
+                        .w_full()
+                        .pt_3()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    Button::new("clash-tun-cancel")
+                                        .ghost()
+                                        .label(t!("clash.tun.cancel"))
+                                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                                )
+                                .child(
+                                    Button::new("clash-tun-submit")
+                                        .custom(submit_variant)
+                                        .bg(blue)
+                                        .rounded(cx.theme().radius)
+                                        .label(t!("clash.tun.save"))
+                                        .disabled(form.read(cx).saving)
+                                        .on_click(move |_, window, cx| {
+                                            let outcome = submit_form
+                                                .update(cx, |state, cx| state.build_settings(cx));
+                                            let settings = match outcome {
+                                                Ok(settings) => settings,
+                                                Err(message) => {
+                                                    window.push_notification(message, cx);
+                                                    return;
+                                                }
+                                            };
+                                            submit_form.update(cx, |state, cx| {
+                                                state.saving = true;
+                                                cx.notify();
+                                            });
+                                            let service = submit_form.read(cx).service.clone();
+                                            let saved_cb = submit_saved.clone();
+                                            submit_form.update(cx, |_, cx| {
+                                                cx.spawn_in(window, async move |this, cx| {
+                                                    let save_result =
+                                                        service.save_tun_settings(settings).await;
+                                                    let _ =
+                                                        this.update_in(cx, |state, window, cx| {
+                                                            state.saving = false;
+                                                            match save_result {
+                                                                Ok(()) => {
+                                                                    saved_cb(window, cx);
+                                                                    window.close_dialog(cx);
+                                                                }
+                                                                Err(error) => {
+                                                                    window.push_notification(
+                                                                        SharedString::from(
+                                                                            format!("{error:#}"),
+                                                                        ),
+                                                                        cx,
+                                                                    );
+                                                                }
+                                                            }
+                                                            cx.notify();
+                                                        });
+                                                })
+                                                .detach();
+                                            });
+                                        }),
+                                ),
+                        ),
                 )
         });
     }
@@ -402,12 +409,7 @@ impl ClashTunSettingsDialog {
             // 装/卸失败的原因原文摆在这儿。装期那条线不必给具体错误 ——
             // 「取消授权」也是一种合理的归宿。
             .when_some(self.helper_error.clone(), |this, message| {
-                this.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().danger)
-                        .child(message),
-                )
+                this.child(div().text_xs().text_color(cx.theme().danger).child(message))
             })
             .child(
                 div()
@@ -422,13 +424,11 @@ impl ClashTunSettingsDialog {
         v_flex()
             .gap_3()
             .child(field_label(t!("clash.tun.section_title").into(), cx))
-            .child(
-                field(
-                    t!("clash.tun.stack_label").into(),
-                    Select::new(&self.stack).w_full().into_any_element(),
-                    cx,
-                ),
-            )
+            .child(field(
+                t!("clash.tun.stack_label").into(),
+                Select::new(&self.stack).w_full().into_any_element(),
+                cx,
+            ))
             .child(
                 h_flex()
                     .w_full()
@@ -436,14 +436,20 @@ impl ClashTunSettingsDialog {
                     .child(
                         div().flex_1().child(field(
                             t!("clash.tun.device_label").into(),
-                            Input::new(&self.device).w_full().cleanable(true).into_any_element(),
+                            Input::new(&self.device)
+                                .w_full()
+                                .cleanable(true)
+                                .into_any_element(),
                             cx,
                         )),
                     )
                     .child(
                         div().w(px(140.)).child(field(
                             t!("clash.tun.mtu_label").into(),
-                            Input::new(&self.mtu).w_full().cleanable(true).into_any_element(),
+                            Input::new(&self.mtu)
+                                .w_full()
+                                .cleanable(true)
+                                .into_any_element(),
                             cx,
                         )),
                     ),
@@ -489,12 +495,7 @@ impl Render for ClashTunSettingsDialog {
             .gap_4()
             .p_4()
             .child(self.render_helper_section(cx))
-            .child(
-                div()
-                    .w_full()
-                    .h(px(1.))
-                    .bg(cx.theme().border),
-            )
+            .child(div().w_full().h(px(1.)).bg(cx.theme().border))
             .child(self.render_tun_section(cx))
     }
 }
@@ -503,7 +504,10 @@ impl Render for ClashTunSettingsDialog {
 
 /// 一颗字段名 + 一颗下挂的输入条。
 fn field(label: SharedString, input: gpui_kit::AnyElement, cx: &App) -> impl IntoElement {
-    v_flex().gap_1p5().child(field_label(label, cx)).child(input)
+    v_flex()
+        .gap_1p5()
+        .child(field_label(label, cx))
+        .child(input)
 }
 
 /// 字段名那一行。
@@ -565,10 +569,7 @@ fn stack_labels() -> Vec<SharedString> {
 /// 装/卸失败拿给界面看的那句话：取消授权是常见结局，单独一句；别的错
 /// 原文带回去（里面常常躺着 launchd / shell 那句关键提示）。
 fn helper_action_error_text(error: &anyhow::Error, is_install: bool) -> SharedString {
-    if error
-        .downcast_ref::<broker::ElevationCancelled>()
-        .is_some()
-    {
+    if error.downcast_ref::<broker::ElevationCancelled>().is_some() {
         let key = if is_install {
             "clash.tun.helper_install_canceled"
         } else {
@@ -608,10 +609,7 @@ fn sanitize_device_name(raw: &str) -> String {
     let cleaned: String = raw
         .trim()
         .chars()
-        .filter(|letter| {
-            letter.is_ascii_alphanumeric()
-                || matches!(letter, '-' | '_' | '.')
-        })
+        .filter(|letter| letter.is_ascii_alphanumeric() || matches!(letter, '-' | '_' | '.'))
         .collect();
     if cleaned.is_empty() {
         TunSettings::default().device

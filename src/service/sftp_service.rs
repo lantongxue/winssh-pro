@@ -123,7 +123,11 @@ impl TransferHandle {
         pause: Arc<PauseState>,
         join: JoinHandle<()>,
     ) -> Self {
-        Self { cancel, pause, join }
+        Self {
+            cancel,
+            pause,
+            join,
+        }
     }
 
     /// 让任务在下一块之前停下。半截的 `.part` 留在原地，名字已经说明它是什么。
@@ -1557,7 +1561,11 @@ mod tests {
             "树里的目录软链接不该被当成目录进去：{:?}",
             plan.dirs
         );
-        assert_eq!(plan.files.len(), 1, "keep/f（自指目录软链接 self 应当被跳过）");
+        assert_eq!(
+            plan.files.len(),
+            1,
+            "keep/f（自指目录软链接 self 应当被跳过）"
+        );
 
         std::fs::remove_dir_all(&root).ok();
     }

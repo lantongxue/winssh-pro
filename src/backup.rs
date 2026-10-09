@@ -309,7 +309,11 @@ pub fn exclusive_for_test() -> impl Drop {
             set_global(BackupConfig::default());
         }
     }
-    Restore(SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    Restore(
+        SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
 }
 
 // ── 加密与解密实现 ─────────────────────────────────────────────────────────
@@ -339,8 +343,8 @@ pub fn encrypt_backup(raw_db: &[u8], password: Option<&str>) -> Result<Vec<u8>> 
     let mut key = [0u8; 32];
     pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ROUNDS, &mut key);
 
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| anyhow!("初始化 AES 加密器失败: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| anyhow!("初始化 AES 加密器失败: {e}"))?;
     let nonce = Nonce::from(nonce_bytes);
     let ciphertext = cipher
         .encrypt(&nonce, raw_db)
@@ -415,8 +419,8 @@ pub fn decrypt_backup(payload: &[u8], password: Option<&str>) -> Result<Vec<u8>>
 
 // ── OpenDAL 统一存储接入 ──────────────────────────────────────────────────
 
-use opendal::services::{S3, Webdav};
 use opendal::Operator;
+use opendal::services::{S3, Webdav};
 
 /// 根据配置构建 OpenDAL Operator 客户端。
 pub fn build_operator(config: &BackupConfig) -> Result<Operator> {
@@ -449,8 +453,7 @@ pub fn build_operator(config: &BackupConfig) -> Result<Operator> {
                 builder = builder.password(pass);
             }
 
-            let op = Operator::new(builder)
-                .context("构建 WebDAV 存储客户端失败")?;
+            let op = Operator::new(builder).context("构建 WebDAV 存储客户端失败")?;
             Ok(op)
         }
         BackupProtocol::S3 => {
@@ -490,8 +493,7 @@ pub fn build_operator(config: &BackupConfig) -> Result<Operator> {
                 builder = builder.enable_virtual_host_style();
             }
 
-            let op = Operator::new(builder)
-                .context("构建 S3 存储客户端失败")?;
+            let op = Operator::new(builder).context("构建 S3 存储客户端失败")?;
             Ok(op)
         }
     }
@@ -554,7 +556,10 @@ mod tests {
     fn test_build_operator_validations() {
         let mut config = BackupConfig::default();
         config.protocol = BackupProtocol::Webdav;
-        assert!(build_operator(&config).is_err(), "empty endpoint should fail");
+        assert!(
+            build_operator(&config).is_err(),
+            "empty endpoint should fail"
+        );
 
         config.webdav.endpoint = "https://dav.example.com".to_string();
         assert!(build_operator(&config).is_ok());

@@ -54,7 +54,10 @@ impl TrustedHostRepository {
         id: &str,
         timestamp: &str,
     ) -> Result<(), DbErr> {
-        if let Some(row) = trusted_host::Entity::find_by_id(id.to_owned()).one(conn).await? {
+        if let Some(row) = trusted_host::Entity::find_by_id(id.to_owned())
+            .one(conn)
+            .await?
+        {
             let mut am: trusted_host::ActiveModel = row.into();
             am.last_seen = Set(timestamp.to_owned());
             am.update(conn).await?;
@@ -64,7 +67,9 @@ impl TrustedHostRepository {
 
     /// 按主键删除一条记录，返回是否真的删掉了。
     pub async fn delete(&self, conn: &impl ConnectionTrait, id: &str) -> Result<bool, DbErr> {
-        let result = trusted_host::Entity::delete_by_id(id.to_owned()).exec(conn).await?;
+        let result = trusted_host::Entity::delete_by_id(id.to_owned())
+            .exec(conn)
+            .await?;
         Ok(result.rows_affected == 1)
     }
 
@@ -77,7 +82,10 @@ impl TrustedHostRepository {
         key_type: &str,
         fingerprint: &str,
     ) -> Result<(), DbErr> {
-        if let Some(row) = trusted_host::Entity::find_by_id(id.to_owned()).one(conn).await? {
+        if let Some(row) = trusted_host::Entity::find_by_id(id.to_owned())
+            .one(conn)
+            .await?
+        {
             let mut am: trusted_host::ActiveModel = row.into();
             am.key_type = Set(key_type.to_owned());
             am.fingerprint = Set(fingerprint.to_owned());

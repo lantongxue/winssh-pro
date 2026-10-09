@@ -441,12 +441,18 @@ async fn download_single_file(
         .reader(remote_path)
         .await
         .map_err(|error| {
-            remote(&t!("ftp_err.action_open_remote", path => remote_path.to_string()), error)
+            remote(
+                &t!("ftp_err.action_open_remote", path => remote_path.to_string()),
+                error,
+            )
         })?
         .into_futures_async_read(..)
         .await
         .map_err(|error| {
-            remote(&t!("ftp_err.action_open_remote", path => remote_path.to_string()), error)
+            remote(
+                &t!("ftp_err.action_open_remote", path => remote_path.to_string()),
+                error,
+            )
         })?
         .compat();
     let mut sink = TokioFile::create(&temp)
@@ -468,10 +474,9 @@ async fn download_single_file(
         if read == 0 {
             break;
         }
-        sink
-            .write_all(&buf[..read])
-            .await
-            .with_context(|| t!("sftp_err.create_local_temp", path => temp.display()).to_string())?;
+        sink.write_all(&buf[..read]).await.with_context(|| {
+            t!("sftp_err.create_local_temp", path => temp.display()).to_string()
+        })?;
         moved += read as u64;
         if total > 0 && last_report.elapsed() >= PROGRESS_EMIT_INTERVAL {
             last_report = std::time::Instant::now();
@@ -514,9 +519,9 @@ async fn download_folder(
     let total_bytes: u64 = tree.files.iter().map(|file| file.size).sum();
 
     for dir in &tree.dirs {
-        tokio::fs::create_dir_all(dir).await.with_context(|| {
-            t!("sftp_err.create_local_dir", path => dir.display()).to_string()
-        })?;
+        tokio::fs::create_dir_all(dir)
+            .await
+            .with_context(|| t!("sftp_err.create_local_dir", path => dir.display()).to_string())?;
     }
 
     let items = tree
@@ -524,12 +529,18 @@ async fn download_folder(
         .iter()
         .map(|file| {
             TransferChild::new(
-                gpui_kit::SharedString::from(relative_local(&file.local, local_root).display().to_string()),
+                gpui_kit::SharedString::from(
+                    relative_local(&file.local, local_root)
+                        .display()
+                        .to_string(),
+                ),
                 file.size,
             )
         })
         .collect();
-    let _ = ctx.progress.send(TransferEvent::Children { id: job.id, items });
+    let _ = ctx
+        .progress
+        .send(TransferEvent::Children { id: job.id, items });
 
     if tree.files.is_empty() {
         let _ = ctx.progress.send(TransferEvent::Progress {
@@ -542,9 +553,7 @@ async fn download_folder(
 
     let agg = AtomicU64::new(0);
     stream::iter(tree.files.into_iter().enumerate())
-        .map(|(index, file)| {
-            download_folder_file(op.clone(), file, index, total_bytes, &agg, ctx)
-        })
+        .map(|(index, file)| download_folder_file(op.clone(), file, index, total_bytes, &agg, ctx))
         .buffer_unordered(FOLDER_CONCURRENCY)
         .try_collect::<()>()
         .await?;
@@ -575,12 +584,18 @@ async fn download_folder_file(
         .reader(&file.remote)
         .await
         .map_err(|error| {
-            remote(&t!("ftp_err.action_open_remote", path => file.remote.clone()), error)
+            remote(
+                &t!("ftp_err.action_open_remote", path => file.remote.clone()),
+                error,
+            )
         })?
         .into_futures_async_read(..)
         .await
         .map_err(|error| {
-            remote(&t!("ftp_err.action_open_remote", path => file.remote.clone()), error)
+            remote(
+                &t!("ftp_err.action_open_remote", path => file.remote.clone()),
+                error,
+            )
         })?
         .compat();
     let mut sink = TokioFile::create(&temp)
@@ -602,10 +617,9 @@ async fn download_folder_file(
         if read == 0 {
             break;
         }
-        sink
-            .write_all(&buf[..read])
-            .await
-            .with_context(|| t!("sftp_err.create_local_temp", path => temp.display()).to_string())?;
+        sink.write_all(&buf[..read]).await.with_context(|| {
+            t!("sftp_err.create_local_temp", path => temp.display()).to_string()
+        })?;
         moved += read as u64;
         let cumulative = agg.fetch_add(read as u64, Ordering::Relaxed) + read as u64;
         if last_report.elapsed() >= PROGRESS_EMIT_INTERVAL {
@@ -639,7 +653,9 @@ async fn download_folder_file(
         transferred: cumulative,
         total,
     });
-    let _ = ctx.progress.send(TransferEvent::ChildDone { id: ctx.id, index });
+    let _ = ctx
+        .progress
+        .send(TransferEvent::ChildDone { id: ctx.id, index });
     Ok(())
 }
 
@@ -702,7 +718,10 @@ async fn upload_single_file(
         .writer(&remote_part)
         .await
         .map_err(|error| {
-            remote(&t!("ftp_err.action_open_remote", path => remote_part.clone()), error)
+            remote(
+                &t!("ftp_err.action_open_remote", path => remote_part.clone()),
+                error,
+            )
         })?
         .into_futures_async_write()
         .compat_write();
@@ -724,15 +743,12 @@ async fn upload_single_file(
         if read == 0 {
             break;
         }
-        sink
-            .write_all(&buf[..read])
-            .await
-            .map_err(|error| {
-                anyhow::Error::new(error).context(t!(
-                    "ftp_err.action_save_file",
-                    path => remote_part.clone()
-                ))
-            })?;
+        sink.write_all(&buf[..read]).await.map_err(|error| {
+            anyhow::Error::new(error).context(t!(
+                "ftp_err.action_save_file",
+                path => remote_part.clone()
+            ))
+        })?;
         moved += read as u64;
         if last_report.elapsed() >= PROGRESS_EMIT_INTERVAL {
             last_report = std::time::Instant::now();
@@ -807,7 +823,9 @@ async fn upload_folder(
             )
         })
         .collect();
-    let _ = ctx.progress.send(TransferEvent::Children { id: ctx.id, items });
+    let _ = ctx
+        .progress
+        .send(TransferEvent::Children { id: ctx.id, items });
 
     if tree.files.is_empty() {
         let _ = ctx.progress.send(TransferEvent::Progress {
@@ -847,7 +865,10 @@ async fn upload_folder_file(
         .writer(&remote_part)
         .await
         .map_err(|error| {
-            remote(&t!("ftp_err.action_open_remote", path => remote_part.clone()), error)
+            remote(
+                &t!("ftp_err.action_open_remote", path => remote_part.clone()),
+                error,
+            )
         })?
         .into_futures_async_write()
         .compat_write();
@@ -869,15 +890,12 @@ async fn upload_folder_file(
         if read == 0 {
             break;
         }
-        sink
-            .write_all(&buf[..read])
-            .await
-            .map_err(|error| {
-                anyhow::Error::new(error).context(t!(
-                    "ftp_err.action_save_file",
-                    path => remote_part.clone()
-                ))
-            })?;
+        sink.write_all(&buf[..read]).await.map_err(|error| {
+            anyhow::Error::new(error).context(t!(
+                "ftp_err.action_save_file",
+                path => remote_part.clone()
+            ))
+        })?;
         moved += read as u64;
         let cumulative = agg.fetch_add(read as u64, Ordering::Relaxed) + read as u64;
         if last_report.elapsed() >= PROGRESS_EMIT_INTERVAL {
@@ -926,7 +944,9 @@ async fn upload_folder_file(
         transferred: cumulative,
         total,
     });
-    let _ = ctx.progress.send(TransferEvent::ChildDone { id: ctx.id, index });
+    let _ = ctx
+        .progress
+        .send(TransferEvent::ChildDone { id: ctx.id, index });
     Ok(())
 }
 
@@ -959,7 +979,10 @@ async fn walk_remote(
         let entries = crate::db::run(async move { op2.list(&list_dir).await })
             .await
             .map_err(|error| {
-                remote(&t!("ftp_err.action_read_dir", path => remote_dir.clone()), error)
+                remote(
+                    &t!("ftp_err.action_read_dir", path => remote_dir.clone()),
+                    error,
+                )
             })?;
 
         for entry in entries {
@@ -1002,8 +1025,9 @@ fn walk_local(local_root: &Path, remote_root: &str) -> Result<LocalTree> {
         dirs: &mut Vec<String>,
     ) -> Result<()> {
         dirs.push(remote_dir.to_string());
-        let mut rd = std::fs::read_dir(local_dir)
-            .with_context(|| t!("sftp_err.read_local_dir", path => local_dir.display()).to_string())?;
+        let mut rd = std::fs::read_dir(local_dir).with_context(|| {
+            t!("sftp_err.read_local_dir", path => local_dir.display()).to_string()
+        })?;
         for child in &mut rd {
             let child = child?;
             let path = child.path();
@@ -1067,8 +1091,9 @@ fn part_path(local: &Path, id: u64) -> PathBuf {
 /// 把临时文件改名落定到最终位置。Windows 上要先删旧文件，与 SFTP 同一个口子。
 fn replace_with(temp: &Path, final_path: &Path) -> Result<()> {
     if final_path.exists() {
-        std::fs::remove_file(final_path)
-            .with_context(|| t!("sftp_err.overwrite_local", path => final_path.display()).to_string())?;
+        std::fs::remove_file(final_path).with_context(|| {
+            t!("sftp_err.overwrite_local", path => final_path.display()).to_string()
+        })?;
     }
     std::fs::rename(temp, final_path).with_context(|| {
         t!(

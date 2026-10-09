@@ -237,7 +237,9 @@ mod tests {
         );
         // 一条链里两段位置：每段都得洗，不能只认第一段。
         assert_eq!(
-            strip_source_locations("[connect @ /a/b.rs:1] nope, caused by: [read @ /c/d.rs:2] boom"),
+            strip_source_locations(
+                "[connect @ /a/b.rs:1] nope, caused by: [read @ /c/d.rs:2] boom"
+            ),
             "[connect] nope, caused by: [read] boom"
         );
     }

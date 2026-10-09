@@ -57,7 +57,8 @@ impl ZmodemConfig {
 }
 
 /// 这份偏好在进程里的那一份缓存。正本在库里（`settings` 表）。
-static GLOBAL: LazyLock<RwLock<ZmodemConfig>> = LazyLock::new(|| RwLock::new(ZmodemConfig::default()));
+static GLOBAL: LazyLock<RwLock<ZmodemConfig>> =
+    LazyLock::new(|| RwLock::new(ZmodemConfig::default()));
 
 /// 现在的 ZMODEM 偏好。
 ///

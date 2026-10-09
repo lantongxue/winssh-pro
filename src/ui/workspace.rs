@@ -521,11 +521,14 @@ impl Workspace {
                     .min_w_0()
                     .items_center()
                     .gap_2()
+                    .child(Icon::new(AppIcon::LogoSlim).with_size(px(18.)))
                     .child(
-                        Icon::new(AppIcon::LogoSlim)
-                            .with_size(px(18.))
-                    )
-                    .child(div().flex_shrink_0().text_sm().font_semibold().child("WinSSH Pro")),
+                        div()
+                            .flex_shrink_0()
+                            .text_sm()
+                            .font_semibold()
+                            .child("WinSSH Pro"),
+                    ),
             )
             .child(
                 h_flex()

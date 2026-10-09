@@ -14,9 +14,9 @@ mod terminal_menu;
 pub use desktop_session_menu::{DesktopSessionAction, DesktopSessionKind, DesktopSessionMenu};
 pub use host_menu::{HostAction, HostActionHandler, HostMenu};
 pub use local_entry_menu::{LocalEntryAction, LocalEntryActionHandler, LocalEntryMenu};
-pub use settings_menu::{SettingsMenu, SettingsMenuAction};
 #[allow(unused_imports)]
 pub use settings_menu::SettingsMenuActionHandler;
+pub use settings_menu::{SettingsMenu, SettingsMenuAction};
 pub use sftp_entry_menu::{SftpEntryAction, SftpEntryActionHandler, SftpEntryMenu};
 pub use terminal_menu::{
     TerminalAction, TerminalActionHandler, TerminalMenu, allowed as terminal_menu_allowed,

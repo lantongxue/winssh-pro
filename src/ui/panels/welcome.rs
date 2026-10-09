@@ -95,10 +95,7 @@ impl Render for WelcomePanel {
                 v_flex()
                     .items_center()
                     .gap_3()
-                    .child(
-                        img("app-icon.png")
-                            .size(px(88.))
-                    )
+                    .child(img("app-icon.png").size(px(88.)))
                     .child(div().text_2xl().font_bold().child("WinSSH Pro"))
                     .child(
                         div()

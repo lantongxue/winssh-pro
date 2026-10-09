@@ -185,12 +185,11 @@ impl CommandHistoryDialog {
         let search = cx.new(|cx| {
             InputState::new(window, cx).placeholder(t!("command_history.search_placeholder"))
         });
-        let _search_sub =
-            cx.subscribe_in(&search, window, |this, _, event: &InputEvent, _, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.apply_filter(cx);
-                }
-            });
+        let _search_sub = cx.subscribe_in(&search, window, |this, _, event: &InputEvent, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.apply_filter(cx);
+            }
+        });
 
         Self {
             host_id: host.id.clone(),
@@ -214,10 +213,13 @@ impl CommandHistoryDialog {
         let service = self.service.clone();
         let host_id = self.host_id.to_string();
         cx.spawn(async move |this, cx| {
-            let records = service.load_for_host(&host_id).await.unwrap_or_else(|error| {
-                log::warn!("命令历史读不出来：{error:#}");
-                Vec::new()
-            });
+            let records = service
+                .load_for_host(&host_id)
+                .await
+                .unwrap_or_else(|error| {
+                    log::warn!("命令历史读不出来：{error:#}");
+                    Vec::new()
+                });
             this.update(cx, |this, cx| {
                 this.records = records;
                 this.loading = false;

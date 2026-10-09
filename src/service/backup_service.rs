@@ -62,8 +62,8 @@ impl BackupService {
         let vacuum_res = db.execute_unprepared(&vacuum_sql).await;
         match vacuum_res {
             Ok(_) => {
-                let bytes = std::fs::read(&temp_path)
-                    .context("读取 SQLite 数据库快照临时文件失败")?;
+                let bytes =
+                    std::fs::read(&temp_path).context("读取 SQLite 数据库快照临时文件失败")?;
                 _ = std::fs::remove_file(&temp_path);
                 Ok(bytes)
             }
@@ -72,9 +72,10 @@ impl BackupService {
                 _ = std::fs::remove_file(&temp_path);
                 let db_path = db::db_file_path()?;
                 if db_path.exists() {
-                    _ = db.execute_unprepared("PRAGMA wal_checkpoint(TRUNCATE)").await;
-                    let bytes = std::fs::read(&db_path)
-                        .context("直接读取数据库文件失败")?;
+                    _ = db
+                        .execute_unprepared("PRAGMA wal_checkpoint(TRUNCATE)")
+                        .await;
+                    let bytes = std::fs::read(&db_path).context("直接读取数据库文件失败")?;
                     Ok(bytes)
                 } else {
                     bail!("无法创建数据库快照：{err:#}");
@@ -116,7 +117,9 @@ impl BackupService {
     /// 数据层 runtime 上执行整次备份，假定已处于 tokio 上下文。
     async fn perform_backup_inner(self, config: BackupConfig) -> Result<String> {
         // 先落库当前配置，确保快照里包含最新配置（包括备份服务器自身信息）
-        SettingService::open().save_backup_config(config.clone()).await?;
+        SettingService::open()
+            .save_backup_config(config.clone())
+            .await?;
 
         let op = backup::build_operator(&config)?;
         let raw_db = Self::build_snapshot(&self.db).await?;
@@ -179,7 +182,9 @@ impl BackupService {
                     let size = entry.metadata().content_length();
                     let updated_at = if let Some(ts_str) = name.strip_prefix("winssh_backup_") {
                         let clean_ts = ts_str.trim_end_matches(".wspbak").trim_end_matches(".db");
-                        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(clean_ts, "%Y%m%d_%H%M%S") {
+                        if let Ok(dt) =
+                            chrono::NaiveDateTime::parse_from_str(clean_ts, "%Y%m%d_%H%M%S")
+                        {
                             Some(dt.format("%Y-%m-%d %H:%M:%S").to_string())
                         } else {
                             None
@@ -247,8 +252,7 @@ impl BackupService {
             }
 
             let restored_file = db::restored_db_file_path()?;
-            std::fs::write(&restored_file, &raw_db)
-                .context("写入待恢复数据库文件失败")?;
+            std::fs::write(&restored_file, &raw_db).context("写入待恢复数据库文件失败")?;
             Ok(())
         })
         .await
@@ -295,7 +299,9 @@ impl BackupService {
                             log::error!("定时备份执行失败：{e:#}");
                             let mut failed_config = config.clone();
                             failed_config.last_backup_status = Some(format!("失败: {e:#}"));
-                            _ = SettingService::open().save_backup_config(failed_config).await;
+                            _ = SettingService::open()
+                                .save_backup_config(failed_config)
+                                .await;
                         }
                     }
                 }
@@ -326,8 +332,12 @@ mod tests {
         assert!(!is_backup_filename(".wspbak"));
 
         // 带路径的一律不认：副本平铺在 root 下，出现分隔符就是想往外走。
-        assert!(!is_backup_filename("../winssh_backup_20260921_101500.wspbak"));
-        assert!(!is_backup_filename("sub/winssh_backup_20260921_101500.wspbak"));
+        assert!(!is_backup_filename(
+            "../winssh_backup_20260921_101500.wspbak"
+        ));
+        assert!(!is_backup_filename(
+            "sub/winssh_backup_20260921_101500.wspbak"
+        ));
         assert!(!is_backup_filename(
             "winssh_backup_20260921_101500.wspbak/../../etc.wspbak"
         ));

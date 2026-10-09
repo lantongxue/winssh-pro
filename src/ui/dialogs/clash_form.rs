@@ -338,7 +338,11 @@ impl ClashFormDialog {
                 .language("yaml")
                 .line_number(true)
                 .placeholder(SharedString::from(t!("clash.form.yaml_placeholder")))
-                .default_value(editing.map(|s| s.config_yaml.to_string()).unwrap_or_default())
+                .default_value(
+                    editing
+                        .map(|s| s.config_yaml.to_string())
+                        .unwrap_or_default(),
+                )
         });
         cx.subscribe(&yaml, |this, yaml, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) && !this.by_url {
@@ -347,7 +351,8 @@ impl ClashFormDialog {
                 this.fetched_meta = None;
                 cx.notify();
             }
-        }).detach();
+        })
+        .detach();
         // 编辑已导入（无地址）的订阅时从 YAML 那一档进场，与上一次的来路对上。
         let by_url = match editing {
             Some(subscription) => subscription.has_source(),
@@ -415,7 +420,9 @@ impl ClashFormDialog {
             color,
             notes,
             fetched_meta: None,
-            body_source: editing.map(|s| s.source_url.to_string()).unwrap_or_default(),
+            body_source: editing
+                .map(|s| s.source_url.to_string())
+                .unwrap_or_default(),
             fetching: false,
             saving: false,
         }
@@ -445,7 +452,9 @@ impl ClashFormDialog {
         SharedString,
     > {
         let config_yaml = match self.by_url {
-            true if self.source_url.read(cx).value().trim() == self.body_source => self.config_yaml.clone(),
+            true if self.source_url.read(cx).value().trim() == self.body_source => {
+                self.config_yaml.clone()
+            }
             true => String::new(),
             false => self.yaml.read(cx).value().to_string(),
         };
@@ -475,7 +484,9 @@ impl ClashFormDialog {
         draft.check()?;
         let meta = if self.by_url && self.source_url.read(cx).value().trim() == self.body_source {
             self.fetched_meta
-        } else { None };
+        } else {
+            None
+        };
         Ok((draft, meta))
     }
 
@@ -505,7 +516,9 @@ impl ClashFormDialog {
             window.push_notification(t!("clash.form.url_required"), cx);
             return;
         }
-        if self.fetching || self.saving { return; }
+        if self.fetching || self.saving {
+            return;
+        }
         self.fetching = true;
         cx.notify();
 
@@ -655,7 +668,9 @@ impl ClashFormDialog {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .bg(gpui_kit::rgb(u32::from_str_radix(&hex[1..], 16).unwrap_or(0x06b6d4)))
+                    .bg(gpui_kit::rgb(
+                        u32::from_str_radix(&hex[1..], 16).unwrap_or(0x06b6d4),
+                    ))
                     .when(picked_here, |this| {
                         this.shadow_sm()
                             .border_1()
@@ -692,7 +707,12 @@ impl ClashFormDialog {
     /// 导入方式那一排：两颗大按钮（同原型那两块）。选中的亮青色边。
     fn render_source_type(&self, cx: &mut Context<Self>) -> AnyElement {
         let kinds = [
-            ("clash-form-kind-url", true, t!("clash.form.kind_url"), AppIcon::Route),
+            (
+                "clash-form-kind-url",
+                true,
+                t!("clash.form.kind_url"),
+                AppIcon::Route,
+            ),
             (
                 "clash-form-kind-yaml",
                 false,
@@ -729,14 +749,18 @@ impl ClashFormDialog {
                         false => cx.theme().muted_foreground,
                     })
                     .cursor_pointer()
-                    .hover(|this| this.bg(match picked {
-                        true => blue.opacity(0.16),
-                        false => palette::surface_strong(cx),
-                    }))
+                    .hover(|this| {
+                        this.bg(match picked {
+                            true => blue.opacity(0.16),
+                            false => palette::surface_strong(cx),
+                        })
+                    })
                     .child(Icon::new(icon).with_size(px(14.)))
                     .child(div().text_xs().font_medium().child(label))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if this.saving || this.fetching { return; }
+                        if this.saving || this.fetching {
+                            return;
+                        }
                         this.by_url = by_url;
                         this.fetched_meta = None;
                         cx.notify();
@@ -748,8 +772,14 @@ impl ClashFormDialog {
 
 /// 正文还空着、地址却填了：先拉一次再存（见模块文档）。
 async fn fill_body(
-    (draft, meta): (ClashSubscriptionDraft, Option<crate::clash::SubscriptionMeta>),
-) -> anyhow::Result<(ClashSubscriptionDraft, Option<crate::clash::SubscriptionMeta>)> {
+    (draft, meta): (
+        ClashSubscriptionDraft,
+        Option<crate::clash::SubscriptionMeta>,
+    ),
+) -> anyhow::Result<(
+    ClashSubscriptionDraft,
+    Option<crate::clash::SubscriptionMeta>,
+)> {
     if !draft.config_yaml.trim().is_empty() || draft.source_url.trim().is_empty() {
         return Ok((draft, meta));
     }
@@ -810,9 +840,7 @@ impl Render for ClashFormDialog {
                 h_flex().w_full().gap_3().children([
                     field_any(
                         t!("clash.form.auto_update").into(),
-                        Select::new(&self.auto_update)
-                            .w_full()
-                            .into_any_element(),
+                        Select::new(&self.auto_update).w_full().into_any_element(),
                         cx,
                     )
                     .into_any_element(),
@@ -833,7 +861,10 @@ impl Render for ClashFormDialog {
                 h_flex().w_full().gap_3().children([
                     field_any(
                         t!("clash.form.tag").into(),
-                        Input::new(&self.tag).w_full().cleanable(true).into_any_element(),
+                        Input::new(&self.tag)
+                            .w_full()
+                            .cleanable(true)
+                            .into_any_element(),
                         cx,
                     )
                     .into_any_element(),
@@ -861,25 +892,19 @@ impl Render for ClashFormDialog {
                             .gap_1p5()
                             .items_center()
                             .text_color(palette::teal())
-                            .child(
-                                Icon::new(AppIcon::Sparkles).with_size(px(14.)),
-                            )
+                            .child(Icon::new(AppIcon::Sparkles).with_size(px(14.)))
                             .child(
                                 div()
                                     .text_xs()
                                     .font_medium()
-                                    .child(SharedString::from(t!(
-                                        "clash.form.protocol_title"
-                                    ))),
+                                    .child(SharedString::from(t!("clash.form.protocol_title"))),
                             ),
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(SharedString::from(t!(
-                                "clash.form.protocol_hint"
-                            ))),
+                            .child(SharedString::from(t!("clash.form.protocol_hint"))),
                     ),
             )
     }

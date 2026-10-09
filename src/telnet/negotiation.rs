@@ -354,18 +354,9 @@ mod tests {
             Action::Do,
             TelnetOption::SuppressGoAhead
         )));
-        assert!(opening.contains(&Decision::Negotiate(
-            Action::Will,
-            TelnetOption::NAWS
-        )));
-        assert!(opening.contains(&Decision::Negotiate(
-            Action::Will,
-            TelnetOption::TTYPE
-        )));
-        assert!(opening.contains(&Decision::Negotiate(
-            Action::Do,
-            TelnetOption::Echo
-        )));
+        assert!(opening.contains(&Decision::Negotiate(Action::Will, TelnetOption::NAWS)));
+        assert!(opening.contains(&Decision::Negotiate(Action::Will, TelnetOption::TTYPE)));
+        assert!(opening.contains(&Decision::Negotiate(Action::Do, TelnetOption::Echo)));
     }
 
     #[test]

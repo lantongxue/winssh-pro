@@ -97,23 +97,25 @@ impl ClashSubscriptionRepository {
         if let Some(meta) = meta {
             // 机场可能只回其中一两个字段。只写明确存在的值，避免一次
             // 不完整的响应把卡片上上次已经读到的额度清成 NULL。
-            if let Some(value) = meta.upload_bytes.and_then(|value| i64::try_from(value).ok()) {
-                update = update.col_expr(
-                    clash_subscription::Column::UploadBytes,
-                    Expr::value(value),
-                );
+            if let Some(value) = meta
+                .upload_bytes
+                .and_then(|value| i64::try_from(value).ok())
+            {
+                update =
+                    update.col_expr(clash_subscription::Column::UploadBytes, Expr::value(value));
             }
-            if let Some(value) = meta.download_bytes.and_then(|value| i64::try_from(value).ok()) {
+            if let Some(value) = meta
+                .download_bytes
+                .and_then(|value| i64::try_from(value).ok())
+            {
                 update = update.col_expr(
                     clash_subscription::Column::DownloadBytes,
                     Expr::value(value),
                 );
             }
             if let Some(value) = meta.total_bytes.and_then(|value| i64::try_from(value).ok()) {
-                update = update.col_expr(
-                    clash_subscription::Column::TotalBytes,
-                    Expr::value(value),
-                );
+                update =
+                    update.col_expr(clash_subscription::Column::TotalBytes, Expr::value(value));
             }
             if let Some(value) = &meta.expire_date {
                 update = update.col_expr(
@@ -131,7 +133,9 @@ impl ClashSubscriptionRepository {
 
     /// 删除一条订阅，返回是否真的删掉了一行。
     pub async fn delete(&self, conn: &impl ConnectionTrait, id: &str) -> Result<bool, DbErr> {
-        let result = clash_subscription::Entity::delete_by_id(id).exec(conn).await?;
+        let result = clash_subscription::Entity::delete_by_id(id)
+            .exec(conn)
+            .await?;
         Ok(result.rows_affected == 1)
     }
 }

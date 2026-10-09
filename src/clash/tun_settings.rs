@@ -91,7 +91,10 @@ static CURRENT: LazyLock<RwLock<TunSettings>> =
 
 /// 此刻进程里这一份。
 pub fn current() -> TunSettings {
-    CURRENT.read().map(|guard| guard.clone()).unwrap_or_default()
+    CURRENT
+        .read()
+        .map(|guard| guard.clone())
+        .unwrap_or_default()
 }
 
 /// 进程里这份换成 `settings`。

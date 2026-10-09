@@ -279,7 +279,8 @@ impl SftpEditorPanel {
                                     // 先收起确认框，再摘标签页 —— 摘除是挪到帧末做的。
                                     window.close_dialog(cx);
                                     if let Some(editor) = discard.upgrade() {
-                                        editor.update(cx, |editor, cx| editor.close_now(window, cx));
+                                        editor
+                                            .update(cx, |editor, cx| editor.close_now(window, cx));
                                     }
                                 }),
                         )
@@ -297,7 +298,8 @@ impl SftpEditorPanel {
                                     // 确认框先收起；标签页由 `save` 在存成功之后再关。
                                     window.close_dialog(cx);
                                     if let Some(editor) = save.upgrade() {
-                                        editor.update(cx, |editor, cx| editor.save(true, window, cx));
+                                        editor
+                                            .update(cx, |editor, cx| editor.save(true, window, cx));
                                     }
                                 }),
                         ),
@@ -470,10 +472,7 @@ impl Render for SftpEditorPanel {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
                                             path.to_string(),
                                         ));
-                                        window.push_notification(
-                                            t!("sftp_editor.path_copied"),
-                                            cx,
-                                        );
+                                        window.push_notification(t!("sftp_editor.path_copied"), cx);
                                     })
                                     .child(self.path.clone())
                             })
@@ -497,7 +496,9 @@ impl Render for SftpEditorPanel {
                             .label(t!("sftp_editor.save"))
                             .tooltip(t!("sftp_editor.save_tooltip"))
                             .disabled(!can_save)
-                            .on_click(cx.listener(|this, _, window, cx| this.save(false, window, cx))),
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.save(false, window, cx)),
+                            ),
                     ),
             )
             // 出错/失败横幅：读失败的原因或上一次保存失败的原因。

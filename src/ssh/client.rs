@@ -16,7 +16,7 @@
 //! [`ForwardRegistry`] 里，跟着 [`super::SshSession`] 一起交给上层。
 
 use russh::client::{Handler, Msg, Session};
-use russh::keys::{PublicKeyOrCertificate, HashAlg};
+use russh::keys::{HashAlg, PublicKeyOrCertificate};
 use russh::{Channel, ChannelOpenFailure};
 
 use super::forward::{ForwardRegistry, serve_remote};
@@ -44,7 +44,11 @@ impl SshHandler {
     /// 调用方（[`super::SshConnection::connect_trusted`]）
     /// 自己也留一份 `forwards`，之后加减转发规则写的就是同一份。
     pub fn new(forwards: ForwardRegistry, host_addr: (String, u16), trust: TrustPolicy) -> Self {
-        Self { forwards, host_addr, trust }
+        Self {
+            forwards,
+            host_addr,
+            trust,
+        }
     }
 
     /// 从公钥计算 SHA256 指纹字符串（`SHA256:...`，和 `ssh-keygen -lf` 一致）。

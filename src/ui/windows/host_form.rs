@@ -23,15 +23,15 @@
 //! 记录还不存在，改不了即存，所以底部留一个显式的保存按钮。
 
 use gpui_kit::component::{
-    ActiveTheme as _, Colorize as _, Icon, IconName, IndexPath, Sizable as _, StyledExt as _,
-    WindowExt as _,
+    ActiveTheme as _, Colorize as _, Icon, IconName, IndexPath, Root, Sizable as _, StyledExt as _,
+    TitleBar, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     group_box::GroupBoxVariant,
     h_flex,
     input::{Input, InputContentType, InputEvent, InputState, Textarea, TextareaState},
     select::{Select, SelectEvent, SelectState},
     setting::{RenderOptions, SelectIndex, SettingGroup, SettingItem, SettingPage, Settings},
-    v_flex, Root, TitleBar,
+    v_flex,
 };
 use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global,
@@ -52,14 +52,14 @@ use crate::{
         SerialBaud, SerialDataBits, SerialFlowControl, SerialLineState, SerialParity,
         SerialSettings, SerialStopBits,
     },
-    vnc::{
-        VncClipboardCharset, VncColorDepth, VncEncodingChoice, VncFrameRate, VncProtocolVersion,
-        VncSettings,
-    },
     service::{HostService, LocalFileService, SerialService, SshService},
     ui::{
         theme::{AppIcon, appearance, palette},
         views::HostExplorerView,
+    },
+    vnc::{
+        VncClipboardCharset, VncColorDepth, VncEncodingChoice, VncFrameRate, VncProtocolVersion,
+        VncSettings,
     },
 };
 use rust_i18n::t;
@@ -86,7 +86,9 @@ fn frame_rates() -> Vec<SharedString> {
 }
 
 fn protocol_versions() -> Vec<SharedString> {
-    VncProtocolVersion::ALL.map(|version| version.label()).to_vec()
+    VncProtocolVersion::ALL
+        .map(|version| version.label())
+        .to_vec()
 }
 
 fn clipboard_charsets() -> Vec<SharedString> {
@@ -113,7 +115,9 @@ fn rdp_color_depths() -> Vec<SharedString> {
 }
 
 fn rdp_performances() -> Vec<SharedString> {
-    RdpPerformance::ALL.map(|performance| performance.label()).to_vec()
+    RdpPerformance::ALL
+        .map(|performance| performance.label())
+        .to_vec()
 }
 
 /// 串口那几档下拉的候选，顺序即各枚举的 `ALL`：波特率 / 数据位 / 校验 /
@@ -555,8 +559,10 @@ impl HostForm {
         // 换了档，下面那几格要不要露出来得重新算；换了网，底下那句提示跟着换 ——
         // 都交给下一次渲染。
         for select in [&proxy_mode, &proxy_network] {
-            cx.subscribe(select, |_, _, _: &SelectEvent<Vec<SharedString>>, cx| cx.notify())
-                .detach();
+            cx.subscribe(select, |_, _, _: &SelectEvent<Vec<SharedString>>, cx| {
+                cx.notify()
+            })
+            .detach();
         }
 
         let auth_type =
@@ -827,8 +833,10 @@ impl HostForm {
         });
         // 接入方式与监听开关一换，端口那一格露不露出来得重新算 —— 交给下一次渲染。
         for select in [&easytier_access, &easytier_listen] {
-            cx.subscribe(select, |_, _, _: &SelectEvent<Vec<SharedString>>, cx| cx.notify())
-                .detach();
+            cx.subscribe(select, |_, _, _: &SelectEvent<Vec<SharedString>>, cx| {
+                cx.notify()
+            })
+            .detach();
         }
 
         let kind = cx.new(|cx| {
@@ -1593,9 +1601,11 @@ impl HostForm {
                         .ghost()
                         .icon(Icon::new(AppIcon::RefreshCw))
                         .tooltip(t!("host_form.serial_refresh_tooltip"))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.refresh_serial_ports(window, cx)
-                        })),
+                        .on_click(
+                            cx.listener(|this, _, window, cx| {
+                                this.refresh_serial_ports(window, cx)
+                            }),
+                        ),
                 ),
             cx,
         )
@@ -1656,7 +1666,9 @@ impl HostForm {
                     .w_full()
                     .child(field(
                         t!("host_form.field_rdp_domain").into(),
-                        Input::new(&self.rdp_domain).font_family("monospace").w_full(),
+                        Input::new(&self.rdp_domain)
+                            .font_family("monospace")
+                            .w_full(),
                         cx,
                     ))
                     .child(self.render_password_section(cx))
@@ -1840,7 +1852,9 @@ impl HostForm {
                         .text_xs()
                         .text_color(palette::idle(cx))
                         .child(SharedString::from(match global.enabled {
-                            true => t!("host_form.proxy_global_on", proxy => global.config.address()),
+                            true => {
+                                t!("host_form.proxy_global_on", proxy => global.config.address())
+                            }
                             false => t!("host_form.proxy_global_off"),
                         })),
                 )
@@ -1849,13 +1863,17 @@ impl HostForm {
                 el.child(two_field_row(
                     field(
                         t!("host_form.proxy_host").into(),
-                        Input::new(&self.proxy_host).font_family("monospace").w_full(),
+                        Input::new(&self.proxy_host)
+                            .font_family("monospace")
+                            .w_full(),
                         cx,
                     ),
                     2.,
                     field(
                         t!("host_form.proxy_port").into(),
-                        Input::new(&self.proxy_port).font_family("monospace").w_full(),
+                        Input::new(&self.proxy_port)
+                            .font_family("monospace")
+                            .w_full(),
                         cx,
                     ),
                     1.,
@@ -2162,7 +2180,9 @@ impl HostForm {
             .child(two_field_row(
                 field(
                     t!("host_form.field_easytier_ipv4").into(),
-                    Input::new(&self.easytier_ipv4).font_family("monospace").w_full(),
+                    Input::new(&self.easytier_ipv4)
+                        .font_family("monospace")
+                        .w_full(),
                     cx,
                 ),
                 1.,
@@ -2448,15 +2468,7 @@ impl HostFormWindow {
 
         let opened = cx.open_window(options, |window, cx| {
             let shell = cx.new(|cx| {
-                HostFormWindow::new(
-                    &groups,
-                    service,
-                    host_explorer,
-                    editing,
-                    &vault,
-                    window,
-                    cx,
-                )
+                HostFormWindow::new(&groups, service, host_explorer, editing, &vault, window, cx)
             });
             // 每个窗口的第一层必须是 Root，它承载对话框、通知与侧板 ——
             // 这一屏的校验与落库失败通知因此都落在它自己身上，不飘回主窗口。
@@ -2537,14 +2549,12 @@ impl HostFormWindow {
                         .flex_shrink_0()
                         .text_color(palette::teal()),
                 )
-                .child(
-                    div().text_sm().font_medium().child(SharedString::from(
-                        match self.editing.is_some() {
-                            true => t!("host_form.title_edit"),
-                            false => t!("host_form.title_new"),
-                        },
-                    )),
-                ),
+                .child(div().text_sm().font_medium().child(SharedString::from(
+                    match self.editing.is_some() {
+                        true => t!("host_form.title_edit"),
+                        false => t!("host_form.title_new"),
+                    },
+                ))),
         )
     }
 
@@ -2602,17 +2612,16 @@ impl HostFormWindow {
             .icon(AppIcon::Server)
             .default_open(true)
             .resettable(false)
-            .group(
-                group.item(self.row(|this, cx| this.render_platform(cx).into_any_element())),
-            )
+            .group(group.item(self.row(|this, cx| this.render_platform(cx).into_any_element())))
     }
 
     fn auth_page(&self, kind: HostKind) -> SettingPage {
         let group = SettingGroup::new().title(t!("host_form.group_auth"));
         // 组网主机的"认证"就是一把网络密钥：没有账号、也没有密钥/Agent 那几档。
         let group = match kind {
-            HostKind::EasyTier => group
-                .item(self.row(|this, cx| this.render_network_secret(cx).into_any_element())),
+            HostKind::EasyTier => {
+                group.item(self.row(|this, cx| this.render_network_secret(cx).into_any_element()))
+            }
             _ => group
                 .item(self.row(|this, cx| this.render_auth_row(cx).into_any_element()))
                 .item(self.row(|this, cx| {
@@ -2709,9 +2718,7 @@ impl HostFormWindow {
             .group(
                 SettingGroup::new()
                     .title(t!("host_form.group_easytier_routing"))
-                    .item(
-                        self.row(|this, cx| this.render_easytier_routing(cx).into_any_element()),
-                    ),
+                    .item(self.row(|this, cx| this.render_easytier_routing(cx).into_any_element())),
             )
     }
 
@@ -2763,9 +2770,7 @@ impl HostFormWindow {
                                 true => t!("host_form.save"),
                                 false => t!("host_form.create"),
                             })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.submit(window, cx)
-                            })),
+                            .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx))),
                     ),
             )
     }
@@ -2826,7 +2831,7 @@ impl HostFormWindow {
                         updated_host.tags = draft.tags.clone();
                         updated_host.proxy = draft.proxy.clone();
                         updated_host.vnc = draft.vnc;
-                updated_host.rdp = draft.rdp.clone();
+                        updated_host.rdp = draft.rdp.clone();
                         updated_host.easytier = draft.easytier.clone();
                         service
                             .update_host(&host.id, &group, draft)
@@ -2875,7 +2880,7 @@ impl Render for HostFormWindow {
             .child(self.render_title_bar())
             .child(div().flex_1().min_h_0().child(self.render_settings(cx)))
             .child(self.render_footer(cx))
-                }
+    }
 }
 
 #[cfg(test)]
@@ -3458,7 +3463,11 @@ mod tests {
 
         form.update_in(cx, |this, window, cx| {
             this.proxy_mode.update(cx, |state, cx| {
-                state.set_selected_index(Some(IndexPath::new(ProxyMode::Custom.index())), window, cx)
+                state.set_selected_index(
+                    Some(IndexPath::new(ProxyMode::Custom.index())),
+                    window,
+                    cx,
+                )
             });
         });
 
@@ -3558,15 +3567,33 @@ mod tests {
         let (form, cx) = draw_form(cx, Some(keyed_host(KEY_TEXT, "hunter2")));
 
         form.update_in(cx, |this, window, cx| {
-            assert_eq!(this.tags, vec![SharedString::from("生产"), SharedString::from("web")]);
-            this.tag_input.update(cx, |state, cx| state.set_value("集群", window, cx));
+            assert_eq!(
+                this.tags,
+                vec![SharedString::from("生产"), SharedString::from("web")]
+            );
+            this.tag_input
+                .update(cx, |state, cx| state.set_value("集群", window, cx));
             this.add_tag(window, cx);
-            assert_eq!(this.tags, vec![SharedString::from("生产"), SharedString::from("web"), SharedString::from("集群")]);
+            assert_eq!(
+                this.tags,
+                vec![
+                    SharedString::from("生产"),
+                    SharedString::from("web"),
+                    SharedString::from("集群")
+                ]
+            );
         });
 
         let (_, draft) = form
             .read_with(cx, |this, cx| this.build_draft(cx))
             .expect("表单数据有效");
-        assert_eq!(draft.tags, vec![SharedString::from("生产"), SharedString::from("web"), SharedString::from("集群")]);
+        assert_eq!(
+            draft.tags,
+            vec![
+                SharedString::from("生产"),
+                SharedString::from("web"),
+                SharedString::from("集群")
+            ]
+        );
     }
 }

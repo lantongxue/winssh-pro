@@ -668,27 +668,25 @@ mod tests {
             let target = std::net::SocketAddr::from(([10, 250, 0, 1], echo_port));
             let mut last_error = None;
             let echoed = match announced {
-                Ok(Ok(())) => {
-                    tokio::time::timeout(Duration::from_secs(20), async {
-                        loop {
-                            let attempt = async {
-                                let mut stream =
-                                    tokio_socks::tcp::Socks5Stream::connect(proxy, target).await?;
-                                stream.write_all(b"winssh").await?;
-                                let mut reply = [0u8; 6];
-                                stream.read_exact(&mut reply).await?;
-                                anyhow::Ok(reply)
-                            };
-                            match attempt.await {
-                                Ok(reply) => return reply,
-                                Err(error) => last_error = Some(format!("{error:#}")),
-                            }
-                            tokio::time::sleep(Duration::from_millis(500)).await;
+                Ok(Ok(())) => tokio::time::timeout(Duration::from_secs(20), async {
+                    loop {
+                        let attempt = async {
+                            let mut stream =
+                                tokio_socks::tcp::Socks5Stream::connect(proxy, target).await?;
+                            stream.write_all(b"winssh").await?;
+                            let mut reply = [0u8; 6];
+                            stream.read_exact(&mut reply).await?;
+                            anyhow::Ok(reply)
+                        };
+                        match attempt.await {
+                            Ok(reply) => return reply,
+                            Err(error) => last_error = Some(format!("{error:#}")),
                         }
-                    })
-                    .await
-                    .ok()
-                }
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                })
+                .await
+                .ok(),
                 _ => None,
             };
 

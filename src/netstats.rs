@@ -13,8 +13,8 @@
 //!   变。测不出来（对端不应答 / 超时）就是 `None`，界面显示破折号。
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::net::TcpStream;

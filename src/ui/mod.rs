@@ -45,7 +45,9 @@ use panels::{
     OpenSelection, PasteClipboard, SaveFile, SelectAllEntries, Tab, ToggleForwards, ToggleHistory,
     ToggleMonitor, ToggleSftp,
 };
-use workspace::{OpenSettingsWindow, OpenTrustedHosts, OpenVaultWindow, ToggleCommandPalette, ToggleSidebar};
+use workspace::{
+    OpenSettingsWindow, OpenTrustedHosts, OpenVaultWindow, ToggleCommandPalette, ToggleSidebar,
+};
 
 /// 主修饰键：macOS 用 Command，其余平台用 Ctrl。
 #[cfg(target_os = "macos")]
@@ -182,7 +184,7 @@ fn bindings() -> Vec<KeyBinding> {
     }
 
     bindings
-    }
+}
 
 #[cfg(test)]
 mod tests {

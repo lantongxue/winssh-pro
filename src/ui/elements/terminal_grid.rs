@@ -25,16 +25,15 @@
 use gpui_kit::{
     App, Bounds, CursorStyle, Element, ElementId, Entity, Font, FontFeatures, FontStyle,
     FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
-    LayoutId, Pixels, Point, ShapedLine, StrikethroughStyle, Style, TextAlign, TextRun,
-    UnderlineStyle, Window, Rgba, fill, outline, point, px, relative, size,
+    LayoutId, Pixels, Point, Rgba, ShapedLine, StrikethroughStyle, Style, TextAlign, TextRun,
+    UnderlineStyle, Window, fill, outline, point, px, relative, size,
 };
 
 use alacritty_terminal::{term::search::Match, vte::ansi::CursorShape};
 
 use crate::{
     terminal::{
-        Content, Emulator, GridCell, GridPoint, SearchState, TerminalBounds,
-        is_default_background,
+        Content, Emulator, GridCell, GridPoint, SearchState, TerminalBounds, is_default_background,
     },
     ui::{elements::boxdraw, theme::ansi::AnsiPalette},
 };
@@ -504,11 +503,9 @@ impl Element for TerminalGridElement {
             .as_ref()
             .is_some_and(|cursor| cursor.shape == CursorShape::Block)
         {
-            content.cursor.map(|cursor| {
-                GridPoint {
-                    line: cursor.point.line,
-                    column: cursor.point.column,
-                }
+            content.cursor.map(|cursor| GridPoint {
+                line: cursor.point.line,
+                column: cursor.point.column,
             })
         } else {
             None

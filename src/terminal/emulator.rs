@@ -1799,11 +1799,7 @@ enum CommandState {
 ///
 /// `term` 必须已经处理到这个标记那一刻为止 —— [`Emulator::write_output`]
 /// 的错开喂法保证了这件事。
-fn apply_mark(
-    state: &mut CommandState,
-    mark: Mark,
-    term: &Term<EventProxy>,
-) -> Option<CommandRun> {
+fn apply_mark(state: &mut CommandState, mark: Mark, term: &Term<EventProxy>) -> Option<CommandRun> {
     match mark {
         // 新的提示符要开始画了。上一条要是还挂在 `Running` 上，说明这个 shell
         // 没发过 `D`（有的集成就是只打前三个点）—— 那条命令确实跑过，照记，
@@ -1836,8 +1832,7 @@ fn apply_mark(
             None
         }
         Mark::CommandEnd(exit_code) => {
-            let CommandState::Running { command } =
-                std::mem::replace(state, CommandState::Idle)
+            let CommandState::Running { command } = std::mem::replace(state, CommandState::Idle)
             else {
                 return None;
             };
@@ -2181,11 +2176,7 @@ mod tests {
             let (events_tx, _events_rx) = mpsc::unbounded();
             let bounds = TerminalBounds::default(); // 80 × 24
             Self {
-                term: FairMutex::new(Term::new(
-                    Config::default(),
-                    &bounds,
-                    EventProxy(events_tx),
-                )),
+                term: FairMutex::new(Term::new(Config::default(), &bounds, EventProxy(events_tx))),
                 parser: Processor::new(),
                 marks: MarkScanner::default(),
                 state: CommandState::Idle,
@@ -2269,8 +2260,10 @@ mod tests {
     #[test]
     fn colour_codes_in_the_prompt_do_not_leak_into_the_command() {
         let mut term = Offline::new();
-        term.write(b"\x1b]133;A\x1b\\\x1b[32mroot@web-01\x1b[0m:\x1b[34m~\x1b[0m$ \x1b]133;B\x1b\\")
-            .write(b"uptime\r\n\x1b]133;C\x1b\\\x1b]133;D;0\x1b\\");
+        term.write(
+            b"\x1b]133;A\x1b\\\x1b[32mroot@web-01\x1b[0m:\x1b[34m~\x1b[0m$ \x1b]133;B\x1b\\",
+        )
+        .write(b"uptime\r\n\x1b]133;C\x1b\\\x1b]133;D;0\x1b\\");
         assert_eq!(term.commands(), vec![("uptime", Some(0))]);
     }
 
@@ -2296,7 +2289,9 @@ mod tests {
     #[test]
     fn a_failing_command_keeps_its_exit_code() {
         let mut term = Offline::new();
-        term.write(b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\false\r\n\x1b]133;C\x1b\\\x1b]133;D;1\x1b\\");
+        term.write(
+            b"\x1b]133;A\x1b\\$ \x1b]133;B\x1b\\false\r\n\x1b]133;C\x1b\\\x1b]133;D;1\x1b\\",
+        );
         assert_eq!(term.commands(), vec![("false", Some(1))]);
     }
 
@@ -2312,7 +2307,11 @@ mod tests {
         }
         assert_eq!(
             term.commands(),
-            vec![("pwd", Some(0)), ("whoami", Some(0)), ("cat missing", Some(1))]
+            vec![
+                ("pwd", Some(0)),
+                ("whoami", Some(0)),
+                ("cat missing", Some(1))
+            ]
         );
     }
 
@@ -2615,10 +2614,8 @@ mod tests {
     fn a_real_receive_session_runs_through_the_emulator(cx: &mut gpui_kit::TestAppContext) {
         use crate::zmodem::Session;
 
-        let root = std::env::temp_dir().join(format!(
-            "winssh-pro-zmodem-emulator-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("winssh-pro-zmodem-emulator-{}", std::process::id()));
         std::fs::remove_dir_all(&root).ok();
         std::fs::create_dir_all(&root).expect("建临时目录");
         let source = root.join("hello.bin");
@@ -2671,8 +2668,7 @@ mod tests {
                 assert_eq!(size, Some(payload.len() as u64), "大小来自 ZFILE");
                 seen_offer = true;
             }
-            if seen_offer
-                && emulator.read_with(cx, |emulator, _| emulator.zmodem_offer().is_some())
+            if seen_offer && emulator.read_with(cx, |emulator, _| emulator.zmodem_offer().is_some())
             {
                 emulator
                     .update(cx, |emulator, cx| {
@@ -2689,7 +2685,12 @@ mod tests {
 
         assert!(seen_offer, "整场跑完都没见到接收提议");
         match outcome {
-            Some(crate::zmodem::Outcome::Completed { files, bytes, saved_to, .. }) => {
+            Some(crate::zmodem::Outcome::Completed {
+                files,
+                bytes,
+                saved_to,
+                ..
+            }) => {
                 assert_eq!(files, 1);
                 assert_eq!(bytes, payload.len() as u64);
                 assert_eq!(saved_to.as_deref(), Some(dest.as_path()));
@@ -2812,9 +2813,7 @@ mod tests {
     /// 远端 `rz`：认出 `ZRINIT` 当场摆提议（还没建会话），等确认的时候
     /// 键盘字被吞掉；取消时送出一串 CAN，对端读到才停手。
     #[gpui_kit::test]
-    fn a_remote_rz_offer_swallows_input_and_cancels_with_can(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
+    fn a_remote_rz_offer_swallows_input_and_cancels_with_can(cx: &mut gpui_kit::TestAppContext) {
         let emulator = emulator_for_test(cx);
 
         emulator.update(cx, |emulator, cx| {
@@ -2843,7 +2842,9 @@ mod tests {
             emulator.input("x".as_bytes().to_vec(), cx);
         });
         assert!(
-            emulator.update(cx, |emulator, _| emulator.take_sent_by_test()).is_empty(),
+            emulator
+                .update(cx, |emulator, _| emulator.take_sent_by_test())
+                .is_empty(),
             "等确认时键盘字不该出去"
         );
 

@@ -225,8 +225,17 @@ mod tests {
     fn an_empty_command_is_not_stored() {
         db::runtime().block_on(async {
             let (history, _hosts, host_id) = fixture().await;
-            history.record(&host_id, run("   ", Some(0))).await.expect("记录失败");
-            assert!(history.load_for_host(&host_id).await.expect("读取失败").is_empty());
+            history
+                .record(&host_id, run("   ", Some(0)))
+                .await
+                .expect("记录失败");
+            assert!(
+                history
+                    .load_for_host(&host_id)
+                    .await
+                    .expect("读取失败")
+                    .is_empty()
+            );
         });
     }
 
@@ -286,10 +295,19 @@ mod tests {
     fn clearing_one_host_leaves_the_others_alone() {
         db::runtime().block_on(async {
             let (history, _hosts, host_id) = fixture().await;
-            history.record(&host_id, run("ls", Some(0))).await.expect("记录失败");
+            history
+                .record(&host_id, run("ls", Some(0)))
+                .await
+                .expect("记录失败");
             let cleared = history.clear_host(&host_id).await.expect("清空失败");
             assert_eq!(cleared, 1);
-            assert!(history.load_for_host(&host_id).await.expect("读取失败").is_empty());
+            assert!(
+                history
+                    .load_for_host(&host_id)
+                    .await
+                    .expect("读取失败")
+                    .is_empty()
+            );
         });
     }
 }

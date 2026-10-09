@@ -530,7 +530,10 @@ mod tests {
             socket
                 .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
                 .await?;
-            Ok((String::from_utf8_lossy(&name).into_owned(), u16::from_be_bytes(port)))
+            Ok((
+                String::from_utf8_lossy(&name).into_owned(),
+                u16::from_be_bytes(port),
+            ))
         }
 
         crate::db::runtime().block_on(async {
@@ -563,8 +566,7 @@ mod tests {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let portal_address = listener.local_addr().unwrap();
             let portal = tokio::spawn(accept_one(listener));
-            let network =
-                crate::easytier::portal::open("ssh-test-network".into(), "家里".into());
+            let network = crate::easytier::portal::open("ssh-test-network".into(), "家里".into());
             network.running(Some(portal_address));
             host.proxy = crate::proxy::HostProxy {
                 mode: crate::proxy::ProxyMode::EasyTier,
@@ -575,7 +577,10 @@ mod tests {
             let outcome = SshConnection::connect(&host, WindowSize::new(80, 24, 640, 384)).await;
             assert!(outcome.is_err(), "假入口不会说 SSH，握手必然失败");
             let (target_host, target_port) = portal.await.unwrap().unwrap();
-            assert_eq!((target_host.as_str(), target_port), ("internal.example", 2222));
+            assert_eq!(
+                (target_host.as_str(), target_port),
+                ("internal.example", 2222)
+            );
             network.finish(None);
         });
     }

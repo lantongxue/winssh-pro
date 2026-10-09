@@ -74,7 +74,9 @@ pub fn validate_start(exe: &str) -> Result<(), String> {
         .map(|name| name.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     if name != KERNEL_EXE.to_lowercase() {
-        return Err(format!("refusing to launch {exe:?}: only {KERNEL_EXE} is allowed"));
+        return Err(format!(
+            "refusing to launch {exe:?}: only {KERNEL_EXE} is allowed"
+        ));
     }
     Ok(())
 }

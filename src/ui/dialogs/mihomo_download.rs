@@ -88,11 +88,7 @@ impl MihomoDownloadBody {
     }
 
     /// 接收下载器状态更新。
-    fn on_download_state(
-        &mut self,
-        state: Arc<DownloadState>,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_download_state(&mut self, state: Arc<DownloadState>, cx: &mut Context<Self>) {
         self.state = state;
         cx.notify();
     }
@@ -101,19 +97,14 @@ impl MihomoDownloadBody {
 impl Render for MihomoDownloadBody {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let phase = &self.state.phase;
-        v_flex()
-            .gap_3()
-            .p_4()
-            .child(match phase {
-                DownloadPhase::Idle => self.render_confirm(cx).into_any_element(),
-                DownloadPhase::Downloading | DownloadPhase::Unpacking => {
-                    self.render_progress(cx).into_any_element()
-                }
-                DownloadPhase::Done => self.render_done(cx).into_any_element(),
-                DownloadPhase::Failed(err) => {
-                    self.render_failed(err.clone(), cx).into_any_element()
-                }
-            })
+        v_flex().gap_3().p_4().child(match phase {
+            DownloadPhase::Idle => self.render_confirm(cx).into_any_element(),
+            DownloadPhase::Downloading | DownloadPhase::Unpacking => {
+                self.render_progress(cx).into_any_element()
+            }
+            DownloadPhase::Done => self.render_done(cx).into_any_element(),
+            DownloadPhase::Failed(err) => self.render_failed(err.clone(), cx).into_any_element(),
+        })
     }
 }
 
@@ -398,11 +389,7 @@ impl MihomoDownloadDialog {
     /// 弹出下载确认与进度弹窗。
     ///
     /// 若内核已经就绪，则直接触发 `on_ready`（如果提供）。
-    pub fn open(
-        on_ready: Option<MihomoReadyHandler>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
+    pub fn open(on_ready: Option<MihomoReadyHandler>, window: &mut Window, cx: &mut App) {
         if downloader::is_installed() {
             if let Some(handler) = on_ready {
                 handler(window, cx);
@@ -553,22 +540,30 @@ fn render_header(phase: &DownloadPhase, cx: &App) -> impl IntoElement {
     let teal = palette::teal();
     let (icon, title, subtitle) = match phase {
         DownloadPhase::Idle => (
-            Icon::new(AppIcon::Download).with_size(px(16.)).into_any_element(),
+            Icon::new(AppIcon::Download)
+                .with_size(px(16.))
+                .into_any_element(),
             t!("clash.download.title").to_string(),
             t!("clash.download.subtitle").to_string(),
         ),
         DownloadPhase::Downloading | DownloadPhase::Unpacking => (
-            Icon::new(AppIcon::Download).with_size(px(16.)).into_any_element(),
+            Icon::new(AppIcon::Download)
+                .with_size(px(16.))
+                .into_any_element(),
             t!("clash.download.downloading_title").to_string(),
             t!("clash.download.downloading_subtitle").to_string(),
         ),
         DownloadPhase::Done => (
-            Icon::new(IconName::Check).with_size(px(16.)).into_any_element(),
+            Icon::new(IconName::Check)
+                .with_size(px(16.))
+                .into_any_element(),
             t!("clash.download.done_title").to_string(),
             t!("clash.download.done_desc").to_string(),
         ),
         DownloadPhase::Failed(_) => (
-            Icon::new(IconName::TriangleAlert).with_size(px(16.)).into_any_element(),
+            Icon::new(IconName::TriangleAlert)
+                .with_size(px(16.))
+                .into_any_element(),
             t!("clash.download.failed_title").to_string(),
             "下载或解压过程中发生错误".to_string(),
         ),
