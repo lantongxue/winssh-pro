@@ -93,6 +93,7 @@ fn main() {
 /// 这儿）和它下面的 `deps/`（`cargo test` 起的测试 exe 在这儿）。输出目录没有
 /// 环境变量可读，从 `OUT_DIR`（`<profile>/build/winssh-pro-<hash>/out`）往上数
 /// 三层是通行做法。内容没变就不重写：应用开着时 dll 被映射着，写不进去。
+#[cfg(target_os = "windows")]
 fn copy_wintun() {
     let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
         Ok("x86_64") => "x86_64",
@@ -121,6 +122,7 @@ fn copy_wintun() {
 ///
 /// 它和 `wintun.dll` 必须落在同一个目录里：mihomo 建虚拟网卡时按名字加载
 /// `wintun.dll`，第一站就是它自己所在的那个目录。
+#[cfg(target_os = "windows")]
 fn copy_mihomo() {
     match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
         // 手里这份是 Windows 的 x86_64 构建；别的架构上先不摆，让它去说
