@@ -131,6 +131,24 @@ impl ClashSubscriptionRepository {
         Ok(result.rows_affected)
     }
 
+    /// 只写 `updated_at`，用于自动拉取失败时也把时间戳推后——否则下一轮
+    /// 定时器还会判定"到期"、反复重试一个挂掉的地址。
+    pub async fn touch_updated_at(
+        &self,
+        conn: &impl ConnectionTrait,
+        id: &str,
+        updated_at: &str,
+    ) -> Result<u64, DbErr> {
+        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, sea_query::Expr};
+
+        let result = clash_subscription::Entity::update_many()
+            .col_expr(clash_subscription::Column::UpdatedAt, Expr::value(updated_at))
+            .filter(clash_subscription::Column::Id.eq(id))
+            .exec(conn)
+            .await?;
+        Ok(result.rows_affected)
+    }
+
     /// 删除一条订阅，返回是否真的删掉了一行。
     pub async fn delete(&self, conn: &impl ConnectionTrait, id: &str) -> Result<bool, DbErr> {
         let result = clash_subscription::Entity::delete_by_id(id)

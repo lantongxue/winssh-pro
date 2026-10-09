@@ -43,7 +43,8 @@ pub struct Model {
     pub notes: String,
     #[sea_orm(default_value = "")]
     pub created_at: String,
-    /// 正文最后一次更新的时间（拉取成功或手工导入的时刻）。
+    /// 最后一次自动拉取尝试的时间（拉取成功或失败都会更新），用于判断
+    /// 下次自动更新是否到期。手工导入时也是创建/更新的时刻。
     #[sea_orm(default_value = "")]
     pub updated_at: String,
 }

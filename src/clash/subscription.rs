@@ -44,7 +44,8 @@ pub struct ClashSubscription {
     /// 用户备注。
     pub notes: SharedString,
     pub created_at: SharedString,
-    /// 正文最后一次更新的时间。
+    /// 最后一次自动拉取尝试的时间（拉取成功或失败都会更新），用于判断
+    /// 下次自动更新是否到期。手工导入时也是创建/更新的时刻。
     pub updated_at: SharedString,
 }
 

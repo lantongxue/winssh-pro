@@ -12,6 +12,9 @@
 //!   不知道为什么用不了。所以 [`Self::refresh`] 先解读，读不出东西就当场
 //!   报错，库里的正文一个字节都不动。
 //! * **`updated_at` 只跟着正文走。** 改个名字不算"订阅更新了"。
+//!
+//!   例外是自动拉取失败时也推后 `updated_at`：否则到期判断永远停在"已到期"，
+//!   下一轮定时器又会重试一个挂掉的地址（见 [`Self::refresh_due_subscriptions`]）。
 
 use anyhow::{Result, anyhow, ensure};
 use rust_i18n::t;
@@ -322,6 +325,9 @@ impl ClashSubscriptionService {
     }
 
     /// 自动刷新并返回成功换上的订阅，供运行时在当前实例上热重载正文。
+    ///
+    /// 不管拉取成功还是失败都会推后 `updated_at`，这样失败的订阅不会在
+    /// 下一轮定时器里又被判定为"到期"、每分钟重试一个挂掉的地址。
     pub async fn refresh_due_subscriptions(&self) -> Result<Vec<ClashSubscription>> {
         let this = self.clone();
         db::run(async move {
@@ -350,9 +356,19 @@ impl ClashSubscriptionService {
                 {
                     Ok(fetched) => match this.apply_fetched(&existing, &fetched).await {
                         Ok(subscription) => refreshed.push(subscription),
-                        Err(error) => log::warn!("自动更新 {} 失败：{error:#}", existing.name),
+                        Err(error) => {
+                            log::warn!("自动更新 {} 失败：{error:#}", existing.name);
+                            // 失败也要推后 updated_at，否则下一轮还会判定
+                            // "到期"、每分钟重试一个挂掉的地址。
+                            let now_str = timestamp();
+                            let _ = this.repo.touch_updated_at(&this.db, &existing.id, &now_str).await;
+                        }
                     },
-                    Err(error) => log::warn!("自动拉取 {} 失败：{error:#}", existing.name),
+                    Err(error) => {
+                        log::warn!("自动拉取 {} 失败：{error:#}", existing.name);
+                        let now_str = timestamp();
+                        let _ = this.repo.touch_updated_at(&this.db, &existing.id, &now_str).await;
+                    }
                 }
             }
             Ok(refreshed)
