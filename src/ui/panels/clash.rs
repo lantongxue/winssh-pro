@@ -1180,19 +1180,7 @@ impl ClashPanel {
                                                         cx.theme().foreground
                                                     })
                                                     .child("虚拟网卡 (TUN)"),
-                                            )
-                                            // 内核跑在管理员权限下时在标题旁亮一手：
-                                            // 它是经 UAC 的提权 broker 拉起来的（见
-                                            // `clash::broker`），TUN 靠的就是它。与标题
-                                            // 同行，免得这张卡比系统代理那张高。
-                                            .when(self.state.elevated, |this| {
-                                                this.child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(cx.theme().muted_foreground)
-                                                        .child("管理员"),
-                                                )
-                                            }),
+                                            ),
                                     )
                                     .child(
                                         div()
