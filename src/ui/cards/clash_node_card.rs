@@ -95,51 +95,51 @@ fn parse_flag_and_name(name: &str) -> (String, String) {
         let lower = trimmed.to_lowercase();
         let flag = if lower.contains("香港") || lower.contains("hk") || lower.contains("hongkong")
         {
-            "🇭🇰 🇭🇰"
+            "🇭🇰"
         } else if lower.contains("东京")
             || lower.contains("日本")
             || lower.contains("jp")
             || lower.contains("japan")
             || lower.contains("tokyo")
         {
-            "🇯🇵 🇯🇵"
+            "🇯🇵"
         } else if lower.contains("洛杉矶")
             || lower.contains("硅谷")
             || lower.contains("美国")
             || lower.contains("us")
             || lower.contains("america")
         {
-            "🇺🇸 🇺🇸"
+            "🇺🇸"
         } else if lower.contains("新加坡")
             || lower.contains("狮城")
             || lower.contains("sg")
             || lower.contains("singapore")
         {
-            "🇸🇬 🇸🇬"
+            "🇸🇬"
         } else if lower.contains("台北")
             || lower.contains("台湾")
             || lower.contains("tw")
             || lower.contains("taiwan")
         {
-            "🇹🇼 🇹🇼"
+            "🇹🇼"
         } else if lower.contains("法兰克福")
             || lower.contains("德国")
             || lower.contains("de")
             || lower.contains("germany")
         {
-            "🇩🇪 🇩🇪"
+            "🇩🇪"
         } else if lower.contains("伦敦")
             || lower.contains("英国")
             || lower.contains("uk")
             || lower.contains("london")
         {
-            "🇬🇧 🇬🇧"
+            "🇬🇧"
         } else if lower.contains("首尔")
             || lower.contains("韩国")
             || lower.contains("kr")
             || lower.contains("korea")
         {
-            "🇰🇷 🇰🇷"
+            "🇰🇷"
         } else {
             "🌐"
         };
@@ -514,7 +514,22 @@ impl RenderOnce for ClashNodeCard {
                             .items_center()
                             .gap_1p5()
                             .when(!flags.is_empty(), |this| {
-                                this.child(div().flex_shrink_0().text_xs().child(flags))
+                                // Windows/Linux 缺带国旗的系统字体，指名打包的
+                                // Twemoji（COLR v0，渲染端配套补丁见
+                                // `vendor/gpui-pre-windows/PATCHES.md` 补丁二）；
+                                // macOS 不指名，系统 Apple Color Emoji 本来就
+                                // 有彩色国旗（见 `assets::flag_emoji_font_family`）。
+                                this.child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .when_some(
+                                            crate::assets::flag_emoji_font_family(),
+                                            |this, family| this.font_family(family),
+                                        )
+                                        // 字号照原型：旗帜那一枚是 text-base。
+                                        .text_base()
+                                        .child(flags),
+                                )
                             })
                             .child(
                                 div()

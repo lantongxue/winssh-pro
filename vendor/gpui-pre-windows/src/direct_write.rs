@@ -764,7 +764,20 @@ impl DirectWriteState {
 
         let bounds = unsafe { glyph_analysis.GetAlphaTextureBounds(texture_type)? };
 
-        if bounds.right < bounds.left {
+        // PATCHED(winssh-pro)：空包围盒的判定用 `<=` 而不是上游的 `<` ——
+        // 纯 COLR 字体的 emoji 底层 `glyf` 轮廓是空的，`GetAlphaTextureBounds`
+        // 对它返回的是**零尺寸**矩形（`right == left`）而不是倒置矩形，上游
+        // 的 `<` 判不出来，零尺寸包到 else 分支算出零包围盒，调用方
+        // （`Window::paint_emoji`）的 `!raster_bounds.is_zero()` 守卫会把整个
+        // 字形跳过不画 —— 而彩色明明就在 COLR 层里。空了就按
+        // `rasterize_color` 同一套枚举取各彩色层包围盒的并集兜底；字体
+        // 没有彩色表示时维持原行为。完整理由见 PATCHES.md。
+        if bounds.right <= bounds.left || bounds.bottom <= bounds.top {
+            if params.is_emoji {
+                if let Some(color_bounds) = self.color_glyph_run_bounds(components, params) {
+                    return Ok(color_bounds);
+                }
+            }
             Ok(Bounds {
                 origin: point(0.into(), 0.into()),
                 size: size(0.into(), 0.into()),
@@ -778,6 +791,122 @@ impl DirectWriteState {
                 ),
             })
         }
+    }
+
+    /// PATCHED(winssh-pro)：纯 COLR 字形的真实绘制包围盒 —— 各彩色层
+    /// alpha 包围盒的并集。
+    ///
+    /// 用**零偏移**的字形运行枚举，与 [`Self::rasterize_color`] 的唯一差别
+    /// 是那边为把位图原点对到包围盒左上角而加了 `-origin` 反偏移：包围盒
+    /// 对整体平移不变，`rasterize_color` 拿到这里的 `origin` 做同样的反向
+    /// 偏移后，各层恰好落回 `[0, size]`，与位图严丝合缝。调用点见
+    /// [`Self::raster_bounds`]，完整理由见 PATCHES.md。
+    ///
+    /// `TranslateColorGlyphRun` 报错（字体没有彩色表示）或枚举不出任何层
+    /// 时返回 `None`，调用方维持零包围盒的原行为；个别层分析失败只跳过
+    /// 该层，不让整个包围盒作废。
+    fn color_glyph_run_bounds(
+        &self,
+        components: &DirectWriteComponents,
+        params: &RenderGlyphParams,
+    ) -> Option<Bounds<DevicePixels>> {
+        let font = &self.fonts[params.font_id.0];
+        let glyph_id = [params.glyph_id.0 as u16];
+        let advance = [params.font_size.as_f32()];
+        let offset = [DWRITE_GLYPH_OFFSET {
+            advanceOffset: 0.0,
+            ascenderOffset: 0.0,
+        }];
+        let subpixel_shift = params
+            .subpixel_variant
+            .map(|v| v as f32 / SUBPIXEL_VARIANTS_X as f32);
+        let baseline_origin_x = subpixel_shift.x / params.scale_factor;
+        let baseline_origin_y = subpixel_shift.y / params.scale_factor;
+        let transform = DWRITE_MATRIX {
+            m11: params.scale_factor,
+            m12: 0.0,
+            m21: 0.0,
+            m22: params.scale_factor,
+            dx: 0.0,
+            dy: 0.0,
+        };
+        let glyph_run = DWRITE_GLYPH_RUN {
+            fontFace: ManuallyDrop::new(Some(unsafe { std::ptr::read(&***font.font_face) })),
+            fontEmSize: params.font_size.as_f32(),
+            glyphCount: 1,
+            glyphIndices: glyph_id.as_ptr(),
+            glyphAdvances: advance.as_ptr(),
+            glyphOffsets: offset.as_ptr(),
+            isSideways: BOOL(0),
+            bidiLevel: 0,
+        };
+
+        // todo: support formats other than COLR（与 `rasterize_color` 同一限制）
+        let color_enumerator = unsafe {
+            components.factory.TranslateColorGlyphRun(
+                Vector2::new(baseline_origin_x, baseline_origin_y),
+                &glyph_run,
+                None,
+                DWRITE_GLYPH_IMAGE_FORMATS_COLR,
+                DWRITE_MEASURING_MODE_NATURAL,
+                Some(&transform),
+                0,
+            )
+        }
+        .ok()?;
+
+        let mut union: Option<Bounds<DevicePixels>> = None;
+        loop {
+            let Ok(color_run) = (unsafe { color_enumerator.GetCurrentRun() }) else {
+                break;
+            };
+            let color_run = unsafe { &*color_run };
+            let image_format = color_run.glyphImageFormat & !DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE;
+            if image_format == DWRITE_GLYPH_IMAGE_FORMATS_COLR {
+                let color_analysis = match unsafe {
+                    components.factory.CreateGlyphRunAnalysis(
+                        &color_run.Base.glyphRun as *const _,
+                        Some(&transform),
+                        DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                        DWRITE_GRID_FIT_MODE_DEFAULT,
+                        DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+                        baseline_origin_x,
+                        baseline_origin_y,
+                    )
+                } {
+                    Ok(analysis) => analysis,
+                    Err(_) => continue,
+                };
+                let bounds = match unsafe {
+                    color_analysis.GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1)
+                } {
+                    Ok(bounds) => bounds,
+                    Err(_) => continue,
+                };
+                if bounds.right > bounds.left && bounds.bottom > bounds.top {
+                    let bounds = Bounds {
+                        origin: point(bounds.left.into(), bounds.top.into()),
+                        size: size(
+                            (bounds.right - bounds.left).into(),
+                            (bounds.bottom - bounds.top).into(),
+                        ),
+                    };
+                    union = Some(match union {
+                        Some(existing) => existing.union(&bounds),
+                        None => bounds,
+                    });
+                }
+            }
+
+            let has_next = unsafe { color_enumerator.MoveNext() }
+                .map(|e| e.as_bool())
+                .unwrap_or(false);
+            if !has_next {
+                break;
+            }
+        }
+        union
     }
 
     fn glyph_for_char(&self, font_id: FontId, ch: char) -> Option<GlyphId> {
@@ -2165,6 +2294,72 @@ mod tests {
             &[0, 0, 0, 0],
             "uncovered texel retained the poison from the uninitialized render target"
         );
+        Ok(())
+    }
+
+    /// PATCHED(winssh-pro)：纯 COLR 字体（Twemoji Mozilla）的一面国旗走完
+    /// 整条管线：整形期判成 emoji → `raster_bounds` 拿到非零包围盒（补丁二）
+    /// → `rasterize_glyph` 产出**非全透明**的彩色位图。哪一步断了，断言的
+    /// 顺序就指到哪里。字体字节取自应用侧 `assets/fonts/`，仅供本测试。
+    #[test]
+    fn pure_colr_font_flag_rasterizes_to_visible_pixels() -> Result<()> {
+        use std::borrow::Cow;
+
+        let devices = DirectXDevices::new()?;
+        let text_system = DirectWriteTextSystem::new(Some(&devices))?;
+        text_system.add_fonts(vec![Cow::Borrowed(include_bytes!(
+            "../../../assets/fonts/Twemoji.Mozilla.ttf"
+        ))])?;
+
+        let font = gpui::Font {
+            family: "Twemoji Mozilla".into(),
+            ..Default::default()
+        };
+        let font_id = text_system.font_id(&font)?;
+
+        let layout = text_system.layout_line(
+            "🇭🇰",
+            px(16.),
+            &[gpui::FontRun {
+                len: "🇭🇰".len(),
+                font_id,
+            }],
+        );
+        let emoji_glyphs: Vec<_> = layout
+            .runs
+            .iter()
+            .flat_map(|run| run.glyphs.iter().map(move |glyph| (run.font_id, glyph)))
+            .collect();
+        assert!(!emoji_glyphs.is_empty(), "🇭🇰 shaped to no glyphs at all");
+        assert!(
+            emoji_glyphs.iter().all(|(_, glyph)| glyph.is_emoji),
+            "🇭🇰 glyphs were not marked as emoji during shaping"
+        );
+
+        for (font_id, glyph) in &emoji_glyphs {
+            let params = RenderGlyphParams {
+                font_id: *font_id,
+                glyph_id: glyph.id,
+                font_size: px(16.),
+                subpixel_variant: point(0u8, 0u8),
+                scale_factor: 1.0,
+                is_emoji: glyph.is_emoji,
+                subpixel_rendering: false,
+                dilation: 0,
+            };
+            let raster_bounds = text_system.glyph_raster_bounds(&params)?;
+            assert!(
+                raster_bounds.size.width.0 > 0 && raster_bounds.size.height.0 > 0,
+                "raster bounds are zero for glyph {} — the pure-COLR bounds fallback did not kick in",
+                glyph.id.0
+            );
+            let (_size, bytes) = text_system.rasterize_glyph(&params, raster_bounds)?;
+            assert!(
+                bytes.chunks_exact(4).any(|pixel| pixel[3] > 0),
+                "rasterized glyph {} is fully transparent",
+                glyph.id.0
+            );
+        }
         Ok(())
     }
 }

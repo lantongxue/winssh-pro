@@ -37,7 +37,9 @@ use gpui_kit::{
     size,
 };
 
-use assets::Assets;
+use std::borrow::Cow;
+
+use assets::{Assets, FLAG_EMOJI_FONT};
 use ui::Workspace;
 
 // 界面文案的语言表，编译期从 `locales/` 读进来。放在 crate 根上是 `t!` 的要求：
@@ -63,6 +65,16 @@ fn main() {
         i18n::init();
         // 必须先初始化组件库，再注册应用自己的动作与快捷键。
         gpui_kit::init(cx);
+        // 国旗字体要在开窗前注册：`add_fonts` 得赶在第一帧文本排版之前，
+        // 晚了那一帧就会按缺字形画。注册失败不拦启动 —— 代价只是国旗
+        // 那几个字形回退成系统画法（字体见 `assets::FLAG_EMOJI_FONT`，
+        // 渲染端配套补丁见 `vendor/gpui-pre-windows/PATCHES.md` 补丁二）。
+        if let Err(error) = cx
+            .text_system()
+            .add_fonts(vec![Cow::Borrowed(FLAG_EMOJI_FONT)])
+        {
+            log::warn!("注册国旗字体失败：{error:#}");
+        }
         ui::init(cx);
         // 全局代理要在第一条会话建起来之前就位：开窗之后主机面板上点一下就
         // 可能开始拨号，那时候再去读库已经晚了（见 `SettingService::prime`）。

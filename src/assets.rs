@@ -12,6 +12,35 @@ use std::borrow::Cow;
 
 use gpui_kit::{AssetSource, Result, SharedString};
 
+/// 国旗 emoji 用的字体：Twemoji Mozilla（COLR v0，含全部国旗字形），
+/// 来源与许可见 `assets/fonts/Twemoji-NOTICE.md`。打包它是因为系统的
+/// emoji 字体普遍不带国旗 —— Windows 11 起的 Segoe UI Emoji 把国旗整个
+/// 移除了，Linux 各发行版也没有统一带国旗的字体。选 COLR v0 格式是
+/// 刻意的：gpui 的彩色 emoji 光栅化在 Windows 上只认 COLR（CBDT 位图
+/// 的 Noto Color Emoji 打进来会画成空白），而这份恰好是 Firefox 自己
+/// 在 Windows 上用的那份。渲染端原本画不出"纯 COLR"字形（空轮廓算出
+/// 零包围盒被跳过），补丁见 `vendor/gpui-pre-windows/PATCHES.md` 补丁二。
+///
+/// macOS 不用它：系统的 Apple Color Emoji 自带彩色国旗，保持系统
+/// 默认的回退链就好 —— 要不要指名这个 family，用 [`flag_emoji_font_family`]
+/// 问一下。
+pub const FLAG_EMOJI_FONT: &[u8] = include_bytes!("../assets/fonts/Twemoji.Mozilla.ttf");
+
+/// [`FLAG_EMOJI_FONT`] 的 family 名，即字体文件 name 表里写的那一个 ——
+/// 按内部名指名，别按文件名。
+pub const FLAG_EMOJI_FONT_FAMILY: &str = "Twemoji Mozilla";
+
+/// 要不要给国旗那一类文本显式指名 [`FLAG_EMOJI_FONT_FAMILY`]。
+/// macOS 的系统 Apple Color Emoji 自带彩色国旗，不指名走系统回退链；
+/// Windows/Linux 的系统 emoji 字体没有国旗，指名打包的 Twemoji。
+pub fn flag_emoji_font_family() -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        None
+    } else {
+        Some(FLAG_EMOJI_FONT_FAMILY)
+    }
+}
+
 /// 本仓库内嵌的资源，路径与 `assets/` 下的相对路径一致。
 ///
 /// 用 `include_bytes!` 而不是 `rust-embed`：数量是个位数，编译期就能定死，
