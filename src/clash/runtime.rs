@@ -177,6 +177,10 @@ pub struct RuntimeState {
     pub traffic_up: SharedString,
     /// 同上，下行。
     pub traffic_down: SharedString,
+    /// 本次运行累计上行字节。每秒采样时累加，停止/重启时归零。
+    pub traffic_up_total: u64,
+    /// 同上，下行。
+    pub traffic_down_total: u64,
     /// 子进程日志的尾巴，最后一行在最后。
     pub logs: Vec<SharedString>,
     /// 当前活跃连接。
@@ -203,6 +207,8 @@ impl Default for RuntimeState {
             live: None,
             traffic_up: SharedString::default(),
             traffic_down: SharedString::default(),
+            traffic_up_total: 0,
+            traffic_down_total: 0,
             logs: Vec::new(),
             connections: Vec::new(),
             delay_tests: 0,
@@ -289,6 +295,8 @@ pub fn start(subscription: &ClashSubscription) -> Result<()> {
         state.delay_tests = 0;
         state.traffic_up = SharedString::default();
         state.traffic_down = SharedString::default();
+        state.traffic_up_total = 0;
+        state.traffic_down_total = 0;
     });
 
     let subscription = subscription.clone();
@@ -727,6 +735,8 @@ fn finish(token: u64, outcome: Option<String>) {
         state.delay_tests = 0;
         state.traffic_up = SharedString::default();
         state.traffic_down = SharedString::default();
+        state.traffic_up_total = 0;
+        state.traffic_down_total = 0;
         state.phase = match outcome {
             Some(reason) => Phase::Failed(reason.into()),
             None => Phase::Idle,
@@ -1083,32 +1093,33 @@ async fn stream_traffic(api: Arc<ApiClient>) {
     }
 }
 
-/// 采一份实时吞吐（上行 / 下行，字节每秒）写进状态。
+/// 采一份实时吞吐（上行 / 下行，字节每秒）写进状态，并累加到本次运行的
+/// 累计字节（`traffic_up_total` / `traffic_down_total`）。
 ///
 /// 和上一份一样就不发：流每秒一份，而每次发布都要克隆整份状态
-/// （节点表、连接表都在里面），没变化的时候不值得。
+/// （节点表、连接表都在里面），没变化的时候不值得。速率没变但非零时
+/// 照样累加 —— 速率不变不代表没走流量。
 fn publish_traffic(traffic: Value) {
-    let up: SharedString = traffic
-        .get("up")
-        .and_then(Value::as_u64)
-        .map(format_bytes_per_sec)
-        .unwrap_or_default()
-        .into();
-    let down: SharedString = traffic
-        .get("down")
-        .and_then(Value::as_u64)
-        .map(format_bytes_per_sec)
-        .unwrap_or_default()
-        .into();
+    let up_raw = traffic.get("up").and_then(Value::as_u64).unwrap_or(0);
+    let down_raw = traffic.get("down").and_then(Value::as_u64).unwrap_or(0);
+    let up: SharedString = format_bytes_per_sec(up_raw).into();
+    let down: SharedString = format_bytes_per_sec(down_raw).into();
     {
         let current = state();
-        if current.traffic_up == up && current.traffic_down == down {
+        // 速率没变且都为零 —— 没走流量，不发布。
+        if current.traffic_up == up
+            && current.traffic_down == down
+            && up_raw == 0
+            && down_raw == 0
+        {
             return;
         }
     }
     publish(|state| {
         state.traffic_up = up;
         state.traffic_down = down;
+        state.traffic_up_total = state.traffic_up_total.saturating_add(up_raw);
+        state.traffic_down_total = state.traffic_down_total.saturating_add(down_raw);
     });
 }
 

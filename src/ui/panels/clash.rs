@@ -754,6 +754,11 @@ impl ClashPanel {
         let tun_active = self.state.tun;
         let testing_all = self.testing_all;
 
+        // 本次运行累计流量（字节）。实时速率是每秒一份的瞬时值，累计才是
+        // "这次跑起来一共走了多少"。没跑起来时是零。
+        let total_up = self.state.traffic_up_total;
+        let total_down = self.state.traffic_down_total;
+
         // 当前活动代理组里选定的那台节点，显示在"一键测速"后面。名字长度随
         // 服务器跳，但它所在的第二行用的不是 justify_between，伸多宽都不影响
         // 同行其余卡片的位置 —— 这也是把它挪上来而不是留在节点组那一行的
@@ -1286,6 +1291,99 @@ impl ClashPanel {
                                                 rgb(0x059669)
                                             })
                                             .child(SharedString::from(down_display.to_string())),
+                                    ),
+                            ),
+                    )
+                    // 本次运行累计流量总计胶囊
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .px_3()
+                            .py_1p5()
+                            .rounded(px(8.))
+                            .flex_shrink_0()
+                            .when(is_dark, |this| {
+                                this.bg(palette::recessed(cx))
+                                    .border_1()
+                                    .border_color(cx.theme().border.opacity(0.6))
+                            })
+                            .when(!is_dark, |this| {
+                                this.bg(cx.theme().background)
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                            })
+                            .child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_semibold()
+                                            .text_color(cx.theme().foreground)
+                                            .child("流量总计"),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .items_center()
+                                            .font_family("monospace")
+                                            .text_xs()
+                                            .child(
+                                                h_flex()
+                                                    .gap_0p5()
+                                                    .items_center()
+                                                    .child(
+                                                        Icon::new(IconName::ArrowUp)
+                                                            .with_size(px(10.))
+                                                            .text_color(if is_dark {
+                                                                rgb(0x22d3ee)
+                                                            } else {
+                                                                rgb(0x0284c7)
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_color(if is_dark {
+                                                                rgb(0x22d3ee)
+                                                            } else {
+                                                                rgb(0x0284c7)
+                                                            })
+                                                            .child(SharedString::from(
+                                                                format_bytes(total_up),
+                                                            )),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_color(cx.theme().border)
+                                                    .child("|"),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .gap_0p5()
+                                                    .items_center()
+                                                    .child(
+                                                        Icon::new(IconName::ArrowDown)
+                                                            .with_size(px(10.))
+                                                            .text_color(if is_dark {
+                                                                rgb(0x34d399)
+                                                            } else {
+                                                                rgb(0x059669)
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_color(if is_dark {
+                                                                rgb(0x34d399)
+                                                            } else {
+                                                                rgb(0x059669)
+                                                            })
+                                                            .child(SharedString::from(
+                                                                format_bytes(total_down),
+                                                            )),
+                                                    ),
+                                            ),
                                     ),
                             ),
                     )
