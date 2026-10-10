@@ -4,7 +4,7 @@
 //! 先连上代理服务器，让它替我们连到目标主机，之后的 SSH 握手、认证、通道
 //! 都在那条已经打通的字节流上跑（见 [`crate::ssh::connection`] 的拨号那一段）。
 //!
-//! 一台主机有四档可选（[`ProxyMode`]），全局只有两档：
+//! 一台主机有五档可选（[`ProxyMode`]），全局只有两档：
 //!
 //! | 主机上的选择 | 实际用谁 |
 //! | --- | --- |
@@ -12,6 +12,7 @@
 //! | [`Global`](ProxyMode::Global) | 设置里那份全局代理（[`GlobalProxy`]），它没开就是直连 |
 //! | [`Custom`](ProxyMode::Custom) | 这台主机自己那份 [`ProxyConfig`] |
 //! | [`EasyTier`](ProxyMode::EasyTier) | 本应用里的一台组网主机：用户态那一档是它的 SOCKS5 入口，虚拟网卡那一档直连（系统路由走网卡） |
+//! | [`Clash`](ProxyMode::Clash) | 本应用里跑着的那个 mihomo 实例：它的混合端口（SOCKS5 与 HTTP 共用） |
 //!
 //! "经组网"那一档是**引用**不是取用：存的是那台组网主机的 id（[`HostProxy::network`]），
 //! 拨号时才去问那张网此刻从哪儿进 —— 入口端口是它自己的配置，改了这边跟着走；
@@ -89,12 +90,20 @@ pub enum ProxyMode {
     Custom,
     /// 经 EasyTier 组网：本应用里的一台组网主机（[`HostProxy::network`]）。
     EasyTier,
+    /// 经 Clash 代理：本应用里跑着的那个 mihomo 实例（见 [`clash_proxy`]）。
+    Clash,
 }
 
 impl ProxyMode {
     /// 下拉里自上而下的顺序。[`Self::from_index`] 按的就是这个顺序。
     /// 新的一档只往后加：下标是界面上的事，但老的几档别挪位置。
-    pub const ALL: [Self; 4] = [Self::Disabled, Self::Global, Self::Custom, Self::EasyTier];
+    pub const ALL: [Self; 5] = [
+        Self::Disabled,
+        Self::Global,
+        Self::Custom,
+        Self::EasyTier,
+        Self::Clash,
+    ];
 
     /// 界面上的名字。
     pub fn label(&self) -> SharedString {
@@ -103,6 +112,7 @@ impl ProxyMode {
             Self::Global => t!("proxy.mode_global"),
             Self::Custom => t!("proxy.mode_custom"),
             Self::EasyTier => t!("proxy.mode_easytier"),
+            Self::Clash => t!("proxy.mode_clash"),
         }
         .into()
     }
@@ -206,6 +216,26 @@ pub fn exclusive_for_test() -> impl Drop {
     )
 }
 
+/// 此刻的 Clash 实例能不能当 SOCKS5 代理用。能的话给回它的入口。
+///
+/// 端口是**实例的**（混合端口，SOCKS5 与 HTTP 共用），不是哪一份存下来的配置：
+/// 换一条订阅端口就跟着换，存快照只会指到一个没人听的口上 —— 所以和"经组网"
+/// 一样按引用对待，拨号那一刻才来问。内核没在跑（`Phase::Running` 之外都是
+/// 不算数：Starting 时口还没开，Stopping 时马上就没）就是 `None`。
+fn clash_proxy() -> Option<ProxyConfig> {
+    let state = crate::clash::runtime::state();
+    match (&state.phase, state.mixed_port) {
+        (crate::clash::Phase::Running, Some(port)) => Some(ProxyConfig {
+            // mihomo 的混合端口只绑回环，不要认证。
+            host: "127.0.0.1".into(),
+            port,
+            username: SharedString::default(),
+            password: SharedString::default(),
+        }),
+        _ => None,
+    }
+}
+
 /// 拨号前为什么定不下来要经过谁。两种说法不一样，所以分开：
 #[derive(Debug, PartialEq)]
 pub enum RouteError {
@@ -295,6 +325,11 @@ fn resolve(proxy: &HostProxy) -> Result<Option<ProxyConfig>, SharedString> {
         }
         // 要等那张网，走 [`route`]。到这里是调用方走错了路，照"没挑网"报。
         ProxyMode::EasyTier => Err(t!("proxy.check_network").into()),
+        // 实例没在跑是报错不是直连 —— 选了它就是不想直连。
+        ProxyMode::Clash => match clash_proxy() {
+            Some(config) => Ok(Some(config)),
+            None => Err(t!("proxy.check_clash_not_running").into()),
+        },
     }
 }
 
@@ -409,6 +444,19 @@ mod tests {
         proxy.mode = ProxyMode::Disabled;
         proxy.network = "".into();
         assert_eq!(proxy.check(), Ok(()));
+    }
+
+    /// 经 Clash：实例没在跑是报错不是直连。表单上这一档没有要填的格子，
+    /// `check` 照样放行 —— 缺不缺在拨号那一刻才知道。
+    #[test]
+    fn a_clash_proxy_needs_a_running_instance() {
+        let proxy = HostProxy {
+            mode: ProxyMode::Clash,
+            ..Default::default()
+        };
+        assert_eq!(proxy.check(), Ok(()));
+        // 测试进程里没有 mihomo 会话，[`clash_proxy`] 是 `None`。
+        assert!(resolve(&proxy).is_err());
     }
 
     fn host_via(proxy: HostProxy, hostname: &str) -> Host {

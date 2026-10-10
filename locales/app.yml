@@ -2693,6 +2693,12 @@ host_form.proxy_global_on:
 host_form.proxy_global_off:
   en: No global proxy is set up yet, so this host connects directly. Configure one under Preferences → Network Proxy.
   zh-CN: 未配置全局代理，此主机将直连。请在偏好设置 → 网络代理中配置。
+host_form.proxy_clash_on:
+  en: "Connects through the Clash SOCKS5 entry %{address}."
+  zh-CN: "连接时经由 Clash 的 SOCKS5 入口 %{address}。"
+host_form.proxy_clash_off:
+  en: The Clash proxy is not running. Start a subscription in the sidebar first; otherwise connecting reports an error.
+  zh-CN: Clash 代理未在运行。请先在侧边栏启动一条订阅，否则连接时会报错。
 host_form.field_proxy_network:
   en: Network
   zh-CN: 组网
@@ -2734,9 +2740,15 @@ proxy.check_port:
 proxy.mode_easytier:
   en: Via EasyTier network
   zh-CN: 经 EasyTier 组网
+proxy.mode_clash:
+  en: Via Clash proxy
+  zh-CN: 经 Clash 代理
 proxy.check_network:
   en: No EasyTier network is picked to connect through.
   zh-CN: 未选择经哪张 EasyTier 组网。
+proxy.check_clash_not_running:
+  en: The Clash proxy is not running, so this host cannot connect through it.
+  zh-CN: Clash 代理未在运行，此主机无法经它连接。
 
 # ── 凭据模型（src/credential.rs） ────────────────────────────────────────
 credential.kind_password:

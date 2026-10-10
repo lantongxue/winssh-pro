@@ -189,9 +189,9 @@ fn auth_types() -> Vec<SharedString> {
     AuthMethod::ALL.map(|method| method.label()).to_vec()
 }
 
-/// 代理那一档的四个选项，顺序即 [`crate::proxy::ProxyMode`] 的编号顺序：
-/// 0 不使用代理、1 跟随全局、2 配置代理、3 经 EasyTier 组网。和认证方式一样按
-/// **下标**判断。
+/// 代理那一档的五个选项，顺序即 [`crate::proxy::ProxyMode`] 的编号顺序：
+/// 0 不使用代理、1 跟随全局、2 配置代理、3 经 EasyTier 组网、4 经 Clash 代理。
+/// 和认证方式一样按**下标**判断。
 fn proxy_modes() -> Vec<SharedString> {
     ProxyMode::ALL.map(|mode| mode.label()).to_vec()
 }
@@ -1822,12 +1822,13 @@ impl HostForm {
         )
     }
 
-    /// 代理那一段：一个三档下拉，后面跟着这一档要说的话。
+    /// 代理那一段：一个五档下拉，后面跟着这一档要说的话。
     ///
     /// - **不使用代理**：什么也不必再说。
     /// - **跟随全局**：把现在的全局代理摆出来。
     /// - **配置代理**：露出地址、端口、用户名、密码四格。
     /// - **经 EasyTier 组网**：挑一台组网主机，底下说一句连接时会怎么走。
+    /// - **经 Clash 代理**：说一句 Clash 实例在不在跑、在跑的话从哪儿进。
     fn render_proxy_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mode = ProxyMode::from_index(
             self.proxy_mode
@@ -1919,6 +1920,24 @@ impl HostForm {
                         .text_xs()
                         .text_color(palette::idle(cx))
                         .child(self.proxy_network_hint(cx)),
+                )
+            })
+            .when(mode == ProxyMode::Clash, |el| {
+                // 入口是实例此刻的混合端口，不是哪一份存下来的配置 ——
+                // 换条订阅端口就跟着换，所以提示也每帧照现状说。
+                let state = crate::clash::runtime::state();
+                let hint = match (&state.phase, state.mixed_port) {
+                    (crate::clash::Phase::Running, Some(port)) => t!(
+                        "host_form.proxy_clash_on",
+                        address => format!("socks5://127.0.0.1:{port}"),
+                    ),
+                    _ => t!("host_form.proxy_clash_off"),
+                };
+                el.child(
+                    div()
+                        .text_xs()
+                        .text_color(palette::idle(cx))
+                        .child(SharedString::from(hint)),
                 )
             })
     }
