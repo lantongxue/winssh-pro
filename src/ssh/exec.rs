@@ -125,26 +125,8 @@ fn append(buffer: &mut Vec<u8>, data: &[u8]) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn failure_reason_prefers_stderr() {
-        let output = ExecOutput {
-            stdout: String::new(),
-            stderr: "\n  sh: docker: not found\n".into(),
-            exit_status: Some(127),
-        };
-        assert!(!output.success());
-        assert_eq!(output.failure_reason(), "sh: docker: not found");
-    }
-
-    #[test]
-    fn missing_exit_status_counts_as_success() {
-        let output = ExecOutput::default();
-        assert!(output.success());
-    }
-}
+#[path = "../tests/ssh/exec.rs"]
+mod tests;
 
 /// 一台只会做一件事的 sshd，跑在进程内的回环端口上。
 ///
