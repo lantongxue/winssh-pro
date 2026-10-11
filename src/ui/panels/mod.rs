@@ -13,6 +13,7 @@ mod easytier;
 mod event_log;
 mod ftp_host;
 mod monitor;
+mod s3_host;
 mod rdp;
 mod sftp;
 mod sftp_editor;
@@ -27,6 +28,7 @@ pub use easytier::EasyTierPanel;
 pub use ftp_host::DockedFtpPanel;
 pub use monitor::{MonitorEvent, MonitorPanel};
 pub use rdp::RdpPanel;
+pub use s3_host::DockedS3Panel;
 pub use sftp::{
     ExtendSelectionDown, ExtendSelectionUp, OpenSelection, SelectAllEntries, SftpPanel,
     SftpPanelEvent,

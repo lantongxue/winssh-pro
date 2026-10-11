@@ -2306,6 +2306,9 @@ host_form.page_serial:
 host_form.page_easytier:
   en: "EasyTier network"
   zh-CN: "EasyTier 组网"
+host_form.page_s3:
+  en: "S3 connection"
+  zh-CN: "S3 连接"
 host_form.group_easytier_peers:
   en: "Peers"
   zh-CN: "对等节点"
@@ -5144,3 +5147,77 @@ ftp_err.chmod_unsupported:
 ftp_err.raw_error:
   en: "{action}: {error}"
   zh-CN: "{action}:{error}"
+
+# ── 独立 S3 会话（HostKind::S3 开出来的那个标签页，见 src/ui/panels/s3_host.rs） ──
+s3_host.close_session:
+  en: Close session
+  zh-CN: 关闭会话
+
+# ── S3 服务错误（src/service/s3_service.rs） ──
+s3_err.no_endpoint:
+  en: The S3 endpoint URL is empty
+  zh-CN: S3 端点地址为空
+s3_err.no_bucket:
+  en: The S3 bucket name is empty
+  zh-CN: S3 存储桶名称为空
+s3_err.build_operator:
+  en: Failed to build the S3 client parameters
+  zh-CN: 组装 S3 客户端参数失败
+s3_err.action_read_dir:
+  en: List the directory {path}
+  zh-CN: 列目录 {path}
+s3_err.action_stat_path:
+  en: Check whether the path exists
+  zh-CN: 判断路径是否存在
+s3_err.action_stat_remote:
+  en: Check the remote path {path}
+  zh-CN: 查看远端路径 {path}
+s3_err.action_create_dir:
+  en: Create the directory {path}
+  zh-CN: 新建目录 {path}
+s3_err.action_create_file:
+  en: Create the file {path}
+  zh-CN: 新建文件 {path}
+s3_err.action_delete:
+  en: Delete {path}
+  zh-CN: 删除 {path}
+s3_err.action_delete_dir:
+  en: Remove the directory {path}
+  zh-CN: 删除目录 {path}
+s3_err.action_rename:
+  en: Rename {from} to {to}
+  zh-CN: 把 {from} 改成 {to}
+s3_err.action_read_file:
+  en: Read the file {path}
+  zh-CN: 读取文件 {path}
+s3_err.action_save_file:
+  en: Save the file {path}
+  zh-CN: 写入文件 {path}
+s3_err.action_open_remote:
+  en: Open the remote file {path}
+  zh-CN: 打开远端文件 {path}
+s3_err.chmod_unsupported:
+  en: S3 does not support chmod; the permissions column is read-only
+  zh-CN: S3 不支持 chmod，权限列只读
+s3_err.raw_error:
+  en: "{action}: {error}"
+  zh-CN: "{action}:{error}"
+
+# ── S3 主机表单字段（src/ui/windows/host_form.rs） ──
+host_form.field_s3_bucket:
+  en: Bucket
+  zh-CN: 存储桶
+host_form.field_s3_region:
+  en: Region
+  zh-CN: 区域
+host_form.s3_bucket_placeholder:
+  en: my-bucket
+  zh-CN: my-bucket
+host_form.s3_region_placeholder:
+  en: us-east-1 / auto
+  zh-CN: us-east-1 / auto
+host_form.s3_hint:
+  en: >-
+    Endpoint goes in the "Hostname" field, Access Key in "Username",
+    Secret Key in "Password". Use "auto" for region with MinIO or R2.
+  zh-CN: 端点地址填在「主机名」，Access Key 填在「用户名」，Secret Key 填在「密码」。MinIO / R2 等可填 "auto"。

@@ -22,7 +22,7 @@ use anyhow::Result;
 use crate::sftp::FileEntry;
 
 use super::{
-    FtpService, SftpService,
+    FtpService, S3Service, SftpService,
     sftp_service::{TransferEvent, TransferHandle, TransferJob},
 };
 use tokio::sync::mpsc::UnboundedSender;
@@ -32,6 +32,7 @@ use tokio::sync::mpsc::UnboundedSender;
 pub enum FileService {
     Sftp(SftpService),
     Ftp(FtpService),
+    S3(S3Service),
 }
 
 impl FileService {
@@ -40,6 +41,7 @@ impl FileService {
         match self {
             Self::Sftp(_) => "SFTP",
             Self::Ftp(_) => "FTP",
+            Self::S3(_) => "S3",
         }
     }
 
@@ -48,6 +50,7 @@ impl FileService {
         match self {
             Self::Sftp(service) => service.home().await,
             Self::Ftp(service) => service.home().await,
+            Self::S3(service) => service.home().await,
         }
     }
 
@@ -56,6 +59,7 @@ impl FileService {
         match self {
             Self::Sftp(service) => service.resolve(raw).await,
             Self::Ftp(service) => service.resolve(raw).await,
+            Self::S3(service) => service.resolve(raw).await,
         }
     }
 
@@ -64,6 +68,7 @@ impl FileService {
         match self {
             Self::Sftp(service) => service.list(dir).await,
             Self::Ftp(service) => service.list(dir).await,
+            Self::S3(service) => service.list(dir).await,
         }
     }
 
@@ -72,6 +77,7 @@ impl FileService {
         match self {
             Self::Sftp(service) => service.create_dir(target).await,
             Self::Ftp(service) => service.create_dir(target).await,
+            Self::S3(service) => service.create_dir(target).await,
         }
     }
 
@@ -80,6 +86,7 @@ impl FileService {
         match self {
             Self::Sftp(service) => service.create_file(target).await,
             Self::Ftp(service) => service.create_file(target).await,
+            Self::S3(service) => service.create_file(target).await,
         }
     }
 
@@ -88,6 +95,7 @@ impl FileService {
         match self {
             Self::Sftp(service) => service.remove(entry).await,
             Self::Ftp(service) => service.remove(entry).await,
+            Self::S3(service) => service.remove(entry).await,
         }
     }
 
@@ -96,6 +104,7 @@ impl FileService {
         match self {
             Self::Sftp(service) => service.rename(from, to).await,
             Self::Ftp(service) => service.rename(from, to).await,
+            Self::S3(service) => service.rename(from, to).await,
         }
     }
 
@@ -104,6 +113,7 @@ impl FileService {
         match self {
             Self::Sftp(service) => service.set_mode(target, octal).await,
             Self::Ftp(service) => service.set_mode(target, octal).await,
+            Self::S3(service) => service.set_mode(target, octal).await,
         }
     }
 
@@ -112,6 +122,7 @@ impl FileService {
         match self {
             Self::Sftp(service) => service.read_text(target).await,
             Self::Ftp(service) => service.read_text(target).await,
+            Self::S3(service) => service.read_text(target).await,
         }
     }
 
@@ -120,6 +131,7 @@ impl FileService {
         match self {
             Self::Sftp(service) => service.write_text(target, content).await,
             Self::Ftp(service) => service.write_text(target, content).await,
+            Self::S3(service) => service.write_text(target, content).await,
         }
     }
 
@@ -132,6 +144,7 @@ impl FileService {
         match self {
             Self::Sftp(service) => service.spawn_download(job, progress),
             Self::Ftp(service) => service.spawn_download(job, progress),
+            Self::S3(service) => service.spawn_download(job, progress),
         }
     }
 
@@ -144,6 +157,7 @@ impl FileService {
         match self {
             Self::Sftp(service) => service.spawn_upload(job, progress),
             Self::Ftp(service) => service.spawn_upload(job, progress),
+            Self::S3(service) => service.spawn_upload(job, progress),
         }
     }
 }

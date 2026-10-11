@@ -48,6 +48,7 @@ use crate::{
     host::{AuthMethod, Host, HostDraft, HostGroup, HostKind},
     proxy::{self, HostProxy, ProxyConfig, ProxyMode},
     rdp::{RdpColorDepth, RdpPerformance, RdpSecurity, RdpSettings},
+    s3::S3Settings,
     serial::{
         SerialBaud, SerialDataBits, SerialFlowControl, SerialLineState, SerialParity,
         SerialSettings, SerialStopBits,
@@ -367,6 +368,10 @@ pub struct HostForm {
     easytier_listen_port: Entity<InputState>,
     easytier_latency_first: Entity<SelectState<Vec<SharedString>>>,
     easytier_encryption: Entity<SelectState<Vec<SharedString>>>,
+    /// S3 那一页：Bucket 与 Region 两个输入框。只有连接类型是 S3 才画出来 ——
+    /// 状态常驻是因为换回别的协议再换回来，用户填过的值不该蒸发。
+    s3_bucket: Entity<InputState>,
+    s3_region: Entity<InputState>,
     proxy_jump: Entity<SelectState<Vec<SharedString>>>,
     /// 走不走 SOCKS5 代理：不使用 / 跟随全局 / 配置代理，见 [`proxy_modes`]。
     ///
@@ -839,6 +844,21 @@ impl HostForm {
             .detach();
         }
 
+        let initial_s3 = match editing {
+            Some((host, _)) => host.s3.clone(),
+            None => S3Settings::default(),
+        };
+        let s3_bucket = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("host_form.s3_bucket_placeholder"))
+                .default_value(initial_s3.bucket.clone())
+        });
+        let s3_region = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("host_form.s3_region_placeholder"))
+                .default_value(initial_s3.region.clone())
+        });
+
         let kind = cx.new(|cx| {
             SelectState::new(
                 host_kinds(),
@@ -983,6 +1003,8 @@ impl HostForm {
             easytier_listen_port,
             easytier_latency_first,
             easytier_encryption,
+            s3_bucket,
+            s3_region,
             proxy_jump,
             proxy_mode,
             proxy_host,
@@ -1130,8 +1152,8 @@ impl HostForm {
     /// 卡片直接从 `kind` 画成一枚徽标，跟着换型走，不会因为复制、改档而对不上。
     fn default_tags(kind: HostKind) -> Vec<SharedString> {
         match kind {
-            // 独立 SFTP / FTP 和 SSH 一样，多半对着一台 Linux 机器。
-            HostKind::Ssh | HostKind::Sftp | HostKind::Ftp => vec!["Linux".into()],
+            // 独立 SFTP / FTP / S3 和 SSH 一样，多半对着一台 Linux 机器。
+            HostKind::Ssh | HostKind::Sftp | HostKind::Ftp | HostKind::S3 => vec!["Linux".into()],
             HostKind::Vnc => vec![],
             HostKind::Rdp => vec!["Windows".into()],
             // Telnet 常见于老式内网设备（路由器、交换机、BBS）；不给一个
@@ -1216,6 +1238,14 @@ impl HostForm {
         }
     }
 
+    /// S3 那一页现在的样子折回一份 [`S3Settings`]。Bucket 必填，Region 可空。
+    fn selected_s3(&self, cx: &App) -> S3Settings {
+        S3Settings {
+            bucket: self.s3_bucket.read(cx).value().trim().to_string(),
+            region: self.s3_region.read(cx).value().trim().to_string(),
+        }
+    }
+
     /// 换连接类型之后跟进几处出厂值：
     ///
     /// - 「主机名」/「串口设备」两格的提示语跟着类型换 —— 它说的是"这一格
@@ -1296,6 +1326,7 @@ impl HostForm {
         // Telnet 的 login 提示走的是对端 shell，账号是"记一记"，不填也允许保存。
         // 串口同 Telnet：设备那头的 login 是它自己 shell 的事，账号只是备忘。
         // FTP 是账号密码即认证，空着大概率是敲错而不是匿名 —— 必填。
+        // S3 同理：Access Key / Secret Key 即认证，空着大概是敲错 —— 必填。
         let username = if kind == HostKind::Vnc && username.is_empty() {
             "vnc".to_string()
         } else {
@@ -1303,7 +1334,7 @@ impl HostForm {
         };
         let requires_user = matches!(
             kind,
-            HostKind::Ssh | HostKind::Sftp | HostKind::Rdp | HostKind::Ftp
+            HostKind::Ssh | HostKind::Sftp | HostKind::Rdp | HostKind::Ftp | HostKind::S3
         );
         if name.is_empty() || hostname.is_empty() || (requires_user && username.is_empty()) {
             return Err(t!("host_form.required_fields").into());
@@ -1349,6 +1380,7 @@ impl HostForm {
             || matches!(
                 kind,
                 HostKind::Telnet | HostKind::Serial | HostKind::EasyTier | HostKind::Ftp
+                    | HostKind::S3
             ) {
             AuthMethod::Password
         } else {
@@ -1416,6 +1448,7 @@ impl HostForm {
                 rdp: self.selected_rdp(cx),
                 serial: self.selected_serial(cx),
                 easytier,
+                s3: self.selected_s3(cx),
             },
         ))
     }
@@ -1617,7 +1650,7 @@ impl HostForm {
     fn render_auth_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let kind = self.selected_kind(cx);
         if kind.is_remote_desktop()
-            || matches!(kind, HostKind::Telnet | HostKind::Serial | HostKind::Ftp)
+            || matches!(kind, HostKind::Telnet | HostKind::Serial | HostKind::Ftp | HostKind::S3)
         {
             return field(
                 t!("host_form.field_username").into(),
@@ -1655,8 +1688,9 @@ impl HostForm {
             return Some(self.render_password_section(cx).into_any_element());
         }
         // Telnet / 串口的"密码"只是对端 login 提示要打的备忘；FTP 是真的拿它当
-        // 认证 —— 三种都只有"账号 + 密码"这一档，恒等于密码格。
-        if matches!(kind, HostKind::Telnet | HostKind::Serial | HostKind::Ftp) {
+        // 认证；S3 同理 —— Secret Access Key 即认证。几种都只有"账号 + 密码"这一档，
+        // 恒等于密码格。
+        if matches!(kind, HostKind::Telnet | HostKind::Serial | HostKind::Ftp | HostKind::S3) {
             return Some(self.render_password_section(cx).into_any_element());
         }
         if kind == HostKind::Rdp {
@@ -1962,6 +1996,35 @@ impl HostForm {
 
     /// VNC 那一段：六档下拉，只在连接类型是 VNC 时画
     /// （画不画由宿主 `vnc_page` 挂不挂整页决定）。
+    /// S3 那一段：Bucket 与 Region 两个输入框，只在连接类型是 S3 时画
+    ///（画不画由宿主 `s3_page` 挂不挂整页决定）。端点地址在连接页的
+    ///「主机名」那一格，Access Key / Secret Key 在认证页。
+    fn render_s3_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_3()
+            .w_full()
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_s3_bucket").into(),
+                    Input::new(&self.s3_bucket).font_family("monospace").w_full(),
+                    cx,
+                ),
+                1.,
+                field(
+                    t!("host_form.field_s3_region").into(),
+                    Input::new(&self.s3_region).font_family("monospace").w_full(),
+                    cx,
+                ),
+                1.,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(t!("host_form.s3_hint"))),
+            )
+    }
+
     fn render_vnc_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_3()
@@ -2605,6 +2668,7 @@ impl HostFormWindow {
             HostKind::Rdp => settings.page(self.rdp_page()),
             HostKind::Serial => settings.page(self.serial_page()),
             HostKind::EasyTier => settings.page(self.easytier_page()),
+            HostKind::S3 => settings.page(self.s3_page()),
             // Ssh / Sftp / Telnet 没有独立的"协议参数"页 —— SFTP 的全部 UI 就是
             // 会话开出来那个文件面板，表单上没有它自己的那一页；Telnet 的协商在
             // [`crate::telnet`] 内部固定（ECHO / SGA / NAWS / TTYPE），不给用户调。
@@ -2738,6 +2802,19 @@ impl HostFormWindow {
                 SettingGroup::new()
                     .title(t!("host_form.group_easytier_routing"))
                     .item(self.row(|this, cx| this.render_easytier_routing(cx).into_any_element())),
+            )
+    }
+
+    /// S3 专属配置页：同 [`Self::vnc_page`]，一级类目、单组无头衔。
+    /// Bucket 与 Region 两个输入框。
+    fn s3_page(&self) -> SettingPage {
+        SettingPage::new(t!("host_form.page_s3"))
+            .icon(IconName::HardDrive)
+            .default_open(true)
+            .resettable(false)
+            .group(
+                SettingGroup::new()
+                    .item(self.row(|this, cx| this.render_s3_section(cx).into_any_element())),
             )
     }
 

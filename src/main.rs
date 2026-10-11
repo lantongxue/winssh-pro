@@ -20,6 +20,7 @@ mod repository;
 mod serial;
 mod service;
 mod session;
+mod s3;
 mod sftp;
 mod snippet;
 mod ssh;

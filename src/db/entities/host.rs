@@ -78,6 +78,13 @@ pub struct Model {
     /// "主机"的地址），密钥存在 `password` 那一列。
     #[sea_orm(default_value = "")]
     pub easytier_settings: String,
+    /// S3 连接配置，JSON 编码的一份 [`crate::s3::S3Settings`]。
+    /// 空串是出厂档，见 [`crate::s3::decode`]。别的协议主机原样存着但没人读。
+    ///
+    /// 端点 URL 在 `hostname` 那一列，Access Key 在 `user` 那一列，
+    /// Secret Key 在 `password` 那一列。
+    #[sea_orm(default_value = "")]
+    pub s3_settings: String,
     /// 连上之后要不要往对端 shell 里装 OSC 133 标记，出厂是不装。
     /// 装的是什么、为什么要用户点头见 [`crate::terminal::shell_integration`]。
     #[sea_orm(default_value = false)]

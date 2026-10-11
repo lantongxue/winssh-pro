@@ -263,6 +263,7 @@ impl TerminalPanel {
             rdp: Default::default(),
             serial: Default::default(),
             easytier: Default::default(),
+            s3: Default::default(),
             shell_integration: false,
         };
         Self::build(host, Source::Local, None, dock_area, window, cx)
@@ -300,6 +301,7 @@ impl TerminalPanel {
             rdp: Default::default(),
             serial: Default::default(),
             easytier: Default::default(),
+            s3: Default::default(),
             shell_integration: false,
         };
         Self::build(host, Source::Detached, None, dock_area, window, cx)

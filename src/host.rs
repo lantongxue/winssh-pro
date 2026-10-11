@@ -8,10 +8,11 @@ use gpui_kit::SharedString;
 use rust_i18n::t;
 
 /// 连接类型。一台主机要么是一条 SSH，要么是一条独立 SFTP（只开文件面板、
-/// 不开 shell），要么是一条 FTP（同样只开文件面板），要么是一个 VNC 桌面，
-/// 要么是一个 RDP 远程桌面，要么是一条 Telnet，要么是一条本机串口，要么是
-/// 一张 EasyTier 虚拟网，落库时存为字符串（`ssh` / `sftp` / `ftp` / `vnc` /
-/// `rdp` / `telnet` / `serial` / `easytier`），读回时按小写匹配。
+/// 不开 shell），要么是一条 FTP（同样只开文件面板），要么是一个 S3 对象存储
+/// （同样只开文件面板），要么是一个 VNC 桌面，要么是一个 RDP 远程桌面，
+/// 要么是一条 Telnet，要么是一条本机串口，要么是一张 EasyTier 虚拟网，
+/// 落库时存为字符串（`ssh` / `sftp` / `ftp` / `s3` / `vnc` / `rdp` / `telnet` /
+/// `serial` / `easytier`），读回时按小写匹配。
 ///
 /// 和 [`AuthMethod`] 一样：界面上的下拉按下标折回枚举，不拿那行字反查。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -25,6 +26,9 @@ pub enum HostKind {
     /// 独立 FTP：用 [`crate::service::FtpService`] 管理文件，账号密码即认证。
     /// 会话开出来是 [`crate::ui::panels::DockedFtpPanel`]。
     Ftp,
+    /// 独立 S3：用 [`crate::service::S3Service`] 管理对象存储，Access Key / Secret
+    /// Key 即认证。会话开出来是 [`crate::ui::panels::DockedS3Panel`]。
+    S3,
     Vnc,
     Rdp,
     Telnet,
@@ -38,10 +42,11 @@ pub enum HostKind {
 }
 
 impl HostKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Ssh,
         Self::Sftp,
         Self::Ftp,
+        Self::S3,
         Self::Vnc,
         Self::Rdp,
         Self::Telnet,
@@ -54,6 +59,7 @@ impl HostKind {
             Self::Ssh => "ssh",
             Self::Sftp => "sftp",
             Self::Ftp => "ftp",
+            Self::S3 => "s3",
             Self::Vnc => "vnc",
             Self::Rdp => "rdp",
             Self::Telnet => "telnet",
@@ -68,6 +74,7 @@ impl HostKind {
             Self::Ssh => "SSH".into(),
             Self::Sftp => "SFTP".into(),
             Self::Ftp => "FTP".into(),
+            Self::S3 => "S3".into(),
             Self::Vnc => "VNC".into(),
             Self::Rdp => "RDP".into(),
             Self::Telnet => "Telnet".into(),
@@ -77,7 +84,8 @@ impl HostKind {
     }
 
     /// 这一档的惯例端口：SSH 与独立 SFTP 都是 22（同一个 sshd），FTP 21，
-    /// VNC 5900，RDP 3389，Telnet 23。[`crate::host::Host::address`]
+    /// S3 没有端口（走 HTTPS 443），VNC 5900，RDP 3389，Telnet 23。
+    /// [`crate::host::Host::address`]
     /// 拿它决定要不要省略端口，表单拿它做换档时的默认值。
     ///
     /// 串口没有端口这一说，给 0 —— 它永远不会出现在地址里（`address()`
@@ -89,6 +97,9 @@ impl HostKind {
         match self {
             Self::Ssh | Self::Sftp => 22,
             Self::Ftp => 21,
+            // S3 走 HTTPS（443），但端点 URL 里已经带了端口，这里给 0：
+            // address() 不该在端点后面再拼一个 443。
+            Self::S3 => 0,
             Self::Vnc => 5900,
             Self::Rdp => 3389,
             Self::Telnet => 23,
@@ -113,6 +124,7 @@ impl HostKind {
         match raw.trim().to_lowercase().as_str() {
             "sftp" => Self::Sftp,
             "ftp" => Self::Ftp,
+            "s3" => Self::S3,
             "vnc" => Self::Vnc,
             "rdp" => Self::Rdp,
             "telnet" => Self::Telnet,
@@ -317,6 +329,12 @@ pub struct Host {
     /// 在 [`Self::hostname`]、密钥在 [`Self::password`]）；别的协议主机这一份
     /// 原样存着但没人读。
     pub easytier: crate::easytier::EasyTierSettings,
+    /// S3 连接配置。见 [`crate::s3::S3Settings`]。
+    ///
+    /// 同样进 [`HostDraft`]：它只在 [`HostKind::S3`] 的连接里有意义（端点 URL
+    /// 在 [`Self::hostname`]、Access Key 在 [`Self::user`]、Secret Key 在
+    /// [`Self::password`]）；别的协议主机这一份原样存着但没人读。
+    pub s3: crate::s3::S3Settings,
     /// 每次连上这台机器，要不要往对端 shell 里装一份 OSC 133 标记。
     ///
     /// 不进 [`HostDraft`]：和采集节奏、转发规则一样，它是连上之后在命令历史
@@ -344,6 +362,11 @@ impl Host {
                 [first] => format!("{} · {first}", self.hostname),
                 [first, rest @ ..] => format!("{} · {first} +{}", self.hostname, rest.len()),
             };
+        }
+        // S3 的 hostname 存的是端点 URL（`https://s3.amazonaws.com`），
+        // 直接原样返回 —— 不在后面拼端口。
+        if self.kind == HostKind::S3 {
+            return self.hostname.to_string();
         }
         if self.port == self.kind.default_port() {
             format!("{}@{}", self.user, self.hostname)
@@ -401,6 +424,8 @@ pub struct HostDraft {
     pub serial: crate::serial::SerialSettings,
     /// 组网配置，见 [`Host::easytier`]。
     pub easytier: crate::easytier::EasyTierSettings,
+    /// S3 连接设置，见 [`Host::s3`]。
+    pub s3: crate::s3::S3Settings,
 }
 
 /// 一台主机的运行时状态。
