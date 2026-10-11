@@ -735,7 +735,7 @@ impl ClashPanel {
         });
     }
 
-    /// 顶部控制条：代理总开关、当前生效订阅、系统代理、虚拟网卡 (TUN)、实时速率、一键测速、分流模式。
+    /// 顶部控制条：代理总开关、当前生效订阅、系统代理、虚拟网卡 (TUN)、流量（实时速率 + 本次累计）、一键测速、分流模式。
     ///
     /// 底下一行是"终端代理"那一档：收起时一颗徽章，点开横列五种壳的
     /// "命令 + 复制钮"。放在总开关下面而不是右下角 —— 它是"这台代理
@@ -1019,7 +1019,7 @@ impl ClashPanel {
                             })),
                     ),
             )
-            // 第二行：系统代理 + 虚拟网卡 (TUN) + 实时速率 + 一键测速
+            // 第二行：系统代理 + 虚拟网卡 (TUN) + 流量(实时速率|本次累计) + 测速与选定节点
             .child(
                 h_flex()
                     .w_full()
@@ -1224,80 +1224,10 @@ impl ClashPanel {
                                 }
                             })),
                     )
-                    // 实时流量速率胶囊
+                    // 流量卡片：实时速率（上） + 本次运行累计（下）
                     .child(
                         h_flex()
-                            .gap_2()
-                            .items_center()
-                            .px_3()
-                            .py_2()
-                            .rounded(px(8.))
-                            .when(is_dark, |this| {
-                                this.bg(palette::recessed(cx))
-                                    .border_1()
-                                    .border_color(cx.theme().border.opacity(0.6))
-                            })
-                            .when(!is_dark, |this| {
-                                this.bg(cx.theme().background)
-                                    .border_1()
-                                    .border_color(cx.theme().border)
-                            })
-                            .font_family("monospace")
-                            .text_xs()
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .child(
-                                        Icon::new(IconName::ArrowUp).with_size(px(11.)).text_color(
-                                            if is_dark {
-                                                rgb(0x22d3ee)
-                                            } else {
-                                                rgb(0x0284c7)
-                                            },
-                                        ),
-                                    )
-                                    .child(
-                                        div()
-                                            .font_semibold()
-                                            .text_color(if is_dark {
-                                                rgb(0x22d3ee)
-                                            } else {
-                                                rgb(0x0284c7)
-                                            })
-                                            .child(SharedString::from(up_display.to_string())),
-                                    ),
-                            )
-                            .child(div().text_color(cx.theme().border).child("|"))
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .items_center()
-                                    .child(
-                                        Icon::new(IconName::ArrowDown)
-                                            .with_size(px(11.))
-                                            .text_color(if is_dark {
-                                                rgb(0x34d399)
-                                            } else {
-                                                rgb(0x059669)
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .font_semibold()
-                                            .text_color(if is_dark {
-                                                rgb(0x34d399)
-                                            } else {
-                                                rgb(0x059669)
-                                            })
-                                            .child(SharedString::from(down_display.to_string())),
-                                    ),
-                            ),
-                    )
-                    // 本次运行累计流量总计胶囊
-                    .child(
-                        h_flex()
-                            .gap_2()
+                            .gap_3()
                             .items_center()
                             .px_3()
                             .py_1p5()
@@ -1313,6 +1243,7 @@ impl ClashPanel {
                                     .border_1()
                                     .border_color(cx.theme().border)
                             })
+                            // 左半：实时速率
                             .child(
                                 v_flex()
                                     .gap_0p5()
@@ -1320,12 +1251,16 @@ impl ClashPanel {
                                         div()
                                             .text_xs()
                                             .font_semibold()
-                                            .text_color(cx.theme().foreground)
-                                            .child("流量总计"),
+                                            .text_color(if is_dark {
+                                                palette::idle(cx)
+                                            } else {
+                                                cx.theme().muted_foreground
+                                            })
+                                            .child("实时速率"),
                                     )
                                     .child(
                                         h_flex()
-                                            .gap_1()
+                                            .gap_1p5()
                                             .items_center()
                                             .font_family("monospace")
                                             .text_xs()
@@ -1344,20 +1279,16 @@ impl ClashPanel {
                                                     )
                                                     .child(
                                                         div()
+                                                            .font_semibold()
                                                             .text_color(if is_dark {
                                                                 rgb(0x22d3ee)
                                                             } else {
                                                                 rgb(0x0284c7)
                                                             })
                                                             .child(SharedString::from(
-                                                                format_bytes(total_up),
+                                                                up_display.to_string(),
                                                             )),
                                                     ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_color(cx.theme().border)
-                                                    .child("|"),
                                             )
                                             .child(
                                                 h_flex()
@@ -1374,10 +1305,91 @@ impl ClashPanel {
                                                     )
                                                     .child(
                                                         div()
+                                                            .font_semibold()
                                                             .text_color(if is_dark {
                                                                 rgb(0x34d399)
                                                             } else {
                                                                 rgb(0x059669)
+                                                            })
+                                                            .child(SharedString::from(
+                                                                down_display.to_string(),
+                                                            )),
+                                                    ),
+                                            ),
+                                    ),
+                            )
+                            // 竖分隔线
+                            .child(
+                                div()
+                                    .w(px(1.))
+                                    .h(px(28.))
+                                    .bg(cx.theme().border.opacity(0.5)),
+                            )
+                            // 右半：累计流量
+                            .child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_semibold()
+                                            .text_color(if is_dark {
+                                                palette::idle(cx)
+                                            } else {
+                                                cx.theme().muted_foreground
+                                            })
+                                            .child("本次累计"),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_1p5()
+                                            .items_center()
+                                            .font_family("monospace")
+                                            .text_xs()
+                                            .child(
+                                                h_flex()
+                                                    .gap_0p5()
+                                                    .items_center()
+                                                    .child(
+                                                        Icon::new(IconName::ArrowUp)
+                                                            .with_size(px(10.))
+                                                            .text_color(if is_dark {
+                                                                rgb(0x22d3ee).opacity(0.7)
+                                                            } else {
+                                                                rgb(0x0284c7).opacity(0.7)
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_color(if is_dark {
+                                                                rgb(0x22d3ee).opacity(0.7)
+                                                            } else {
+                                                                rgb(0x0284c7).opacity(0.7)
+                                                            })
+                                                            .child(SharedString::from(
+                                                                format_bytes(total_up),
+                                                            )),
+                                                    ),
+                                            )
+                                            .child(
+                                                h_flex()
+                                                    .gap_0p5()
+                                                    .items_center()
+                                                    .child(
+                                                        Icon::new(IconName::ArrowDown)
+                                                            .with_size(px(10.))
+                                                            .text_color(if is_dark {
+                                                                rgb(0x34d399).opacity(0.7)
+                                                            } else {
+                                                                rgb(0x059669).opacity(0.7)
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_color(if is_dark {
+                                                                rgb(0x34d399).opacity(0.7)
+                                                            } else {
+                                                                rgb(0x059669).opacity(0.7)
                                                             })
                                                             .child(SharedString::from(
                                                                 format_bytes(total_down),
@@ -1387,15 +1399,17 @@ impl ClashPanel {
                                     ),
                             ),
                     )
-                    // 一键全量测速按钮
+                    // 测速与选定节点卡片：上行走为、下行节点名，与左边流量卡片对齐
                     .child(
                         h_flex()
                             .id("clash-header-quick-test")
-                            .gap_1p5()
+                            .gap_3()
                             .items_center()
                             .px_3()
-                            .py_2()
+                            .py_1p5()
                             .rounded(px(8.))
+                            .flex_shrink_0()
+                            .cursor_pointer()
                             .when(is_dark, |this| {
                                 this.bg(palette::recessed(cx))
                                     .border_1()
@@ -1408,24 +1422,80 @@ impl ClashPanel {
                                     .border_color(cx.theme().border)
                                     .hover(|this| this.bg(palette::surface(cx)))
                             })
-                            .cursor_pointer()
-                            .child(Icon::new(AppIcon::Zap).with_size(px(13.)).text_color(
-                                if is_dark {
-                                    rgb(0xfbbf24)
-                                } else {
-                                    rgb(0xd97706)
-                                },
-                            ))
+                            .child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_semibold()
+                                            .text_color(if is_dark {
+                                                palette::idle(cx)
+                                            } else {
+                                                cx.theme().muted_foreground
+                                            })
+                                            .child("节点测速"),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_1p5()
+                                            .items_center()
+                                            .child(
+                                                Icon::new(AppIcon::Zap)
+                                                    .with_size(px(11.))
+                                                    .text_color(if is_dark {
+                                                        rgb(0xfbbf24)
+                                                    } else {
+                                                        rgb(0xd97706)
+                                                    }),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .font_semibold()
+                                                    .text_color(cx.theme().foreground)
+                                                    .child(if testing_all {
+                                                        "测速中..."
+                                                    } else {
+                                                        "一键测速"
+                                                    }),
+                                            ),
+                                    ),
+                            )
+                            // 竖分隔线
                             .child(
                                 div()
-                                    .text_xs()
-                                    .font_medium()
-                                    .text_color(cx.theme().foreground)
-                                    .child(if testing_all {
-                                        "测速中..."
-                                    } else {
-                                        "一键测速"
-                                    }),
+                                    .w(px(1.))
+                                    .h(px(28.))
+                                    .bg(cx.theme().border.opacity(0.5)),
+                            )
+                            .child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_semibold()
+                                            .text_color(if is_dark {
+                                                palette::idle(cx)
+                                            } else {
+                                                cx.theme().muted_foreground
+                                            })
+                                            .child("当前选定"),
+                                    )
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_xs()
+                                            .font_semibold()
+                                            .text_color(if is_dark {
+                                                palette::teal()
+                                            } else {
+                                                rgb(0x0d9488).into()
+                                            })
+                                            .child(selected_node),
+                                    ),
                             )
                             .on_click(cx.listener(|this, _, _, _| {
                                 if this.is_running() && !this.testing_all {
@@ -1434,44 +1504,6 @@ impl ClashPanel {
                                 }
                             })),
                     )
-                    // 当前选定节点：贴着"一键测速"。不动节点组那一行的布局。
-                    .child(
-                        h_flex()
-                            .gap_1p5()
-                            .items_center()
-                            .flex_shrink_0()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(if is_dark {
-                                        palette::idle(cx)
-                                    } else {
-                                        cx.theme().muted_foreground
-                                    })
-                                    .child("当前选定:"),
-                            )
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded(px(4.))
-                                    .bg(palette::teal().opacity(0.15))
-                                    .border_1()
-                                    .border_color(palette::teal().opacity(if is_dark {
-                                        0.4
-                                    } else {
-                                        0.55
-                                    }))
-                                    .text_xs()
-                                    .font_semibold()
-                                    .text_color(if is_dark {
-                                        palette::teal()
-                                    } else {
-                                        rgb(0x0d9488).into()
-                                    })
-                                    .child(selected_node),
-                            ),
-                    ),
             )
             // 第三行：终端代理 —— 五种壳的"走这台代理"各拉一颗复制钮。
             // 它讲的是"对一个终端该说一声什么"，放总开关那一块下面讲，
