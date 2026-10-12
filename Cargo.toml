@@ -205,6 +205,14 @@ rust-i18n = "4.2"
 # 变成直接依赖不多编译一份东西；比自己读 LANG / GetUserDefaultLocaleName 稳。
 sys-locale = "0.3"
 opendal = { version = "0.59", features = ["services-s3", "services-webdav", "services-ftp"] }
+# S3 的"列出存储桶"（GetService）OpenDAL 没有这个动作，见 `src/s3/buckets.rs`
+# 自补的最小客户端：请求走下面那份 reqwest，签名与 XML 解析复用依赖树里
+# 已有的那两份 —— reqsign 是 OpenDAL 的 S3 签名后端，quick-xml 是
+# opendal-service-s3 的响应解析器，都只是变直接依赖，不多编译一份东西。
+reqsign-aws-v4 = "3.3"
+reqsign-core = "3.3"
+http = "1"
+quick-xml = "0.42"
 aes-gcm = "0.11.1"
 pbkdf2 = "0.13.0"
 sha2 = "0.11.0"

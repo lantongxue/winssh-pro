@@ -30,6 +30,7 @@
             rdp: Default::default(),
             serial: Default::default(),
             easytier: EasyTierSettings::default(),
+            s3: Default::default(),
             shell_integration: false,
         }
     }

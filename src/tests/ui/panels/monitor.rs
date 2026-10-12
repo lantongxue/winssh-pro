@@ -28,6 +28,7 @@
             rdp: Default::default(),
             serial: Default::default(),
             easytier: Default::default(),
+            s3: Default::default(),
             kind: crate::host::HostKind::Ssh,
             id: "settings-test".into(),
             name: "web-01".into(),

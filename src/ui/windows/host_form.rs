@@ -48,7 +48,7 @@ use crate::{
     host::{AuthMethod, Host, HostDraft, HostGroup, HostKind},
     proxy::{self, HostProxy, ProxyConfig, ProxyMode},
     rdp::{RdpColorDepth, RdpPerformance, RdpSecurity, RdpSettings},
-    s3::S3Settings,
+    s3::{S3Addressing, S3Settings},
     serial::{
         SerialBaud, SerialDataBits, SerialFlowControl, SerialLineState, SerialParity,
         SerialSettings, SerialStopBits,
@@ -160,6 +160,37 @@ fn serial_port_picks(ports: &[SharedString]) -> Vec<SharedString> {
 /// EasyTier 接入方式的两档，顺序即 [`EasyTierAccess::ALL`]：用户态 SOCKS5 / 虚拟网卡。
 fn easytier_access_choices() -> Vec<SharedString> {
     EasyTierAccess::ALL.map(|access| access.label()).to_vec()
+}
+
+/// S3 服务商预设的下拉行，顺序即 [`crate::s3::ALL`]。名字走 locale ——
+/// 预设本身只带事实（端点 / Region / 寻址风格），不带名字。
+fn s3_preset_choices() -> Vec<SharedString> {
+    crate::s3::ALL
+        .iter()
+        .map(|preset| s3_preset_label(preset.id))
+        .collect()
+}
+
+fn s3_preset_label(id: &str) -> SharedString {
+    match id {
+        "aws" => t!("host_form.s3_preset_aws").into(),
+        "aliyun" => t!("host_form.s3_preset_aliyun").into(),
+        "tencent" => t!("host_form.s3_preset_tencent").into(),
+        "qiniu" => t!("host_form.s3_preset_qiniu").into(),
+        "minio" => t!("host_form.s3_preset_minio").into(),
+        _ => t!("host_form.s3_preset_custom").into(),
+    }
+}
+
+/// 寻址风格的下拉行，顺序即 [`S3Addressing::ALL`]。
+fn s3_addressing_choices() -> Vec<SharedString> {
+    S3Addressing::ALL
+        .map(|addressing| match addressing {
+            S3Addressing::Auto => t!("host_form.s3_addressing_auto").into(),
+            S3Addressing::Path => t!("host_form.s3_addressing_path").into(),
+            S3Addressing::VirtualHost => t!("host_form.s3_addressing_virtual_host").into(),
+        })
+        .to_vec()
 }
 
 /// 端口那一格读回来：空着就是这一档的出厂端口，敲了个非数字就是 0 ——
@@ -368,8 +399,11 @@ pub struct HostForm {
     easytier_listen_port: Entity<InputState>,
     easytier_latency_first: Entity<SelectState<Vec<SharedString>>>,
     easytier_encryption: Entity<SelectState<Vec<SharedString>>>,
-    /// S3 那一页：Bucket 与 Region 两个输入框。只有连接类型是 S3 才画出来 ——
-    /// 状态常驻是因为换回别的协议再换回来，用户填过的值不该蒸发。
+    /// S3 那一页：服务商预设 / 寻址风格两个下拉，Bucket 与 Region 两个输入框。
+    /// 只有连接类型是 S3 才画出来 —— 状态常驻是因为换回别的协议再换回来，
+    /// 用户填过的值不该蒸发。
+    s3_preset: Entity<SelectState<Vec<SharedString>>>,
+    s3_addressing: Entity<SelectState<Vec<SharedString>>>,
     s3_bucket: Entity<InputState>,
     s3_region: Entity<InputState>,
     proxy_jump: Entity<SelectState<Vec<SharedString>>>,
@@ -848,6 +882,22 @@ impl HostForm {
             Some((host, _)) => host.s3.clone(),
             None => S3Settings::default(),
         };
+        let s3_preset = cx.new(|cx| {
+            // 预设按下标折回，找不到的旧 id 折回自定义档。
+            let index = crate::s3::ALL
+                .iter()
+                .position(|preset| preset.id == initial_s3.preset)
+                .unwrap_or(0);
+            SelectState::new(s3_preset_choices(), Some(IndexPath::new(index)), window, cx)
+        });
+        let s3_addressing = cx.new(|cx| {
+            SelectState::new(
+                s3_addressing_choices(),
+                Some(IndexPath::new(initial_s3.addressing.index())),
+                window,
+                cx,
+            )
+        });
         let s3_bucket = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(t!("host_form.s3_bucket_placeholder"))
@@ -858,6 +908,17 @@ impl HostForm {
                 .placeholder(t!("host_form.s3_region_placeholder"))
                 .default_value(initial_s3.region.clone())
         });
+        // 选一家预设：那家的默认端点写进「主机名」格，寻址风格跟着预填 ——
+        // 挑阿里云 OSS 的人要的就是不用自己知道 virtual-host style 这回事。
+        cx.subscribe_in(
+            &s3_preset,
+            window,
+            |this, _, _: &SelectEvent<Vec<SharedString>>, window, cx| {
+                this.on_s3_preset_changed(window, cx);
+                cx.notify();
+            },
+        )
+        .detach();
 
         let kind = cx.new(|cx| {
             SelectState::new(
@@ -1003,6 +1064,8 @@ impl HostForm {
             easytier_listen_port,
             easytier_latency_first,
             easytier_encryption,
+            s3_preset,
+            s3_addressing,
             s3_bucket,
             s3_region,
             proxy_jump,
@@ -1238,12 +1301,53 @@ impl HostForm {
         }
     }
 
-    /// S3 那一页现在的样子折回一份 [`S3Settings`]。Bucket 必填，Region 可空。
+    /// S3 那一页现在的样子折回一份 [`S3Settings`]。Bucket 留空 = 根模式
+    ///（连上后面板根目录列出账号下的全部存储桶），Region 可空 —— 留空由
+    /// 服务层从 Endpoint 域名推断。预设与寻址按下标折回，不比文案。
     fn selected_s3(&self, cx: &App) -> S3Settings {
+        let row = |select: &Entity<SelectState<Vec<SharedString>>>| {
+            select
+                .read(cx)
+                .selected_index(cx)
+                .map(|index| index.row)
+                .unwrap_or_default()
+        };
         S3Settings {
+            preset: crate::s3::ALL
+                .get(row(&self.s3_preset))
+                .map(|preset| preset.id.to_string())
+                .unwrap_or_else(|| "custom".to_string()),
             bucket: self.s3_bucket.read(cx).value().trim().to_string(),
             region: self.s3_region.read(cx).value().trim().to_string(),
+            addressing: S3Addressing::from_index(row(&self.s3_addressing)),
         }
+    }
+
+    /// 选中一家服务商预设：那家的默认 Endpoint 写进「主机名」格，寻址风格
+    /// 下拉跟着预填 —— 挑阿里云 OSS 的人要的就是不用自己知道 virtual-host
+    /// style 这回事。「自定义」没有默认值，不碰用户敲了一半的地址。
+    fn on_s3_preset_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let row = self
+            .s3_preset
+            .read(cx)
+            .selected_index(cx)
+            .map(|index| index.row)
+            .unwrap_or_default();
+        let Some(preset) = crate::s3::ALL.get(row) else {
+            return;
+        };
+        if !preset.default_endpoint.is_empty() {
+            let endpoint = preset.default_endpoint.to_string();
+            self.hostname
+                .update(cx, |state, cx| state.set_value(endpoint, window, cx));
+        }
+        self.s3_addressing.update(cx, |state, cx| {
+            state.set_selected_index(
+                Some(IndexPath::new(preset.addressing.index())),
+                window,
+                cx,
+            )
+        });
     }
 
     /// 换连接类型之后跟进几处出厂值：
@@ -1264,6 +1368,7 @@ impl HostForm {
         let placeholder = match kind {
             HostKind::Serial => t!("host_form.serial_device_placeholder"),
             HostKind::EasyTier => t!("host_form.easytier_network_placeholder"),
+            HostKind::S3 => t!("host_form.s3_endpoint_placeholder"),
             _ => t!("host_form.hostname_placeholder"),
         };
         self.hostname.update(cx, |state, cx| {
@@ -1595,6 +1700,16 @@ impl HostForm {
                 )
                 .into_any_element();
             }
+            // 对象存储没有"端口"这一说：Endpoint 自带协议与端口
+            //（`https://oss-cn-hangzhou.aliyuncs.com`），并成单格。
+            HostKind::S3 => {
+                return field(
+                    t!("host_form.field_s3_endpoint").into(),
+                    Input::new(&self.hostname).font_family("monospace").w_full(),
+                    cx,
+                )
+                .into_any_element();
+            }
             _ => {}
         }
         two_field_row(
@@ -1649,8 +1764,17 @@ impl HostForm {
     /// 走同一档 UI 免得用户看到"选密钥还是选 Agent"的空白下拉；串口同理。
     fn render_auth_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let kind = self.selected_kind(cx);
+        // S3 的术语是 Access Key ID：同一格落库（`hosts.username`），标签单说。
+        if kind == HostKind::S3 {
+            return field(
+                t!("host_form.field_s3_access_key").into(),
+                Input::new(&self.username).font_family("monospace").w_full(),
+                cx,
+            )
+            .into_any_element();
+        }
         if kind.is_remote_desktop()
-            || matches!(kind, HostKind::Telnet | HostKind::Serial | HostKind::Ftp | HostKind::S3)
+            || matches!(kind, HostKind::Telnet | HostKind::Serial | HostKind::Ftp)
         {
             return field(
                 t!("host_form.field_username").into(),
@@ -1728,12 +1852,18 @@ impl HostForm {
     /// 三种协议共用一格落库（`hosts.password`），标签也共用一个“密码”——
     /// 这一格收的是“登这台机器的那把密码”，与协议无关。
     fn render_password_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // S3 的术语是 Secret Access Key：同一格落库（`hosts.password`），标签单说。
+        let label: SharedString = if self.selected_kind(cx) == HostKind::S3 {
+            t!("host_form.field_s3_secret_key").into()
+        } else {
+            t!("host_form.field_password").into()
+        };
         v_flex()
             .gap_3()
             .w_full()
             .children(self.render_vault_picker(CredentialKind::Password, cx))
             .child(field(
-                t!("host_form.field_password").into(),
+                label,
                 // 尾部那只眼睛来自 `mask_toggle()`：密码默认是打码的
                 // （`InputState::masked(true)`），点一下明文看一眼，再点回去。
                 Input::new(&self.password)
@@ -1996,13 +2126,28 @@ impl HostForm {
 
     /// VNC 那一段：六档下拉，只在连接类型是 VNC 时画
     /// （画不画由宿主 `vnc_page` 挂不挂整页决定）。
-    /// S3 那一段：Bucket 与 Region 两个输入框，只在连接类型是 S3 时画
-    ///（画不画由宿主 `s3_page` 挂不挂整页决定）。端点地址在连接页的
-    ///「主机名」那一格，Access Key / Secret Key 在认证页。
+    /// S3 那一段：服务商预设与寻址风格两个下拉，加 Bucket / Region 两个
+    /// 输入框，只在连接类型是 S3 时画（画不画由宿主 `s3_page` 挂不挂整页
+    /// 决定）。端点地址在连接页的「Endpoint」那一格，Access Key / Secret
+    /// Key 在认证页。
     fn render_s3_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_3()
             .w_full()
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_s3_preset").into(),
+                    Select::new(&self.s3_preset).w_full(),
+                    cx,
+                ),
+                1.,
+                field(
+                    t!("host_form.field_s3_addressing").into(),
+                    Select::new(&self.s3_addressing).w_full(),
+                    cx,
+                ),
+                1.,
+            ))
             .child(two_field_row(
                 field(
                     t!("host_form.field_s3_bucket").into(),

@@ -21,6 +21,7 @@
             rdp: Default::default(),
             serial: Default::default(),
             easytier: Default::default(),
+            s3: Default::default(),
             kind: crate::host::HostKind::Ssh,
             id: "h1".into(),
             name: "Prod-K8s-Master-01".into(),

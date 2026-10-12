@@ -5,6 +5,7 @@
         Host {
             serial: Default::default(),
             easytier: Default::default(),
+            s3: Default::default(),
             kind: HostKind::Serial,
             id: "test-serial-missing".into(),
             name: "serial-missing".into(),

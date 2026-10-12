@@ -58,6 +58,7 @@
             vnc: Default::default(),
             rdp: Default::default(),
             serial: Default::default(),
+            s3: Default::default(),
             easytier: EasyTierSettings {
                 ipv4: ipv4.into(),
                 node_name: id.into(),

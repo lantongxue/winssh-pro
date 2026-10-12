@@ -14,8 +14,13 @@
 //! 配置存在 [`S3Settings`] 里，编码后落在 `hosts.s3_settings` 那一列。
 //! 端点地址存在 `hosts.hostname` 里，Access Key 存在 `hosts.user` 里，
 //! Secret Key 存在 `hosts.password` 里 —— 和 FTP 同一套"复用已有列"的写法。
-//! Bucket 与 Region 在 [`S3Settings`] 里。
+//! Bucket 留空即根模式：面板根目录列出账号下的全部存储桶，服务层按路径
+//! 首段为每个桶懒建 Operator（见 [`crate::service::S3Service`]）。
 
+mod buckets;
+pub mod presets;
 mod settings;
 
-pub use settings::{S3Settings, decode, encode};
+pub use buckets::list_buckets;
+pub use presets::ALL;
+pub use settings::{S3Addressing, S3Settings, decode, encode, infer_region};

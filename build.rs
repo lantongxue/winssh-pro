@@ -39,6 +39,10 @@ use std::path::{Path, PathBuf};
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=assets/app-icon.ico");
+    // `rust_i18n::i18n!`（src/main.rs）在编译期把 locales/ 下的文案嵌进
+    // 二进制，但过程宏读的外部文件不进 cargo 的指纹追踪 —— 不声明的话，
+    // 只改 app.yml cargo 会判定无需重编，跑起来的还是旧文案。
+    println!("cargo:rerun-if-changed=locales");
 
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         println!("cargo:rustc-link-arg-bins=/STACK:8388608");

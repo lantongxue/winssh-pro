@@ -5109,44 +5109,44 @@ ftp_err.action_open_session:
   en: Open the FTP session
   zh-CN: 打开 FTP 会话
 ftp_err.action_read_dir:
-  en: List the directory {path}
-  zh-CN: 列目录 {path}
+  en: List the directory %{path}
+  zh-CN: 列目录 %{path}
 ftp_err.action_stat_path:
   en: Check whether the path exists
   zh-CN: 判断路径是否存在
 ftp_err.action_stat_remote:
-  en: Check the remote path {path}
-  zh-CN: 查看远端路径 {path}
+  en: Check the remote path %{path}
+  zh-CN: 查看远端路径 %{path}
 ftp_err.action_create_dir:
-  en: Create the directory {path}
-  zh-CN: 新建目录 {path}
+  en: Create the directory %{path}
+  zh-CN: 新建目录 %{path}
 ftp_err.action_create_file:
-  en: Create the file {path}
-  zh-CN: 新建文件 {path}
+  en: Create the file %{path}
+  zh-CN: 新建文件 %{path}
 ftp_err.action_delete:
-  en: Delete {path}
-  zh-CN: 删除 {path}
+  en: Delete %{path}
+  zh-CN: 删除 %{path}
 ftp_err.action_delete_dir:
-  en: Remove the directory {path}
-  zh-CN: 删除目录 {path}
+  en: Remove the directory %{path}
+  zh-CN: 删除目录 %{path}
 ftp_err.action_rename:
-  en: Rename {from} to {to}
-  zh-CN: 把 {from} 改成 {to}
+  en: Rename %{from} to %{to}
+  zh-CN: 把 %{from} 改成 %{to}
 ftp_err.action_read_file:
-  en: Read the file {path}
-  zh-CN: 读取文件 {path}
+  en: Read the file %{path}
+  zh-CN: 读取文件 %{path}
 ftp_err.action_save_file:
-  en: Save the file {path}
-  zh-CN: 写入文件 {path}
+  en: Save the file %{path}
+  zh-CN: 写入文件 %{path}
 ftp_err.action_open_remote:
-  en: Open the remote file {path}
-  zh-CN: 打开远端文件 {path}
+  en: Open the remote file %{path}
+  zh-CN: 打开远端文件 %{path}
 ftp_err.chmod_unsupported:
   en: FTP servers do not support chmod; the permissions column is read-only
   zh-CN: FTP 协议不支持 chmod，权限列只读
 ftp_err.raw_error:
-  en: "{action}: {error}"
-  zh-CN: "{action}:{error}"
+  en: "%{action}: %{error}"
+  zh-CN: "%{action}:%{error}"
 
 # ── 独立 S3 会话（HostKind::S3 开出来的那个标签页，见 src/ui/panels/s3_host.rs） ──
 s3_host.close_session:
@@ -5164,60 +5164,115 @@ s3_err.build_operator:
   en: Failed to build the S3 client parameters
   zh-CN: 组装 S3 客户端参数失败
 s3_err.action_read_dir:
-  en: List the directory {path}
-  zh-CN: 列目录 {path}
+  en: List the directory %{path}
+  zh-CN: 列目录 %{path}
 s3_err.action_stat_path:
   en: Check whether the path exists
   zh-CN: 判断路径是否存在
 s3_err.action_stat_remote:
-  en: Check the remote path {path}
-  zh-CN: 查看远端路径 {path}
+  en: Check the remote path %{path}
+  zh-CN: 查看远端路径 %{path}
 s3_err.action_create_dir:
-  en: Create the directory {path}
-  zh-CN: 新建目录 {path}
+  en: Create the directory %{path}
+  zh-CN: 新建目录 %{path}
 s3_err.action_create_file:
-  en: Create the file {path}
-  zh-CN: 新建文件 {path}
+  en: Create the file %{path}
+  zh-CN: 新建文件 %{path}
 s3_err.action_delete:
-  en: Delete {path}
-  zh-CN: 删除 {path}
+  en: Delete %{path}
+  zh-CN: 删除 %{path}
 s3_err.action_delete_dir:
-  en: Remove the directory {path}
-  zh-CN: 删除目录 {path}
+  en: Remove the directory %{path}
+  zh-CN: 删除目录 %{path}
 s3_err.action_rename:
-  en: Rename {from} to {to}
-  zh-CN: 把 {from} 改成 {to}
+  en: Rename %{from} to %{to}
+  zh-CN: 把 %{from} 改成 %{to}
 s3_err.action_read_file:
-  en: Read the file {path}
-  zh-CN: 读取文件 {path}
+  en: Read the file %{path}
+  zh-CN: 读取文件 %{path}
 s3_err.action_save_file:
-  en: Save the file {path}
-  zh-CN: 写入文件 {path}
+  en: Save the file %{path}
+  zh-CN: 写入文件 %{path}
 s3_err.action_open_remote:
-  en: Open the remote file {path}
-  zh-CN: 打开远端文件 {path}
+  en: Open the remote file %{path}
+  zh-CN: 打开远端文件 %{path}
 s3_err.chmod_unsupported:
   en: S3 does not support chmod; the permissions column is read-only
   zh-CN: S3 不支持 chmod，权限列只读
+s3_err.action_list_buckets:
+  en: List the buckets under this account
+  zh-CN: 列出账号下的存储桶
+s3_err.list_buckets_rejected:
+  en: "The server rejected listing buckets (HTTP %{status}): %{body}"
+  zh-CN: "服务端拒绝了列存储桶请求（HTTP %{status}）：%{body}"
+s3_err.root_read_only:
+  en: Enter a bucket first; the bucket list page is read-only
+  zh-CN: 请先进入某个存储桶，存储桶列表页只读
+s3_err.cross_bucket_rename:
+  en: Renaming across buckets is not supported
+  zh-CN: 不支持跨存储桶重命名
 s3_err.raw_error:
-  en: "{action}: {error}"
-  zh-CN: "{action}:{error}"
+  en: "%{action}: %{error}"
+  zh-CN: "%{action}:%{error}"
 
 # ── S3 主机表单字段（src/ui/windows/host_form.rs） ──
+host_form.field_s3_endpoint:
+  en: Endpoint
+  zh-CN: 端点 (Endpoint)
+host_form.field_s3_preset:
+  en: Provider Preset
+  zh-CN: 服务商预设
+host_form.field_s3_addressing:
+  en: Addressing Style
+  zh-CN: 寻址风格
 host_form.field_s3_bucket:
   en: Bucket
   zh-CN: 存储桶
 host_form.field_s3_region:
   en: Region
   zh-CN: 区域
+host_form.field_s3_access_key:
+  en: Access Key ID
+  zh-CN: Access Key ID
+host_form.field_s3_secret_key:
+  en: Secret Access Key
+  zh-CN: Secret Access Key
+host_form.s3_endpoint_placeholder:
+  en: https://s3.amazonaws.com
+  zh-CN: https://s3.amazonaws.com
 host_form.s3_bucket_placeholder:
-  en: my-bucket
-  zh-CN: my-bucket
+  en: my-bucket (empty = list all buckets)
+  zh-CN: my-bucket（留空列出全部存储桶）
 host_form.s3_region_placeholder:
-  en: us-east-1 / auto
-  zh-CN: us-east-1 / auto
+  en: empty = inferred from the endpoint
+  zh-CN: 留空则从 Endpoint 自动推断
+host_form.s3_preset_custom:
+  en: Custom
+  zh-CN: 自定义
+host_form.s3_preset_aws:
+  en: Amazon S3
+  zh-CN: Amazon S3
+host_form.s3_preset_aliyun:
+  en: Alibaba Cloud OSS
+  zh-CN: 阿里云 OSS
+host_form.s3_preset_tencent:
+  en: Tencent Cloud COS
+  zh-CN: 腾讯云 COS
+host_form.s3_preset_qiniu:
+  en: Qiniu Kodo
+  zh-CN: 七牛云 Kodo
+host_form.s3_preset_minio:
+  en: MinIO
+  zh-CN: MinIO
+host_form.s3_addressing_auto:
+  en: Auto
+  zh-CN: 自动
+host_form.s3_addressing_path:
+  en: Path Style
+  zh-CN: 路径寻址 (Path Style)
+host_form.s3_addressing_virtual_host:
+  en: Virtual-Host Style
+  zh-CN: 虚拟主机寻址 (Virtual-Host Style)
 host_form.s3_hint:
-  en: >-
-    Endpoint goes in the "Hostname" field, Access Key in "Username",
-    Secret Key in "Password". Use "auto" for region with MinIO or R2.
-  zh-CN: 端点地址填在「主机名」，Access Key 填在「用户名」，Secret Key 填在「密码」。MinIO / R2 等可填 "auto"。
+  en: Endpoint goes in the "Endpoint" field on the connection page; Access Key ID and Secret Access Key go on the auth page. Leave bucket empty to browse all buckets in the account. Alibaba Cloud OSS and Tencent Cloud COS need virtual-host addressing — the preset fills it in.
+  zh-CN: 端点地址填在「连接」页的「Endpoint」，Access Key ID / Secret Access Key 填在「认证」页。存储桶留空可在面板根目录浏览账号下的全部存储桶。阿里云 OSS / 腾讯云 COS 需要虚拟主机寻址 —— 选中预设会自动带出。

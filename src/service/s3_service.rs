@@ -6,7 +6,8 @@
 //! 所以 `SftpPanel` 可以原样吃这一份内容。
 //!
 //! 传输协议由 [`opendal::services::S3`] 收口 —— OpenDAL 已经把 S3 的签名、
-//! 分片上传、列目录折叠都做完，这里不引入第二个 S3 客户端库。
+//! 分片上传、列目录折叠都做完，这里不引入第二个 S3 客户端库（列存储桶的
+//! `GetService` 例外，见 [`crate::s3::buckets`] —— OpenDAL 没有这个动作）。
 //!
 //! 与 FTP 那边的几条语义差值得写下：
 //!
@@ -20,11 +21,19 @@
 //! - `hostname` → S3 端点 URL（`https://s3.amazonaws.com`、`http://127.0.0.1:9000`）
 //! - `user` → Access Key ID
 //! - `password` → Secret Access Key
-//! - `s3.bucket` → Bucket 名称
-//! - `s3.region` → Region
+//! - `s3.bucket` → Bucket 名称（**可留空**：留空即根模式，面板根目录列出
+//!   账号下的全部存储桶，每个桶当"文件夹"看）
+//! - `s3.region` → Region（可选覆盖，留空按 `infer_region` 从端点推断）
+//! - `s3.addressing` → 寻址风格（阿里云 OSS / 腾讯云 COS 必须虚拟主机风格）
+//!
+//! 根模式下路径以桶名开头（`/my-bucket/a/b`），每个桶的 Operator 按
+//! [`Resolver`] 的缓存懒建；固定桶主机的路径与 OpenDAL 的路径一一对应，
+//! 行为与从前完全一致。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -42,58 +51,183 @@ use super::sftp_service::{
     CHUNK, FOLDER_CONCURRENCY, MAX_TEXT_BYTES, PROGRESS_EMIT_INTERVAL, PauseState, TransferEvent,
     TransferHandle, TransferJob,
 };
+use crate::s3::{S3Addressing, infer_region};
 use crate::sftp::{FileEntry, FileKind, TransferChild, path};
 
-/// 一台 S3 主机的服务入口。廉价克隆（一个 `Arc<Operator>`）。
+/// 一台 S3 主机的连接参数。装一次，随 [`Resolver`] 到处分发（廉价克隆）。
+#[derive(Clone)]
+struct S3ConnParams {
+    /// 端点地址。保持用户填写的原样 —— OpenDAL 会自己补 scheme。
+    endpoint: String,
+    access_key: String,
+    secret_key: String,
+    /// 签名用的 Region。连接时定死：用户覆盖 → 端点推断 → `us-east-1` 兜底
+    /// （OpenDAL 的 builder 没有 region 会直接构建失败，这里不给它机会）。
+    region: String,
+    /// 寻址风格。`Auto` / `Path` 都不给 OpenDAL 传选项（默认即路径风格）。
+    addressing: S3Addressing,
+}
+
+/// 面板路径 → 桶内 Operator 的解析器。
+///
+/// 固定桶主机：面板路径就是 OpenDAL 路径，一个 Operator 走天下。
+/// 根模式：路径首段是桶名（`/my-bucket/a/b`），每个桶一个 Operator，
+/// 懒建并缓存 —— 列桶不需要 Operator，点进去那一刻才建。
+#[derive(Clone)]
+struct Resolver {
+    params: Arc<S3ConnParams>,
+    /// 固定桶主机的桶名；`None` 即根模式。
+    fixed_bucket: Option<String>,
+    /// 桶名 → Operator 的懒建缓存。
+    ops: Arc<Mutex<HashMap<String, Arc<opendal::Operator>>>>,
+}
+
+impl Resolver {
+    /// 这一路径是不是根模式的"桶列表"（`/`）。
+    fn is_root_list(&self, panel: &str) -> bool {
+        self.fixed_bucket.is_none() && (panel.is_empty() || panel == "/")
+    }
+
+    /// 面板路径所在的桶名。根模式取首段，空路径就是"还没进桶"。
+    fn bucket_of(&self, panel: &str) -> Result<String> {
+        match &self.fixed_bucket {
+            Some(bucket) => Ok(bucket.clone()),
+            None => {
+                let bucket = panel.trim_matches('/').split('/').next().unwrap_or_default();
+                match bucket.is_empty() {
+                    true => bail!("{}", t!("s3_err.root_read_only")),
+                    false => Ok(bucket.to_string()),
+                }
+            }
+        }
+    }
+
+    /// 面板路径折成桶内路径。固定桶主机原样透传（OpenDAL 自己会消化 `..`），
+    /// 根模式剥掉首段桶名。
+    fn inner_of(&self, bucket: &str, panel: &str) -> String {
+        match &self.fixed_bucket {
+            Some(_) => panel.to_string(),
+            None => {
+                let rest = panel.trim_matches('/');
+                let rest = match rest.strip_prefix(bucket) {
+                    // 桶名必须整段剥掉：`/my-bucket-x` 不是桶 `my-bucket` 里的 `x`。
+                    Some(rest) if rest.is_empty() || rest.starts_with('/') => rest,
+                    _ => rest,
+                };
+                format!("/{}", rest.trim_matches('/'))
+            }
+        }
+    }
+
+    /// 面板路径条目折算时要在前面补回的那段（根模式是 `/{bucket}`）。
+    fn prefix_of(&self, panel: &str) -> String {
+        match &self.fixed_bucket {
+            Some(_) => String::new(),
+            None => format!("/{}", self.bucket_of(panel).unwrap_or_default()),
+        }
+    }
+
+    /// 解析面板路径：`(Operator, 桶内路径)`。
+    fn op_for(&self, panel: &str) -> Result<(Arc<opendal::Operator>, String)> {
+        let bucket = self.bucket_of(panel)?;
+        let inner = self.inner_of(&bucket, panel);
+        let op = self.operator_of(&bucket)?;
+        Ok((op, inner))
+    }
+
+    /// `(Operator, 桶内路径, 条目折算前缀)`，列目录专用。
+    fn scope_of(&self, panel: &str) -> Result<(Arc<opendal::Operator>, String, String)> {
+        let bucket = self.bucket_of(panel)?;
+        let inner = self.inner_of(&bucket, panel);
+        let op = self.operator_of(&bucket)?;
+        let prefix = self.prefix_of(panel);
+        Ok((op, inner, prefix))
+    }
+
+    /// 拿一个桶的 Operator：命中缓存直接返回，否则现建一份再入缓存。
+    fn operator_of(&self, bucket: &str) -> Result<Arc<opendal::Operator>> {
+        if let Ok(cache) = self.ops.lock() {
+            if let Some(op) = cache.get(bucket) {
+                return Ok(op.clone());
+            }
+        }
+        let op = self.build_operator(bucket)?;
+        if let Ok(mut cache) = self.ops.lock() {
+            cache.insert(bucket.to_string(), op.clone());
+        }
+        Ok(op)
+    }
+
+    /// 把连接参数装进 OpenDAL 的 builder。真正的网络动作要等第一次操作。
+    fn build_operator(&self, bucket: &str) -> Result<Arc<opendal::Operator>> {
+        let params = &*self.params;
+        let mut builder = S3::default()
+            .endpoint(&params.endpoint)
+            .bucket(bucket)
+            .root("/")
+            .region(&params.region);
+
+        if !params.access_key.is_empty() {
+            builder = builder.access_key_id(&params.access_key);
+        }
+        if !params.secret_key.is_empty() {
+            builder = builder.secret_access_key(&params.secret_key);
+        }
+        if params.addressing == S3Addressing::VirtualHost {
+            builder = builder.enable_virtual_host_style();
+        }
+
+        let op = opendal::Operator::new(builder)
+            .with_context(|| t!("s3_err.build_operator").to_string())?;
+        Ok(Arc::new(op))
+    }
+}
+
+/// 一台 S3 主机的服务入口。廉价克隆（参数与 Operator 缓存都在 `Arc` 里）。
 #[derive(Clone)]
 pub struct S3Service {
-    op: Arc<opendal::Operator>,
-    home: Arc<std::sync::Mutex<Option<String>>>,
+    resolver: Resolver,
+    home: Arc<Mutex<Option<String>>>,
 }
 
 impl S3Service {
-    /// 按出一台 S3 主机的连接配置。不涉及网络：这一步只把参数装进
-    /// builder，真正的连接要等到第一次操作时才发请求。
+    /// 按出一台 S3 主机的连接配置。固定桶主机会当场把 Operator 建出来 ——
+    /// 参数不对早死早超生，别等到面板第一下列目录才爆；根模式（bucket 留空）
+    /// 不建 Operator，等点进某个桶再说。
     pub fn connect(host: &crate::host::Host) -> Result<Self> {
         let endpoint = host.hostname.trim();
         if endpoint.is_empty() {
             bail!("{}", t!("s3_err.no_endpoint"));
         }
 
-        let access_key = host.user.trim();
-        let secret_key = host.password.trim();
+        let region = match host.s3.region.trim().is_empty() {
+            true => infer_region(endpoint).unwrap_or_else(|| "us-east-1".to_string()),
+            false => host.s3.region.trim().to_string(),
+        };
+        let params = S3ConnParams {
+            endpoint: endpoint.to_string(),
+            access_key: host.user.trim().to_string(),
+            secret_key: host.password.trim().to_string(),
+            region,
+            addressing: host.s3.addressing,
+        };
         let bucket = host.s3.bucket.trim();
-        let region = host.s3.region.trim();
-
-        if bucket.is_empty() {
-            bail!("{}", t!("s3_err.no_bucket"));
+        let resolver = Resolver {
+            params: Arc::new(params),
+            fixed_bucket: (!bucket.is_empty()).then(|| bucket.to_string()),
+            ops: Arc::new(Mutex::new(HashMap::new())),
+        };
+        if let Some(bucket) = &resolver.fixed_bucket {
+            resolver.operator_of(bucket)?;
         }
-
-        let mut builder = S3::default()
-            .endpoint(endpoint)
-            .bucket(bucket)
-            .root("/");
-
-        if !region.is_empty() {
-            builder = builder.region(region);
-        }
-        if !access_key.is_empty() {
-            builder = builder.access_key_id(access_key);
-        }
-        if !secret_key.is_empty() {
-            builder = builder.secret_access_key(secret_key);
-        }
-
-        let op = opendal::Operator::new(builder)
-            .with_context(|| t!("s3_err.build_operator").to_string())?;
         Ok(Self {
-            op: Arc::new(op),
-            home: Arc::new(std::sync::Mutex::new(Some("/".to_string()))),
+            resolver,
+            home: Arc::new(Mutex::new(Some("/".to_string()))),
         })
     }
 
     /// S3 没有"家目录"的协议概念。面板初次打开时总要落到一个起点，这里
-    /// 返回 `/` —— 任何 S3 存储桶都从一个根出发。
+    /// 返回 `/` —— 固定桶主机是桶根，根模式是存储桶列表。
     pub async fn home(&self) -> Result<String> {
         if let Some(known) = self.cached_home() {
             return Ok(known);
@@ -118,43 +252,89 @@ impl S3Service {
     /// 列一个目录。opendal 把 S3 的 list 折成一个 `Vec<Entry>`，这里
     /// 把每一项折成面板要的 [`FileEntry`]。opendal 会把查询的根本身也作为一项
     /// 放在最前面（该目录的 `/` 形式），不是子项 —— 剥掉再放行。
+    ///
+    /// 根模式列 `/` 是特例：那不是桶内的目录，是账号下的存储桶列表。
     pub async fn list(&self, dir: &str) -> Result<Vec<FileEntry>> {
         let dir = path::normalize(dir);
+        if self.resolver.is_root_list(&dir) {
+            return self.list_buckets().await;
+        }
+        let (op, inner, prefix) = self.resolver.scope_of(&dir)?;
         let label = dir.clone();
-        let op = self.op.clone();
         let entries = crate::db::run({
-            let dir = dir.clone();
-            async move { op.list(&dir).await }
+            let op = op.clone();
+            let inner = inner.clone();
+            async move { op.list(&inner).await }
         })
         .await
         .map_err(|error| remote(&t!("s3_err.action_read_dir", path => label), error))?;
 
-        let base = dir.trim_end_matches('/');
+        let base = inner.trim_end_matches('/');
         Ok(entries
             .into_iter()
             .filter(|entry| {
                 let trimmed = entry.path().trim_end_matches('/');
                 !(trimmed == base || (trimmed.is_empty() && base.is_empty()))
             })
-            .map(entry_of)
+            .map(|entry| entry_of(entry, &prefix))
+            .collect())
+    }
+
+    /// 列出账号下的全部存储桶（S3 `GetService`）。OpenDAL 没有这个动作，
+    /// 走 [`crate::s3::list_buckets`] 自己发 —— 每个桶折成一个"文件夹"。
+    async fn list_buckets(&self) -> Result<Vec<FileEntry>> {
+        let params = (*self.resolver.params).clone();
+        let names = crate::db::run(async move {
+            crate::s3::list_buckets(
+                &params.endpoint,
+                &params.access_key,
+                &params.secret_key,
+                &params.region,
+            )
+            .await
+        })
+        .await
+        .map_err(|error| {
+            anyhow!(t!(
+                "s3_err.raw_error",
+                action => t!("s3_err.action_list_buckets").to_string(),
+                error => format!("{error:#}")
+            ))
+        })?;
+
+        Ok(names
+            .into_iter()
+            .map(|name| FileEntry {
+                name: gpui_kit::SharedString::from(name.clone()),
+                path: gpui_kit::SharedString::from(format!("/{name}/")),
+                kind: FileKind::Dir,
+                size: 0,
+                modified: None,
+                mode: None,
+                uid: None,
+                owner: None,
+            })
             .collect())
     }
 
     /// 存不存在。错误照旧冒泡 —— "没权限 stat" 不等于 "没有这个文件"。
+    /// 根模式的 `/`（存储桶列表）永远存在。
     pub async fn exists(&self, target: &str) -> Result<bool> {
         let target = path::normalize(target);
-        let op = self.op.clone();
-        crate::db::run(async move { op.exists(&target).await })
+        if self.resolver.is_root_list(&target) {
+            return Ok(true);
+        }
+        let (op, inner) = self.resolver.op_for(&target)?;
+        crate::db::run(async move { op.exists(&inner).await })
             .await
             .map_err(|error| remote(&t!("s3_err.action_stat_path"), error))
     }
 
     /// 新建目录。S3 的"目录"是一个以 `/` 结尾的零字节对象。
     pub async fn create_dir(&self, target: &str) -> Result<()> {
-        let target = path::normalize(target);
-        let with_trailing = format!("{target}/");
-        let label = target.clone();
-        let op = self.op.clone();
+        let (op, inner) = self.resolver.op_for(&path::normalize(target))?;
+        let with_trailing = format!("{inner}/");
+        let label = with_trailing.clone();
         crate::db::run(async move { op.create_dir(&with_trailing).await })
             .await
             .map_err(|error| remote(&t!("s3_err.action_create_dir", path => label), error))
@@ -166,9 +346,9 @@ impl S3Service {
         if self.exists(&target).await.unwrap_or(false) {
             bail!("{}", t!("sftp_err.already_exists", path => target));
         }
-        let label = target.clone();
-        let op = self.op.clone();
-        crate::db::run(async move { op.write(&target, Vec::<u8>::new()).await.map(|_| ()) })
+        let (op, inner) = self.resolver.op_for(&target)?;
+        let label = inner.clone();
+        crate::db::run(async move { op.write(&inner, Vec::<u8>::new()).await.map(|_| ()) })
             .await
             .map_err(|error| remote(&t!("s3_err.action_create_file", path => label), error))
     }
@@ -178,11 +358,11 @@ impl S3Service {
     pub async fn remove(&self, entry: &FileEntry) -> Result<()> {
         let target = entry.path.to_string();
         if entry.kind == FileKind::Dir {
-            return Self::remove_dir_all(self.op.clone(), target).await;
+            return Self::remove_dir_all(self.resolver.clone(), target).await;
         }
-        let op = self.op.clone();
-        let label = target.clone();
-        crate::db::run(async move { op.delete(&target).await })
+        let (op, inner) = self.resolver.op_for(&target)?;
+        let label = inner.clone();
+        crate::db::run(async move { op.delete(&inner).await })
             .await
             .map_err(|error| remote(&t!("s3_err.action_delete", path => label), error))
     }
@@ -190,52 +370,59 @@ impl S3Service {
     /// 递归删除目录。async 自递归要装箱。opendal 的 list 会把目录本身列出来，
     /// 递归删时先跳过自己；其余按子项类型分派。
     fn remove_dir_all(
-        op: Arc<opendal::Operator>,
-        dir: String,
+        resolver: Resolver,
+        panel_dir: String,
     ) -> impl std::future::Future<Output = Result<()>> + Send + 'static {
         async move {
-            let normalized = path::normalize(&dir);
-            let list_op = op.clone();
+            let (op, inner, prefix) = resolver.scope_of(&panel_dir)?;
+            let label = inner.clone();
             let children = crate::db::run({
-                let normalized = normalized.clone();
-                async move { list_op.list(&normalized).await }
+                let op = op.clone();
+                let inner = inner.clone();
+                async move { op.list(&inner).await }
             })
             .await
             .map_err(|error| {
                 remote(
-                    &t!("s3_err.action_read_dir", path => normalized.clone()),
+                    &t!("s3_err.action_read_dir", path => label.clone()),
                     error,
                 )
             })?;
 
+            let base = inner.trim_end_matches('/');
             for child in children {
-                let full = child.path().trim_end_matches('/').to_string();
-                if full == normalized {
+                let inner_full = with_leading_slash(child.path())
+                    .trim_end_matches('/')
+                    .to_string();
+                if inner_full == base || inner_full.is_empty() {
                     continue;
                 }
-                let name = full.rsplit('/').next().unwrap_or_default();
+                let name = inner_full.rsplit('/').next().unwrap_or_default();
                 if matches!(name, "." | "..") {
                     continue;
                 }
-                let mode = child.metadata().mode();
-                match mode {
+                let panel_full = format!("{prefix}{inner_full}/");
+                match child.metadata().mode() {
                     EntryMode::DIR => {
-                        Box::pin(Self::remove_dir_all(op.clone(), full)).await?;
+                        Box::pin(Self::remove_dir_all(resolver.clone(), panel_full)).await?;
                     }
                     _ => {
-                        let inner = op.clone();
+                        let delete_full = inner_full.clone();
                         crate::db::run({
-                            let full = full.clone();
-                            async move { inner.delete(&full).await }
+                            let op = op.clone();
+                            async move { op.delete(&delete_full).await }
                         })
                         .await
                         .map_err(|error| {
-                            remote(&t!("s3_err.action_delete", path => full.clone()), error)
+                            remote(
+                                &t!("s3_err.action_delete", path => inner_full.clone()),
+                                error,
+                            )
                         })?;
                     }
                 }
             }
-            let with_trailing = format!("{}/", normalized.trim_end_matches('/'));
+            let with_trailing = format!("{}/", inner.trim_end_matches('/'));
             let label = with_trailing.clone();
             crate::db::run(async move { op.delete(&with_trailing).await })
                 .await
@@ -245,11 +432,16 @@ impl S3Service {
 
     /// 重命名。S3 协议没有原子的 rename，OpenDAL 在 S3 后端上用 copy + delete
     /// 实现。同名目标已存在时对端会回拒绝 —— "不顶替"，与 SFTP/FTP 那边一致。
+    /// 根模式下源与目标必须同桶 —— 跨桶没有"一条 rename"可言。
     pub async fn rename(&self, from: &str, to: &str) -> Result<()> {
         let (from, to) = (path::normalize(from), path::normalize(to));
-        let op = self.op.clone();
-        let (from_label, to_label) = (from.clone(), to.clone());
-        crate::db::run(async move { op.rename(&from, &to).await })
+        if self.resolver.bucket_of(&from)? != self.resolver.bucket_of(&to)? {
+            bail!("{}", t!("s3_err.cross_bucket_rename"));
+        }
+        let (op, inner_from) = self.resolver.op_for(&from)?;
+        let (_, inner_to) = self.resolver.op_for(&to)?;
+        let (from_label, to_label) = (inner_from.clone(), inner_to.clone());
+        crate::db::run(async move { op.rename(&inner_from, &inner_to).await })
             .await
             .map_err(|error| {
                 remote(
@@ -268,31 +460,30 @@ impl S3Service {
     /// 读一个远端文本文件，交给编辑器。超出 `MAX_TEXT_BYTES` 也不要读进内存。
     pub async fn read_text(&self, target: &str) -> Result<String> {
         let target = path::normalize(target);
-        let label = target.clone();
-        let op = self.op.clone();
+        let (op, inner) = self.resolver.op_for(&target)?;
+        let label = inner.clone();
         let bytes = crate::db::run(async move {
-            let stat = op.stat(&target).await?;
+            let stat = op.stat(&inner).await?;
             if stat.content_length() > MAX_TEXT_BYTES {
                 return Err(opendal::Error::new(
                     opendal::ErrorKind::Unexpected,
                     t!("sftp_err.too_large_to_edit", bytes => stat.content_length()).to_string(),
                 ));
             }
-            let buf = op.read(&target).await?;
+            let buf = op.read(&inner).await?;
             Ok::<_, opendal::Error>(buf.to_bytes().to_vec())
         })
         .await
         .map_err(|error| remote(&t!("s3_err.action_read_file", path => label), error))?;
-        String::from_utf8(bytes).map_err(|_| anyhow!(t!("sftp_err.not_utf8", path => label)))
+        String::from_utf8(bytes).map_err(|_| anyhow!(t!("sftp_err.not_utf8", path => target)))
     }
 
     /// 整篇覆盖写回。
     pub async fn write_text(&self, target: &str, content: &str) -> Result<()> {
-        let target = path::normalize(target);
-        let label = target.clone();
-        let op = self.op.clone();
+        let (op, inner) = self.resolver.op_for(&path::normalize(target))?;
+        let label = inner.clone();
         let bytes = content.as_bytes().to_vec();
-        crate::db::run(async move { op.write(&target, bytes).await.map(|_| ()) })
+        crate::db::run(async move { op.write(&inner, bytes).await.map(|_| ()) })
             .await
             .map_err(|error| remote(&t!("s3_err.action_save_file", path => label), error))
     }
@@ -303,7 +494,7 @@ impl S3Service {
         job: TransferJob,
         progress: UnboundedSender<TransferEvent>,
     ) -> TransferHandle {
-        let op = self.op.clone();
+        let resolver = self.resolver.clone();
         let cancel = CancellationToken::new();
         let pause = Arc::new(PauseState::default());
         let task_cancel = cancel.clone();
@@ -318,7 +509,7 @@ impl S3Service {
                 pause: &task_pause,
                 progress: &task_progress,
             };
-            let outcome = download(op, &job, &ctx).await;
+            let outcome = download(resolver, &job, &ctx).await;
             report_done(&progress, id, outcome, task_cancel.is_cancelled());
         });
 
@@ -331,7 +522,7 @@ impl S3Service {
         job: TransferJob,
         progress: UnboundedSender<TransferEvent>,
     ) -> TransferHandle {
-        let op = self.op.clone();
+        let resolver = self.resolver.clone();
         let cancel = CancellationToken::new();
         let pause = Arc::new(PauseState::default());
         let task_cancel = cancel.clone();
@@ -346,7 +537,7 @@ impl S3Service {
                 pause: &task_pause,
                 progress: &task_progress,
             };
-            let outcome = upload(op, &job, &ctx).await;
+            let outcome = upload(resolver, &job, &ctx).await;
             report_done(&progress, id, outcome, task_cancel.is_cancelled());
         });
 
@@ -354,12 +545,25 @@ impl S3Service {
     }
 }
 
+/// OpenDAL lister 返回的条目路径相对 operator root、**不带前导 `/`** ——
+/// 见 opendal-core 的 `build_rel_path`（root="/" 时原样返回）；查询的根本身
+/// （`FlatLister` 补的第一项）倒是请求原样、带着 `/`。这里统一补齐这一刀：
+/// 不补的话根模式下面板路径会把桶名和对象 key 粘成一段，`bucket_of` 拿整段
+/// 当桶名，拼出解析不了的虚拟主机域名（OSS 上即 reqwest "error sending
+/// request"），列目录与下载全断。
+fn with_leading_slash(path: &str) -> String {
+    match path.starts_with('/') {
+        true => path.to_string(),
+        false => format!("/{path}"),
+    }
+}
+
 /// 把 opendal `Entry` 折成面板要的 [`FileEntry`]。S3 拿不到权限位、
-/// 属主与组名 —— 那几列照常 `None`。
-fn entry_of(entry: opendal::Entry) -> FileEntry {
-    let full_path = entry.path().to_string();
-    let name = entry
-        .path()
+/// 属主与组名 —— 那几列照常 `None`。根模式下面板路径要补回桶名前缀。
+fn entry_of(entry: opendal::Entry, panel_prefix: &str) -> FileEntry {
+    let inner_path = with_leading_slash(entry.path());
+    let full_path = format!("{panel_prefix}{inner_path}");
+    let name = inner_path
         .trim_end_matches('/')
         .rsplit('/')
         .next()
@@ -416,26 +620,31 @@ fn report_done(
 
 // ─── 远端 → 本地 ──────────────────────────────────────────────────────────
 
-async fn download(op: Arc<opendal::Operator>, job: &TransferJob, ctx: &PumpCtx<'_>) -> Result<()> {
+async fn download(resolver: Resolver, job: &TransferJob, ctx: &PumpCtx<'_>) -> Result<()> {
     let remote_path = path::normalize(&job.remote);
-    let stat = op.stat(&remote_path).await.map_err(|error| {
-        remote(
-            &t!("s3_err.action_stat_remote", path => remote_path.clone()),
-            error,
-        )
-    })?;
+    let (op, inner) = resolver.op_for(&remote_path)?;
+    let stat = op
+        .stat(&inner)
+        .await
+        .map_err(|error| {
+            remote(
+                &t!("s3_err.action_stat_remote", path => remote_path.clone()),
+                error,
+            )
+        })?;
 
     if stat.mode() == EntryMode::DIR {
-        download_folder(op, job, &remote_path, &job.local, ctx).await
+        download_folder(resolver, job, &remote_path, &job.local, ctx).await
     } else {
-        download_single_file(op, &remote_path, &job.local, stat.content_length(), ctx).await
+        download_single_file(resolver, &remote_path, &job.local, stat.content_length(), ctx).await
     }
 }
 
 /// 下载单个文件：远端读出、本地写 `.<name>.<id>.part`、改名落定。
+/// 错误标签用面板路径 —— 那才是用户眼里这一行是什么。
 async fn download_single_file(
-    op: Arc<opendal::Operator>,
-    remote_path: &str,
+    resolver: Resolver,
+    remote_panel: &str,
     local: &Path,
     total: u64,
     ctx: &PumpCtx<'_>,
@@ -449,13 +658,14 @@ async fn download_single_file(
         })?;
     }
     let temp = part_path(local, ctx.id);
+    let (op, inner) = resolver.op_for(remote_panel)?;
 
     let mut source = op
-        .reader(remote_path)
+        .reader(&inner)
         .await
         .map_err(|error| {
             remote(
-                &t!("s3_err.action_open_remote", path => remote_path.to_string()),
+                &t!("s3_err.action_open_remote", path => remote_panel.to_string()),
                 error,
             )
         })?
@@ -463,7 +673,7 @@ async fn download_single_file(
         .await
         .map_err(|error| {
             remote(
-                &t!("s3_err.action_open_remote", path => remote_path.to_string()),
+                &t!("s3_err.action_open_remote", path => remote_panel.to_string()),
                 error,
             )
         })?
@@ -482,7 +692,7 @@ async fn download_single_file(
         ctx.pause.wait(ctx.cancel).await;
         let read = source.read(&mut buf).await.map_err(|error| {
             anyhow::Error::new(error)
-                .context(t!("s3_err.action_read_file", path => remote_path.to_string()))
+                .context(t!("s3_err.action_read_file", path => remote_panel.to_string()))
         })?;
         if read == 0 {
             break;
@@ -521,13 +731,13 @@ async fn download_single_file(
 
 /// 远端目录树 → 本地目录树。文件并发下载。
 async fn download_folder(
-    op: Arc<opendal::Operator>,
+    resolver: Resolver,
     job: &TransferJob,
     remote_root: &str,
     local_root: &Path,
     ctx: &PumpCtx<'_>,
 ) -> Result<()> {
-    let tree = walk_remote(op.clone(), remote_root, local_root).await?;
+    let tree = walk_remote(resolver.clone(), remote_root, local_root).await?;
     let total_bytes: u64 = tree.files.iter().map(|file| file.size).sum();
 
     for dir in &tree.dirs {
@@ -563,7 +773,7 @@ async fn download_folder(
 
     let agg = AtomicU64::new(0);
     stream::iter(tree.files.into_iter().enumerate())
-        .map(|(index, file)| download_folder_file(op.clone(), file, index, total_bytes, &agg, ctx))
+        .map(|(index, file)| download_folder_file(resolver.clone(), file, index, total_bytes, &agg, ctx))
         .buffer_unordered(FOLDER_CONCURRENCY)
         .try_collect::<()>()
         .await?;
@@ -573,7 +783,7 @@ async fn download_folder(
 
 /// 目录下的一个文件走与单文件相同的循环，但额外按 `agg` 上报整体进度。
 async fn download_folder_file(
-    op: Arc<opendal::Operator>,
+    resolver: Resolver,
     file: RemoteFile,
     index: usize,
     total: u64,
@@ -589,9 +799,10 @@ async fn download_folder_file(
         })?;
     }
     let temp = part_path(&file.local, ctx.id);
+    let (op, inner) = resolver.op_for(&file.remote)?;
 
     let mut source = op
-        .reader(&file.remote)
+        .reader(&inner)
         .await
         .map_err(|error| {
             remote(
@@ -669,9 +880,9 @@ async fn download_folder_file(
     Ok(())
 }
 
-// ─── 本地 → 远端 ──────────────────────────────────────────────────────────
+// ─── 本地 → 远端 ──────────────────────────────────────────────────────
 
-async fn upload(op: Arc<opendal::Operator>, job: &TransferJob, ctx: &PumpCtx<'_>) -> Result<()> {
+async fn upload(resolver: Resolver, job: &TransferJob, ctx: &PumpCtx<'_>) -> Result<()> {
     let local = job.local.clone();
     let meta = tokio::fs::metadata(&local)
         .await
@@ -683,6 +894,10 @@ async fn upload(op: Arc<opendal::Operator>, job: &TransferJob, ctx: &PumpCtx<'_>
     } else {
         remote_dir
     };
+    // 根模式下落点还在存储桶列表上 —— 没有可写的对象，先把话说明白。
+    if resolver.is_root_list(&remote_dir) {
+        bail!("{}", t!("s3_err.root_read_only"));
+    }
     let basename = local
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -695,8 +910,8 @@ async fn upload(op: Arc<opendal::Operator>, job: &TransferJob, ctx: &PumpCtx<'_>
 
     if meta.is_dir() {
         let with_trailing = format!("{target_remote}/");
-        let op_mk = op.clone();
-        crate::db::run(async move { op_mk.create_dir(&with_trailing).await })
+        let (op, inner) = resolver.op_for(&with_trailing)?;
+        crate::db::run(async move { op.create_dir(&inner).await })
             .await
             .map_err(|error| {
                 remote(
@@ -704,15 +919,15 @@ async fn upload(op: Arc<opendal::Operator>, job: &TransferJob, ctx: &PumpCtx<'_>
                     error,
                 )
             })?;
-        upload_folder(op, &local, &target_remote, ctx).await
+        upload_folder(resolver, &local, &target_remote, ctx).await
     } else {
-        upload_single_file(op, &local, &target_remote, meta.len(), ctx).await
+        upload_single_file(resolver, &local, &target_remote, meta.len(), ctx).await
     }
 }
 
 /// 上传单个文件：本地读、远端写 `<final>.part`、改名落定。
 async fn upload_single_file(
-    op: Arc<opendal::Operator>,
+    resolver: Resolver,
     local: &Path,
     remote_target: &str,
     total: u64,
@@ -723,9 +938,10 @@ async fn upload_single_file(
     }
     let remote_part = format!("{remote_target}.part");
     let local_label = local.to_string_lossy().into_owned();
+    let (op, inner_part) = resolver.op_for(&remote_part)?;
 
     let mut sink = op
-        .writer(&remote_part)
+        .writer(&inner_part)
         .await
         .map_err(|error| {
             remote(
@@ -773,27 +989,24 @@ async fn upload_single_file(
     let _ = source.shutdown().await;
 
     if moved != total {
-        let _ = op.delete(&remote_part).await.ok();
+        let _ = op.delete(&inner_part).await.ok();
         bail!(
             "{}",
             t!("sftp_err.upload_incomplete", moved => moved, total => total)
         );
     }
 
-    let final_target = remote_target.to_string();
-    let rename_target = final_target.clone();
-    crate::db::run({
-        let op = op.clone();
-        let remote_part = remote_part.clone();
-        async move { op.rename(&remote_part, &rename_target).await }
-    })
-    .await
-    .map_err(|error| {
-        remote(
-            &t!("s3_err.action_rename", from => remote_part.clone(), to => final_target.clone()),
-            error,
-        )
-    })?;
+    // part 与终点同前缀，必同桶 —— 两个 Operator 是同一个缓存项。
+    let (op, inner_final) = resolver.op_for(remote_target)?;
+    let final_label = inner_final.clone();
+    crate::db::run(async move { op.rename(&inner_part, &inner_final).await })
+        .await
+        .map_err(|error| {
+            remote(
+                &t!("s3_err.action_rename", from => remote_part.clone(), to => final_label.clone()),
+                error,
+            )
+        })?;
 
     let _ = ctx.progress.send(TransferEvent::Progress {
         id: ctx.id,
@@ -805,7 +1018,7 @@ async fn upload_single_file(
 
 /// 本地目录树 → 远端目录。
 async fn upload_folder(
-    op: Arc<opendal::Operator>,
+    resolver: Resolver,
     local_root: &Path,
     remote_root: &str,
     ctx: &PumpCtx<'_>,
@@ -815,8 +1028,8 @@ async fn upload_folder(
 
     for dir in &tree.dirs {
         let with_trailing = format!("{dir}/");
-        let op_mk = op.clone();
-        crate::db::run(async move { op_mk.create_dir(&with_trailing).await })
+        let (op, inner) = resolver.op_for(&with_trailing)?;
+        crate::db::run(async move { op.create_dir(&inner).await })
             .await
             .map_err(|error| {
                 remote(&t!("s3_err.action_create_dir", path => dir.clone()), error)
@@ -848,7 +1061,7 @@ async fn upload_folder(
 
     let agg = AtomicU64::new(0);
     stream::iter(tree.files.into_iter().enumerate())
-        .map(|(index, file)| upload_folder_file(op.clone(), file, index, total_bytes, &agg, ctx))
+        .map(|(index, file)| upload_folder_file(resolver.clone(), file, index, total_bytes, &agg, ctx))
         .buffer_unordered(FOLDER_CONCURRENCY)
         .try_collect::<()>()
         .await?;
@@ -858,7 +1071,7 @@ async fn upload_folder(
 
 /// 目录下的一个文件走与单文件同一份循环，额外按 `agg` 报整体进度。
 async fn upload_folder_file(
-    op: Arc<opendal::Operator>,
+    resolver: Resolver,
     file: LocalFile,
     index: usize,
     total: u64,
@@ -870,9 +1083,10 @@ async fn upload_folder_file(
     }
     let remote_part = format!("{}.part", file.remote);
     let local_label = file.local.to_string_lossy().into_owned();
+    let (op, inner_part) = resolver.op_for(&remote_part)?;
 
     let mut sink = op
-        .writer(&remote_part)
+        .writer(&inner_part)
         .await
         .map_err(|error| {
             remote(
@@ -926,27 +1140,23 @@ async fn upload_folder_file(
     let _ = source.shutdown().await;
 
     if moved != file.size {
-        let _ = op.delete(&remote_part).await.ok();
+        let _ = op.delete(&inner_part).await.ok();
         bail!(
             "{}",
             t!("sftp_err.upload_incomplete", moved => moved, total => file.size)
         );
     }
 
-    let final_target = file.remote.clone();
-    let rename_target = final_target.clone();
-    crate::db::run({
-        let op = op.clone();
-        let remote_part = remote_part.clone();
-        async move { op.rename(&remote_part, &rename_target).await }
-    })
-    .await
-    .map_err(|error| {
-        remote(
-            &t!("s3_err.action_rename", from => remote_part.clone(), to => final_target.clone()),
-            error,
-        )
-    })?;
+    let (op, inner_final) = resolver.op_for(&file.remote)?;
+    let final_label = inner_final.clone();
+    crate::db::run(async move { op.rename(&inner_part, &inner_final).await })
+        .await
+        .map_err(|error| {
+            remote(
+                &t!("s3_err.action_rename", from => remote_part.clone(), to => final_label.clone()),
+                error,
+            )
+        })?;
 
     let cumulative = agg.load(Ordering::Relaxed);
     let _ = ctx.progress.send(TransferEvent::Progress {
@@ -963,6 +1173,7 @@ async fn upload_folder_file(
 // ─── 目录树 walker ────────────────────────────────────────────────────────
 
 struct RemoteFile {
+    /// 面板路径（根模式下带桶名前缀）。
     remote: String,
     local: PathBuf,
     size: u64,
@@ -974,7 +1185,7 @@ struct RemoteTree {
 }
 
 async fn walk_remote(
-    op: Arc<opendal::Operator>,
+    resolver: Resolver,
     remote_root: &str,
     local_root: &Path,
 ) -> Result<RemoteTree> {
@@ -982,31 +1193,38 @@ async fn walk_remote(
     let mut dirs = Vec::new();
     let mut stack = vec![(path::normalize(remote_root), local_root.to_path_buf())];
 
-    while let Some((remote_dir, local_dir)) = stack.pop() {
+    while let Some((panel_dir, local_dir)) = stack.pop() {
         dirs.push(local_dir.clone());
-        let op2 = op.clone();
-        let list_dir = remote_dir.clone();
-        let entries = crate::db::run(async move { op2.list(&list_dir).await })
-            .await
-            .map_err(|error| {
-                remote(
-                    &t!("s3_err.action_read_dir", path => remote_dir.clone()),
-                    error,
-                )
-            })?;
+        let (op, inner, prefix) = resolver.scope_of(&panel_dir)?;
+        let label = panel_dir.clone();
+        let entries = crate::db::run({
+            let op = op.clone();
+            let inner = inner.clone();
+            async move { op.list(&inner).await }
+        })
+        .await
+        .map_err(|error| {
+            remote(
+                &t!("s3_err.action_read_dir", path => label.clone()),
+                error,
+            )
+        })?;
 
+        let base = inner.trim_end_matches('/');
         for entry in entries {
-            let full = entry.path().trim_end_matches('/').to_string();
+            let inner_full = with_leading_slash(entry.path());
+            let full = inner_full.trim_end_matches('/').to_string();
             let name = full.rsplit('/').next().unwrap_or_default().to_string();
-            if name.is_empty() || full == remote_dir.trim_end_matches('/') {
+            if name.is_empty() || full == base {
                 continue;
             }
             let metadata = entry.metadata();
             let local_path = local_dir.join(&name);
+            let panel = path::normalize(&format!("{prefix}{inner_full}"));
             match metadata.mode() {
-                EntryMode::DIR => stack.push((full, local_path)),
+                EntryMode::DIR => stack.push((panel, local_path)),
                 _ => files.push(RemoteFile {
-                    remote: full,
+                    remote: panel,
                     local: local_path,
                     size: metadata.content_length(),
                 }),
@@ -1116,7 +1334,11 @@ fn replace_with(temp: &Path, final_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 把错误包成"操作 + 对端原话"的一行。
+/// 把错误包成“操作 + 对端原话”的一行。
 fn remote(action: &str, error: opendal::Error) -> anyhow::Error {
     anyhow!(t!("s3_err.raw_error", action => action, error => error.to_string()))
 }
+
+#[cfg(test)]
+#[path = "../tests/service/s3_service.rs"]
+mod tests;

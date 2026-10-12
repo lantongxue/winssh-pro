@@ -77,6 +77,37 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 ## 调试规则
 禁止自启动截图调试，必须由人工手动验证
 
+## 测试规则
+
+单元测试一律外移到 `src/tests/`，不在源文件里写内联 `#[cfg(test)] mod tests { ... }`：
+
+- **目录镜像源码树**：`src/service/s3_service.rs` 的测试放 `src/tests/service/s3_service.rs`，
+  文件名与被测模块同名。`src/tests/` 只放测试，不放任何生产代码。
+- **源文件末尾用 `#[path]` 挂回**：
+  ```rust
+  #[cfg(test)]
+  #[path = "../tests/service/s3_service.rs"]
+  mod tests;
+  ```
+  平台限定的测试可以在 `cfg` 上加条件（如 `#[cfg(all(test, unix))]`，见 `src/serial/bridge.rs`）。
+- **禁止顶层 `tests/` 集成测试**：本仓库是纯 bin crate（无 `[lib]` 段），顶层集成测试
+  作为外部 crate 链接时看不到任何内部模块，且编译主 crate 不带 `cfg(test)`，
+  所有测试专用 API 会整个消失，直接编不过。
+- 测试体用 `use super::*;` 拿被测模块的私有项 —— 外移只是换文件，访问权限不变。
+
+写法上的几条：
+
+- **测试盯纯函数**：把可测的逻辑提炼成无副作用的纯函数（`path::normalize`、
+  `with_leading_slash` 那样），别为了测试去硬造第三方类型 —— 依赖库的构造器
+  常是 `pub(crate)`，外面造不出来。
+- **一个测试一个行为**，函数名蛇形描述行为（`root_mode_blocks_writes_at_root`），
+  不叫 `test_1`、`test_err`。
+- **线上踩过的坑要在断言旁留注释**：说清楚当时的事故关键词与原因
+  （如 OSS 粘段那两条），日后回归或重构的人才知道这条测试在守什么。
+- 异步测试用 `db::runtime().block_on(...)`（见 `src/tests/service/trusted_host_service.rs`）。
+- 环境敏感、容易随机器漂的测试标 `#[ignore]`，并在注释里记下当时的数
+  （`monitor::tests::frame_cost` 那样）。
+
 ## 命名规范
 
 术语跟着设计原型走，一个概念只用一个词：

@@ -98,7 +98,8 @@ fn default_backup_dir() -> String {
     "/winssh_backups".to_string()
 }
 
-/// S3 服务商预设定义。
+/// S3 服务商预设定义。端点 / Region / 寻址风格从 [`crate::s3::presets`] 那份
+/// 共享事实派生（两处不再各写一份），这里只补界面要的名字。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct S3Preset {
     pub id: &'static str,
@@ -108,43 +109,30 @@ pub struct S3Preset {
     pub path_style: bool,
 }
 
-/// 内置常见 S3 云厂商预设列表。
+use crate::s3::presets as s3_presets;
+use crate::s3::S3Addressing;
+
+const fn preset_of(
+    shared: &s3_presets::S3Preset,
+    name: &'static str,
+) -> S3Preset {
+    S3Preset {
+        id: shared.id,
+        name,
+        default_endpoint: shared.default_endpoint,
+        default_region: shared.default_region,
+        path_style: !matches!(shared.addressing, S3Addressing::VirtualHost),
+    }
+}
+
+/// 内置常见 S3 云厂商预设列表。id 与 [`crate::s3::presets`] 对齐 ——
+/// 备份页沿用的 "custom" 在主机表单那边拆成了 MinIO 与自定义两档。
 pub const S3_PRESETS: &[S3Preset] = &[
-    S3Preset {
-        id: "aws",
-        name: "Amazon S3",
-        default_endpoint: "https://s3.amazonaws.com",
-        default_region: "us-east-1",
-        path_style: false,
-    },
-    S3Preset {
-        id: "aliyun",
-        name: "阿里云 OSS",
-        default_endpoint: "https://oss-cn-hangzhou.aliyuncs.com",
-        default_region: "oss-cn-hangzhou",
-        path_style: false,
-    },
-    S3Preset {
-        id: "tencent",
-        name: "腾讯云 COS",
-        default_endpoint: "https://cos.ap-guangzhou.myqcloud.com",
-        default_region: "ap-guangzhou",
-        path_style: false,
-    },
-    S3Preset {
-        id: "qiniu",
-        name: "七牛云 Kodo",
-        default_endpoint: "https://s3.cn-east-1.qiniucs.com",
-        default_region: "cn-east-1",
-        path_style: false,
-    },
-    S3Preset {
-        id: "custom",
-        name: "自定义 / MinIO",
-        default_endpoint: "http://127.0.0.1:9000",
-        default_region: "auto",
-        path_style: true,
-    },
+    preset_of(&s3_presets::AWS, "Amazon S3"),
+    preset_of(&s3_presets::ALIYUN, "阿里云 OSS"),
+    preset_of(&s3_presets::TENCENT, "腾讯云 COS"),
+    preset_of(&s3_presets::QINIU, "七牛云 Kodo"),
+    preset_of(&s3_presets::MINIO, "自定义 / MinIO"),
 ];
 
 pub fn find_s3_preset(id: &str) -> Option<&'static S3Preset> {
@@ -469,10 +457,14 @@ pub fn build_operator(config: &BackupConfig) -> Result<Operator> {
                 builder = builder.endpoint(endpoint);
             }
 
-            let region = config.s3.region.trim();
-            if !region.is_empty() {
-                builder = builder.region(region);
-            }
+            // OpenDAL 的 builder 没有 region 会直接构建失败。预设的阿里云 /
+            // 腾讯云留空走端点推断，推不出的（自定义域名、MinIO）折回 us-east-1。
+            let region = match config.s3.region.trim() {
+                "" => crate::s3::infer_region(endpoint)
+                    .unwrap_or_else(|| "us-east-1".to_string()),
+                region => region.to_string(),
+            };
+            builder = builder.region(&region);
 
             let ak = config.s3.access_key_id.trim();
             if !ak.is_empty() {
