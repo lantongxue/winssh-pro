@@ -769,6 +769,9 @@ workspace.local_shell_tooltip:
 workspace.local_shell_a11y:
   en: Open local shell
   zh-CN: 打开本地 Shell
+workspace.local_shell_menu_tooltip:
+  en: Pick a shell to open
+  zh-CN: 选择要打开的 Shell
 
 # ── 命令面板 ─────────────────────────────────────────────────────────────
 palette.empty:
@@ -3745,6 +3748,15 @@ terminal.local_shell_numbered:
 terminal.local_platform:
   en: This machine
   zh-CN: 本机
+terminal.wsl_shell:
+  en: "WSL: %{distro}"
+  zh-CN: "WSL · %{distro}"
+terminal.wsl_shell_numbered:
+  en: "WSL: %{distro} %{index}"
+  zh-CN: "WSL · %{distro} %{index}"
+terminal.wsl_platform:
+  en: WSL
+  zh-CN: WSL
 terminal.close_session:
   en: Close session
   zh-CN: 关闭会话
@@ -3770,6 +3782,12 @@ terminal.banner_local_ready:
 terminal.local_shell_failed:
   en: "Local shell could not start: %{error}"
   zh-CN: 本地 Shell 启动失败：%{error}
+terminal.banner_wsl_ready:
+  en: WSL shell is ready.
+  zh-CN: WSL Shell 已就绪。
+terminal.wsl_shell_failed:
+  en: "WSL shell could not start: %{error}"
+  zh-CN: WSL Shell 启动失败：%{error}
 terminal.banner_connecting:
   en: Connecting over SSH…
   zh-CN: 正在通过 SSH 连接...

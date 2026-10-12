@@ -116,8 +116,11 @@ pub enum PaneOrigin {
     /// 在一条已经认证过的连接上再开一条 shell。分屏出来的窗格走这条 ——
     /// 用户要的是"同一台机器上的另一个 shell"，不是再登录一次。
     Share(SshSession),
-    /// 本机 PTY，不经过 SSH。
+    /// 本机 PTY，不经过 SSH。指了发行版就是那条 WSL（`wsl.exe -d`），
+    /// 没指是系统默认的登录 shell。
     Local,
+    /// 本机 PTY 里跑一个 WSL 发行版（`wsl.exe -d <发行版>`）。
+    Wsl(SharedString),
     /// 一个什么都不连的空终端。
     ///
     /// 只给测试用：本机 shell 会起一条真的 PTY 读线程，而 GPUI 的确定性测试
@@ -206,6 +209,7 @@ impl TerminalPane {
             };
             match origin {
                 PaneOrigin::Local => this.spawn_local(cx),
+                PaneOrigin::Wsl(distro) => this.spawn_wsl(&distro, cx),
                 PaneOrigin::Dial => this.dial(window, cx),
                 PaneOrigin::Share(session) => this.share(session, window, cx),
                 #[cfg(test)]
@@ -256,24 +260,56 @@ impl TerminalPane {
 
     /// 本机登录 shell，不经过 SSH。
     fn spawn_local(&mut self, cx: &mut Context<Self>) {
-        match Emulator::spawn(None, cx) {
+        self.spawn_on_pty(
+            None,
+            format!("{}@{}", self.host.user, self.host.hostname),
+            t!("terminal.banner_local_ready").to_string(),
+            |error| {
+                t!("terminal.local_shell_failed", error => error).to_string()
+            },
+            cx,
+        );
+    }
+
+    /// 本机 PTY 里跑一个 WSL 发行版（`wsl.exe -d <发行版>`），不经过 SSH。
+    ///
+    /// 对终端来说这仍是一条本机 PTY：ConPTY 把 `wsl.exe` 当普通控制台程序
+    /// 接上，里面的 Linux shell 只是它跑起来的东西。失败处理与
+    /// [`Self::spawn_local`] 同形。
+    fn spawn_wsl(&mut self, distro: &str, cx: &mut Context<Self>) {
+        self.spawn_on_pty(
+            Some(crate::terminal::wsl::shell(distro)),
+            format!("wsl.exe -d {distro}"),
+            t!("terminal.banner_wsl_ready").to_string(),
+            |error| t!("terminal.wsl_shell_failed", error => error).to_string(),
+            cx,
+        );
+    }
+
+    /// 开一条本机 PTY。`shell` 为 `None` 就是系统默认的登录 shell；横幅
+    /// 第二行括号里跟一句说明（本机是 `user@host`，WSL 那档是命令行）。
+    fn spawn_on_pty(
+        &mut self,
+        shell: Option<alacritty_terminal::tty::Shell>,
+        detail: String,
+        ready: String,
+        on_failed: impl Fn(String) -> String,
+        cx: &mut Context<Self>,
+    ) {
+        match Emulator::spawn_with(None, shell, cx) {
             Ok(emulator) => {
                 self.attach_emulator(&emulator, cx);
                 let banner = format!(
-                    "\x1b[32m◆ {}\x1b[0m（{}@{}）\r\n\x1b[90m{}\x1b[0m\r\n\r\n",
+                    "\x1b[32m◆ {}\x1b[0m（{}）\r\n\x1b[90m{}\x1b[0m\r\n\r\n",
                     self.host.name,
-                    self.host.user,
-                    self.host.hostname,
-                    t!("terminal.banner_local_ready"),
+                    detail,
+                    ready,
                 );
                 emulator.update(cx, |em, cx| em.write_output(banner.as_bytes(), cx));
                 self.emulator = Some(emulator);
             }
             Err(error) => {
-                self.error = Some(SharedString::from(t!(
-                    "terminal.local_shell_failed",
-                    error => format!("{error:#}"),
-                )));
+                self.error = Some(SharedString::from(on_failed(format!("{error:#}"))));
             }
         }
     }

@@ -121,12 +121,15 @@ const SFTP_MIN_HEIGHT: gpui_kit::Pixels = px(120.);
 const SFTP_MAX_HEIGHT: gpui_kit::Pixels = px(560.);
 
 /// 这个标签页的终端从哪儿拿字节。分屏出来的第二个窗格要照着第一个开。
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum Source {
     /// SSH：第一个窗格拨号，之后的在同一条连接上开 shell。
     Ssh,
-    /// 本机 PTY。
+    /// 本机 PTY，系统默认的登录 shell。
     Local,
+    /// 本机 PTY 里跑一条 WSL 发行版。名字随标签页带着，分屏出来的
+    /// 第二个窗格好开同一条发行版。
+    Wsl(SharedString),
     /// 空终端，什么都不连。只在测试里用，理由见 [`PaneOrigin::Detached`]。
     #[cfg(test)]
     Detached,
@@ -141,15 +144,55 @@ impl Source {
     /// 脚本。本机 shell 没有连接可开，所以那三颗不画（点不动的控件比没有
     /// 更让人困惑），三个动作也不注册：Alt+P/F/M 照旧作为转义序列进本机
     /// shell，那才是本机 shell 里该有的行为。
-    fn over_ssh(self) -> bool {
+    fn over_ssh(&self) -> bool {
         match self {
             Self::Ssh => true,
-            Self::Local => false,
+            Self::Local | Self::Wsl(_) => false,
             // 测试里那个壳按 SSH 会话算：整帧渲染那个测试要能走到那三颗按钮，
             // 它们各自都还有点亮/不点亮两条分支。
             #[cfg(test)]
             Self::Detached => true,
         }
+    }
+}
+
+/// 本机 Shell 与 WSL 那两档的会话计数器：标签名第二条起带序号就靠它，
+/// 两个入口共用一份，先后开的次序才是真的。
+fn session_counter() -> usize {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(1);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+/// 摆样子的主机记录：本机 Shell 与 WSL 那两档的 `Host` 只用于展示
+/// （名字、地址、状态栏读数），背后根本没有连接，内容全是占位。
+fn display_host(id: String, name: SharedString, platform: SharedString) -> Host {
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "local".to_string());
+    Host {
+        id: id.into(),
+        name,
+        kind: crate::host::HostKind::Ssh,
+        user: user.into(),
+        hostname: "localhost".into(),
+        port: 22,
+        platform,
+        auth_method: crate::host::AuthMethod::Password,
+        password: "".into(),
+        key_content: "".into(),
+        key_passphrase: "".into(),
+        jump_host_id: None,
+        monitor_intervals: crate::host::MonitorIntervals::default(),
+        forwards: Vec::new(),
+        tags: Vec::new(),
+        proxy: Default::default(),
+        vnc: Default::default(),
+        rdp: Default::default(),
+        serial: Default::default(),
+        easytier: Default::default(),
+        s3: Default::default(),
+        shell_integration: false,
     }
 }
 
@@ -230,43 +273,35 @@ impl TerminalPanel {
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
-        let counter = {
-            use std::sync::atomic::{AtomicUsize, Ordering};
-            static LOCAL_COUNTER: AtomicUsize = AtomicUsize::new(1);
-            LOCAL_COUNTER.fetch_add(1, Ordering::Relaxed)
-        };
-        let user = std::env::var("USER")
-            .or_else(|_| std::env::var("USERNAME"))
-            .unwrap_or_else(|_| "local".to_string());
+        let counter = session_counter();
         let name: SharedString = match counter {
             1 => t!("terminal.local_shell").into(),
             index => t!("terminal.local_shell_numbered", index => index).into(),
         };
-        let host = Host {
-            id: SharedString::from(format!("local-{counter}")),
-            name,
-            kind: crate::host::HostKind::Ssh,
-            user: SharedString::from(user),
-            hostname: SharedString::from("localhost"),
-            port: 22,
-            platform: t!("terminal.local_platform").into(),
-            auth_method: crate::host::AuthMethod::Password,
-            password: "".into(),
-            key_content: "".into(),
-            key_passphrase: "".into(),
-            jump_host_id: None,
-            monitor_intervals: crate::host::MonitorIntervals::default(),
-            forwards: Vec::new(),
-            tags: Vec::new(),
-            proxy: Default::default(),
-            vnc: Default::default(),
-            rdp: Default::default(),
-            serial: Default::default(),
-            easytier: Default::default(),
-            s3: Default::default(),
-            shell_integration: false,
-        };
+        let host = display_host(format!("local-{counter}"), name, t!("terminal.local_platform").into());
         Self::build(host, Source::Local, None, dock_area, window, cx)
+    }
+
+    /// 在本机 PTY 里开一条 WSL 发行版的 shell（`wsl.exe -d <发行版>`），
+    /// 不经过 SSH。
+    ///
+    /// 用于标题栏下拉里的 WSL 条目，与 [`Self::new_local`] 同一张脸：
+    /// `Host` 仅用于展示，字节源是 [`crate::terminal::Emulator::spawn_with`]
+    /// 的本机 PTY，只是里面跑的是 `wsl.exe`。
+    pub fn new_wsl(
+        distro: impl Into<SharedString>,
+        dock_area: WeakEntity<DockArea>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        let distro = distro.into();
+        let counter = session_counter();
+        let name: SharedString = match counter {
+            1 => t!("terminal.wsl_shell", distro => distro.clone()).into(),
+            index => t!("terminal.wsl_shell_numbered", distro => distro.clone(), index => index).into(),
+        };
+        let host = display_host(format!("wsl-{counter}"), name, t!("terminal.wsl_platform").into());
+        Self::build(host, Source::Wsl(distro), None, dock_area, window, cx)
     }
 
     /// 只在测试里用：窗格拿一个不连任何东西的空终端。理由见
@@ -318,10 +353,12 @@ impl TerminalPanel {
         cx.new(|cx| {
             let monitor_panel = MonitorPanel::new(host.clone(), hosts.clone(), window, cx);
             let sftp_panel = SftpPanel::new(host.clone(), window, cx);
-            // 第一个窗格没有连接可借，SSH 那一档只能自己拨号。
-            let origin = match source {
+            // 第一个窗格没有连接可借，SSH 那一档只能自己拨号；本机与 WSL
+            // 那两档在 [`PaneOrigin`] 里各自带话。
+            let origin = match &source {
                 Source::Ssh => PaneOrigin::Dial,
                 Source::Local => PaneOrigin::Local,
+                Source::Wsl(distro) => PaneOrigin::Wsl(distro.clone()),
                 #[cfg(test)]
                 Source::Detached => PaneOrigin::Detached,
             };
@@ -517,8 +554,9 @@ impl TerminalPanel {
     /// 便宜也最准确的做法。还没连上（正在拨号）或者第一个窗格已经回退到本机时，
     /// 才各自去开：让第二个窗格悄悄变成本机 shell 是答非所问，而且看不出来。
     fn pane_origin(&self) -> PaneOrigin {
-        match self.source {
+        match &self.source {
             Source::Local => PaneOrigin::Local,
+            Source::Wsl(distro) => PaneOrigin::Wsl(distro.clone()),
             #[cfg(test)]
             Source::Detached => PaneOrigin::Detached,
             Source::Ssh => match self.ssh.clone() {

@@ -467,6 +467,17 @@ impl Emulator {
     /// 对终端来说，SSH 通道和本机 PTY 都只是一条双向字节流，从通道里读到的字节走
     /// [`Emulator::write_output`]。
     pub fn spawn(working_directory: Option<PathBuf>, cx: &mut App) -> Result<Entity<Self>> {
+        Self::spawn_with(working_directory, None, cx)
+    }
+
+    /// 同 [`Self::spawn`]，只是给 PTY 指定了要跑的程序（如 `wsl.exe -d Ubuntu`）。
+    ///
+    /// `shell` 为 `None` 时就是系统默认的登录 shell，与 [`Self::spawn`] 全同。
+    pub fn spawn_with(
+        working_directory: Option<PathBuf>,
+        shell: Option<tty::Shell>,
+        cx: &mut App,
+    ) -> Result<Entity<Self>> {
         let bounds = TerminalBounds::default();
         let (events_tx, events_rx) = mpsc::unbounded();
 
@@ -483,8 +494,7 @@ impl Emulator {
         )));
 
         let options = tty::Options {
-            // `None` = 系统默认的登录 shell。
-            shell: None,
+            shell,
             working_directory,
             drain_on_exit: true,
             env: child_env(),

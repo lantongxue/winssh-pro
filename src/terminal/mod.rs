@@ -26,6 +26,7 @@ pub mod scheme;
 mod search;
 mod semantic;
 pub mod shell_integration;
+pub mod wsl;
 
 pub use emulator::{
     Content, Emulator, EmulatorEvent, GridCell, GridPoint, TerminalBounds, is_default_background,

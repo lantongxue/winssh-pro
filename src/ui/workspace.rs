@@ -16,10 +16,11 @@ use gpui_fps::fps_monitor;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, ResizableState, Root, Sizable as _, StyledExt as _, TitleBar,
     WindowExt as _,
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonVariants as _, DropdownButton},
     dock::{DockArea, DockLayout, DockPlacement, DockSkin, PanelStyle, panel_handle},
     h_flex, h_resizable,
     kbd::Kbd,
+    menu::PopupMenuItem,
     resizable_panel,
 };
 use gpui_kit::{
@@ -119,6 +120,10 @@ pub struct Workspace {
     desktop_fullscreen_owns_window: bool,
     /// 至少观察到一次原生全屏，才能把后续的退出事件当成用户主动退出。
     desktop_fullscreen_native_seen: bool,
+    /// 已探测到的 WSL 发行版。`None` 是还没探完（探测在后台跑，见
+    /// [`Self::new`]），空表是这台机器上没有 —— 标题栏那颗按钮只在非空时
+    /// 才换成分裂钮，底下挂着发行版下拉。
+    wsl_distros: Option<Vec<String>>,
     _skin: Rc<DockSkin>,
 }
 
@@ -298,6 +303,23 @@ impl Workspace {
             area.toggle_dock(DockPlacement::Right, window, cx);
         });
 
+        // WSL 发行版探测放后台：`wsl.exe --list` 要起一个子进程，慢的话
+        // 几百毫秒，堵在开窗这一帧不值得。探完（多半是空表）回来把标题栏
+        // 那颗 Shell 按钮换成带下拉的分裂钮；没有 WSL 就还是原样。
+        cx.spawn_in(window, async move |workspace, cx| {
+            let distros = cx
+                .background_executor()
+                .spawn(async { crate::terminal::wsl::probe_distros() })
+                .await;
+            workspace
+                .update(cx, |this, cx| {
+                    this.wsl_distros = Some(distros);
+                    cx.notify();
+                })
+                .ok();
+        })
+        .detach();
+
         Self {
             dock_area,
             focus_handle,
@@ -313,6 +335,7 @@ impl Workspace {
             desktop_fullscreen: None,
             desktop_fullscreen_owns_window: false,
             desktop_fullscreen_native_seen: false,
+            wsl_distros: None,
             _skin: skin,
         }
     }
@@ -469,6 +492,14 @@ impl Workspace {
         });
     }
 
+    /// 在中心区开一条 WSL 发行版的 shell（标题栏下拉里选的那条）。
+    fn open_wsl_shell(&mut self, distro: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = TerminalPanel::new_wsl(distro, self.dock_area.downgrade(), window, cx);
+        _ = self.dock_area.update(cx, |area, cx| {
+            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+        });
+    }
+
     fn on_open_local_shell(
         &mut self,
         _: &OpenLocalShell,
@@ -543,20 +574,71 @@ impl Workspace {
                                 this.open_command_palette(window, cx);
                             })),
                     )
-                    .child(
-                        Button::new("title-bar-local-shell")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(AppIcon::Terminal))
-                            .label(t!("workspace.local_shell"))
-                            .tooltip(t!("workspace.local_shell_tooltip"))
-                            .accessibility_id(t!("workspace.local_shell_a11y"))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_local_shell(window, cx);
-                            })),
-                    ),
+                    .child(self.render_shell_button(cx)),
             )
             .child(h_flex().flex_1().min_w_0().pr(WINDOW_CONTROLS_INSET))
+    }
+
+    /// 标题栏那颗 Shell 钮。
+    ///
+    /// 机器上有 WSL 发行版时是一颗分裂钮：左半边照旧一键开本地 Shell，
+    /// 右侧 caret 拉开一列 —— 首项仍是本地 Shell，隔一条分隔线，底下每个
+    /// WSL 发行版各占一项，点哪条进哪条。没有 WSL（或还没探完）就是原来
+    /// 的独粒按钮，不多出那个 caret。
+    fn render_shell_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let button = Button::new("title-bar-local-shell")
+            .ghost()
+            .small()
+            .icon(Icon::new(AppIcon::Terminal))
+            .label(t!("workspace.local_shell"))
+            .tooltip(t!("workspace.local_shell_tooltip"))
+            .accessibility_id(t!("workspace.local_shell_a11y"))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.open_local_shell(window, cx);
+            }));
+
+        // `self` 的引用进不了 'static 的菜单构建器，发行版表拿一份自己的。
+        let Some(distros) = self
+            .wsl_distros
+            .clone()
+            .filter(|distros| !distros.is_empty())
+        else {
+            return button.into_any_element();
+        };
+
+        let workspace = cx.weak_entity();
+        DropdownButton::new("title-bar-shell-split")
+            .button(button)
+            .menu_accessibility_label(t!("workspace.local_shell_menu_tooltip"))
+            .dropdown_menu_with_anchor(Anchor::TopLeft, move |mut menu, _, _| {
+                let shell_menu = workspace.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(t!("workspace.local_shell"))
+                        .icon(Icon::new(AppIcon::Terminal))
+                        .on_click(move |_, window, cx| {
+                            shell_menu
+                                .update(cx, |this, cx| this.open_local_shell(window, cx))
+                                .ok();
+                        }),
+                );
+                menu = menu.separator();
+                for distro in &distros {
+                    let distro_menu = workspace.clone();
+                    let distro = distro.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(t!("terminal.wsl_shell", distro => distro))
+                            .on_click(move |_, window, cx| {
+                                distro_menu
+                                    .update(cx, |this, cx| {
+                                        this.open_wsl_shell(&distro, window, cx)
+                                    })
+                                    .ok();
+                            }),
+                    );
+                }
+                menu
+            })
+            .into_any_element()
     }
 
     /// 侧边栏当前那个视图。三个视图都常驻一个 `Entity`，切换只换渲染的那一个。
