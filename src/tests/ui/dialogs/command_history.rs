@@ -10,6 +10,7 @@
             easytier: Default::default(),
             s3: Default::default(),
             ftp: Default::default(),
+            webdav: Default::default(),
             kind: crate::host::HostKind::Ssh,
             id: "prod-k8s".into(),
             name: "Prod-K8s-Master-01".into(),

@@ -151,6 +151,7 @@
             easytier: Default::default(),
             s3: Default::default(),
             ftp: Default::default(),
+            webdav: Default::default(),
             shell_integration: false,
         };
         let config = connector_config(&host, desktop, &host.rdp);

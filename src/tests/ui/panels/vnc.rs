@@ -60,6 +60,7 @@
                     easytier: Default::default(),
                     s3: Default::default(),
                     ftp: Default::default(),
+                    webdav: Default::default(),
                     shell_integration: false,
                 },
                 phase: VncPhase::Live,

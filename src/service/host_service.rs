@@ -119,6 +119,7 @@ impl HostService {
                         easytier_settings: Set(crate::easytier::encode(&draft.easytier)),
                         s3_settings: Set(crate::s3::encode(&draft.s3)),
                         ftp_settings: Set(crate::ftp::encode(&draft.ftp)),
+                        webdav_settings: Set(crate::webdav::encode(&draft.webdav)),
                         // shell 集成同理不在表单里，新主机一律不装 ——
                         // 往对端打字这件事只能由用户自己在命令历史那扇窗里开
                         // （[`Self::update_shell_integration`]）。
@@ -151,6 +152,7 @@ impl HostService {
                 easytier: draft.easytier,
                 s3: draft.s3,
                 ftp: draft.ftp,
+                webdav: draft.webdav,
                 shell_integration: false,
             })
         })
@@ -199,6 +201,7 @@ impl HostService {
                         easytier_settings: Set(crate::easytier::encode(&draft.easytier)),
                         s3_settings: Set(crate::s3::encode(&draft.s3)),
                         ftp_settings: Set(crate::ftp::encode(&draft.ftp)),
+                        webdav_settings: Set(crate::webdav::encode(&draft.webdav)),
                     },
                 )
                 .await;
@@ -301,6 +304,7 @@ impl HostService {
                         easytier_settings: Set(source.easytier_settings.clone()),
                         s3_settings: Set(source.s3_settings.clone()),
                         ftp_settings: Set(source.ftp_settings.clone()),
+                        webdav_settings: Set(source.webdav_settings.clone()),
                         shell_integration: Set(source.shell_integration),
                     },
                 )
@@ -334,6 +338,7 @@ impl HostService {
                 easytier: crate::easytier::decode(&source.easytier_settings),
                 s3: crate::s3::decode(&source.s3_settings),
                 ftp: crate::ftp::decode(&source.ftp_settings),
+                webdav: crate::webdav::decode(&source.webdav_settings),
                 shell_integration: source.shell_integration,
             })
         })
@@ -498,6 +503,7 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                     easytier: crate::easytier::decode(&host.easytier_settings),
                     s3: crate::s3::decode(&host.s3_settings),
                     ftp: crate::ftp::decode(&host.ftp_settings),
+                    webdav: crate::webdav::decode(&host.webdav_settings),
                     shell_integration: host.shell_integration,
                 })
                 .collect(),

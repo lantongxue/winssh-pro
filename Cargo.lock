@@ -868,12 +868,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "asyncband"
-version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2d85fd3d291fabcc40c7232c92c280ec1754fd7b5d7ea769f143222143e179a"
-
-[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1062,17 +1056,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f38493193e45cb4788ee7d479ee94a0a56721ccd28de79bbd0227bb8c11fee3"
 dependencies = [
  "thiserror 2.0.20",
-]
-
-[[package]]
-name = "backon"
-version = "1.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
-dependencies = [
- "fastrand",
- "gloo-timers 0.3.0",
- "tokio",
 ]
 
 [[package]]
@@ -2704,6 +2687,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "digest_auth"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3054f4e81d395e50822796c5e99ca522e6ba7be98947d6d4b0e5e61640bdb894"
+dependencies = [
+ "digest 0.10.7",
+ "hex",
+ "md-5 0.10.6",
+ "rand 0.8.8",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "dirs"
 version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3863,7 +3859,7 @@ version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
 dependencies = [
- "gloo-timers 0.4.0",
+ "gloo-timers",
  "send_wrapper",
 ]
 
@@ -4072,18 +4068,6 @@ dependencies = [
  "bitflags 2.13.2",
  "ignore",
  "walkdir",
-]
-
-[[package]]
-name = "gloo-timers"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
-dependencies = [
- "futures-channel",
- "futures-core",
- "js-sys",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -5506,6 +5490,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6231,14 +6221,10 @@ dependencies = [
  "defmt",
  "jiff-core",
  "jiff-static",
- "jiff-tzdb-platform",
- "js-sys",
  "log",
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "wasm-bindgen",
- "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -6261,21 +6247,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "jiff-tzdb"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "142bd39932ad231f10513df9ab62661fead8719872150b7ad02a2df79f4e141e"
-
-[[package]]
-name = "jiff-tzdb-platform"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8"
-dependencies = [
- "jiff-tzdb",
 ]
 
 [[package]]
@@ -7977,119 +7948,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "opendal"
-version = "0.59.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fe43e16d96bed57937eb7c4a28559bf4c5fc4a3951656505d1fdd4f856349b4"
-dependencies = [
- "ctor",
- "opendal-core",
- "opendal-http-transport-reqwest",
- "opendal-layer-concurrent-limit",
- "opendal-layer-logging",
- "opendal-layer-retry",
- "opendal-layer-timeout",
- "opendal-service-webdav",
-]
-
-[[package]]
-name = "opendal-core"
-version = "0.59.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de4566a412776e3f65d53dd9fceced5b432a0a9c9a1e8d50ccf58823795e5c5b"
-dependencies = [
- "anyhow",
- "asyncband",
- "base64 0.23.1",
- "bytes",
- "futures",
- "http",
- "jiff",
- "log",
- "md-5 0.11.0",
- "percent-encoding",
- "quick-xml 0.41.0",
- "serde",
- "serde_json",
- "tokio",
- "url",
- "uuid",
- "web-time",
-]
-
-[[package]]
-name = "opendal-http-transport-reqwest"
-version = "0.59.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f772ce6c137ab43647726116d505a649a88d41928fcd813438eb30b02312bcbb"
-dependencies = [
- "bytes",
- "futures",
- "http",
- "http-body",
- "opendal-core",
- "reqwest 0.13.5",
-]
-
-[[package]]
-name = "opendal-layer-concurrent-limit"
-version = "0.59.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3734c648617e5ad724d49175dde8323550624f9614f50e9e81b7aafae30b1734"
-dependencies = [
- "asyncband",
- "futures",
- "http",
- "opendal-core",
-]
-
-[[package]]
-name = "opendal-layer-logging"
-version = "0.59.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a8daab5a91eac76f94516e7c71e677195c9221840ce8f5e71815e3fc8207742"
-dependencies = [
- "log",
- "opendal-core",
-]
-
-[[package]]
-name = "opendal-layer-retry"
-version = "0.59.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb8e22cb1f86ef9af771a8947d3ccf380c8f5b76236f628314dd41c9ba73331a"
-dependencies = [
- "backon",
- "log",
- "opendal-core",
-]
-
-[[package]]
-name = "opendal-layer-timeout"
-version = "0.59.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08ac6c77fe0d1b18e0064a02c19b98dbebcab78bf5e7753ad1f3abbc18850ff4"
-dependencies = [
- "opendal-core",
- "tokio",
-]
-
-[[package]]
-name = "opendal-service-webdav"
-version = "0.59.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7806923cde4f05eadbf176f59a5d21bf3bfcaac62d8ce1d4b698d9aebfd27a0c"
-dependencies = [
- "anyhow",
- "bytes",
- "http",
- "log",
- "opendal-core",
- "quick-xml 0.41.0",
- "serde",
-]
-
-[[package]]
 name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9661,6 +9519,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -9673,6 +9532,26 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams 0.5.0",
  "web-sys",
+]
+
+[[package]]
+name = "reqwest_dav"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b644ce99d853a5f53cef7a9226371f571cf9e63504e396346c4e563defa753"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "digest_auth",
+ "http",
+ "httpdate",
+ "reqwest 0.13.5",
+ "serde",
+ "serde-xml-rs",
+ "serde_derive",
+ "serde_json",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -9949,7 +9828,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap",
- "gloo-timers 0.4.0",
+ "gloo-timers",
  "log",
  "serde",
  "serde_bytes",
@@ -10695,6 +10574,18 @@ dependencies = [
  "serde_core",
  "smallvec",
  "zmij",
+]
+
+[[package]]
+name = "serde-xml-rs"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb3aa78ecda1ebc9ec9847d5d3aba7d618823446a049ba2491940506da6e2782"
+dependencies = [
+ "log",
+ "serde",
+ "thiserror 1.0.69",
+ "xml-rs",
 ]
 
 [[package]]
@@ -14587,6 +14478,7 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "base64 0.22.1",
+ "bytes",
  "chrono",
  "cidr",
  "dirs 6.0.0",
@@ -14604,11 +14496,12 @@ dependencies = [
  "ironrdp-tls",
  "ironrdp-tokio",
  "log",
- "opendal",
  "pbkdf2 0.13.0",
+ "percent-encoding",
  "rand 0.10.3",
  "reqwest 0.12.28",
  "reqwest 0.13.5",
+ "reqwest_dav",
  "rig-agent",
  "rig-core",
  "russh",

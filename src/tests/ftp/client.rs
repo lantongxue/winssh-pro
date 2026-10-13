@@ -93,6 +93,7 @@
             easytier: Default::default(),
             s3: Default::default(),
             ftp: crate::ftp::FtpSettings { security },
+            webdav: Default::default(),
             shell_integration: false,
         }
     }

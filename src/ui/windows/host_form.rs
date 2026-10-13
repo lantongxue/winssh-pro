@@ -55,6 +55,7 @@ use crate::{
         SerialSettings, SerialStopBits,
     },
     service::{HostService, LocalFileService, SerialService, SshService},
+    webdav::{AuthMode, WebdavSettings},
     ui::{
         theme::{AppIcon, appearance, palette},
         views::HostExplorerView,
@@ -203,6 +204,25 @@ fn ftp_security_choices() -> Vec<SharedString> {
             FtpSecurity::Implicit => t!("host_form.ftp_security_implicit").into(),
         })
         .to_vec()
+}
+
+/// WebDAV 认证方式的下拉行，顺序即 [`AuthMode::ALL`]。
+fn webdav_auth_choices() -> Vec<SharedString> {
+    AuthMode::ALL
+        .map(|auth| match auth {
+            AuthMode::Auto => t!("host_form.webdav_auth_auto").into(),
+            AuthMode::Basic => t!("host_form.webdav_auth_basic").into(),
+            AuthMode::Digest => t!("host_form.webdav_auth_digest").into(),
+        })
+        .to_vec()
+}
+
+/// "跳过证书校验"那一格：开 / 关两档，顺序固定 —— 0 是开。
+fn webdav_insecure_choices() -> Vec<SharedString> {
+    vec![
+        t!("host_form.webdav_insecure_on").into(),
+        t!("host_form.webdav_insecure_off").into(),
+    ]
 }
 
 /// 端口那一格读回来：空着就是这一档的出厂端口，敲了个非数字就是 0 ——
@@ -423,6 +443,11 @@ pub struct HostForm {
     /// 下拉上一次停在哪一档。换档时要知道"从哪档换过来"，才判断得出端口
     /// 是不是还停在上一档的惯例端口上（见 [`crate::ftp::port_after_switch`]）。
     ftp_security_last: FtpSecurity,
+    /// WebDAV 那一页：认证方式一个下拉、根目录一个输入框，外加"跳过证书校验"
+    /// 那个开关（见 [`WebdavSettings::allow_invalid_certs`]）。
+    webdav_auth: Entity<SelectState<Vec<SharedString>>>,
+    webdav_root: Entity<InputState>,
+    webdav_insecure: Entity<SelectState<Vec<SharedString>>>,
     proxy_jump: Entity<SelectState<Vec<SharedString>>>,
     /// 走不走 SOCKS5 代理：不使用 / 跟随全局 / 配置代理，见 [`proxy_modes`]。
     ///
@@ -961,6 +986,36 @@ impl HostForm {
         )
         .detach();
 
+        let initial_webdav = match editing {
+            Some((host, _)) => host.webdav.clone(),
+            None => WebdavSettings::default(),
+        };
+        let webdav_auth = cx.new(|cx| {
+            SelectState::new(
+                webdav_auth_choices(),
+                Some(IndexPath::new(initial_webdav.auth.index())),
+                window,
+                cx,
+            )
+        });
+        let webdav_root = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("host_form.webdav_root_placeholder"))
+                .default_value(initial_webdav.root.clone())
+        });
+        let webdav_insecure = cx.new(|cx| {
+            let index = match initial_webdav.allow_invalid_certs {
+                true => 0,
+                false => 1,
+            };
+            SelectState::new(
+                webdav_insecure_choices(),
+                Some(IndexPath::new(index)),
+                window,
+                cx,
+            )
+        });
+
         let kind = cx.new(|cx| {
             SelectState::new(
                 host_kinds(),
@@ -1111,6 +1166,9 @@ impl HostForm {
             s3_region,
             ftp_security,
             ftp_security_last,
+            webdav_auth,
+            webdav_root,
+            webdav_insecure,
             proxy_jump,
             proxy_mode,
             proxy_host,
@@ -1258,8 +1316,10 @@ impl HostForm {
     /// 卡片直接从 `kind` 画成一枚徽标，跟着换型走，不会因为复制、改档而对不上。
     fn default_tags(kind: HostKind) -> Vec<SharedString> {
         match kind {
-            // 独立 SFTP / FTP / S3 和 SSH 一样，多半对着一台 Linux 机器。
-            HostKind::Ssh | HostKind::Sftp | HostKind::Ftp | HostKind::S3 => vec!["Linux".into()],
+            // 独立 SFTP / FTP / S3 / WebDAV 和 SSH 一样，多半对着一台 Linux 机器。
+            HostKind::Ssh | HostKind::Sftp | HostKind::Ftp | HostKind::S3 | HostKind::Webdav => {
+                vec!["Linux".into()]
+            }
             HostKind::Vnc => vec![],
             HostKind::Rdp => vec!["Windows".into()],
             // Telnet 常见于老式内网设备（路由器、交换机、BBS）；不给一个
@@ -1376,6 +1436,28 @@ impl HostForm {
             .unwrap_or_default();
         FtpSettings {
             security: FtpSecurity::from_index(row),
+        }
+    }
+
+    /// WebDAV 那一页现在的样子折回一份 [`WebdavSettings`]。认证方式与"跳过
+    /// 证书校验"都按下标折回，不比文案。
+    fn selected_webdav(&self, cx: &App) -> WebdavSettings {
+        let auth = self
+            .webdav_auth
+            .read(cx)
+            .selected_index(cx)
+            .map(|index| index.row)
+            .unwrap_or_default();
+        let insecure = self
+            .webdav_insecure
+            .read(cx)
+            .selected_index(cx)
+            .map(|index| index.row)
+            .unwrap_or_default();
+        WebdavSettings {
+            auth: AuthMode::from_index(auth),
+            root: self.webdav_root.read(cx).value().trim().to_string(),
+            allow_invalid_certs: insecure == 0,
         }
     }
 
@@ -1508,7 +1590,12 @@ impl HostForm {
         };
         let requires_user = matches!(
             kind,
-            HostKind::Ssh | HostKind::Sftp | HostKind::Rdp | HostKind::Ftp | HostKind::S3
+            HostKind::Ssh
+                | HostKind::Sftp
+                | HostKind::Rdp
+                | HostKind::Ftp
+                | HostKind::S3
+                | HostKind::Webdav
         );
         if name.is_empty() || hostname.is_empty() || (requires_user && username.is_empty()) {
             return Err(t!("host_form.required_fields").into());
@@ -1555,6 +1642,7 @@ impl HostForm {
                 kind,
                 HostKind::Telnet | HostKind::Serial | HostKind::EasyTier | HostKind::Ftp
                     | HostKind::S3
+                    | HostKind::Webdav
             ) {
             AuthMethod::Password
         } else {
@@ -1624,6 +1712,7 @@ impl HostForm {
                 easytier,
                 s3: self.selected_s3(cx),
                 ftp: self.selected_ftp(cx),
+                webdav: self.selected_webdav(cx),
             },
         ))
     }
@@ -1780,6 +1869,16 @@ impl HostForm {
                 )
                 .into_any_element();
             }
+            // WebDAV 同理：地址就是那条 URL（`https://dav.jianguoyun.com/dav/`），
+            // 协议与端口都在里面，不再单独给一格端口。
+            HostKind::Webdav => {
+                return field(
+                    t!("host_form.field_webdav_url").into(),
+                    Input::new(&self.hostname).font_family("monospace").w_full(),
+                    cx,
+                )
+                .into_any_element();
+            }
             _ => {}
         }
         two_field_row(
@@ -1844,7 +1943,10 @@ impl HostForm {
             .into_any_element();
         }
         if kind.is_remote_desktop()
-            || matches!(kind, HostKind::Telnet | HostKind::Serial | HostKind::Ftp)
+            || matches!(
+                kind,
+                HostKind::Telnet | HostKind::Serial | HostKind::Ftp | HostKind::Webdav
+            )
         {
             return field(
                 t!("host_form.field_username").into(),
@@ -1884,7 +1986,10 @@ impl HostForm {
         // Telnet / 串口的"密码"只是对端 login 提示要打的备忘；FTP 是真的拿它当
         // 认证；S3 同理 —— Secret Access Key 即认证。几种都只有"账号 + 密码"这一档，
         // 恒等于密码格。
-        if matches!(kind, HostKind::Telnet | HostKind::Serial | HostKind::Ftp | HostKind::S3) {
+        if matches!(
+            kind,
+            HostKind::Telnet | HostKind::Serial | HostKind::Ftp | HostKind::S3 | HostKind::Webdav
+        ) {
             return Some(self.render_password_section(cx).into_any_element());
         }
         if kind == HostKind::Rdp {
@@ -2256,6 +2361,44 @@ impl HostForm {
                     .text_xs()
                     .text_color(palette::idle(cx))
                     .child(SharedString::from(t!("host_form.s3_hint"))),
+            )
+    }
+
+    /// WebDAV 那一页：认证方式、根目录，以及"跳过证书校验"那个开关。
+    ///
+    /// 端点在「连接」页那一格（它就是这个主机的"地址"），账号密码在「认证」页；
+    /// 这里只放 WebDAV 独有的三样。根目录是"从端点的哪个位置开始算面板的根"，
+    /// 留空就落在端点上（端点的路径部分仍然算数，见 [`crate::webdav::client`]）。
+    fn render_webdav_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_3()
+            .w_full()
+            .child(two_field_row(
+                field(
+                    t!("host_form.field_webdav_auth").into(),
+                    Select::new(&self.webdav_auth).w_full(),
+                    cx,
+                ),
+                1.,
+                field(
+                    t!("host_form.field_webdav_root").into(),
+                    Input::new(&self.webdav_root)
+                        .font_family("monospace")
+                        .w_full(),
+                    cx,
+                ),
+                1.,
+            ))
+            .child(field(
+                t!("host_form.field_webdav_insecure").into(),
+                Select::new(&self.webdav_insecure).w_full(),
+                cx,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(t!("host_form.webdav_hint"))),
             )
     }
 
@@ -2904,6 +3047,7 @@ impl HostFormWindow {
             HostKind::EasyTier => settings.page(self.easytier_page()),
             HostKind::S3 => settings.page(self.s3_page()),
             HostKind::Ftp => settings.page(self.ftp_page()),
+            HostKind::Webdav => settings.page(self.webdav_page()),
             // Ssh / Sftp / Telnet 没有独立的"协议参数"页 —— SFTP 的全部 UI 就是
             // 会话开出来那个文件面板，表单上没有它自己的那一页；Telnet 的协商在
             // [`crate::telnet`] 内部固定（ECHO / SGA / NAWS / TTYPE），不给用户调。
@@ -3063,6 +3207,19 @@ impl HostFormWindow {
             .group(
                 SettingGroup::new()
                     .item(self.row(|this, cx| this.render_ftp_section(cx).into_any_element())),
+            )
+    }
+
+    /// WebDAV 专属配置页：同 [`Self::ftp_page`]，一级类目、单组无头衔。
+    /// 认证方式、根目录，外加"跳过证书校验"那个开关。
+    fn webdav_page(&self) -> SettingPage {
+        SettingPage::new(t!("host_form.page_webdav"))
+            .icon(AppIcon::ShieldCheck)
+            .default_open(true)
+            .resettable(false)
+            .group(
+                SettingGroup::new()
+                    .item(self.row(|this, cx| this.render_webdav_section(cx).into_any_element())),
             )
     }
 

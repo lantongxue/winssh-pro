@@ -89,6 +89,13 @@ pub struct Model {
     /// 空串是出厂档（明文），见 [`crate::ftp::decode`]。别的协议主机原样存着但没人读。
     #[sea_orm(default_value = "")]
     pub ftp_settings: String,
+    /// WebDAV 连接配置，JSON 编码的一份 [`crate::webdav::WebdavSettings`]。
+    /// 空串是出厂档，见 [`crate::webdav::decode`]。别的协议主机原样存着但没人读。
+    ///
+    /// 端点 URL 在 `hostname` 那一列，用户名在 `user`，密码在 `password`，
+    /// 根目录在设置本身里。
+    #[sea_orm(default_value = "")]
+    pub webdav_settings: String,
     /// 连上之后要不要往对端 shell 里装 OSC 133 标记，出厂是不装。
     /// 装的是什么、为什么要用户点头见 [`crate::terminal::shell_integration`]。
     #[sea_orm(default_value = false)]

@@ -22,7 +22,7 @@ use anyhow::Result;
 use crate::sftp::FileEntry;
 
 use super::{
-    FtpService, S3Service, SftpService,
+    FtpService, S3Service, SftpService, WebdavService,
     sftp_service::{TransferEvent, TransferHandle, TransferJob},
 };
 use tokio::sync::mpsc::UnboundedSender;
@@ -33,6 +33,7 @@ pub enum FileService {
     Sftp(SftpService),
     Ftp(FtpService),
     S3(S3Service),
+    Webdav(WebdavService),
 }
 
 impl FileService {
@@ -42,6 +43,7 @@ impl FileService {
             Self::Sftp(_) => "SFTP",
             Self::Ftp(service) => service.label(),
             Self::S3(_) => "S3",
+            Self::Webdav(service) => service.label(),
         }
     }
 
@@ -51,6 +53,7 @@ impl FileService {
             Self::Sftp(service) => service.home().await,
             Self::Ftp(service) => service.home().await,
             Self::S3(service) => service.home().await,
+            Self::Webdav(service) => service.home().await,
         }
     }
 
@@ -60,6 +63,7 @@ impl FileService {
             Self::Sftp(service) => service.resolve(raw).await,
             Self::Ftp(service) => service.resolve(raw).await,
             Self::S3(service) => service.resolve(raw).await,
+            Self::Webdav(service) => service.resolve(raw).await,
         }
     }
 
@@ -69,6 +73,7 @@ impl FileService {
             Self::Sftp(service) => service.list(dir).await,
             Self::Ftp(service) => service.list(dir).await,
             Self::S3(service) => service.list(dir).await,
+            Self::Webdav(service) => service.list(dir).await,
         }
     }
 
@@ -78,6 +83,7 @@ impl FileService {
             Self::Sftp(service) => service.create_dir(target).await,
             Self::Ftp(service) => service.create_dir(target).await,
             Self::S3(service) => service.create_dir(target).await,
+            Self::Webdav(service) => service.create_dir(target).await,
         }
     }
 
@@ -87,6 +93,7 @@ impl FileService {
             Self::Sftp(service) => service.create_file(target).await,
             Self::Ftp(service) => service.create_file(target).await,
             Self::S3(service) => service.create_file(target).await,
+            Self::Webdav(service) => service.create_file(target).await,
         }
     }
 
@@ -96,6 +103,7 @@ impl FileService {
             Self::Sftp(service) => service.remove(entry).await,
             Self::Ftp(service) => service.remove(entry).await,
             Self::S3(service) => service.remove(entry).await,
+            Self::Webdav(service) => service.remove(entry).await,
         }
     }
 
@@ -105,15 +113,18 @@ impl FileService {
             Self::Sftp(service) => service.rename(from, to).await,
             Self::Ftp(service) => service.rename(from, to).await,
             Self::S3(service) => service.rename(from, to).await,
+            Self::Webdav(service) => service.rename(from, to).await,
         }
     }
 
-    /// 改权限位。FTP 走 `SITE CHMOD`，服务器不认时那一头报"不支持"；S3 没有这一档。
+    /// 改权限位。FTP 走 `SITE CHMOD`，服务器不认时那一头报"不支持"；
+    /// S3 与 WebDAV 都没有权限位可改。
     pub async fn set_mode(&self, target: &str, octal: u32) -> Result<()> {
         match self {
             Self::Sftp(service) => service.set_mode(target, octal).await,
             Self::Ftp(service) => service.set_mode(target, octal).await,
             Self::S3(service) => service.set_mode(target, octal).await,
+            Self::Webdav(service) => service.set_mode(target, octal).await,
         }
     }
 
@@ -123,6 +134,7 @@ impl FileService {
             Self::Sftp(service) => service.read_text(target).await,
             Self::Ftp(service) => service.read_text(target).await,
             Self::S3(service) => service.read_text(target).await,
+            Self::Webdav(service) => service.read_text(target).await,
         }
     }
 
@@ -132,6 +144,7 @@ impl FileService {
             Self::Sftp(service) => service.write_text(target, content).await,
             Self::Ftp(service) => service.write_text(target, content).await,
             Self::S3(service) => service.write_text(target, content).await,
+            Self::Webdav(service) => service.write_text(target, content).await,
         }
     }
 
@@ -145,6 +158,7 @@ impl FileService {
             Self::Sftp(service) => service.spawn_download(job, progress),
             Self::Ftp(service) => service.spawn_download(job, progress),
             Self::S3(service) => service.spawn_download(job, progress),
+            Self::Webdav(service) => service.spawn_download(job, progress),
         }
     }
 
@@ -158,6 +172,7 @@ impl FileService {
             Self::Sftp(service) => service.spawn_upload(job, progress),
             Self::Ftp(service) => service.spawn_upload(job, progress),
             Self::S3(service) => service.spawn_upload(job, progress),
+            Self::Webdav(service) => service.spawn_upload(job, progress),
         }
     }
 }

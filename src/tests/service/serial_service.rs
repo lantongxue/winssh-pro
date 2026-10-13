@@ -7,6 +7,7 @@
             easytier: Default::default(),
             s3: Default::default(),
             ftp: Default::default(),
+            webdav: Default::default(),
             kind: HostKind::Serial,
             id: "test-serial-missing".into(),
             name: "serial-missing".into(),

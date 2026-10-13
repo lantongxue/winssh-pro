@@ -20,6 +20,7 @@ mod sftp_editor;
 mod sftp_host;
 mod terminal;
 mod vnc;
+mod webdav_host;
 mod welcome;
 
 pub use assistant::{ASSISTANT_DOCK_WIDTH, AssistantPanel};
@@ -42,4 +43,5 @@ pub use terminal::{
     TerminalPanel, ToggleForwards, ToggleHistory, ToggleMonitor, ToggleSftp,
 };
 pub use vnc::VncPanel;
+pub use webdav_host::DockedWebdavPanel;
 pub use welcome::{WelcomeEvent, WelcomePanel};

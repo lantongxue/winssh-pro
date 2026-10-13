@@ -2315,6 +2315,9 @@ host_form.page_s3:
 host_form.page_ftp:
   en: "FTP connection"
   zh-CN: "FTP 连接"
+host_form.page_webdav:
+  en: "WebDAV connection"
+  zh-CN: "WebDAV 连接"
 host_form.group_easytier_peers:
   en: "Peers"
   zh-CN: "对等节点"
@@ -5240,7 +5243,94 @@ ftp_err.raw_error:
   en: "%{action}: %{error}"
   zh-CN: "%{action}:%{error}"
 
-# ── 独立 S3 会话（HostKind::S3 开出来的那个标签页，见 src/ui/panels/s3_host.rs） ──
+# ── 独立 WebDAV 会话（HostKind::Webdav 开出来的那个标签页，见 src/ui/panels/webdav_host.rs） ──
+webdav_host.close_session:
+  en: Close session
+  zh-CN: 关闭会话
+
+# ── WebDAV 服务错误（src/service/webdav_service.rs、src/webdav/client.rs） ──
+webdav_err.no_endpoint:
+  en: The WebDAV server URL is empty
+  zh-CN: WebDAV 服务器地址为空
+webdav_err.bad_endpoint:
+  en: "Not a valid WebDAV server URL: %{endpoint}"
+  zh-CN: "不是有效的 WebDAV 服务器地址：%{endpoint}"
+webdav_err.unauthorized:
+  en: The server rejected these credentials (401)
+  zh-CN: 服务器拒绝了这组账号密码（401）
+webdav_err.forbidden:
+  en: The server refused this path (403)
+  zh-CN: 服务器拒绝访问这个路径（403）
+webdav_err.not_found:
+  en: The server says this path does not exist (404)
+  zh-CN: 服务器说这个路径不存在（404）
+webdav_err.method_not_allowed:
+  en: "This address does not accept WebDAV requests (405) — check that the server URL includes the WebDAV mount path, e.g. https://host/dav"
+  zh-CN: 这个地址不接受 WebDAV 请求（405）—— 检查服务器地址是否带上了 WebDAV 的挂载路径，例如 https://host/dav
+webdav_err.conflict:
+  en: The parent directory does not exist on the server (409)
+  zh-CN: 服务器上没有它的上级目录（409）
+webdav_err.precondition_failed:
+  en: The target already exists (412)
+  zh-CN: 目标已经存在（412）
+webdav_err.path_missing:
+  en: "%{path} does not exist"
+  zh-CN: "%{path} 不存在"
+webdav_err.is_directory:
+  en: "%{path} is a directory"
+  zh-CN: "%{path} 是一个目录"
+webdav_err.insufficient_storage:
+  en: The server has no space left (507)
+  zh-CN: 服务器空间不足（507）
+webdav_err.status:
+  en: "The server answered HTTP %{code}"
+  zh-CN: "服务器回了 HTTP %{code}"
+webdav_err.server:
+  en: "The server refused the request (%{code}): %{message}"
+  zh-CN: "服务器拒绝了这次请求（%{code}）：%{message}"
+webdav_err.timeout:
+  en: Timed out talking to the WebDAV server
+  zh-CN: 与 WebDAV 服务器通信超时
+webdav_err.connect:
+  en: "Cannot reach the WebDAV server: %{error}"
+  zh-CN: "连不上 WebDAV 服务器：%{error}"
+webdav_err.chmod_unsupported:
+  en: WebDAV has no permission bits; the permissions column is read-only
+  zh-CN: WebDAV 没有权限位，权限列只读
+webdav_err.action_read_dir:
+  en: "List %{path}"
+  zh-CN: "读取目录 %{path}"
+webdav_err.action_stat_path:
+  en: Check whether the path exists
+  zh-CN: 查询路径是否存在
+webdav_err.action_stat_remote:
+  en: "Inspect %{path}"
+  zh-CN: "查看 %{path}"
+webdav_err.action_create_dir:
+  en: "Create the directory %{path}"
+  zh-CN: "新建目录 %{path}"
+webdav_err.action_create_file:
+  en: "Create the file %{path}"
+  zh-CN: "新建文件 %{path}"
+webdav_err.action_delete:
+  en: "Delete %{path}"
+  zh-CN: "删除 %{path}"
+webdav_err.action_delete_dir:
+  en: "Delete the directory %{path}"
+  zh-CN: "删除目录 %{path}"
+webdav_err.action_rename:
+  en: "Rename %{from} to %{to}"
+  zh-CN: "把 %{from} 改名为 %{to}"
+webdav_err.action_read_file:
+  en: "Read %{path}"
+  zh-CN: "读取 %{path}"
+webdav_err.action_save_file:
+  en: "Save %{path}"
+  zh-CN: "保存 %{path}"
+webdav_err.raw_error:
+  en: "%{action}: %{error}"
+  zh-CN: "%{action}:%{error}"
+
 s3_host.close_session:
   en: Close session
   zh-CN: 关闭会话
@@ -5386,3 +5476,38 @@ host_form.s3_addressing_virtual_host:
 host_form.s3_hint:
   en: Endpoint goes in the "Endpoint" field on the connection page; Access Key ID and Secret Access Key go on the auth page. Leave bucket empty to browse all buckets in the account. Alibaba Cloud OSS and Tencent Cloud COS need virtual-host addressing — the preset fills it in.
   zh-CN: 端点地址填在「连接」页的「Endpoint」，Access Key ID / Secret Access Key 填在「认证」页。存储桶留空可在面板根目录浏览账号下的全部存储桶。阿里云 OSS / 腾讯云 COS 需要虚拟主机寻址 —— 选中预设会自动带出。
+
+# ── WebDAV 主机表单字段（src/ui/windows/host_form.rs） ──
+host_form.field_webdav_url:
+  en: Server URL
+  zh-CN: 服务器地址 (URL)
+host_form.field_webdav_auth:
+  en: Authentication
+  zh-CN: 认证方式
+host_form.field_webdav_root:
+  en: Root directory
+  zh-CN: 根目录
+host_form.field_webdav_insecure:
+  en: Skip certificate check
+  zh-CN: 跳过证书校验
+host_form.webdav_auth_auto:
+  en: Auto (probe the server)
+  zh-CN: 自动（探测服务器）
+host_form.webdav_auth_basic:
+  en: Basic
+  zh-CN: Basic
+host_form.webdav_auth_digest:
+  en: Digest
+  zh-CN: Digest
+host_form.webdav_insecure_on:
+  en: "On (dangerous)"
+  zh-CN: "开（不安全）"
+host_form.webdav_insecure_off:
+  en: "Off"
+  zh-CN: "关"
+host_form.webdav_root_placeholder:
+  en: /winssh
+  zh-CN: /winssh
+host_form.webdav_hint:
+  en: The server URL goes in the "Server URL" field on the connection page, including the WebDAV mount path (e.g. https://host/dav); the account and password go on the auth page. Root directory is where the file panel starts, relative to that URL; leave it empty to start at the URL itself. Basic sends the password in clear base64, so use it over https only. Self-signed servers can't be pinned by fingerprint the way SSH hosts are — "Skip certificate check" turns verification off entirely, so only turn it on for hosts you trust.
+  zh-CN: 服务器地址填在「连接」页的「服务器地址 (URL)」，要带上 WebDAV 的挂载路径（例如 https://host/dav）；账号密码填在「认证」页。根目录是文件面板的起点，相对这个地址；留空就从地址本身开始。「自动」会先探一次服务器要的是 Basic 还是 Digest。Basic 把密码按 base64 明文发出去，只应在 https 上用。自签名证书没法像 SSH 主机那样按指纹钉住 —— 「跳过证书校验」是把校验整个关掉，只对你信得过的主机开。

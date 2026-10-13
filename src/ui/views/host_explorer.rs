@@ -47,7 +47,7 @@ use crate::{
         cards::{HOST_CARD_HEIGHT, HostCard},
         menus::HostAction,
         panels::{
-            DockedFtpPanel, DockedS3Panel, DockedSftpPanel, EasyTierPanel, RdpPanel,
+            DockedFtpPanel, DockedS3Panel, DockedSftpPanel, DockedWebdavPanel, EasyTierPanel, RdpPanel,
             SessionEvent, TerminalPanel, VncPanel,
         },
         theme::{AppIcon, palette},
@@ -152,6 +152,7 @@ enum TrackedPanel {
     Sftp(WeakEntity<DockedSftpPanel>),
     Ftp(WeakEntity<DockedFtpPanel>),
     S3(WeakEntity<DockedS3Panel>),
+    Webdav(WeakEntity<DockedWebdavPanel>),
     Vnc(WeakEntity<VncPanel>),
     Rdp(WeakEntity<RdpPanel>),
     EasyTier(WeakEntity<EasyTierPanel>),
@@ -174,6 +175,9 @@ impl TrackedPanel {
             Self::S3(panel) => panel
                 .upgrade()
                 .is_some_and(|panel| panel.read(cx).alive(cx)),
+            Self::Webdav(panel) => panel
+                .upgrade()
+                .is_some_and(|panel| panel.read(cx).alive(cx)),
             Self::Vnc(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
             Self::Rdp(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
             Self::EasyTier(panel) => panel.upgrade().is_some_and(|panel| panel.read(cx).alive()),
@@ -187,6 +191,7 @@ impl TrackedPanel {
             Self::Sftp(panel) => panel.upgrade().is_some(),
             Self::Ftp(panel) => panel.upgrade().is_some(),
             Self::S3(panel) => panel.upgrade().is_some(),
+            Self::Webdav(panel) => panel.upgrade().is_some(),
             Self::Vnc(panel) => panel.upgrade().is_some(),
             Self::Rdp(panel) => panel.upgrade().is_some(),
             Self::EasyTier(panel) => panel.upgrade().is_some(),
@@ -199,6 +204,7 @@ impl TrackedPanel {
             Self::Sftp(panel) => panel.entity_id(),
             Self::Ftp(panel) => panel.entity_id(),
             Self::S3(panel) => panel.entity_id(),
+            Self::Webdav(panel) => panel.entity_id(),
             Self::Vnc(panel) => panel.entity_id(),
             Self::Rdp(panel) => panel.entity_id(),
             Self::EasyTier(panel) => panel.entity_id(),
@@ -547,6 +553,11 @@ impl HostExplorerView {
             HostKind::S3 => {
                 let panel = DockedS3Panel::new(host.clone(), self.dock_area.clone(), window, cx);
                 self.track_panel(host.id.clone(), &panel, TrackedPanel::S3, window, cx);
+                panel_handle(panel)
+            }
+            HostKind::Webdav => {
+                let panel = DockedWebdavPanel::new(host.clone(), self.dock_area.clone(), window, cx);
+                self.track_panel(host.id.clone(), &panel, TrackedPanel::Webdav, window, cx);
                 panel_handle(panel)
             }
             HostKind::Vnc => {

@@ -204,7 +204,20 @@ rust-i18n = "4.2"
 # 启动时问一下系统"现在是什么语言"。它本来就在依赖树里（cosmic-text 用它），
 # 变成直接依赖不多编译一份东西；比自己读 LANG / GetUserDefaultLocaleName 稳。
 sys-locale = "0.3"
-opendal = { version = "0.59", features = ["services-webdav"] }
+# WebDAV（WebDAV 主机的文件面板，见 `src/webdav/` 与 `crate::service::WebdavService`；
+# 以及备份同步的 WebDAV 那一档，见 `src/backup.rs`）。
+#
+# 直接用 reqwest_dav，不再经 OpenDAL 转一道：OpenDAL 一个 crate 就拖进几十个
+# 传递依赖（它按"所有服务共用一套 op 抽象"长的），而我们只要 WebDAV 那七八个
+# 方法；它的 `Operator` 是一层与面板无关的抽象，列目录给的是它自己的 `Entry`，
+# 权限、属主这些字段到面板那一步还得再折一次。
+#
+# 0.3.3 是 crates.io 上的当前版本，它自己钉的就是 `reqwest ^0.13`（与下面那一行
+# 同一份 reqwest，不多编译一份东西）。**默认特性必须关掉**：它默认点的是
+# `reqwest/default`，那一档会带进 native-tls（SChannel / OpenSSL 一整套），
+# 与全项目的 rustls 后端相冲；换成 `rustls-tls` 才是同一套 TLS。
+# 认证支持 Basic 与 Digest（见 `Auth`），够那些普通的 WebDAV 服务器用。
+reqwest_dav = { version = "0.3.3", default-features = false, features = ["rustls-tls"] }
 # FTP / FTPS（FTP 主机的文件面板，见 `src/ftp/` 与 `crate::service::FtpService`）。
 # 直接用 suppaftp，不再经 OpenDAL 转一道：OpenDAL 的 FTP 只有明文、没有隐式
 # FTPS、拨号不走代理，也拿不到 `PWD` 给的登录目录。
@@ -372,9 +385,18 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] 
 url = "2"
 cidr = "0.3"
 strum = "0.28"
+# WebDAV 那一头的两件小工具，本来就在依赖树里（`url` 与 reqwest 自己都拖着
+# 它们），变成直接依赖不多编译一份东西。
+#
+# `percent-encoding`：服务器在 `PROPFIND` 回的 href 里把中文与空格编成了
+# `%E4%B8%AD%E6%96%87`，面板要显示原字符就得解一次（见 `src/webdav/client.rs`）。
+# `bytes`：流式传输的正文按块过手，块类型就是它（见
+# `src/service/webdav_service.rs` 的下载循环）。
+percent-encoding = "2"
+bytes = "1"
 
 # Clash 订阅那两处 HTTP（见 `src/clash/`）：拉订阅正文本体，以及跟本机
-# mihomo 的外部控制口说话。图上本来就有 reqwest 0.13（OpenDAL 的
+# mihomo 的外部控制口说话。图上本来就有 reqwest 0.13（`reqwest_dav` 的
 # WebDAV 传输、rig 的后端都用它），这里只是把它变成直接依赖，
 # 不多编译一份东西 —— 所以版本跟着图上那一份走。
 #
@@ -383,7 +405,11 @@ strum = "0.28"
 # 改那份设置的那一方（`src/clash/system_proxy.rs`）。代理开着的时候，连
 # `127.0.0.1` 上那个控制口都可能被绕进代理里，于是"设置系统代理"这一步自己
 # 先把控制通道掐了。两处请求都显式 `no_proxy()`，这一档干脆不点亮。
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+#
+# `stream` 是 WebDAV 传输要的：下载走 `Response::bytes_stream()`、上传用
+# `Body::wrap_stream()` 一块一块喂，都不把整个文件读进内存（见
+# `src/service/webdav_service.rs`）。reqwest 0.13 里这几个入口都挂在这个特性下。
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 
 # russh 的默认加密后端 aws-lc-rs 会用 C + 汇编编译 aws-lc-sys；在 x86_64 Windows 上
 # 它的汇编要靠 NASM 汇编，本机没有 nasm.exe 时 build 脚本直接 panic。开启

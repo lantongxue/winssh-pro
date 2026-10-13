@@ -9,10 +9,11 @@ use rust_i18n::t;
 
 /// 连接类型。一台主机要么是一条 SSH，要么是一条独立 SFTP（只开文件面板、
 /// 不开 shell），要么是一条 FTP（同样只开文件面板），要么是一个 S3 对象存储
-/// （同样只开文件面板），要么是一个 VNC 桌面，要么是一个 RDP 远程桌面，
+/// （同样只开文件面板），要么是一台 WebDAV 服务器（同样只开文件面板），
+/// 要么是一个 VNC 桌面，要么是一个 RDP 远程桌面，
 /// 要么是一条 Telnet，要么是一条本机串口，要么是一张 EasyTier 虚拟网，
-/// 落库时存为字符串（`ssh` / `sftp` / `ftp` / `s3` / `vnc` / `rdp` / `telnet` /
-/// `serial` / `easytier`），读回时按小写匹配。
+/// 落库时存为字符串（`ssh` / `sftp` / `ftp` / `s3` / `webdav` / `vnc` / `rdp` /
+/// `telnet` / `serial` / `easytier`），读回时按小写匹配。
 ///
 /// 和 [`AuthMethod`] 一样：界面上的下拉按下标折回枚举，不拿那行字反查。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -29,6 +30,10 @@ pub enum HostKind {
     /// 独立 S3：用 [`crate::service::S3Service`] 管理对象存储，Access Key / Secret
     /// Key 即认证。会话开出来是 [`crate::ui::panels::DockedS3Panel`]。
     S3,
+    /// 独立 WebDAV：用 [`crate::service::WebdavService`] 管理文件。它和 FTP
+    /// 一样有真目录，但跑在 HTTP 上，认证走 Basic / Digest。会话开出来是
+    /// [`crate::ui::panels::DockedWebdavPanel`]。
+    Webdav,
     Vnc,
     Rdp,
     Telnet,
@@ -42,11 +47,12 @@ pub enum HostKind {
 }
 
 impl HostKind {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Ssh,
         Self::Sftp,
         Self::Ftp,
         Self::S3,
+        Self::Webdav,
         Self::Vnc,
         Self::Rdp,
         Self::Telnet,
@@ -60,6 +66,7 @@ impl HostKind {
             Self::Sftp => "sftp",
             Self::Ftp => "ftp",
             Self::S3 => "s3",
+            Self::Webdav => "webdav",
             Self::Vnc => "vnc",
             Self::Rdp => "rdp",
             Self::Telnet => "telnet",
@@ -75,6 +82,7 @@ impl HostKind {
             Self::Sftp => "SFTP".into(),
             Self::Ftp => "FTP".into(),
             Self::S3 => "S3".into(),
+            Self::Webdav => "WebDAV".into(),
             Self::Vnc => "VNC".into(),
             Self::Rdp => "RDP".into(),
             Self::Telnet => "Telnet".into(),
@@ -84,7 +92,8 @@ impl HostKind {
     }
 
     /// 这一档的惯例端口：SSH 与独立 SFTP 都是 22（同一个 sshd），FTP 21，
-    /// S3 没有端口（走 HTTPS 443），VNC 5900，RDP 3389，Telnet 23。
+    /// S3 没有端口（走 HTTPS 443），WebDAV 没有端口（URL 自带 scheme 与端口），
+    /// VNC 5900，RDP 3389，Telnet 23。
     /// [`crate::host::Host::address`]
     /// 拿它决定要不要省略端口，表单拿它做换档时的默认值。
     ///
@@ -93,13 +102,15 @@ impl HostKind {
     /// 之后再换回别的协议也认得出来那是"没填过"、该换回惯例端口。
     /// EasyTier 同理：它连的是一张网，不是一个端口（监听端口另在
     /// [`crate::easytier::EasyTierSettings`] 里）。
+    ///
+    /// WebDAV 与 S3 同理：地址是整条 URL，端口在 URL 里，不再单独拼。
     pub fn default_port(&self) -> u16 {
         match self {
             Self::Ssh | Self::Sftp => 22,
             Self::Ftp => 21,
-            // S3 走 HTTPS（443），但端点 URL 里已经带了端口，这里给 0：
+            // S3 / WebDAV 走 HTTP(S)，端点 URL 里已经带了端口，这里给 0：
             // address() 不该在端点后面再拼一个 443。
-            Self::S3 => 0,
+            Self::S3 | Self::Webdav => 0,
             Self::Vnc => 5900,
             Self::Rdp => 3389,
             Self::Telnet => 23,
@@ -125,6 +136,7 @@ impl HostKind {
             "sftp" => Self::Sftp,
             "ftp" => Self::Ftp,
             "s3" => Self::S3,
+            "webdav" => Self::Webdav,
             "vnc" => Self::Vnc,
             "rdp" => Self::Rdp,
             "telnet" => Self::Telnet,
@@ -340,6 +352,13 @@ pub struct Host {
     /// 同样进 [`HostDraft`]：它只在 [`HostKind::Ftp`] 的连接里有意义；
     /// 别的协议主机这一份原样存着但没人读。
     pub ftp: crate::ftp::FtpSettings,
+    /// WebDAV 连接配置。见 [`crate::webdav::WebdavSettings`]。
+    ///
+    /// 同样进 [`HostDraft`]：它只在 [`HostKind::Webdav`] 的连接里有意义
+    /// （端点 URL 在 [`Self::hostname`]、用户名在 [`Self::user`]、密码在
+    /// [`Self::password`]、根目录在 `webdav.root`）；别的协议主机这一份原样
+    /// 存着但没人读。
+    pub webdav: crate::webdav::WebdavSettings,
     /// 每次连上这台机器，要不要往对端 shell 里装一份 OSC 133 标记。
     ///
     /// 不进 [`HostDraft`]：和采集节奏、转发规则一样，它是连上之后在命令历史
@@ -371,6 +390,10 @@ impl Host {
         // S3 的 hostname 存的是端点 URL（`https://s3.amazonaws.com`），
         // 直接原样返回 —— 不在后面拼端口。
         if self.kind == HostKind::S3 {
+            return self.hostname.to_string();
+        }
+        // WebDAV 同理：地址就是那条 URL，端口（若写了）在 URL 里。
+        if self.kind == HostKind::Webdav {
             return self.hostname.to_string();
         }
         if self.port == self.kind.default_port() {
@@ -433,6 +456,8 @@ pub struct HostDraft {
     pub s3: crate::s3::S3Settings,
     /// FTP 加密方式，见 [`Host::ftp`]。
     pub ftp: crate::ftp::FtpSettings,
+    /// WebDAV 连接设置，见 [`Host::webdav`]。
+    pub webdav: crate::webdav::WebdavSettings,
 }
 
 /// 一台主机的运行时状态。

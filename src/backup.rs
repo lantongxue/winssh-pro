@@ -1,7 +1,8 @@
 //! 数据备份与恢复：WebDAV 与 S3 兼容协议的领域模型、加密机制与预设。
 //!
 //! 核心能力：
-//! - 协议支持：WebDAV（基于 Apache OpenDAL）、S3 兼容协议（基于 rust-s3）
+//! - 协议支持：WebDAV（基于 reqwest_dav，见 [`crate::webdav`]）、
+//!   S3 兼容协议（基于 rust-s3）
 //! - 常见 S3 云厂商预设：AWS S3、阿里云 OSS、腾讯云 COS、七牛云 Kodo、MinIO/自定义
 //! - 加密机制：支持明文裸备份与 AES-256-GCM 密码加密备份（PBKDF2-SHA256 密钥派生）
 //! - 副本保留策略与备份频率设置
@@ -409,18 +410,18 @@ pub fn decrypt_backup(payload: &[u8], password: Option<&str>) -> Result<Vec<u8>>
 
 use ::s3::Bucket;
 use ::s3::error::S3Error;
-use opendal::Operator;
-use opendal::services::Webdav;
 
-/// 备份落点。WebDAV 走 OpenDAL，S3 走 rust-s3（与主机的 S3 文件面板同一份
-/// 接线，见 [`crate::s3::S3ConnParams`]）。备份服务只用得着列、写、读、删
-/// 四个动作，两边在这里折成同一套；副本一律平铺在 root 下。
+use crate::webdav::WebdavStore;
+
+/// 备份落点。WebDAV 走 [`crate::webdav`]，S3 走 rust-s3（与主机的 S3 文件
+/// 面板同一份接线，见 [`crate::s3::S3ConnParams`]）。备份服务只用得着列、
+/// 写、读、删四个动作，两边在这里折成同一套；副本一律平铺在 root 下。
 ///
 /// 构造只装参数、不发请求。四个动作都要在数据层 runtime 上 await —— 两边
 /// 底层都是 reqwest + tokio，在 gpui executor 上 await 会因缺 tokio reactor
 /// 直接 panic。
 pub enum BackupStore {
-    Webdav(Operator),
+    Webdav(WebdavStore),
     S3 {
         bucket: Box<Bucket>,
         /// root 前缀，不带首尾 `/`；空串即桶根。
@@ -433,35 +434,19 @@ impl BackupStore {
     pub fn open(config: &BackupConfig) -> Result<Self> {
         match config.protocol {
             BackupProtocol::Webdav => {
-                let mut endpoint = config.webdav.endpoint.trim().to_string();
+                let endpoint = config.webdav.endpoint.trim();
                 if endpoint.is_empty() {
                     bail!("WebDAV 服务器地址不能为空");
                 }
-                if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
-                    endpoint = format!("https://{endpoint}");
-                }
-                if !endpoint.ends_with('/') {
-                    endpoint.push('/');
-                }
-
-                let mut builder = Webdav::default().endpoint(&endpoint);
-
-                let root = config.webdav.root.trim();
-                if !root.is_empty() {
-                    builder = builder.root(root);
-                }
-
-                let user = config.webdav.username.trim();
-                if !user.is_empty() {
-                    builder = builder.username(user);
-                }
-                let pass = config.webdav.password.trim();
-                if !pass.is_empty() {
-                    builder = builder.password(pass);
-                }
-
-                let op = Operator::new(builder).context("构建 WebDAV 存储客户端失败")?;
-                Ok(Self::Webdav(op))
+                // root 是"备份落点"的那个目录，拼在端点后面当 URL 路径的一部分。
+                // 空 root 即直接落在端点上（`WebdavStore::new` 里处理空串）。
+                let store = WebdavStore::new(
+                    endpoint,
+                    config.webdav.root.trim(),
+                    config.webdav.username.trim(),
+                    config.webdav.password.trim(),
+                )?;
+                Ok(Self::Webdav(store))
             }
             BackupProtocol::S3 => {
                 let bucket = config.s3.bucket.trim();
@@ -493,12 +478,7 @@ impl BackupStore {
     /// 列出 root 下直接的那一层文件：`(文件名, 大小)`。
     pub async fn list(&self) -> Result<Vec<(String, u64)>> {
         match self {
-            Self::Webdav(op) => Ok(op
-                .list("")
-                .await?
-                .into_iter()
-                .map(|entry| (entry.name().to_string(), entry.metadata().content_length()))
-                .collect()),
+            Self::Webdav(store) => store.list().await,
             Self::S3 { bucket, root } => {
                 let prefix = s3_key(root, "");
                 let pages = bucket
@@ -520,7 +500,7 @@ impl BackupStore {
     /// 写一个副本（同名覆盖）。
     pub async fn write(&self, name: &str, payload: Vec<u8>) -> Result<()> {
         match self {
-            Self::Webdav(op) => op.write(name, payload).await.map(drop)?,
+            Self::Webdav(store) => store.write(name, payload).await?,
             Self::S3 { bucket, root } => s3_transfer(bucket)
                 .put_object(s3_key(root, name), &payload)
                 .await
@@ -533,7 +513,7 @@ impl BackupStore {
     /// 读回一个副本的全部字节。
     pub async fn read(&self, name: &str) -> Result<Vec<u8>> {
         match self {
-            Self::Webdav(op) => Ok(op.read(name).await?.to_vec()),
+            Self::Webdav(store) => store.read(name).await,
             Self::S3 { bucket, root } => Ok(s3_transfer(bucket)
                 .get_object(s3_key(root, name))
                 .await
@@ -545,7 +525,7 @@ impl BackupStore {
     /// 删一个副本。
     pub async fn delete(&self, name: &str) -> Result<()> {
         match self {
-            Self::Webdav(op) => op.delete(name).await?,
+            Self::Webdav(store) => store.delete(name).await?,
             Self::S3 { bucket, root } => bucket
                 .delete_object(s3_key(root, name))
                 .await

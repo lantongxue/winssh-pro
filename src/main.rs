@@ -31,6 +31,7 @@ mod tls;
 mod trusted_host;
 mod ui;
 mod vnc;
+mod webdav;
 mod zmodem;
 
 use gpui_kit::component::{Root, TitleBar};

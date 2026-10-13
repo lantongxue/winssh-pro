@@ -30,6 +30,7 @@
             easytier: Default::default(),
             s3: Default::default(),
             ftp: Default::default(),
+            webdav: Default::default(),
             kind: crate::host::HostKind::Ssh,
             id: "settings-test".into(),
             name: "web-01".into(),
