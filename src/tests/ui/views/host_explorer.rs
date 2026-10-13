@@ -64,3 +64,50 @@
         // 不匹配的普通查询
         assert!(!HostExplorerView::matches(&host, &group, "database"));
     }
+
+    fn host_of(name: &str, kind: HostKind) -> Host {
+        Host {
+            kind,
+            ..sample_host(name, "10.0.0.1", Vec::new())
+        }
+    }
+
+    #[test]
+    fn present_kinds_lists_only_kinds_in_use_in_declared_order() {
+        let groups = vec![
+            HostGroup {
+                name: "a".into(),
+                hosts: vec![host_of("rdp", HostKind::Rdp), host_of("ssh", HostKind::Ssh)],
+            },
+            HostGroup {
+                name: "b".into(),
+                hosts: vec![host_of("ssh-2", HostKind::Ssh), host_of("s3", HostKind::S3)],
+            },
+            HostGroup {
+                name: "empty".into(),
+                hosts: Vec::new(),
+            },
+        ];
+
+        // 跨分组去重，顺序跟 `HostKind::ALL` 走，不跟建主机的先后走。
+        assert_eq!(
+            present_kinds(&groups),
+            vec![HostKind::Ssh, HostKind::S3, HostKind::Rdp]
+        );
+    }
+
+    #[test]
+    fn present_kinds_is_empty_without_hosts() {
+        assert!(present_kinds(&[]).is_empty());
+    }
+
+    #[test]
+    fn kind_filter_admits_only_its_own_kind() {
+        let ssh = host_of("ssh", HostKind::Ssh);
+        let vnc = host_of("vnc", HostKind::Vnc);
+
+        assert!(HostFilter::All.admits(&ssh));
+        assert!(HostFilter::All.admits(&vnc));
+        assert!(HostFilter::Kind(HostKind::Ssh).admits(&ssh));
+        assert!(!HostFilter::Kind(HostKind::Ssh).admits(&vnc));
+    }

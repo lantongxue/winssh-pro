@@ -854,9 +854,6 @@ host_explorer.new_host:
 host_explorer.filter_all:
   en: All (%{count})
   zh-CN: 全部（%{count}）
-host_explorer.filter_recent:
-  en: Recent
-  zh-CN: 最近
 host_explorer.delete_group:
   en: Delete group
   zh-CN: 删除分组

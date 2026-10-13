@@ -1,11 +1,11 @@
 //! 主机视图：侧边栏里管理主机的那一块，按分组浏览、搜索并打开主机。
 //!
-//! 版式来自设计稿，自上而下四段：标题行、搜索 + 分组筛选、列表、底部主操作。
+//! 版式来自设计稿，自上而下四段：标题行、搜索 + 协议筛选、列表、底部主操作。
 //! 标题行和底部是 chrome（面板自己的底色），中间的输入框、筛选片和列表都落在
 //! 亮一档的内容表面上，段与段之间用 1px 分隔线断开。
 //!
-//! 分组做成一排可横向滚动的筛选片，列表因此只呈现被选中的那一部分 ——
-//! 不必再套一层“主机 / 最近”的分段标题，列表的第一层就是分组本身。
+//! 搜索框下面是一排可横向滚动的协议筛选片：“全部”之后只列主机表里真有的
+//! 那几种协议，选中哪一片，列表就只留那种协议的主机，第一层仍然是分组本身。
 //!
 //! 列表是一个按行记尺寸的虚拟列表：分组头是一行 36 的普通行，展开后的主机是
 //! 一张 [`HostCard`]，两者高度不同，所以用不了 [`gpui_kit::component::tree`] 那种
@@ -47,17 +47,14 @@ use crate::{
         cards::{HOST_CARD_HEIGHT, HostCard},
         menus::HostAction,
         panels::{
-            DockedFtpPanel, DockedS3Panel, DockedSftpPanel, DockedWebdavPanel, EasyTierPanel, RdpPanel,
-            SessionEvent, TerminalPanel, VncPanel,
+            DockedFtpPanel, DockedS3Panel, DockedSftpPanel, DockedWebdavPanel, EasyTierPanel,
+            RdpPanel, SessionEvent, TerminalPanel, VncPanel,
         },
         theme::{AppIcon, palette},
         windows::HostFormWindow,
     },
 };
 use rust_i18n::t;
-
-/// 最近打开最多记住多少台主机。
-const RECENT_LIMIT: usize = 8;
 
 /// 分组头那一行的高度，也就是它悬停底色的高度。
 const GROUP_ROW_HEIGHT: Pixels = px(36.);
@@ -110,17 +107,13 @@ enum Row {
         count: usize,
         expanded: bool,
     },
-    /// 一台主机，画成一张卡片。
+    /// 一台主机，画成一张卡片，挂在它的分组下面。
     ///
     /// 这里**不存**它的运行时状态（[`HostStatus`]）：那是每一帧从会话名册上
     /// 数出来的（[`HostExplorerView::status`]）。存进行里的话，一条会话断掉
     /// 之后就得记得把整张列表重建一遍，漏一次那颗点就一直亮着 —— 正是
     /// 这个视图曾经犯的错。
-    Host {
-        host: Host,
-        /// 是否挂在某个分组下面。“最近”那一档是平铺的，不画缩进导轨。
-        nested: bool,
-    },
+    Host { host: Host },
 }
 
 impl Row {
@@ -272,14 +265,35 @@ impl Render for HostDragPreview {
 }
 
 /// 列表的筛选条件，对应搜索框下面那一排片。选中哪一片，列表就只显示那一部分。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HostFilter {
-    /// 全部分组。
+    /// 全部主机。
     All,
-    /// 最近打开过的主机，按最近使用排序，不再按分组归类。
-    Recent,
-    /// 单个分组。
-    Group(SharedString),
+    /// 只看某一种协议的主机，仍按分组归类。
+    Kind(HostKind),
+}
+
+impl HostFilter {
+    fn admits(self, host: &Host) -> bool {
+        match self {
+            Self::All => true,
+            Self::Kind(kind) => host.kind == kind,
+        }
+    }
+}
+
+/// 主机表里出现过的协议，按 [`HostKind::ALL`] 的顺序 —— 筛选片的顺序因此
+/// 固定，不随哪台主机先建而跳。一台都没有的协议不出片。
+fn present_kinds(groups: &[HostGroup]) -> Vec<HostKind> {
+    HostKind::ALL
+        .into_iter()
+        .filter(|kind| {
+            groups
+                .iter()
+                .flat_map(|group| &group.hosts)
+                .any(|host| host.kind == *kind)
+        })
+        .collect()
 }
 
 /// 视图往外发的请求。列表自己能办的（增删改、开终端、拖排序）都在视图里办完了，
@@ -307,8 +321,6 @@ pub struct HostExplorerView {
     /// （[`TerminalPanel::alive`]）；关掉的那条会由它报一声 [`SessionEvent::Ended`]
     /// 从这里划掉。
     sessions: Vec<TrackedSession>,
-    /// 最近打开过的主机，最新的在前。
-    recent: Vec<SharedString>,
     /// 当前选中的筛选片。
     filter: HostFilter,
     /// 用户手动收起的分组，重建列表时保留他的选择。
@@ -351,7 +363,6 @@ impl HostExplorerView {
             credentials,
             groups: Vec::new(),
             sessions: Vec::new(),
-            recent: Vec::new(),
             filter: HostFilter::All,
             collapsed: HashSet::new(),
             selected: None,
@@ -445,8 +456,9 @@ impl HostExplorerView {
         .detach();
     }
 
-    /// 新建落库之后的收尾：重读列表，跳到目标分组并选中新主机，
-    /// 让“新建”这个操作有看得见的结果。
+    /// 新建落库之后的收尾：重读列表，展开目标分组并选中新主机，
+    /// 让“新建”这个操作有看得见的结果。正筛着别的协议的话回到“全部”，
+    /// 不然新主机被筛掉了，看上去像没建成。
     pub fn host_created(
         &mut self,
         host: Host,
@@ -456,7 +468,9 @@ impl HostExplorerView {
     ) {
         self.reload(window, cx);
         self.collapsed.remove(&group);
-        self.filter = HostFilter::Group(group);
+        if !self.filter.admits(&host) {
+            self.filter = HostFilter::All;
+        }
         self.select_host(&host, cx);
     }
 
@@ -496,14 +510,10 @@ impl HostExplorerView {
         cx.notify();
     }
 
-    /// 打开一台主机：在中心区新开一个终端标签页，并记进“最近”。
+    /// 打开一台主机：在中心区新开一个终端标签页。
     /// 列表里双击是这条路，命令面板选中一台主机也是。
     pub fn open_host(&mut self, host: &Host, window: &mut Window, cx: &mut Context<Self>) {
         self.select_host(host, cx);
-
-        self.recent.retain(|id| id != &host.id);
-        self.recent.insert(0, host.id.clone());
-        self.recent.truncate(RECENT_LIMIT);
 
         // 主机的类型决定开哪一扇会话窗：SSH / Telnet / 串口都进终端面板
         //（字节流同一套），底下协议在 [`crate::ui::panels::TerminalPane::dial`]
@@ -556,7 +566,8 @@ impl HostExplorerView {
                 panel_handle(panel)
             }
             HostKind::Webdav => {
-                let panel = DockedWebdavPanel::new(host.clone(), self.dock_area.clone(), window, cx);
+                let panel =
+                    DockedWebdavPanel::new(host.clone(), self.dock_area.clone(), window, cx);
                 self.track_panel(host.id.clone(), &panel, TrackedPanel::Webdav, window, cx);
                 panel_handle(panel)
             }
@@ -859,10 +870,6 @@ impl HostExplorerView {
             let result = service.delete_group(&name).await;
             this.update_in(cx, |this, window, cx| match result {
                 Ok(()) => {
-                    // 正看着这一组的话先回到“全部”：分组没了，它的筛选片也跟着没了。
-                    if matches!(&this.filter, HostFilter::Group(selected) if selected == &name) {
-                        this.filter = HostFilter::All;
-                    }
                     this.collapsed.remove(&name);
                     this.reload(window, cx);
                 }
@@ -1066,15 +1073,25 @@ impl HostExplorerView {
                 .any(|tag| tag.to_lowercase().contains(query))
     }
 
-    /// 按当前的过滤词和分组筛选重建整个列表。
+    /// 按当前的过滤词和协议筛选重建整个列表。
     /// 搜索时全部展开，清空搜索后回到用户自己的展开状态。
     fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
+        // 正筛着的那种协议最后一台被删掉或改了协议，它的片就没了 —— 回到“全部”，
+        // 不然列表空着、却没有一片是选中的。
+        if let HostFilter::Kind(kind) = self.filter
+            && !present_kinds(&self.groups).contains(&kind)
+        {
+            self.filter = HostFilter::All;
+        }
+
         let query = self.query(cx);
         let searching = !query.is_empty();
+        // 筛着某种协议时，一台都不剩的分组和搜索时一样不出现。
+        let narrowed = searching || self.filter != HostFilter::All;
         let mut rows = Vec::new();
 
-        // “全部”那一片上的计数只看过滤词，不看分组筛选：
-        // 换分组的时候这个数跳来跳去，就没法当参照了。
+        // “全部”那一片上的计数只看过滤词，不看协议筛选：
+        // 换协议的时候这个数跳来跳去，就没法当参照了。
         let mut matched = 0;
         for group in &self.groups {
             matched += group
@@ -1084,56 +1101,29 @@ impl HostExplorerView {
                 .count();
         }
 
-        if self.filter == HostFilter::Recent {
-            // 最近这一档是一串平铺的主机，本来就跨分组，再按分组套一层没有意义。
-            for id in &self.recent {
-                let Some((group, host)) = self.host(id) else {
-                    continue;
-                };
-                if !Self::matches(host, group, &query) {
-                    continue;
-                }
-
-                rows.push(Row::Host {
-                    host: host.clone(),
-                    nested: false,
-                });
+        for group in &self.groups {
+            let hosts: Vec<&Host> = group
+                .hosts
+                .iter()
+                .filter(|host| self.filter.admits(host) && Self::matches(host, group, &query))
+                .collect();
+            // 平时空分组要留着 —— 它是能往里拖东西的落点，拖空了的分组也得有地方拖回去。
+            if hosts.is_empty() && narrowed {
+                continue;
             }
-        } else {
-            for group in &self.groups {
-                if let HostFilter::Group(name) = &self.filter
-                    && &group.name != name
-                {
-                    continue;
-                }
 
-                let hosts: Vec<&Host> = group
-                    .hosts
-                    .iter()
-                    .filter(|host| Self::matches(host, group, &query))
-                    .collect();
-                // 搜索时一台都没命中的分组就不出现；平时空分组要留着 ——
-                // 它是能往里拖东西的落点，拖空了的分组也得有地方拖回去。
-                if hosts.is_empty() && searching {
-                    continue;
-                }
+            let expanded = searching || !self.collapsed.contains(&group.name);
+            rows.push(Row::Group {
+                name: group.name.clone(),
+                count: hosts.len(),
+                expanded,
+            });
 
-                let expanded = searching || !self.collapsed.contains(&group.name);
-                rows.push(Row::Group {
-                    name: group.name.clone(),
-                    count: hosts.len(),
-                    expanded,
-                });
-
-                if !expanded {
-                    continue;
-                }
-                for host in hosts {
-                    rows.push(Row::Host {
-                        host: host.clone(),
-                        nested: true,
-                    });
-                }
+            if !expanded {
+                continue;
+            }
+            for host in hosts {
+                rows.push(Row::Host { host: host.clone() });
             }
         }
 
@@ -1166,7 +1156,7 @@ impl HostExplorerView {
             )
     }
 
-    /// 搜索框 + 分组筛选片。两者一起决定列表里出现什么，所以合成一段。
+    /// 搜索框 + 协议筛选片。两者一起决定列表里出现什么，所以合成一段。
     fn render_filters(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // 先把片渲染出来再交给 `children`：闭包借了 `cx`，惰性迭代器会把这个
         // 借用带出闭包体，borrow checker 不放行。
@@ -1195,7 +1185,7 @@ impl HostExplorerView {
             )
             .child(
                 // 片比面板宽是常态：横向滚动，不换行也不挤压 ——
-                // 换行会让这一段的高度随分组数量变化，整个面板就跟着跳。
+                // 换行会让这一段的高度随协议数量变化，整个面板就跟着跳。
                 h_flex()
                     .id("host-explorer-filters")
                     .w_full()
@@ -1205,22 +1195,16 @@ impl HostExplorerView {
             )
     }
 
-    /// 筛选片的顺序：全部、最近，然后是各个分组。
+    /// 筛选片的顺序：全部，然后是主机表里出现过的各种协议（[`present_kinds`]）。
     fn filters(&self) -> Vec<(HostFilter, SharedString)> {
-        let mut filters = vec![
-            (
-                HostFilter::All,
-                SharedString::from(t!("host_explorer.filter_all", count => self.matched)),
-            ),
-            (
-                HostFilter::Recent,
-                SharedString::from(t!("host_explorer.filter_recent")),
-            ),
-        ];
+        let mut filters = vec![(
+            HostFilter::All,
+            SharedString::from(t!("host_explorer.filter_all", count => self.matched)),
+        )];
         filters.extend(
-            self.groups
-                .iter()
-                .map(|group| (HostFilter::Group(group.name.clone()), group.name.clone())),
+            present_kinds(&self.groups)
+                .into_iter()
+                .map(|kind| (HostFilter::Kind(kind), kind.label())),
         );
         filters
     }
@@ -1256,7 +1240,7 @@ impl HostExplorerView {
             .when(selected, |this| {
                 this.border_1().border_color(palette::blue())
             })
-            .on_click(cx.listener(move |this, _, _, cx| this.set_filter(filter.clone(), cx)))
+            .on_click(cx.listener(move |this, _, _, cx| this.set_filter(filter, cx)))
     }
 
     /// 分组头：整行可点，点一下开合这一组。可点的那块只占上面 [`GROUP_ROW_HEIGHT`]，
@@ -1374,14 +1358,9 @@ impl HostExplorerView {
     /// 缩进、缩进导轨，下面留给下一张的缝，以及拖拽。
     ///
     /// 拖拽挂在这一层而不是卡片上：卡片不知道自己在哪个列表的第几位，
-    /// 排到哪儿去只有这个视图算得出来。
-    fn render_host_row(
-        &self,
-        ix: usize,
-        host: &Host,
-        nested: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    /// 排到哪儿去只有这个视图算得出来。筛着某种协议时照样能拖 —— 落点
+    /// 认的是整组里的那张卡片（[`Self::resolve`]），被筛掉的主机不跟着挪。
+    fn render_host_row(&self, ix: usize, host: &Host, cx: &mut Context<Self>) -> impl IntoElement {
         // 会话点这一帧的答案现算，见 [`Self::status`]。
         let status = self.status(&host.id, cx);
         let selected = self.selected.as_ref() == Some(&host.id);
@@ -1393,9 +1372,6 @@ impl HostExplorerView {
         let dragged = host.clone();
         let tracked = host.id.clone();
         let dropped = host.id.clone();
-        // 「最近」那一档是按最近使用排的，不是用户排的，所以那里不给拖 ——
-        // 拖出来的顺序下一次打开主机就没了。
-        let sortable = self.filter != HostFilter::Recent;
 
         div()
             .id(("host-row", ix))
@@ -1403,40 +1379,32 @@ impl HostExplorerView {
             .w_full()
             .h(host_row_height())
             .pb(HOST_ROW_GAP)
-            .when(nested, |this| {
-                this.ml(GUIDE_OFFSET)
-                    .pl(GUIDE_OFFSET)
-                    .border_l_1()
-                    .border_color(cx.theme().sidebar_border)
-            })
-            .when(sortable, |this| {
-                this.on_drag(
-                    DraggedHost {
-                        host: dragged.clone(),
-                    },
-                    |dragged, click_offset, _, cx| {
-                        let host = dragged.host.clone();
-                        cx.new(|_| HostDragPreview { host, click_offset })
-                    },
-                )
-                .on_drag_move(cx.listener(
-                    move |this, event: &DragMoveEvent<DraggedHost>, _, cx| {
-                        this.track_drop(&tracked, event, cx);
-                    },
-                ))
-                .on_drop(cx.listener(
-                    move |this, dragged: &DraggedHost, window, cx| {
-                        // 落点是拖拽移动时记下的。万一一次移动事件都没赶上，
-                        // 就按“插到这张卡片前面”办 —— 指针正停在它上面。
-                        let target = this.drop_target.clone().unwrap_or(DropTarget::Host {
-                            id: dropped.clone(),
-                            after: false,
-                        });
-                        let id = dragged.host.id.clone();
-                        this.move_host(&id, &target, window, cx);
-                    },
-                ))
-            })
+            .ml(GUIDE_OFFSET)
+            .pl(GUIDE_OFFSET)
+            .border_l_1()
+            .border_color(cx.theme().sidebar_border)
+            .on_drag(
+                DraggedHost { host: dragged },
+                |dragged, click_offset, _, cx| {
+                    let host = dragged.host.clone();
+                    cx.new(|_| HostDragPreview { host, click_offset })
+                },
+            )
+            .on_drag_move(
+                cx.listener(move |this, event: &DragMoveEvent<DraggedHost>, _, cx| {
+                    this.track_drop(&tracked, event, cx);
+                }),
+            )
+            .on_drop(cx.listener(move |this, dragged: &DraggedHost, window, cx| {
+                // 落点是拖拽移动时记下的。万一一次移动事件都没赶上，
+                // 就按“插到这张卡片前面”办 —— 指针正停在它上面。
+                let target = this.drop_target.clone().unwrap_or(DropTarget::Host {
+                    id: dropped.clone(),
+                    after: false,
+                });
+                let id = dragged.host.id.clone();
+                this.move_host(&id, &target, window, cx);
+            }))
             .children(self.render_drop_line(&host.id, cx))
             .child(
                 HostCard::new(("host", ix), host.clone(), status)
@@ -1493,9 +1461,7 @@ impl HostExplorerView {
             } => self
                 .render_group_row(ix, name.clone(), *count, *expanded, cx)
                 .into_any_element(),
-            Row::Host { host, nested } => self
-                .render_host_row(ix, host, *nested, cx)
-                .into_any_element(),
+            Row::Host { host } => self.render_host_row(ix, host, cx).into_any_element(),
         }
     }
 
