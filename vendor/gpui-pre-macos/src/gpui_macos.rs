@@ -2,7 +2,7 @@
 // Local patch (see PATCHES.md): 这一档在 crates.io 的 0.3.8 上就一直在刷警告 ——
 // cocoa 0.26 把 `id`/`nil`/NSRect 这类绑定全标了 deprecated（"改用 objc2"），
 // 全 crate 共 698 条，挤满 `cargo check` 的输出。这份 crate 的定位是照抄快照，
-// 不跟着把 platform 层重写到 objc2，所以整档静音；真做迁移时这条要一并去掉。
+// 不跟着把 platform 层重写到 objc2，所以整档静默；真做迁移时这条要一并去掉。
 #![allow(deprecated)]
 //! macOS platform implementation for GPUI.
 //!
@@ -28,12 +28,6 @@ pub mod metal_renderer {
     pub use gpui_apple::metal_renderer::MetalHeadlessRenderer;
 }
 
-#[cfg(feature = "font-kit")]
-mod open_type;
-
-#[cfg(feature = "font-kit")]
-mod text_system;
-
 mod platform;
 mod window;
 mod window_appearance;
@@ -55,9 +49,6 @@ pub(crate) use gpui_apple::{AppleActivity, AppleDispatcher};
 pub(crate) use keyboard::*;
 pub(crate) use platform::*;
 pub(crate) use window::*;
-
-#[cfg(feature = "font-kit")]
-pub(crate) use text_system::*;
 
 pub use platform::MacPlatform;
 

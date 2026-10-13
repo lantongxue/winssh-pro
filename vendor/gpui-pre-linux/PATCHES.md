@@ -1,9 +1,9 @@
 # 这份 `gpui-pre-linux` 与上游的差别
 
-`vendor/gpui-pre-linux` 逐字来自 crates.io 的 **gpui-pre-linux 0.3.8**
+`vendor/gpui-pre-linux` 逐字来自 crates.io 的 **gpui-pre-linux 0.3.9**
 （Zed 的 `gpui_linux` 的快照，Apache-2.0，`LICENSE-APACHE` 与
 `Cargo.toml.orig` 原样留着），`Cargo.toml` 里的 `[patch.crates-io]` 指着它。
-版本号必须和 gpui-kit 钉的 `=0.3.8` 一致，patch 才会生效。
+版本号必须和 gpui-kit 钉的 `=0.3.9` 一致，patch 才会生效。
 
 它是 `vendor/gpui-pre` 那份补丁二（**窗口隐藏**）的 Linux 一半。为什么要有
 这件事、接口长什么样，见 `vendor/gpui-pre/PATCHES.md`。
@@ -42,7 +42,7 @@ unmap / hide 这类请求 —— 是否显示由合成器说了算，客户端�
 | `src/linux/display_connection.rs` | `impl DisplayConnection` 加 `supports_window_hiding`：X11 `true`，Wayland / Headless `false`。 |
 | `src/linux/platform.rs` | `impl Platform for LinuxPlatform` 加 `supports_window_hiding`，转发给当前 `DisplayConnection`。 |
 
-其余文件与 crates.io 上的 0.3.8 逐字节相同（`diff -r` 对照即可）。改动都带
+其余文件与 crates.io 上的 0.3.9 逐字节相同（`diff -r` 对照即可）。改动都带
 `Local patch (see PATCHES.md)` 注释，`grep -rn "Local patch" src/` 能列全。
 
 `display_connection.rs` 里那个 `dispatch!` 宏（按后端展开 `$connection`）在这处

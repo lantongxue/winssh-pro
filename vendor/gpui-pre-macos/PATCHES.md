@@ -1,9 +1,9 @@
 # 这份 `gpui-pre-macos` 与上游的差别
 
-`vendor/gpui-pre-macos` 逐字来自 crates.io 的 **gpui-pre-macos 0.3.8**
+`vendor/gpui-pre-macos` 逐字来自 crates.io 的 **gpui-pre-macos 0.3.9**
 （Zed 的 `gpui_macos` 的快照，Apache-2.0，`LICENSE-APACHE` 与
 `Cargo.toml.orig` 原样留着），`Cargo.toml` 里的 `[patch.crates-io]` 指着它。
-版本号必须和 gpui-kit 钉的 `=0.3.8` 一致，patch 才会生效。
+版本号必须和 gpui-kit 钉的 `=0.3.9` 一致，patch 才会生效。
 
 它是 `vendor/gpui-pre` 那份补丁二（**窗口隐藏**）的 macOS 一半。为什么要有
 这件事、接口长什么样，见 `vendor/gpui-pre/PATCHES.md`。
@@ -46,18 +46,19 @@ Cargo 的 patch 是**按包名**顶替的，所以这两个 key 必须写 `gpui-
 | `src/platform.rs` | `impl Platform for MacPlatform` 加 `supports_window_hiding` 返回 `true`。 |
 | `src/gpui_macos.rs` | crate 根加 `#![allow(deprecated)]`，静音 cocoa 0.26 那 698 条 deprecated（理由见下节）。 |
 
-其余文件与 crates.io 上的 0.3.8 逐字节相同（`diff -r` 对照即可）。改动都带
+其余文件与 crates.io 上的 0.3.9 逐字节相同（`diff -r` 对照即可）。改动都带
 `Local patch (see PATCHES.md)` 注释，`grep -rn "Local patch" src/` 能列全。
 
 ## 那些 deprecated 警告
 
-`cargo check -p gpui-pre-macos` 在本机（macOS）上会刷 **698 条** warning，全是
+`cargo check -p gpui-pre-macos` 在本机（macOS）上会刷 **696 条** warning，全是
 一回事：cocoa 0.26 把 `base::id`、`base::nil`、`foundation::NSRect` / `NSPoint` /
 `NSSize` / `NSString` 这一整套绑定标了 deprecated，提示改用 **objc2**。分布是
-`window.rs` 425 条、`platform.rs` 157 条，其余散在 `display.rs`、`pasteboard.rs`、
-`gpui_macos.rs`、`events.rs`、`window_appearance.rs`。
+`window.rs` 424 条、`platform.rs` 155 条，其余散在 `display.rs`（33）、
+`pasteboard.rs`（31）、`gpui_macos.rs`（24）、`events.rs`（22）、
+`window_appearance.rs`（7）。其中最多的是 `base::id`（276）与 `base::nil`（107）。
 
-上游的 0.3.8 原样就是这样，不是我们的补丁带进来的。清掉它只有两条路：
+上游的 0.3.9 原样就是这样，不是我们的补丁带进来的。清掉它只有两条路：
 
 1. **迁到 objc2** —— 等于把 macOS platform 层整个重写，脱离这个快照，不干。
 2. **整档静音** —— 现在这条路，crate 根一条 `#![allow(deprecated)]`。
