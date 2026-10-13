@@ -515,7 +515,13 @@ flate2 = "1"
 # `Platform::supports_window_hiding` 说明），三份平台层各自落地：Windows 用
 # `SW_HIDE`，macOS 用 `orderOut:`，X11 用 `unmap_window`。Wayland 协议里没有
 # 这类请求，那一档如实回答 `false`。同样见各份 PATCHES.md。
+#
+# 还有一处与上面都无关：`vendor/block`（0.1.6）。macOS 平台层经 cocoa / metal /
+# core-video 拖进来的 `block` 把一个 extern static 声明成空 enum，每次构建都报
+# "will be rejected by a future version of Rust"（`uninhabited_static`）。0.1.6 是
+# 最后一版，补丁只把那个空 enum 换成零尺寸的不透明结构体，见它的 PATCHES.md。
 [patch.crates-io]
+block = { path = "vendor/block" }
 vnc-rs = { path = "vendor/vnc-rs" }
 ironrdp-connector = { path = "vendor/ironrdp-connector" }
 picky = { path = "vendor/picky" }

@@ -44,9 +44,28 @@ Cargo 的 patch 是**按包名**顶替的，所以这两个 key 必须写 `gpui-
 | --- | --- |
 | `src/window.rs` | `impl PlatformWindow for MacWindow` 的 `minimize` 之后加 `hide_window`（`orderOut:`）与 `show_window`（`isVisible` 为假才 `orderFront:`）。 |
 | `src/platform.rs` | `impl Platform for MacPlatform` 加 `supports_window_hiding` 返回 `true`。 |
+| `src/gpui_macos.rs` | crate 根加 `#![allow(deprecated)]`，静音 cocoa 0.26 那 698 条 deprecated（理由见下节）。 |
 
 其余文件与 crates.io 上的 0.3.8 逐字节相同（`diff -r` 对照即可）。改动都带
 `Local patch (see PATCHES.md)` 注释，`grep -rn "Local patch" src/` 能列全。
+
+## 那些 deprecated 警告
+
+`cargo check -p gpui-pre-macos` 在本机（macOS）上会刷 **698 条** warning，全是
+一回事：cocoa 0.26 把 `base::id`、`base::nil`、`foundation::NSRect` / `NSPoint` /
+`NSSize` / `NSString` 这一整套绑定标了 deprecated，提示改用 **objc2**。分布是
+`window.rs` 425 条、`platform.rs` 157 条，其余散在 `display.rs`、`pasteboard.rs`、
+`gpui_macos.rs`、`events.rs`、`window_appearance.rs`。
+
+上游的 0.3.8 原样就是这样，不是我们的补丁带进来的。清掉它只有两条路：
+
+1. **迁到 objc2** —— 等于把 macOS platform 层整个重写，脱离这个快照，不干。
+2. **整档静音** —— 现在这条路，crate 根一条 `#![allow(deprecated)]`。
+
+选 2 的理由：这份 crate 的价值就在于"和 Zed 快照逐字一致、只多两个窗口显隐方法"，
+平台层真出问题时 `diff` 一下上游就能定位。真正的迁移是跟着快照换代一起做的，
+不该在这个补丁副本里先开一个头。哪天做迁移，那条 `allow` 要一并去掉 ——
+它只是把噪音按下去，没解决任何问题。
 
 ## 测试放在哪
 
