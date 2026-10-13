@@ -438,6 +438,9 @@ impl ForegroundRunnableCounter {
     }
 
     fn finished(&self) {
+        // Local patch (see PATCHES.md): Rust 1.98 renamed `fetch_update` to
+        // `try_update`; keep the old name so older toolchains still build.
+        #[allow(deprecated)]
         let _ = self
             .0
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {

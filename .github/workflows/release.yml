@@ -104,6 +104,11 @@ jobs:
       # `protobuf-compiler` 给 EasyTier 组网（`easytier-proto` 的构建脚本用
       # prost-build 现编 protobuf，要 `protoc`）。Windows 上那个构建脚本自己
       # 会下一份 protoc，不用在这里装；macOS 走下面那一步的 brew。
+      # `libprotobuf-dev` 必须显式列：EasyTier 的 proto import 了
+      # `google/protobuf/timestamp.proto` 这类 well-known types，它们装在
+      # `/usr/include/google/protobuf/` 下、属于这个包，而它只是
+      # `protobuf-compiler` 的 Recommends —— 在 `--no-install-recommends`
+      # 下不会被带上，protoc 报 "timestamp.proto: File not found"。
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -115,7 +120,8 @@ jobs:
             libxkbcommon-dev \
             libxkbcommon-x11-dev \
             pkg-config \
-            protobuf-compiler
+            protobuf-compiler \
+            libprotobuf-dev
 
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'

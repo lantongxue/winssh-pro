@@ -91,6 +91,12 @@ Windows 侧 vsync 线程也已经在跳过不可见窗口的 frame signal；应�
 | `src/window.rs` | 新增 `Window::hide_window` / `Window::show_window`，转发到 `self.platform_window`。 |
 | `src/app.rs` | 新增 `App::supports_window_hiding`。 |
 
+### 构建警告
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `src/profiler/journal.rs` | `finished()` 里那条 `fetch_update` 前加 `#[allow(deprecated)]`。新版 stable 把它改名成 `try_update` 并标了 deprecated；这份 crate 是 path 依赖，cargo 不替它压 lint，每次编译都刷一条。不直接换成 `try_update`：那会把能编这份 crate 的最低 Rust 版本抬上去，而上游快照本身没这个要求。 |
+
 另外**删掉了 `examples/`**（4.5 MB，主要是示例图片）。作为依赖时 Cargo 不编
 示例，`Cargo.toml` 里那些 `[[example]]` 条目只在编示例时才会去找文件。其余文件
 与 crates.io 上的 0.3.9 逐字节相同（`diff -r` 对照即可）。
