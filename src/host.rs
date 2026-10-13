@@ -335,6 +335,11 @@ pub struct Host {
     /// 在 [`Self::hostname`]、Access Key 在 [`Self::user`]、Secret Key 在
     /// [`Self::password`]）；别的协议主机这一份原样存着但没人读。
     pub s3: crate::s3::S3Settings,
+    /// FTP 的加密方式（明文 / 显式 FTPS / 隐式 FTPS）。见 [`crate::ftp::FtpSettings`]。
+    ///
+    /// 同样进 [`HostDraft`]：它只在 [`HostKind::Ftp`] 的连接里有意义；
+    /// 别的协议主机这一份原样存着但没人读。
+    pub ftp: crate::ftp::FtpSettings,
     /// 每次连上这台机器，要不要往对端 shell 里装一份 OSC 133 标记。
     ///
     /// 不进 [`HostDraft`]：和采集节奏、转发规则一样，它是连上之后在命令历史
@@ -426,6 +431,8 @@ pub struct HostDraft {
     pub easytier: crate::easytier::EasyTierSettings,
     /// S3 连接设置，见 [`Host::s3`]。
     pub s3: crate::s3::S3Settings,
+    /// FTP 加密方式，见 [`Host::ftp`]。
+    pub ftp: crate::ftp::FtpSettings,
 }
 
 /// 一台主机的运行时状态。

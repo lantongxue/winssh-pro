@@ -8,6 +8,7 @@
             serial: Default::default(),
             easytier: Default::default(),
             s3: Default::default(),
+            ftp: Default::default(),
             kind: HostKind::Telnet,
             id: "test-telnet-unreachable".into(),
             name: "telnet-unreachable".into(),

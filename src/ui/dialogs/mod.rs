@@ -9,6 +9,7 @@
 //! 那个常驻实体，把结果通过 [`CommandPaletteEvent`] 发回去。
 
 mod backup_restore;
+mod cert_trust;
 mod clash_form;
 mod clash_tun_settings;
 mod command_history;
@@ -26,6 +27,7 @@ mod snippet_params;
 mod zmodem_transfer;
 
 pub use backup_restore::BackupRestoreDialog;
+pub use cert_trust::CertTrustDialog;
 
 pub use clash_form::{ClashFormDialog, ClashSavedHandler};
 #[allow(unused_imports)]

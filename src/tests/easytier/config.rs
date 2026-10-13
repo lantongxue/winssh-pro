@@ -25,6 +25,7 @@
             serial: Default::default(),
             easytier: settings,
             s3: Default::default(),
+            ftp: Default::default(),
             shell_integration: false,
         }
     }

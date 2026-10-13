@@ -97,6 +97,7 @@
             serial: Default::default(),
             easytier: Default::default(),
             s3: Default::default(),
+            ftp: Default::default(),
             shell_integration: false,
         }
     }

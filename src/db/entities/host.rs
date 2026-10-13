@@ -85,6 +85,10 @@ pub struct Model {
     /// Secret Key 在 `password` 那一列。
     #[sea_orm(default_value = "")]
     pub s3_settings: String,
+    /// FTP 加密方式，JSON 编码的一份 [`crate::ftp::FtpSettings`]。
+    /// 空串是出厂档（明文），见 [`crate::ftp::decode`]。别的协议主机原样存着但没人读。
+    #[sea_orm(default_value = "")]
+    pub ftp_settings: String,
     /// 连上之后要不要往对端 shell 里装 OSC 133 标记，出厂是不装。
     /// 装的是什么、为什么要用户点头见 [`crate::terminal::shell_integration`]。
     #[sea_orm(default_value = false)]

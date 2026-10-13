@@ -192,6 +192,7 @@ fn display_host(id: String, name: SharedString, platform: SharedString) -> Host 
         serial: Default::default(),
         easytier: Default::default(),
         s3: Default::default(),
+        ftp: Default::default(),
         shell_integration: false,
     }
 }
@@ -337,6 +338,7 @@ impl TerminalPanel {
             serial: Default::default(),
             easytier: Default::default(),
             s3: Default::default(),
+            ftp: Default::default(),
             shell_integration: false,
         };
         Self::build(host, Source::Detached, None, dock_area, window, cx)

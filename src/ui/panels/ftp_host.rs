@@ -1,19 +1,19 @@
 //! 独立 FTP 会话面板：一台 `HostKind::Ftp` 主机开出来的那个标签页。
 //!
 //! 形状和 [`super::DockedSftpPanel`] 同构 —— 都只是一个把
-//! [`SftpPanel`] 铺成整页的壳 —— 但拨号那一侧正好相反：
+//! [`SftpPanel`] 铺成整页的壳 —— 拨号那一侧不同：
 //!
-//! - **认证用账号密码**。FTP 协议没有主机公钥这一说，也没有"密钥 / Agent"
-//!   那两档认证 —— 表单里 FTP 主机的认证下拉只给"密码"，这里直接把那一对
-//!   值交给 `opendal::services::Ftp`。所以也没有"主机信任确认框"这一段
-//!   流程，连不上就是连不上，原因直接落进空状态。
-//! - **走 OpenDAL，不走 russh**。因为项目信任库、传输池、被动模式由
-//!   OpenDAL 收口，这里不再引第二个 FTP 客户端库。
+//! - **认证用账号密码**。FTP 协议没有"密钥 / Agent"那两档认证 —— 表单里
+//!   FTP 主机的认证下拉只给"密码"。
+//! - **信任的是证书，不是主机密钥**。FTPS 的证书系统证书库认就直接连；不认
+//!   （自签名、内网 CA、过期……）就弹 [`CertTrustDialog`]，点头之后按指纹记进
+//!   和 SSH 主机密钥同一张信任库，规则见 [`crate::ftp::tls`]。明文 FTP 没有这一步。
+//! - **走 suppaftp，不走 russh**。拨号、TLS、登录与连接池见 [`crate::ftp::client`]。
 //!
 //! 与 [`super::DockedSftpPanel`] 的关系是"同一种壳，两种芯"：
 //! 渲染 / 文件面板本都一样，只是构造里把 [`FtpService`] 作为
 //! [`crate::service::FileService::Ftp`] 喂给 [`SftpPanel`]，面板里
-//! 那枚徽标就会标成 "FTP" 而不是 "SFTP"。
+//! 那枚徽标就会标成 "FTP" / "FTPS" 而不是 "SFTP"。
 
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Sizable as _,
@@ -30,9 +30,13 @@ use rust_i18n::t;
 
 use super::{SessionEvent, SftpPanel, SftpPanelEvent};
 use crate::{
+    ftp::tls::{CertInfo, CertTrust},
     host::Host,
-    service::{FileService, FtpService},
-    ui::theme::palette,
+    service::{FileService, FtpService, TrustedHostService},
+    ui::{
+        dialogs::{CertTrustDialog, TrustDecision, TrustDecisionHandler},
+        theme::palette,
+    },
 };
 
 /// 标签页上那个颜色点的直径，和别的会话同一档。
@@ -41,8 +45,7 @@ const TAB_DOT_SIZE: gpui_kit::Pixels = px(6.);
 /// 独立 FTP 会话。握着那条 FTP 连接，开着它的文件面板铺满整页。
 pub struct DockedFtpPanel {
     host: Host,
-    /// 面板本体。连接本身由 [`FtpService`] 自己管（OpenDAL 内部连接池），
-    /// 这一侧只持有"现在连没连上"的那份凭据。
+    /// 连没连上。连接本身由 [`FtpService`] 自己的连接池管，这一侧只记一个结论。
     service_connected: bool,
     /// 正在拨号中。"再连一次"那颗按钮靠它知道要灰着。
     connecting: bool,
@@ -97,11 +100,12 @@ impl DockedFtpPanel {
 
     // ─── 拨号 ──────────────────────────────────────────────────────────────
 
-    /// 拨 FTP：账号密码直接交给 Opendal 的 builder，绕开 SSH 那一套。
+    /// 拨 FTP：选路、拨号、TLS、登录，一步到位（见 [`FtpService::connect`]）。
     ///
-    /// 失败就只摆原因 + 一颗"再连一次" —— 没有主机信任确认框（FTP 没有
-    /// 主机指纹可验），没有回落本机（见 [`super::DockedSftpPanel`] 上"不回落"
-    /// 的同一个理由）。
+    /// FTPS 的流程与独立 SFTP 那一段同形：查信任库 → 决定钉不钉指纹 → 先连一次 →
+    /// 证书不被系统认、库里又没有 → 弹确认框 → 用户点头后钉住指纹再连。
+    /// 其余失败（网络不通、密码错、证书变了）只摆原因 + 一颗"再连一次"，
+    /// 不回落本机（见 [`super::DockedSftpPanel`] 上"不回落"的同一个理由）。
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.connecting {
             return;
@@ -111,24 +115,99 @@ impl DockedFtpPanel {
         let host = self.host.clone();
         let panel = cx.entity().downgrade();
         cx.spawn_in(window, async move |_, cx| {
-            // 构造该服务做的事只是参数装配：build 在 `FtpService::connect` 里同步
-            // 完成，真正的网络动作（连接/登录/列表）都推迟到面板第一次调用 ——
-            // 这一步的"连上"只是参数可信，不是通道就绪。
-            let outcome = FtpService::connect(&host);
-            _ = panel.update_in(cx, |this, window, cx| match outcome {
+            let hostname = host.hostname.trim().to_string();
+            let port = host.port;
+            let secure = host.ftp.security.is_secure();
+            let pinned = match secure {
+                true => TrustedHostService::open()
+                    .fingerprint_for(&hostname, port)
+                    .await
+                    .ok()
+                    .flatten(),
+                false => None,
+            };
+            let trust = CertTrust {
+                pinned: pinned.clone(),
+                ..CertTrust::default()
+            };
+
+            match FtpService::connect(&host, trust.clone()).await {
                 Ok(service) => {
-                    this.connecting = false;
-                    this.service_connected = true;
-                    this.sftp_panel.update(cx, |panel, cx| {
-                        panel.attach(Some(FileService::Ftp(service)), None, window, cx);
-                    });
-                    this.set_alive(true, cx);
-                    cx.notify();
+                    if pinned.is_some() {
+                        TrustedHostService::open().touch(&hostname, port).await.ok();
+                    }
+                    _ = panel.update_in(cx, |this, window, cx| this.attach(service, window, cx));
                 }
-                Err(error) => this.finish_error(format!("{error:#}"), window, cx),
-            });
+                Err(error) => {
+                    // 首次、证书被拒：拿被拒的那张弹框。钉过指纹却被拒是"证书变了"，
+                    // 那句报错已经说清楚了，不给继续的按钮。
+                    let first_sight = pinned.is_none().then(|| trust.rejected()).flatten();
+                    _ = panel.update_in(cx, |this, window, cx| match first_sight {
+                        Some(info) => this.show_trust_dialog(host.clone(), info, window, cx),
+                        None => this.finish_error(format!("{error:#}"), window, cx),
+                    });
+                }
+            }
         })
         .detach();
+    }
+
+    /// 首次见到一张系统不认的证书时那只确认框。接受就钉住这张证书的指纹再连一次
+    ///（勾了"保存"还要先落库）；拒绝就把那句提示挂进面板空状态。
+    fn show_trust_dialog(
+        &mut self,
+        host: Host,
+        info: CertInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let panel = cx.entity().downgrade();
+        let accept_info = info.clone();
+        let handler: TrustDecisionHandler = std::rc::Rc::new(move |decision, win, app| {
+            let panel = panel.clone();
+            match decision {
+                TrustDecision::Accept { save } => {
+                    let info = accept_info.clone();
+                    let host = host.clone();
+                    win.spawn(app, async move |cx| {
+                        if save {
+                            TrustedHostService::open().save(&info.key_info()).await.ok();
+                        }
+                        // "仅本次"也钉住这一个指纹：一次会话里每条数据通道都要再握手，
+                        // 用户看过、点过头的只是这一张（见 [`CertTrust::pinned`]）。
+                        let trust = CertTrust::pinned(info.fingerprint.clone());
+                        let outcome = FtpService::connect(&host, trust).await;
+                        _ = panel.update_in(cx, |this, window, cx| match outcome {
+                            Ok(service) => this.attach(service, window, cx),
+                            Err(error) => this.finish_error(format!("{error:#}"), window, cx),
+                        });
+                    })
+                    .detach();
+                }
+                TrustDecision::Reject => {
+                    _ = panel.update(app, |this, cx| {
+                        this.connecting = false;
+                        this.sftp_panel.update(cx, |panel, cx| {
+                            panel.note_error(SharedString::from(t!("ftp_host.trust_rejected")), cx);
+                        });
+                        this.set_alive(false, cx);
+                        cx.notify();
+                    });
+                }
+            }
+        });
+        CertTrustDialog::open(&info, handler, window, cx);
+    }
+
+    /// 连上了：把服务交给文件面板，颜色点亮起来。
+    fn attach(&mut self, service: FtpService, window: &mut Window, cx: &mut Context<Self>) {
+        self.connecting = false;
+        self.service_connected = true;
+        self.sftp_panel.update(cx, |panel, cx| {
+            panel.attach(Some(FileService::Ftp(service)), None, window, cx);
+        });
+        self.set_alive(true, cx);
+        cx.notify();
     }
 
     /// 拨号 / 服务构造失败的收尾：原因摆进面板空状态，颜色点记灰。
@@ -155,7 +234,7 @@ impl DockedFtpPanel {
 
     /// 面板向外报的事。与 [`super::DockedSftpPanel`] 同一组事件被翻译成
     /// 本面板自己的动作 —— `SendCommand` / `SetHeight` 同样没有终端可发，
-    /// `Reconnect` 也几乎不可能失败（构造轻活），但仍走"重新 connect"。
+    /// `Reconnect` 就是重新拨一次。
     fn subscribe_sftp(sftp_panel: &Entity<SftpPanel>, window: &mut Window, cx: &mut Context<Self>) {
         cx.subscribe_in(
             sftp_panel,
@@ -221,7 +300,7 @@ impl BasePanel for DockedFtpPanel {
 }
 
 impl Panel for DockedFtpPanel {
-    /// 标签页和别的会话一致：一颗颜色点、会话名、一个 "FTP" 的小尾巴、关闭。
+    /// 标签页和别的会话一致：一颗颜色点、会话名、一个 "FTP" / "FTPS" 的小尾巴、关闭。
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .items_center()
@@ -241,7 +320,7 @@ impl Panel for DockedFtpPanel {
                 div()
                     .text_xs()
                     .text_color(palette::teal())
-                    .child(self.host.kind.label()),
+                    .child(self.host.ftp.security.label()),
             )
             .child(
                 Button::new("ftp-host-panel-close")

@@ -1,4 +1,4 @@
-//! 面板眼里的一份"文件服务"：SFTP（SSH 子系统）、FTP（OpenDAL）或 S3（rust-s3）。
+//! 面板眼里的一份"文件服务"：SFTP（SSH 子系统）、FTP / FTPS（suppaftp）或 S3（rust-s3）。
 //!
 //! 界面把"这台主机是哪一种"压扁成这一档枚举，把"调用什么方法"留成一行
 //! `match` —— 两边的公开方法签名被刻意做成一样，所以这个枚举的每个方法
@@ -36,16 +36,16 @@ pub enum FileService {
 }
 
 impl FileService {
-    /// 面板在徽标上要标注协议名（"SFTP" / "FTP"），从这一档取。
+    /// 面板在徽标上要标注协议名（"SFTP" / "FTP" / "FTPS"），从这一档取。
     pub fn label(&self) -> &'static str {
         match self {
             Self::Sftp(_) => "SFTP",
-            Self::Ftp(_) => "FTP",
+            Self::Ftp(service) => service.label(),
             Self::S3(_) => "S3",
         }
     }
 
-    /// 远端家目录。SFTP 会来真的查一次；FTP 没有这个概念，答 "/"。
+    /// 远端家目录。SFTP 会来真的查一次；FTP 答登录时 `PWD` 问出来的那一个。
     pub async fn home(&self) -> Result<String> {
         match self {
             Self::Sftp(service) => service.home().await,
@@ -108,7 +108,7 @@ impl FileService {
         }
     }
 
-    /// 改权限位。FTP 协议没有这一档，那一头会返回"不支持"。
+    /// 改权限位。FTP 走 `SITE CHMOD`，服务器不认时那一头报"不支持"；S3 没有这一档。
     pub async fn set_mode(&self, target: &str, octal: u32) -> Result<()> {
         match self {
             Self::Sftp(service) => service.set_mode(target, octal).await,

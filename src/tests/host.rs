@@ -62,6 +62,7 @@
             serial: crate::serial::SerialSettings::default(),
             easytier: crate::easytier::EasyTierSettings::default(),
             s3: Default::default(),
+            ftp: Default::default(),
             shell_integration: false,
         };
         assert_eq!(host.address(), "root@10.0.0.1");

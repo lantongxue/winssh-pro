@@ -10,6 +10,7 @@ mod db;
 mod desktop;
 mod easytier;
 mod forward;
+mod ftp;
 mod host;
 mod i18n;
 mod monitor;

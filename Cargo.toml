@@ -204,7 +204,25 @@ rust-i18n = "4.2"
 # 启动时问一下系统"现在是什么语言"。它本来就在依赖树里（cosmic-text 用它），
 # 变成直接依赖不多编译一份东西；比自己读 LANG / GetUserDefaultLocaleName 稳。
 sys-locale = "0.3"
-opendal = { version = "0.59", features = ["services-webdav", "services-ftp"] }
+opendal = { version = "0.59", features = ["services-webdav"] }
+# FTP / FTPS（FTP 主机的文件面板，见 `src/ftp/` 与 `crate::service::FtpService`）。
+# 直接用 suppaftp，不再经 OpenDAL 转一道：OpenDAL 的 FTP 只有明文、没有隐式
+# FTPS、拨号不走代理，也拿不到 `PWD` 给的登录目录。
+#
+# TLS 走 rustls（aws-lc-rs，与 russh、reqwest 同一个后端），**不用 native-tls**：
+# FileZilla Server、vsftpd 默认要求数据通道恢复控制连接的 TLS 会话
+# （`425 TLS session of data connection not resumed`），native-tls 在哪个平台上
+# 都不给会话复用的开关；rustls 给，见 `src/ftp/client.rs` 里 `connector` 的说明。
+# 证书先问系统证书库，系统不认再弹确认框按指纹认，见 `src/ftp/tls.rs`。
+# `deprecated` 开的是隐式 FTPS（990 端口）那个入口 `connect_secure_implicit`，
+# 协议上不推荐，但老 NAS、Serv-U 一类还在用。
+suppaftp = { version = "10", default-features = false, features = ["tokio-rustls-aws-lc-rs", "deprecated"] }
+# FTPS 证书校验的"系统证书库"那一层（Windows 上是系统的证书链引擎）。它本来
+# 就在依赖树里（reqwest 0.13 用它），变成直接依赖不多编译一份东西。
+rustls-platform-verifier = "0.7"
+# 不受信任证书确认框上的主题、颁发者、有效期从证书里解出来。同样本来就在
+# 依赖树里（IronRDP 用它）。
+x509-cert = { version = "0.2", default-features = false }
 # S3 对象存储（S3 主机的文件面板、备份同步的 S3 一档），见 `src/s3/`。
 # rust-s3 一个 `Bucket` 就是一只完整的 S3 客户端：SigV4 签名、列桶、
 # ListObjectsV2、分片上传、服务端复制都在里面，不再自己补签名与 XML。

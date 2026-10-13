@@ -1015,7 +1015,7 @@ impl TableDelegate for RemoteTableDelegate {
 /// 底部这一栏 SFTP 面板。
 pub struct SftpPanel {
     host: Host,
-    /// 这条会话的远端文件通道 —— 上/backed by SFTP（SSH 子系统）、FTP（OpenDAL）
+    /// 这条会话的远端文件通道 —— 上/backed by SFTP（SSH 子系统）、FTP / FTPS（suppaftp）
     /// 或 S3（rust-s3），面板不再区分[`FileService`]。`None` 时右栏只有一个空状态
     /// —— 本地 Shell 会话、或者还没连上，都不该画一张假的文件表。
     service: Option<FileService>,

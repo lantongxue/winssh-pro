@@ -7989,7 +7989,6 @@ dependencies = [
  "opendal-layer-logging",
  "opendal-layer-retry",
  "opendal-layer-timeout",
- "opendal-service-ftp",
  "opendal-service-webdav",
 ]
 
@@ -8072,23 +8071,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08ac6c77fe0d1b18e0064a02c19b98dbebcab78bf5e7753ad1f3abbc18850ff4"
 dependencies = [
  "opendal-core",
- "tokio",
-]
-
-[[package]]
-name = "opendal-service-ftp"
-version = "0.59.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a72ac3ecb7eaf8f355127f3c8daa1e6487634b197625d9d34dcadce252165e31"
-dependencies = [
- "asyncband",
- "bytes",
- "http",
- "log",
- "opendal-core",
- "rustls-native-certs",
- "serde",
- "suppaftp",
  "tokio",
 ]
 
@@ -14634,6 +14616,7 @@ dependencies = [
  "rust-i18n",
  "rust-s3",
  "rustls",
+ "rustls-platform-verifier",
  "sea-orm",
  "serde",
  "serde_json",
@@ -14642,6 +14625,7 @@ dependencies = [
  "sha2 0.11.0",
  "ssh-key",
  "strum",
+ "suppaftp",
  "sys-locale",
  "telnet",
  "tokio",
@@ -14652,6 +14636,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "winreg 0.56.0",
  "winres",
+ "x509-cert",
  "zip",
  "zmodem2",
 ]

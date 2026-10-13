@@ -2312,6 +2312,9 @@ host_form.page_easytier:
 host_form.page_s3:
   en: "S3 connection"
   zh-CN: "S3 连接"
+host_form.page_ftp:
+  en: "FTP connection"
+  zh-CN: "FTP 连接"
 host_form.group_easytier_peers:
   en: "Peers"
   zh-CN: "对等节点"
@@ -4924,6 +4927,56 @@ host_trust.reject:
   en: 'Cancel'
   zh-CN: 取消
 
+# ── 证书信任确认框（FTPS 证书不被系统认时弹出，见 src/ui/dialogs/cert_trust.rs） ──
+cert_trust.title:
+  en: Untrusted Certificate
+  zh-CN: 证书不受信任
+cert_trust.subtitle:
+  en: The system does not trust this server's TLS certificate.
+  zh-CN: 系统不信任这台服务器的 TLS 证书。
+cert_trust.label_address:
+  en: Address
+  zh-CN: 地址
+cert_trust.label_subject:
+  en: Subject
+  zh-CN: 主题
+cert_trust.label_issuer:
+  en: Issuer
+  zh-CN: 颁发者
+cert_trust.label_validity:
+  en: Valid
+  zh-CN: 有效期
+cert_trust.label_fingerprint:
+  en: SHA-256
+  zh-CN: 指纹
+cert_trust.unknown:
+  en: (unreadable)
+  zh-CN: （解析不出）
+cert_trust.problem_self_signed:
+  en: The certificate is self-signed — it was not issued by any authority the system trusts.
+  zh-CN: 这是一张自签名证书 —— 不是由系统信任的机构签发的。
+cert_trust.problem_unknown_issuer:
+  en: The certificate was issued by an authority the system does not trust.
+  zh-CN: 签发这张证书的机构不在系统的信任列表里。
+cert_trust.problem_expired:
+  en: The certificate has expired.
+  zh-CN: 这张证书已经过期。
+cert_trust.problem_not_yet_valid:
+  en: The certificate is not valid yet — check this computer's clock.
+  zh-CN: 这张证书还没到生效时间 —— 请检查本机时钟。
+cert_trust.problem_name_mismatch:
+  en: The certificate was issued for a different host name than the one you connected to.
+  zh-CN: 证书上的主机名与你连接的地址不一致。
+cert_trust.problem_revoked:
+  en: The certificate has been revoked by its issuer.
+  zh-CN: 这张证书已被签发机构吊销。
+cert_trust.problem_other:
+  en: The system could not verify the certificate.
+  zh-CN: 系统无法验证这张证书。
+cert_trust.safety_note:
+  en: Compare the fingerprint with the one shown in the server's configuration (FileZilla Server shows it in its settings). Trusting a forged certificate exposes your password and files to a man-in-the-middle.
+  zh-CN: 请把指纹与服务器配置里显示的核对一致（FileZilla Server 在设置里能看到）。信任一张伪造的证书，密码和文件会暴露给中间人。
+
 # ── 可信主机管理弹窗 ──────────────────────────────────────────────────────────
 trusted_hosts.title:
   en: Trusted Hosts
@@ -5115,14 +5168,38 @@ sftp_host.trust_rejected:
 ftp_host.close_session:
   en: Close session
   zh-CN: 关闭会话
+ftp_host.trust_rejected:
+  en: Connection cancelled — you chose not to trust this server's certificate
+  zh-CN: 连接已取消 —— 已拒绝信任这台服务器的证书
 
-# ── FTP 服务错误（src/service/ftp_service.rs） ──
+# ── FTP 服务错误（src/service/ftp_service.rs、src/ftp/client.rs） ──
 ftp_err.no_hostname:
   en: The FTP server address is empty
   zh-CN: FTP 服务器地址为空
-ftp_err.build_operator:
-  en: Failed to build the FTP client parameters
-  zh-CN: 组装 FTP 客户端参数失败
+ftp_err.proxy_misconfigured:
+  en: "The proxy for this FTP host is not fully configured: %{reason}"
+  zh-CN: 这台 FTP 主机的代理配置不完整：%{reason}
+ftp_err.proxy_failed:
+  en: "Could not connect through proxy %{proxy}: %{error}"
+  zh-CN: 经代理 %{proxy} 连接失败：%{error}
+ftp_err.timed_out:
+  en: Timed out waiting for the server
+  zh-CN: 等服务器响应超时
+ftp_err.tls_failed:
+  en: "TLS handshake failed: %{error}"
+  zh-CN: TLS 握手失败：%{error}
+ftp_err.cert_untrusted:
+  en: The TLS certificate of %{address} is not trusted
+  zh-CN: "%{address} 的 TLS 证书不受信任"
+ftp_err.cert_changed:
+  en: "The TLS certificate of %{address} has changed — this could be a man-in-the-middle attack. Trusted: %{expected}; presented: %{presented}. If the server really got a new certificate, remove its entry under Trusted Hosts and connect again."
+  zh-CN: "%{address} 的 TLS 证书变了 —— 可能是中间人攻击。已信任：%{expected}；对端出示：%{presented}。如果确实是服务器换了证书，请在「受信任主机」里删掉这一条再连。"
+ftp_err.not_found:
+  en: "%{path} does not exist on the server"
+  zh-CN: 服务器上没有 %{path}
+ftp_err.action_chmod:
+  en: Change permissions of %{path}
+  zh-CN: 修改 %{path} 的权限
 ftp_err.action_open_session:
   en: Open the FTP session
   zh-CN: 打开 FTP 会话
@@ -5156,12 +5233,9 @@ ftp_err.action_read_file:
 ftp_err.action_save_file:
   en: Save the file %{path}
   zh-CN: 写入文件 %{path}
-ftp_err.action_open_remote:
-  en: Open the remote file %{path}
-  zh-CN: 打开远端文件 %{path}
 ftp_err.chmod_unsupported:
-  en: FTP servers do not support chmod; the permissions column is read-only
-  zh-CN: FTP 协议不支持 chmod，权限列只读
+  en: This FTP server does not support changing permissions (SITE CHMOD)
+  zh-CN: 这台 FTP 服务器不支持修改权限（SITE CHMOD）
 ftp_err.raw_error:
   en: "%{action}: %{error}"
   zh-CN: "%{action}:%{error}"
@@ -5240,6 +5314,21 @@ s3_err.raw_error:
 host_form.field_s3_endpoint:
   en: Endpoint
   zh-CN: 端点 (Endpoint)
+host_form.field_ftp_security:
+  en: Encryption
+  zh-CN: 加密方式
+host_form.ftp_security_plain:
+  en: Plain FTP (unencrypted)
+  zh-CN: 明文 FTP（不加密）
+host_form.ftp_security_explicit:
+  en: Explicit FTP over TLS (AUTH TLS)
+  zh-CN: 显式 FTPS（AUTH TLS）
+host_form.ftp_security_implicit:
+  en: Implicit FTP over TLS (port 990)
+  zh-CN: 隐式 FTPS（990 端口）
+host_form.ftp_hint:
+  en: Explicit FTPS upgrades the connection to TLS before logging in and fails rather than falling back to plain text. Certificates the system trusts are accepted silently; for others (self-signed, expired…) you are asked once, and the fingerprint is remembered under Trusted Hosts.
+  zh-CN: 显式 FTPS 在登录前把连接升级为 TLS，服务器不支持时直接报错，不会退回明文。系统信任的证书直接连接；不信任的（自签名、过期……）会弹框询问一次，指纹记在「受信任主机」里。
 host_form.field_s3_preset:
   en: Provider Preset
   zh-CN: 服务商预设

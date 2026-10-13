@@ -150,6 +150,7 @@
             serial: Default::default(),
             easytier: Default::default(),
             s3: Default::default(),
+            ftp: Default::default(),
             shell_integration: false,
         };
         let config = connector_config(&host, desktop, &host.rdp);

@@ -45,6 +45,7 @@ use crate::{
     easytier::{
         DEFAULT_LISTEN_PORT, DEFAULT_SOCKS5_PORT, EasyTierAccess, EasyTierSettings, split_lines,
     },
+    ftp::{FtpSecurity, FtpSettings},
     host::{AuthMethod, Host, HostDraft, HostGroup, HostKind},
     proxy::{self, HostProxy, ProxyConfig, ProxyMode},
     rdp::{RdpColorDepth, RdpPerformance, RdpSecurity, RdpSettings},
@@ -189,6 +190,17 @@ fn s3_addressing_choices() -> Vec<SharedString> {
             S3Addressing::Auto => t!("host_form.s3_addressing_auto").into(),
             S3Addressing::Path => t!("host_form.s3_addressing_path").into(),
             S3Addressing::VirtualHost => t!("host_form.s3_addressing_virtual_host").into(),
+        })
+        .to_vec()
+}
+
+/// FTP 加密方式的下拉行，顺序即 [`FtpSecurity::ALL`]。
+fn ftp_security_choices() -> Vec<SharedString> {
+    FtpSecurity::ALL
+        .map(|security| match security {
+            FtpSecurity::Plain => t!("host_form.ftp_security_plain").into(),
+            FtpSecurity::Explicit => t!("host_form.ftp_security_explicit").into(),
+            FtpSecurity::Implicit => t!("host_form.ftp_security_implicit").into(),
         })
         .to_vec()
 }
@@ -406,6 +418,11 @@ pub struct HostForm {
     s3_addressing: Entity<SelectState<Vec<SharedString>>>,
     s3_bucket: Entity<InputState>,
     s3_region: Entity<InputState>,
+    /// FTP 那一页：加密方式一个下拉，顺序即 [`FtpSecurity::ALL`]。
+    ftp_security: Entity<SelectState<Vec<SharedString>>>,
+    /// 下拉上一次停在哪一档。换档时要知道"从哪档换过来"，才判断得出端口
+    /// 是不是还停在上一档的惯例端口上（见 [`crate::ftp::port_after_switch`]）。
+    ftp_security_last: FtpSecurity,
     proxy_jump: Entity<SelectState<Vec<SharedString>>>,
     /// 走不走 SOCKS5 代理：不使用 / 跟随全局 / 配置代理，见 [`proxy_modes`]。
     ///
@@ -920,6 +937,30 @@ impl HostForm {
         )
         .detach();
 
+        let ftp_security_last = match editing {
+            Some((host, _)) => host.ftp.security,
+            None => FtpSecurity::default(),
+        };
+        let ftp_security = cx.new(|cx| {
+            SelectState::new(
+                ftp_security_choices(),
+                Some(IndexPath::new(ftp_security_last.index())),
+                window,
+                cx,
+            )
+        });
+        // 换到隐式 FTPS，端口跟着换成 990（换回来换回 21）—— 只在端口还停在
+        // 上一档的惯例端口上时才换。
+        cx.subscribe_in(
+            &ftp_security,
+            window,
+            |this, _, _: &SelectEvent<Vec<SharedString>>, window, cx| {
+                this.on_ftp_security_changed(window, cx);
+                cx.notify();
+            },
+        )
+        .detach();
+
         let kind = cx.new(|cx| {
             SelectState::new(
                 host_kinds(),
@@ -1068,6 +1109,8 @@ impl HostForm {
             s3_addressing,
             s3_bucket,
             s3_region,
+            ftp_security,
+            ftp_security_last,
             proxy_jump,
             proxy_mode,
             proxy_host,
@@ -1323,6 +1366,32 @@ impl HostForm {
         }
     }
 
+    /// FTP 那一页现在选的加密方式。按下标折回，不比文案。
+    fn selected_ftp(&self, cx: &App) -> FtpSettings {
+        let row = self
+            .ftp_security
+            .read(cx)
+            .selected_index(cx)
+            .map(|index| index.row)
+            .unwrap_or_default();
+        FtpSettings {
+            security: FtpSecurity::from_index(row),
+        }
+    }
+
+    /// 换了加密方式：端口还停在上一档的惯例端口（21 / 990）或空着，就跟着换；
+    /// 用户自己敲过的端口不动。编辑老主机时同样生效 —— 从 21 换到隐式 FTPS
+    /// 却还连 21，十有八九不是用户想要的。
+    fn on_ftp_security_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let to = self.selected_ftp(cx).security;
+        let from = std::mem::replace(&mut self.ftp_security_last, to);
+        let port = self.port.read(cx).value().to_string();
+        if let Some(port) = crate::ftp::port_after_switch(&port, from, to) {
+            self.port
+                .update(cx, |state, cx| state.set_value(port.to_string(), window, cx));
+        }
+    }
+
     /// 选中一家服务商预设：那家的默认 Endpoint 写进「主机名」格，寻址风格
     /// 下拉跟着预填 —— 挑阿里云 OSS 的人要的就是不用自己知道 virtual-host
     /// style 这回事。「自定义」没有默认值，不碰用户敲了一半的地址。
@@ -1554,6 +1623,7 @@ impl HostForm {
                 serial: self.selected_serial(cx),
                 easytier,
                 s3: self.selected_s3(cx),
+                ftp: self.selected_ftp(cx),
             },
         ))
     }
@@ -2130,6 +2200,25 @@ impl HostForm {
     /// 输入框，只在连接类型是 S3 时画（画不画由宿主 `s3_page` 挂不挂整页
     /// 决定）。端点地址在连接页的「Endpoint」那一格，Access Key / Secret
     /// Key 在认证页。
+    /// FTP 那一段：加密方式一个下拉，下面一行说明。只在连接类型是 FTP 时画
+    /// （画不画由宿主 `ftp_page` 挂不挂整页决定）。
+    fn render_ftp_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_3()
+            .w_full()
+            .child(field(
+                t!("host_form.field_ftp_security").into(),
+                Select::new(&self.ftp_security).w_full(),
+                cx,
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(t!("host_form.ftp_hint"))),
+            )
+    }
+
     fn render_s3_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_3()
@@ -2814,10 +2903,11 @@ impl HostFormWindow {
             HostKind::Serial => settings.page(self.serial_page()),
             HostKind::EasyTier => settings.page(self.easytier_page()),
             HostKind::S3 => settings.page(self.s3_page()),
+            HostKind::Ftp => settings.page(self.ftp_page()),
             // Ssh / Sftp / Telnet 没有独立的"协议参数"页 —— SFTP 的全部 UI 就是
             // 会话开出来那个文件面板，表单上没有它自己的那一页；Telnet 的协商在
             // [`crate::telnet`] 内部固定（ECHO / SGA / NAWS / TTYPE），不给用户调。
-            HostKind::Ssh | HostKind::Sftp | HostKind::Ftp | HostKind::Telnet => settings,
+            HostKind::Ssh | HostKind::Sftp | HostKind::Telnet => settings,
         };
         settings.page(self.tags_page())
     }
@@ -2960,6 +3050,19 @@ impl HostFormWindow {
             .group(
                 SettingGroup::new()
                     .item(self.row(|this, cx| this.render_s3_section(cx).into_any_element())),
+            )
+    }
+
+    /// FTP 专属配置页：同 [`Self::vnc_page`]，一级类目、单组无头衔。
+    /// 只有加密方式一个下拉。
+    fn ftp_page(&self) -> SettingPage {
+        SettingPage::new(t!("host_form.page_ftp"))
+            .icon(AppIcon::ShieldCheck)
+            .default_open(true)
+            .resettable(false)
+            .group(
+                SettingGroup::new()
+                    .item(self.row(|this, cx| this.render_ftp_section(cx).into_any_element())),
             )
     }
 
