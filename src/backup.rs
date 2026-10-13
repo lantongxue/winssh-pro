@@ -1,7 +1,7 @@
 //! 数据备份与恢复：WebDAV 与 S3 兼容协议的领域模型、加密机制与预设。
 //!
 //! 核心能力：
-//! - 协议支持：WebDAV、S3 兼容协议（基于 Apache OpenDAL）
+//! - 协议支持：WebDAV（基于 Apache OpenDAL）、S3 兼容协议（基于 rust-s3）
 //! - 常见 S3 云厂商预设：AWS S3、阿里云 OSS、腾讯云 COS、七牛云 Kodo、MinIO/自定义
 //! - 加密机制：支持明文裸备份与 AES-256-GCM 密码加密备份（PBKDF2-SHA256 密钥派生）
 //! - 副本保留策略与备份频率设置
@@ -405,90 +405,178 @@ pub fn decrypt_backup(payload: &[u8], password: Option<&str>) -> Result<Vec<u8>>
     }
 }
 
-// ── OpenDAL 统一存储接入 ──────────────────────────────────────────────────
+// ── 远端存储接入 ──────────────────────────────────────────────────────────
 
+use ::s3::Bucket;
+use ::s3::error::S3Error;
 use opendal::Operator;
-use opendal::services::{S3, Webdav};
+use opendal::services::Webdav;
 
-/// 根据配置构建 OpenDAL Operator 客户端。
-pub fn build_operator(config: &BackupConfig) -> Result<Operator> {
-    match config.protocol {
-        BackupProtocol::Webdav => {
-            let mut endpoint = config.webdav.endpoint.trim().to_string();
-            if endpoint.is_empty() {
-                bail!("WebDAV 服务器地址不能为空");
+/// 备份落点。WebDAV 走 OpenDAL，S3 走 rust-s3（与主机的 S3 文件面板同一份
+/// 接线，见 [`crate::s3::S3ConnParams`]）。备份服务只用得着列、写、读、删
+/// 四个动作，两边在这里折成同一套；副本一律平铺在 root 下。
+///
+/// 构造只装参数、不发请求。四个动作都要在数据层 runtime 上 await —— 两边
+/// 底层都是 reqwest + tokio，在 gpui executor 上 await 会因缺 tokio reactor
+/// 直接 panic。
+pub enum BackupStore {
+    Webdav(Operator),
+    S3 {
+        bucket: Box<Bucket>,
+        /// root 前缀，不带首尾 `/`；空串即桶根。
+        root: String,
+    },
+}
+
+impl BackupStore {
+    /// 根据配置装出备份落点。
+    pub fn open(config: &BackupConfig) -> Result<Self> {
+        match config.protocol {
+            BackupProtocol::Webdav => {
+                let mut endpoint = config.webdav.endpoint.trim().to_string();
+                if endpoint.is_empty() {
+                    bail!("WebDAV 服务器地址不能为空");
+                }
+                if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
+                    endpoint = format!("https://{endpoint}");
+                }
+                if !endpoint.ends_with('/') {
+                    endpoint.push('/');
+                }
+
+                let mut builder = Webdav::default().endpoint(&endpoint);
+
+                let root = config.webdav.root.trim();
+                if !root.is_empty() {
+                    builder = builder.root(root);
+                }
+
+                let user = config.webdav.username.trim();
+                if !user.is_empty() {
+                    builder = builder.username(user);
+                }
+                let pass = config.webdav.password.trim();
+                if !pass.is_empty() {
+                    builder = builder.password(pass);
+                }
+
+                let op = Operator::new(builder).context("构建 WebDAV 存储客户端失败")?;
+                Ok(Self::Webdav(op))
             }
-            if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
-                endpoint = format!("https://{endpoint}");
+            BackupProtocol::S3 => {
+                let bucket = config.s3.bucket.trim();
+                if bucket.is_empty() {
+                    bail!("S3 存储桶名称 (Bucket) 不能为空");
+                }
+                // Region 留空走端点推断、推不出折回 us-east-1；端点留空落到
+                // AWS 的地域端点。两条兜底都在 `S3ConnParams::new` 里。
+                let addressing = match config.s3.path_style {
+                    true => S3Addressing::Path,
+                    false => S3Addressing::VirtualHost,
+                };
+                let params = crate::s3::S3ConnParams::new(
+                    &config.s3.endpoint,
+                    &config.s3.access_key_id,
+                    &config.s3.secret_access_key,
+                    &config.s3.region,
+                    addressing,
+                );
+                let bucket = params.bucket(bucket).context("构建 S3 存储客户端失败")?;
+                Ok(Self::S3 {
+                    bucket,
+                    root: config.s3.root.trim().trim_matches('/').to_string(),
+                })
             }
-            if !endpoint.ends_with('/') {
-                endpoint.push('/');
-            }
-
-            let mut builder = Webdav::default().endpoint(&endpoint);
-
-            let root = config.webdav.root.trim();
-            if !root.is_empty() {
-                builder = builder.root(root);
-            }
-
-            let user = config.webdav.username.trim();
-            if !user.is_empty() {
-                builder = builder.username(user);
-            }
-            let pass = config.webdav.password.trim();
-            if !pass.is_empty() {
-                builder = builder.password(pass);
-            }
-
-            let op = Operator::new(builder).context("构建 WebDAV 存储客户端失败")?;
-            Ok(op)
-        }
-        BackupProtocol::S3 => {
-            let bucket = config.s3.bucket.trim();
-            if bucket.is_empty() {
-                bail!("S3 存储桶名称 (Bucket) 不能为空");
-            }
-
-            let mut builder = S3::default().bucket(bucket);
-
-            let endpoint = config.s3.endpoint.trim();
-            if !endpoint.is_empty() {
-                builder = builder.endpoint(endpoint);
-            }
-
-            // OpenDAL 的 builder 没有 region 会直接构建失败。预设的阿里云 /
-            // 腾讯云留空走端点推断，推不出的（自定义域名、MinIO）折回 us-east-1。
-            let region = match config.s3.region.trim() {
-                "" => crate::s3::infer_region(endpoint)
-                    .unwrap_or_else(|| "us-east-1".to_string()),
-                region => region.to_string(),
-            };
-            builder = builder.region(&region);
-
-            let ak = config.s3.access_key_id.trim();
-            if !ak.is_empty() {
-                builder = builder.access_key_id(ak);
-            }
-
-            let sk = config.s3.secret_access_key.trim();
-            if !sk.is_empty() {
-                builder = builder.secret_access_key(sk);
-            }
-
-            let root = config.s3.root.trim();
-            if !root.is_empty() {
-                builder = builder.root(root);
-            }
-
-            if !config.s3.path_style {
-                builder = builder.enable_virtual_host_style();
-            }
-
-            let op = Operator::new(builder).context("构建 S3 存储客户端失败")?;
-            Ok(op)
         }
     }
+
+    /// 列出 root 下直接的那一层文件：`(文件名, 大小)`。
+    pub async fn list(&self) -> Result<Vec<(String, u64)>> {
+        match self {
+            Self::Webdav(op) => Ok(op
+                .list("")
+                .await?
+                .into_iter()
+                .map(|entry| (entry.name().to_string(), entry.metadata().content_length()))
+                .collect()),
+            Self::S3 { bucket, root } => {
+                let prefix = s3_key(root, "");
+                let pages = bucket
+                    .list(prefix.clone(), Some("/".to_string()))
+                    .await
+                    .map_err(s3_error)?;
+                Ok(pages
+                    .into_iter()
+                    .flat_map(|page| page.contents)
+                    .filter_map(|object| {
+                        let name = object.key.strip_prefix(&prefix)?;
+                        (!name.is_empty()).then(|| (name.to_string(), object.size))
+                    })
+                    .collect())
+            }
+        }
+    }
+
+    /// 写一个副本（同名覆盖）。
+    pub async fn write(&self, name: &str, payload: Vec<u8>) -> Result<()> {
+        match self {
+            Self::Webdav(op) => op.write(name, payload).await.map(drop)?,
+            Self::S3 { bucket, root } => s3_transfer(bucket)
+                .put_object(s3_key(root, name), &payload)
+                .await
+                .map(drop)
+                .map_err(s3_error)?,
+        }
+        Ok(())
+    }
+
+    /// 读回一个副本的全部字节。
+    pub async fn read(&self, name: &str) -> Result<Vec<u8>> {
+        match self {
+            Self::Webdav(op) => Ok(op.read(name).await?.to_vec()),
+            Self::S3 { bucket, root } => Ok(s3_transfer(bucket)
+                .get_object(s3_key(root, name))
+                .await
+                .map_err(s3_error)?
+                .to_vec()),
+        }
+    }
+
+    /// 删一个副本。
+    pub async fn delete(&self, name: &str) -> Result<()> {
+        match self {
+            Self::Webdav(op) => op.delete(name).await?,
+            Self::S3 { bucket, root } => bucket
+                .delete_object(s3_key(root, name))
+                .await
+                .map(drop)
+                .map_err(s3_error)?,
+        }
+        Ok(())
+    }
+}
+
+/// 副本在桶里的 key：`{root}/{name}`，root 为空就是桶根。`name` 传空串得到的
+/// 正是列举 root 那一层用的前缀（`{root}/` 或空）。
+fn s3_key(root: &str, name: &str) -> String {
+    match root.is_empty() {
+        true => name.to_string(),
+        false => format!("{root}/{name}"),
+    }
+}
+
+/// 上传 / 下载副本用的那一只：去掉 rust-s3 默认的 60 秒整请求超时 —— 它连
+/// 正文一起算，几十 MB 的快照在慢上行链路上一分钟传不完。克隆共用同一只
+/// reqwest 客户端。
+fn s3_transfer(bucket: &Bucket) -> Bucket {
+    let mut bucket = bucket.clone();
+    bucket.set_request_timeout(None);
+    bucket
+}
+
+/// rust-s3 的错误说成一行人话（对端拒绝时带着 S3 的错误码与原话）。
+fn s3_error(error: S3Error) -> anyhow::Error {
+    anyhow!(crate::s3::describe(&error))
 }
 
 #[cfg(test)]

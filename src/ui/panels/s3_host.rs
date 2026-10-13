@@ -5,11 +5,11 @@
 //!
 //! - **认证用 Access Key / Secret Key**。S3 协议没有主机公钥这一说，也没有
 //!   "密钥 / Agent" 那两档认证 —— 表单里 S3 主机的认证下拉只给"密码"，
-//!   这里直接把那一对值交给 `opendal::services::S3`（Access Key 存在
+//!   这里直接把那一对值交给 [`S3Service`]（Access Key 存在
 //!   `hosts.user`、Secret Key 存在 `hosts.password`）。所以也没有"主机信任
 //!   确认框"这一段流程，连不上就是连不上，原因直接落进空状态。
-//! - **走 OpenDAL，不走 russh**。因为 S3 的签名、分片上传由 OpenDAL 收口，
-//!   这里不再引第二个 S3 客户端库。
+//! - **走 rust-s3，不走 russh**。S3 的签名、列桶、分片上传都由 rust-s3 收口，
+//!   见 [`crate::s3`]。
 //!
 //! 与 [`super::DockedFtpPanel`] 的关系是"同一种壳，两种芯"：
 //! 渲染 / 文件面板本都一样，只是构造里把 [`S3Service`] 作为
@@ -42,7 +42,7 @@ const TAB_DOT_SIZE: gpui_kit::Pixels = px(6.);
 /// 独立 S3 会话。握着那条 S3 连接，开着它的文件面板铺满整页。
 pub struct DockedS3Panel {
     host: Host,
-    /// 面板本体。连接本身由 [`S3Service`] 自己管（OpenDAL 内部连接池），
+    /// 面板本体。连接本身由 [`S3Service`] 自己管（每个桶一只 reqwest 连接池），
     /// 这一侧只持有"现在连没连上"的那份凭据。
     service_connected: bool,
     /// 正在拨号中。"再连一次"那颗按钮靠它知道要灰着。
@@ -98,7 +98,7 @@ impl DockedS3Panel {
 
     // ─── 拨号 ──────────────────────────────────────────────────────────────
 
-    /// 拨 S3：Access Key / Secret Key 直接交给 OpenDAL 的 builder，绕开 SSH 那一套。
+    /// 拨 S3：Access Key / Secret Key 直接交给 [`S3Service`]，绕开 SSH 那一套。
     ///
     /// 失败就只摆原因 + 一颗"再连一次" —— 没有主机信任确认框（S3 没有
     /// 主机指纹可验），没有回落本机（见 [`super::DockedSftpPanel`] 上"不回落"

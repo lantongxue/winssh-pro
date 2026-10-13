@@ -6,7 +6,7 @@
 //! 只能新增、不能改名。
 //!
 //! 阿里云 OSS / 腾讯云 COS 只认虚拟主机风格寻址，MinIO / 自建服务吃路径
-//! 风格（也是 OpenDAL 的默认），这一档写在预设里，选中即预填。
+//! 风格（也是 [`S3Addressing::Auto`] 那一档的发法），这一档写在预设里，选中即预填。
 
 use super::settings::S3Addressing;
 
@@ -23,7 +23,7 @@ pub struct S3Preset {
     pub addressing: S3Addressing,
 }
 
-/// Amazon S3。路径风格是 OpenDAL 的默认，AWS 两种都认。
+/// Amazon S3。AWS 两种寻址风格都认，按出厂档的路径风格发。
 pub const AWS: S3Preset = S3Preset {
     id: "aws",
     default_endpoint: "https://s3.amazonaws.com",
@@ -55,7 +55,7 @@ pub const QINIU: S3Preset = S3Preset {
     addressing: S3Addressing::VirtualHost,
 };
 
-/// MinIO 一类的自建服务。路径风格（OpenDAL 默认），Region 无从推断。
+/// MinIO 一类的自建服务。路径风格，Region 无从推断。
 pub const MINIO: S3Preset = S3Preset {
     id: "minio",
     default_endpoint: "http://127.0.0.1:9000",
@@ -75,21 +75,5 @@ pub const CUSTOM: S3Preset = S3Preset {
 pub const ALL: [S3Preset; 6] = [CUSTOM, AWS, ALIYUN, TENCENT, QINIU, MINIO];
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn all_ids_are_unique() {
-        for (index, preset) in ALL.iter().enumerate() {
-            assert!(!ALL[..index].iter().any(|earlier| earlier.id == preset.id));
-        }
-    }
-
-    #[test]
-    fn virtual_host_presets_are_the_chinese_clouds() {
-        assert_eq!(ALIYUN.addressing, S3Addressing::VirtualHost);
-        assert_eq!(TENCENT.addressing, S3Addressing::VirtualHost);
-        assert_eq!(QINIU.addressing, S3Addressing::VirtualHost);
-        assert_eq!(MINIO.addressing, S3Addressing::Auto);
-    }
-}
+#[path = "../tests/s3/presets.rs"]
+mod tests;

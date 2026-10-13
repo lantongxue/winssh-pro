@@ -50,21 +50,31 @@
     }
 
     #[test]
-    fn test_build_operator_validations() {
+    fn backup_store_open_validates_required_fields() {
         let mut config = BackupConfig::default();
         config.protocol = BackupProtocol::Webdav;
         assert!(
-            build_operator(&config).is_err(),
+            BackupStore::open(&config).is_err(),
             "empty endpoint should fail"
         );
 
         config.webdav.endpoint = "https://dav.example.com".to_string();
-        assert!(build_operator(&config).is_ok());
+        assert!(BackupStore::open(&config).is_ok());
 
         config.protocol = BackupProtocol::S3;
         config.s3.bucket = "".to_string();
-        assert!(build_operator(&config).is_err(), "empty bucket should fail");
+        assert!(BackupStore::open(&config).is_err(), "empty bucket should fail");
 
         config.s3.bucket = "my-bucket".to_string();
-        assert!(build_operator(&config).is_ok());
+        assert!(BackupStore::open(&config).is_ok());
+    }
+
+    #[test]
+    fn s3_keys_sit_flat_under_root() {
+        assert_eq!(s3_key("winssh_backups", "a.wspbak"), "winssh_backups/a.wspbak");
+        assert_eq!(s3_key("", "a.wspbak"), "a.wspbak");
+        // 空文件名就是列举 root 那一层用的前缀 —— 少了收尾 `/`，同名前缀的
+        // 兄弟目录（`winssh_backups_old/`）会被一起列进来。
+        assert_eq!(s3_key("winssh_backups", ""), "winssh_backups/");
+        assert_eq!(s3_key("", ""), "");
     }

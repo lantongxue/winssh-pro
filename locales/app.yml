@@ -5178,9 +5178,9 @@ s3_err.no_endpoint:
 s3_err.no_bucket:
   en: The S3 bucket name is empty
   zh-CN: S3 存储桶名称为空
-s3_err.build_operator:
-  en: Failed to build the S3 client parameters
-  zh-CN: 组装 S3 客户端参数失败
+s3_err.build_client:
+  en: Failed to build the S3 client
+  zh-CN: 构建 S3 客户端失败
 s3_err.action_read_dir:
   en: List the directory %{path}
   zh-CN: 列目录 %{path}
@@ -5220,15 +5220,18 @@ s3_err.chmod_unsupported:
 s3_err.action_list_buckets:
   en: List the buckets under this account
   zh-CN: 列出账号下的存储桶
-s3_err.list_buckets_rejected:
-  en: "The server rejected listing buckets (HTTP %{status}): %{body}"
-  zh-CN: "服务端拒绝了列存储桶请求（HTTP %{status}）：%{body}"
 s3_err.root_read_only:
   en: Enter a bucket first; the bucket list page is read-only
   zh-CN: 请先进入某个存储桶，存储桶列表页只读
 s3_err.cross_bucket_rename:
   en: Renaming across buckets is not supported
   zh-CN: 不支持跨存储桶重命名
+s3_err.not_found:
+  en: "%{path} does not exist"
+  zh-CN: "%{path} 不存在"
+s3_err.move_into_itself:
+  en: A folder cannot be moved into itself
+  zh-CN: 不能把目录移进它自己里面
 s3_err.raw_error:
   en: "%{action}: %{error}"
   zh-CN: "%{action}:%{error}"

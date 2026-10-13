@@ -3,7 +3,7 @@
 //! 核心职责：
 //! - 生成当前 SQLite 数据库快照（完整备份，包含设置与备份服务器自身配置）
 //! - 根据加密设置对快照进行 AES-256-GCM 加密或裸备份
-//! - 通过 OpenDAL 将备份推送到 WebDAV 或 S3 存储
+//! - 将备份推送到 WebDAV（OpenDAL）或 S3（rust-s3）存储，见 [`backup::BackupStore`]
 //! - 执行保留副本数策略，自动删除最早的历史备份
 //! - 从云端拉取备份、解密并暂存，提示用户重启生效
 //! - 后台定时调度器定期检查备份频率并自动触发备份
@@ -86,13 +86,14 @@ impl BackupService {
 
     /// 测试云端存储连通性。
     ///
-    /// OpenDAL 底层走 reqwest + tokio TcpStream，必须在数据层 runtime 上执行，
+    /// 两种存储底层都走 reqwest + tokio TcpStream，必须在数据层 runtime 上执行，
     /// 否则在 gpui executor 上 await 会因缺 tokio reactor 直接 panic。
     pub async fn test_connection(&self, config: &BackupConfig) -> Result<()> {
         let config = config.clone();
         db::run(async move {
-            let op = backup::build_operator(&config)?;
-            op.list("")
+            let store = backup::BackupStore::open(&config)?;
+            store
+                .list()
                 .await
                 .context("连接测试失败：无法访问或列出存储目录")?;
             Ok(())
@@ -121,7 +122,7 @@ impl BackupService {
             .save_backup_config(config.clone())
             .await?;
 
-        let op = backup::build_operator(&config)?;
+        let store = backup::BackupStore::open(&config)?;
         let raw_db = Self::build_snapshot(&self.db).await?;
 
         let password = if config.encrypt && !config.password.trim().is_empty() {
@@ -136,24 +137,22 @@ impl BackupService {
             chrono::Local::now().format("%Y%m%d_%H%M%S")
         );
 
-        op.write(&filename, payload)
+        store
+            .write(&filename, payload)
             .await
             .context("上传备份文件到云端存储失败")?;
 
         // 副本保留数清理策略：按文件名时间倒序排列，删除超出数量的旧文件
         if config.retention_count > 0 {
-            if let Ok(entries) = op.list("").await {
+            if let Ok(entries) = store.list().await {
                 let mut backups: Vec<String> = entries
                     .into_iter()
-                    .filter_map(|entry| {
-                        let name = entry.name().to_string();
-                        is_backup_filename(&name).then_some(name)
-                    })
+                    .filter_map(|(name, _)| is_backup_filename(&name).then_some(name))
                     .collect();
                 backups.sort_by(|a, b| b.cmp(a));
                 if backups.len() > config.retention_count as usize {
                     for old in &backups[config.retention_count as usize..] {
-                        if let Err(e) = op.delete(old).await {
+                        if let Err(e) = store.delete(old).await {
                             log::warn!("清理旧备份文件 {old} 失败：{e:#}");
                         }
                     }
@@ -173,13 +172,11 @@ impl BackupService {
     pub async fn list_backups(&self, config: &BackupConfig) -> Result<Vec<BackupRemoteFile>> {
         let config = config.clone();
         db::run(async move {
-            let op = backup::build_operator(&config)?;
-            let entries = op.list("").await.context("获取远端备份列表失败")?;
+            let store = backup::BackupStore::open(&config)?;
+            let entries = store.list().await.context("获取远端备份列表失败")?;
             let mut files = Vec::new();
-            for entry in entries {
-                let name = entry.name().to_string();
+            for (name, size) in entries {
                 if is_backup_filename(&name) {
-                    let size = entry.metadata().content_length();
                     let updated_at = if let Some(ts_str) = name.strip_prefix("winssh_backup_") {
                         let clean_ts = ts_str.trim_end_matches(".wspbak").trim_end_matches(".db");
                         if let Ok(dt) =
@@ -217,8 +214,9 @@ impl BackupService {
         let config = config.clone();
         let remote_filename = remote_filename.to_string();
         db::run(async move {
-            let op = backup::build_operator(&config)?;
-            op.delete(&remote_filename)
+            let store = backup::BackupStore::open(&config)?;
+            store
+                .delete(&remote_filename)
                 .await
                 .context("删除远端备份文件失败")?;
             Ok(())
@@ -240,12 +238,12 @@ impl BackupService {
         let remote_filename = remote_filename.to_string();
         let password = password.map(str::to_string);
         db::run(async move {
-            let op = backup::build_operator(&config)?;
-            let buffer = op
+            let store = backup::BackupStore::open(&config)?;
+            let buffer = store
                 .read(&remote_filename)
                 .await
                 .context("下载远端备份文件失败")?;
-            let raw_db = backup::decrypt_backup(&buffer.to_vec(), password.as_deref())?;
+            let raw_db = backup::decrypt_backup(&buffer, password.as_deref())?;
 
             if !raw_db.starts_with(b"SQLite format 3\0") {
                 bail!("解密或提取后的文件不是有效的 SQLite 数据库");

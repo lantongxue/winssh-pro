@@ -204,15 +204,24 @@ rust-i18n = "4.2"
 # 启动时问一下系统"现在是什么语言"。它本来就在依赖树里（cosmic-text 用它），
 # 变成直接依赖不多编译一份东西；比自己读 LANG / GetUserDefaultLocaleName 稳。
 sys-locale = "0.3"
-opendal = { version = "0.59", features = ["services-s3", "services-webdav", "services-ftp"] }
-# S3 的"列出存储桶"（GetService）OpenDAL 没有这个动作，见 `src/s3/buckets.rs`
-# 自补的最小客户端：请求走下面那份 reqwest，签名与 XML 解析复用依赖树里
-# 已有的那两份 —— reqsign 是 OpenDAL 的 S3 签名后端，quick-xml 是
-# opendal-service-s3 的响应解析器，都只是变直接依赖，不多编译一份东西。
-reqsign-aws-v4 = "3.3"
-reqsign-core = "3.3"
-http = "1"
-quick-xml = "0.42"
+opendal = { version = "0.59", features = ["services-webdav", "services-ftp"] }
+# S3 对象存储（S3 主机的文件面板、备份同步的 S3 一档），见 `src/s3/`。
+# rust-s3 一个 `Bucket` 就是一只完整的 S3 客户端：SigV4 签名、列桶、
+# ListObjectsV2、分片上传、服务端复制都在里面，不再自己补签名与 XML。
+#
+# 只开 `with-tokio`（reqwest 0.12 后端）与 `fail-on-err`（非 2xx 一律当错误
+# 抛回来，带着状态码与对端原话）。它自带的几档 TLS 特性都不合适：
+# `tokio-native-tls` 拖进 SChannel/OpenSSL 一整套；`tokio-rustls-tls` 连带
+# 点亮 aws-creds 的 attohttpc（去 EC2 元数据取凭据用的，我们的密钥都是
+# 显式给的），而且只认 webpki-roots 那份内置根证书。TLS 由下面那一行替它点亮。
+rust-s3 = { version = "0.38", default-features = false, features = ["with-tokio", "fail-on-err"] }
+# rust-s3 那份 reqwest 0.12 的 TLS 后端。这一行不在代码里出现，只为特性合并：
+# 0.12 在图上本来就有（IronRDP 的 KDC 请求），但谁都没给它开 TLS，S3 的
+# https 端点就连不上。选 rustls + 系统根证书：和从前 OpenDAL 那份 reqwest 0.13
+# 一样认 Windows 证书库，自建 MinIO 用企业内部 CA 签的证书照样能连；
+# 加密后端走进程默认的 aws-lc-rs（`src/tls.rs`），它点亮的 `ring` 本来就被
+# EasyTier 编进来了，不多编一套。
+reqwest-s3-tls = { package = "reqwest", version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
 aes-gcm = "0.11.1"
 pbkdf2 = "0.13.0"
 sha2 = "0.11.0"
@@ -348,7 +357,7 @@ strum = "0.28"
 
 # Clash 订阅那两处 HTTP（见 `src/clash/`）：拉订阅正文本体，以及跟本机
 # mihomo 的外部控制口说话。图上本来就有 reqwest 0.13（OpenDAL 的
-# WebDAV/S3 传输、rig 的后端都用它），这里只是把它变成直接依赖，
+# WebDAV 传输、rig 的后端都用它），这里只是把它变成直接依赖，
 # 不多编译一份东西 —— 所以版本跟着图上那一份走。
 #
 # 关掉默认特性、只留 `rustls` 与 `json`：默认那一档里 `system-proxy` 是要
