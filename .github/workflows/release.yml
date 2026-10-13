@@ -44,12 +44,16 @@ jobs:
             extension: .exe
           - os: macos
             arch: x64
-            runner: macos-13
+            # macos-13 已于 2025-12-04 下线：退役的标签不报错，任务只是一直排队，
+            # 熬到 24h 被取消，release 那一步跟着 skipped（v0.0.1 就栽在这）。
+            # macos-15-intel 是官方给的 Intel 替代，支持到 2027-08。
+            runner: macos-15-intel
             target: x86_64-apple-darwin
             extension: ""
           - os: macos
             arch: arm64
-            runner: macos-14
+            # macos-14 定于 2026-11-02 下线，同上，提前挪走。
+            runner: macos-15
             target: aarch64-apple-darwin
             extension: ""
 
