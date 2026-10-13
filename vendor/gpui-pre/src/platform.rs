@@ -351,6 +351,13 @@ pub trait Platform: 'static {
     fn hide(&self);
     fn hide_other_apps(&self);
     fn unhide_other_apps(&self);
+    /// Local patch (see PATCHES.md): whether [`PlatformWindow::hide_window`]
+    /// takes the window off screen for real. Windows, macOS and X11 do; a
+    /// Wayland compositor is the one that decides visibility, and there a
+    /// hidden window is merely minimized.
+    fn supports_window_hiding(&self) -> bool {
+        false
+    }
 
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>>;
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>>;
@@ -1216,6 +1223,14 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn set_title(&mut self, title: &str);
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance);
     fn minimize(&self);
+    /// Local patch (see PATCHES.md): take the window off screen without
+    /// destroying it, so the application keeps running with its windows still
+    /// alive. Pairs with [`Self::show_window`]. A platform that cannot do this
+    /// leaves the default in place, and the window stays visible.
+    fn hide_window(&self) {}
+    /// Local patch (see PATCHES.md): undo [`Self::hide_window`]. An already
+    /// visible window is left alone.
+    fn show_window(&self) {}
     fn zoom(&self);
     fn toggle_fullscreen(&self);
     fn is_fullscreen(&self) -> bool;

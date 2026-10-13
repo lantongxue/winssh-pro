@@ -67,15 +67,34 @@ Segoe UI Emoji 之所以能画，是它的 emoji glyph 带黑色轮廓（兼容�
 应用侧打包 Twemoji Mozilla（`assets/fonts/`，`assets::FLAG_EMOJI_FONT`），
 Windows/Linux 上显式指名，macOS 继续用系统 Apple Color Emoji。
 
+## 补丁三：窗口隐藏（`SW_HIDE`）
+
+`vendor/gpui-pre` 的第二处补丁给 `PlatformWindow` 加了 `hide_window` /
+`show_window`，Windows 这一半就是 `ShowWindowAsync`：
+
+- **隐藏**：`SW_HIDE`。它同时把任务栏按钮一并拿掉 —— 这正是它和 `SW_MINIMIZE`
+  的区别，也是托盘"关窗缩起来"要的那一步。`SW_HIDE` 会让系统发
+  `WM_SHOWWINDOW`，`events.rs` 那边照常把它翻译成 GPUI 的可见性变化，应用侧
+  `Window::visibility()` 与 `observe_window_visibility` 都会跟着翻面。
+- **显示**：已经可见就返回（幂等）。不可见时看 `IsIconic`：先被最小化过再隐藏的
+  窗口，直接 `SW_SHOW` 回来仍是图标态，所以那一支走 `SW_RESTORE` 把两件事一起
+  撤掉，其余走 `SW_SHOW`。
+
+`Platform::supports_window_hiding` 在这边恒为 `true`。
+
+顺带一提，`SW_HIDE` 这条路本来就在这份 crate 里 —— `WindowsWindow` 的 `Drop` 就用它把窗口
+从屏幕上撤掉再 `DestroyWindow`。补丁只是把那句话拆出来，交给应用按需触发，而不
+再只发生在窗口已经要销毁的那条路上。
+
 ## 逐文件改动
 
 | 文件 | 改了什么 |
 | --- | --- |
 | `src/cursor_image.rs` | 新文件：`CursorImageCache`（按图 id 缓存、按引用回收）、`NativeCursor`、`create_cursor`，以及单测（三种形式各自做出来的 `ICONINFO`、`DrawIconEx` 画到白底上实际得到的像素、掩码按 WORD 对齐的打包、窗口还在用时不销毁）。 |
 | `src/gpui_windows.rs` | `mod cursor_image` 与 `pub(crate) use`。 |
-| `src/platform.rs` | `WindowsPlatformState` 多一个 `cursor_images`；原 `set_cursor_style` 的函数体挪进 `apply_cursor`（外加回收），`set_cursor_style` 调它；实现 `set_cursor_image` 与 `supports_cursor_images`。 |
+| `src/platform.rs` | `WindowsPlatformState` 多一个 `cursor_images`；原 `set_cursor_style` 的函数体挪进 `apply_cursor`（外加回收），`set_cursor_style` 调它；实现 `set_cursor_image` 与 `supports_cursor_images`。补丁三：实现 `supports_window_hiding`。 |
 | `src/events.rs` | `handle_set_cursor` 记下这次是不是本窗口定的光标；`handle_cursor_changed` 在上面说的条件下立刻 `SetCursor`。 |
-| `src/window.rs` | `WindowsWindowState` 多一个 `cursor_under_pointer`。 |
+| `src/window.rs` | `WindowsWindowState` 多一个 `cursor_under_pointer`。补丁三：实现 `hide_window` / `show_window`。 |
 | `src/direct_write.rs` | 补丁二：`raster_bounds` 空矩形判定收紧为 `<=`；空包围盒且 `params.is_emoji` 时调新加的 `color_glyph_run_bounds`（COLR 各层 alpha 包围盒的并集）兜底；非 emoji 与无彩色字形行为不变。另加全管线单测 `pure_colr_font_flag_rasterizes_to_visible_pixels`（整形 → 判定 → 包围盒 → 非全透明像素，字体字节引用应用侧 `assets/fonts/Twemoji.Mozilla.ttf`）。 |
 
 除上述文件外，其余与 crates.io 上的 0.3.8 逐字节相同。单测跑法：

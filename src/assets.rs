@@ -30,6 +30,11 @@ pub const FLAG_EMOJI_FONT: &[u8] = include_bytes!("../assets/fonts/Twemoji.Mozil
 /// 按内部名指名，别按文件名。
 pub const FLAG_EMOJI_FONT_FAMILY: &str = "Twemoji Mozilla";
 
+/// 应用图标的原始 PNG 字节。托盘要自己解一遍、缩到托盘区那个尺寸再交出去
+/// （`src/tray/mod.rs`），所以这里给的是字节而不是 GPUI 的图片资源 ——
+/// 那条路（`img("app-icon.png")`）是给界面里画的，托盘用不上。
+pub const APP_ICON_PNG: &[u8] = include_bytes!("../assets/app-icon.png");
+
 /// 要不要给国旗那一类文本显式指名 [`FLAG_EMOJI_FONT_FAMILY`]。
 /// macOS 的系统 Apple Color Emoji 自带彩色国旗，不指名走系统回退链；
 /// Windows/Linux 的系统 emoji 字体没有国旗，指名打包的 Twemoji。

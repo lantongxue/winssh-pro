@@ -794,7 +794,7 @@ impl SettingsWindow {
             .with_group_variant(GroupBoxVariant::Fill)
             .sidebar_width(px(210.))
             .default_selected_index(default_index)
-            .page(self.general_page())
+            .page(self.general_page(cx))
             .page(Self::terminal_page(cx))
             .page(self.proxy_page())
             .page(self.assistant_page())
@@ -802,7 +802,7 @@ impl SettingsWindow {
             .page(Self::about_page())
     }
 
-    fn general_page(&self) -> SettingPage {
+    fn general_page(&self, cx: &App) -> SettingPage {
         SettingPage::new(t!("settings.tab_general"))
             .icon(IconName::Settings)
             .default_open(true)
@@ -859,7 +859,35 @@ impl SettingsWindow {
                                 set_show_fps_monitor(checked, None, cx);
                             },
                         ),
-                    )),
+                    ))
+                    .item(
+                        SettingItem::new(
+                            t!("settings.close_to_tray"),
+                            SettingField::switch(
+                                |_: &App| crate::tray::close_to_tray(),
+                                |checked: bool, cx: &mut App| {
+                                    crate::tray::set_global(checked);
+                                    cx.spawn(async move |_| {
+                                        if let Err(error) = SettingService::open()
+                                            .save_close_to_tray(checked)
+                                            .await
+                                        {
+                                            log::error!("关窗缩托盘的开关存不下去：{error:#}");
+                                        }
+                                    })
+                                    .detach();
+                                },
+                            ),
+                        )
+                        // 藏不了窗口的平台（现在的 Wayland）不摆这一条：摆一个
+                        // 按下去什么也不发生的开关，只会让人以为它坏了。
+                        .disabled(!cx.supports_window_hiding())
+                        .description(if cx.supports_window_hiding() {
+                            String::new()
+                        } else {
+                            t!("settings.close_to_tray_unsupported").to_string()
+                        }),
+                    ),
             )
     }
 

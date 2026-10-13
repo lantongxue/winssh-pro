@@ -28,6 +28,7 @@ mod ssh;
 mod telnet;
 mod terminal;
 mod tls;
+mod tray;
 mod trusted_host;
 mod ui;
 mod vnc;
@@ -135,6 +136,10 @@ fn main() {
                 window.set_window_title("WinSSH Pro");
                 // 系统深浅设置在 Linux 上是开窗之后才送达的，订阅之后补上。
                 ui::observe_appearance(window, cx).detach();
+                // 点关闭时先问一句：缩到托盘还是真退出。这条判断与标题栏那个
+                // × 共用（见 `tray::handle_close_request`），两条路各写一遍迟早
+                // 会走岔。
+                window.on_window_should_close(cx, tray::handle_close_request);
                 cx.on_release(|_, cx| {
                     // 退出之前先把 mihomo 与系统代理收掉。这条路径上来不及等
                     // 会话线程自己收尾，理由见 `clash::runtime::shutdown`。
@@ -144,6 +149,12 @@ fn main() {
                 .detach();
             })
             .expect("初始化主窗口失败");
+
+        // 托盘图标。窗口已经开好之后才建是 `tray-icon` 的要求：macOS 上
+        // 图标必须在事件循环已经在跑的时候建（此刻 GPUI 的 run 回调已进入
+        // `applicationDidFinishLaunching`）。平台不支持隐藏窗口时它自己会
+        // 什么都不做，理由见 `src/tray/mod.rs` 的模块文档。
+        tray::install(cx, window);
 
         // 把键盘焦点落到 Workspace 上。这一步在 macOS 上尤其关键：
         // `activate_window` 是 `makeKeyAndOrderFront:`，它让窗口成为键窗口，

@@ -269,6 +269,15 @@ vnc-rs = "0.6.0"
 # gpui 自己早就点亮了（它的剪贴板与 `img()` 靠它们解码），这里写出来只是不靠
 # 特性合并的巧合，不多编译一份东西。
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp", "gif", "webp"] }
+# 系统托盘（见 `src/tray/`）。它自己建一个隐藏窗口收 shell 的回调，事件经
+# 全进程的 channel 送出来 —— 不占主线程的消息循环，也不需要应用给它跑什么
+# 循环，所以能和 GPUI 那套并存。
+#
+# Linux 上刻意关掉默认特性、只开 `ksni`：默认那一档是 libappindicator，它要
+# 有 GTK 主循环在跑才轮得到菜单事件，而 GPUI 在 Linux 上跑的是自己的 calloop，
+# 没有 GTK；ksni 走纯 Rust 的 D-Bus，自己在工作线程上服务，不碰 GTK。Windows
+# 与 macOS 那两档不受这个特性影响。
+tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
 # 发给模型的图片是 base64（两种协议都只收这一种内联写法）。和 rig / reqwest
 # 用的是同一份，本来就在依赖树里。
 base64 = "0.22"
@@ -498,6 +507,14 @@ flate2 = "1"
 # `CreateIconIndirect` 落地。理由与逐文件改动见两边的 PATCHES.md。gpui-kit 升
 # GPUI 版本时这两份要跟着重做 —— 版本对不上时 patch 不生效，应用侧用到的新接口
 # 会直接编译报错，不会静默退回。
+#
+# 同一批快照上还有第二处补丁：**窗口隐藏**。托盘要"关窗缩起来、会话还连着"，
+# 就得能把窗从屏幕上拿掉而不销毁它 —— GPUI 原来只有 `minimize_window`，那个
+# 还占着任务栏，语义不对。`vendor/gpui-pre` 在 `PlatformWindow` 上加
+# `hide_window`/`show_window`（带默认空实现，平台不支持就什么都不做，另以
+# `Platform::supports_window_hiding` 说明），三份平台层各自落地：Windows 用
+# `SW_HIDE`，macOS 用 `orderOut:`，X11 用 `unmap_window`。Wayland 协议里没有
+# 这类请求，那一档如实回答 `false`。同样见各份 PATCHES.md。
 [patch.crates-io]
 vnc-rs = { path = "vendor/vnc-rs" }
 ironrdp-connector = { path = "vendor/ironrdp-connector" }
@@ -505,6 +522,8 @@ picky = { path = "vendor/picky" }
 sspi = { path = "vendor/sspi" }
 gpui-pre = { path = "vendor/gpui-pre" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
+gpui-pre-linux = { path = "vendor/gpui-pre-linux" }
 
 # 依赖全部按发布级优化编译。gpui 与 alacritty_terminal 是每一帧真正在跑的代码，
 # dev 默认的 opt-level=0 会让它们慢出一个数量级 —— 界面卡、CPU 占用高，多半就是

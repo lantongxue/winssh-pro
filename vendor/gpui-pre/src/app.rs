@@ -1224,6 +1224,14 @@ impl App {
         self.platform.supports_cursor_images()
     }
 
+    /// Local patch (see PATCHES.md): whether [`Window::hide_window`] takes the
+    /// window off screen for real. On a platform that says `false` the window
+    /// is only minimized, and a "close to tray" affordance should hide itself
+    /// rather than promise something it can't deliver.
+    pub fn supports_window_hiding(&self) -> bool {
+        self.platform.supports_window_hiding()
+    }
+
     /// Returns whether non-essential animations (e.g. loading spinners) should
     /// be rendered in a static state instead of animating.
     pub fn reduce_motion(&self) -> bool {

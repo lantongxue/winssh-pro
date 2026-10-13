@@ -948,6 +948,27 @@ impl PlatformWindow for WindowsWindow {
         unsafe { ShowWindowAsync(self.0.hwnd, SW_MINIMIZE).ok().log_err() };
     }
 
+    fn hide_window(&self) {
+        // `SW_HIDE` also clears the taskbar button, which is what makes this
+        // different from minimizing. `WM_SHOWWINDOW` follows, and
+        // `handle_window_visibility_changed` reports the new state to GPUI.
+        unsafe { ShowWindowAsync(self.0.hwnd, SW_HIDE).ok().log_err() };
+    }
+
+    fn show_window(&self) {
+        unsafe {
+            if !IsWindowVisible(self.0.hwnd).as_bool() {
+                // A window that was minimized before it was hidden comes back
+                // minimized without this; `SW_RESTORE` undoes both.
+                if IsIconic(self.0.hwnd).as_bool() {
+                    ShowWindowAsync(self.0.hwnd, SW_RESTORE).ok().log_err();
+                } else {
+                    ShowWindowAsync(self.0.hwnd, SW_SHOW).ok().log_err();
+                }
+            }
+        }
+    }
+
     fn zoom(&self) {
         unsafe {
             if IsWindowVisible(self.0.hwnd).as_bool() {

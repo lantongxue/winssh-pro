@@ -1015,6 +1015,10 @@ impl Platform for WindowsPlatform {
         true
     }
 
+    fn supports_window_hiding(&self) -> bool {
+        true
+    }
+
     fn hide_cursor_until_mouse_moves(&self) {
         if !self
             .inner

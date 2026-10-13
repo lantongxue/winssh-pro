@@ -6527,6 +6527,24 @@ impl Window {
         self.platform_window.minimize();
     }
 
+    /// Local patch (see PATCHES.md): take the window off screen without
+    /// destroying it. The window and everything it owns keep running — the
+    /// element tree is not torn down, timers keep firing, and tasks spawned on
+    /// the app keep running. Use [`Window::show_window`] to bring it back.
+    ///
+    /// Platform support: Windows, macOS and X11 do this natively. Wayland has
+    /// no protocol request for it, and a window there falls back to being
+    /// minimized. `App::supports_window_hiding` says which one you get.
+    pub fn hide_window(&self) {
+        self.platform_window.hide_window();
+    }
+
+    /// Local patch (see PATCHES.md): undo [`Window::hide_window`]. An already
+    /// visible window is left alone, so this is safe to call unconditionally.
+    pub fn show_window(&self) {
+        self.platform_window.show_window();
+    }
+
     /// Toggle full screen status on the current window at the platform level.
     pub fn toggle_fullscreen(&self) {
         self.platform_window.toggle_fullscreen();

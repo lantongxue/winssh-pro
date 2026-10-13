@@ -376,6 +376,12 @@ settings.performance:
 settings.fps_monitor:
   en: FPS monitor
   zh-CN: FPS 监控
+settings.close_to_tray:
+  en: Close to tray
+  zh-CN: 关闭时最小化到托盘
+settings.close_to_tray_unsupported:
+  en: This desktop can't hide windows, so closing always quits.
+  zh-CN: 这个桌面环境不能隐藏窗口，关闭即是退出。
 settings.terminal_appearance:
   en: Appearance
   zh-CN: 外观
@@ -5508,3 +5514,10 @@ host_form.webdav_root_placeholder:
 host_form.webdav_hint:
   en: The server URL goes in the "Server URL" field on the connection page, including the WebDAV mount path (e.g. https://host/dav); the account and password go on the auth page. Root directory is where the file panel starts, relative to that URL; leave it empty to start at the URL itself. Basic sends the password in clear base64, so use it over https only. Self-signed servers can't be pinned by fingerprint the way SSH hosts are — "Skip certificate check" turns verification off entirely, so only turn it on for hosts you trust.
   zh-CN: 服务器地址填在「连接」页的「服务器地址 (URL)」，要带上 WebDAV 的挂载路径（例如 https://host/dav）；账号密码填在「认证」页。根目录是文件面板的起点，相对这个地址；留空就从地址本身开始。「自动」会先探一次服务器要的是 Basic 还是 Digest。Basic 把密码按 base64 明文发出去，只应在 https 上用。自签名证书没法像 SSH 主机那样按指纹钉住 —— 「跳过证书校验」是把校验整个关掉，只对你信得过的主机开。
+
+tray.show_window:
+  en: Show main window
+  zh-CN: 显示主窗口
+tray.quit:
+  en: Quit WinSSH Pro
+  zh-CN: 退出 WinSSH Pro

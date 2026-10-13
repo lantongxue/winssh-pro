@@ -546,6 +546,16 @@ impl Workspace {
     /// 右侧 `WINDOW_CONTROLS_INSET` 把 macOS 红绿灯那段补回来，整体仍居中。
     fn render_title_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         TitleBar::new()
+            // Linux 上标题栏那个 × 是自绘的，点下去直接 `remove_window()` ——
+            // 不经平台的关闭请求，所以 `main.rs` 挂在窗口上的
+            // `on_window_should_close` 收不到它。这里把它接回同一个判断：
+            // 该缩到托盘就藏起来（返回 `false`），否则照关。
+            .on_close_window(|_, window, cx| {
+                if !crate::tray::handle_close_request(window, cx) {
+                    return;
+                }
+                window.remove_window();
+            })
             .child(
                 h_flex()
                     .flex_1()

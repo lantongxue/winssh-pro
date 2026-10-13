@@ -44,6 +44,8 @@ const TERMINAL_SCHEME_KEY: &str = "terminal.scheme";
 const ASSISTANT_CONFIG_KEY: &str = "assistant.config";
 /// 终端光标闪烁在 `settings` 表里的键。存的是 "true" 或 "false"。
 const CURSOR_BLINK_KEY: &str = "terminal.cursor_blink";
+/// 关窗缩托盘在 `settings` 表里的键。存的是 "true" 或 "false"。
+const CLOSE_TO_TRAY_KEY: &str = "tray.close_to_tray";
 /// 数据备份同步配置在 `settings` 表里的键。存的是一份 JSON。
 const BACKUP_CONFIG_KEY: &str = "backup.config";
 /// ZMODEM 收发偏好在 `settings` 表里的键。存的是一份 JSON。
@@ -98,6 +100,7 @@ impl SettingService {
                 this.load_backup_config().await,
                 this.load_zmodem_config().await,
                 this.load_tun_settings().await,
+                this.load_close_to_tray().await,
             )
         });
         match loaded.0 {
@@ -131,6 +134,10 @@ impl SettingService {
         match loaded.7 {
             Ok(settings) => crate::clash::tun_settings::set_current(settings),
             Err(error) => log::warn!("Clash TUN 偏好读不出来，这次运行按出厂档处理：{error:#}"),
+        }
+        match loaded.8 {
+            Ok(close_to_tray) => crate::tray::set_global(close_to_tray),
+            Err(error) => log::warn!("关窗缩托盘的开关读不出来，这次运行按出厂档处理：{error:#}"),
         }
     }
 
@@ -263,6 +270,32 @@ impl SettingService {
         db::run(async move {
             this.repo
                 .set(&this.db, CURSOR_BLINK_KEY, &encoded)
+                .await
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    /// 库里那份关窗缩托盘的开关。没写过就是出厂档（开）。
+    pub async fn load_close_to_tray(&self) -> Result<bool> {
+        let this = self.clone();
+        db::run(async move {
+            let raw = this.repo.get(&this.db, CLOSE_TO_TRAY_KEY).await?;
+            Ok(crate::tray::decode(&raw.unwrap_or_default()))
+        })
+        .await
+    }
+
+    /// 写回关窗缩托盘的开关，并同时换掉进程里那份缓存。
+    ///
+    /// 缓存先换：用户下一次点关闭可能就在这一帧之后，落库那条路慢一拍不要紧。
+    pub async fn save_close_to_tray(&self, close_to_tray: bool) -> Result<()> {
+        crate::tray::set_global(close_to_tray);
+        let this = self.clone();
+        let encoded = crate::tray::encode(close_to_tray);
+        db::run(async move {
+            this.repo
+                .set(&this.db, CLOSE_TO_TRAY_KEY, &encoded)
                 .await
                 .map_err(Into::into)
         })

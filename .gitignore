@@ -3,4 +3,8 @@
 .DS_Store
 .zcode/
 /third_party/mihomo/
+# 三份 platform crate 都在 vendor 里，各自被单独编过时会在自己目录下留一个
+# target（它们不在工作区的 workspace 成员里，构建产物不落根目录）。
 vendor/gpui-pre-windows/target
+vendor/gpui-pre-macos/target
+vendor/gpui-pre-linux/target
