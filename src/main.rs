@@ -29,6 +29,7 @@ mod service;
 mod session;
 mod s3;
 mod sftp;
+mod single_instance;
 mod snippet;
 mod ssh;
 mod telnet;
@@ -80,6 +81,36 @@ fn main() {
     // 在任何一条 TLS 连接之前：rustls 的两个后端都在图上，不先定一个默认的，
     // 不指名后端的 `ClientConfig::builder()` 会 panic（见 `src/tls.rs`）。
     tls::install_default_provider();
+
+    // 同一座数据目录只允许跑一份。已经在跑的那份会被唤到前面，这一份就地退出。
+    // 位置在这儿：`--restore-system-proxy` 那条卸载器专用的路已经走过了（它不该
+    // 被拦），而库、托盘、mihomo、系统代理这会儿都还没人碰。
+    // 互斥这套东西自己坏了（数据目录不存在、上不了锁）不拦启动 —— 宁可少一层
+    // 保护，也不能让用户谁都开不了。
+    let mut instance = match db::db_dir() {
+        Ok(dir) => match single_instance::acquire(&dir) {
+            Ok(single_instance::Startup::Primary(instance)) => Some(instance),
+            Ok(single_instance::Startup::AlreadyRunning { woke }) => {
+                if woke {
+                    log::info!("已经有一份 WinSSH Pro 在跑，已把它唤到前面");
+                } else {
+                    log::warn!("已经有一份 WinSSH Pro 在跑，但没能把它唤到前面");
+                }
+                return;
+            }
+            Err(error) => {
+                log::warn!("单实例互斥没做成，这次启动不做限制：{error:#}");
+                None
+            }
+        },
+        Err(error) => {
+            log::warn!("拿不到数据目录，这次启动不做互斥：{error:#}");
+            None
+        }
+    };
+    // 锁得拿到进程结束，所以 `instance` 绑在 `run` 外面。收端也是在这一层取出来
+    // 交给开窗那段去等的（见下面的 `single_instance::wake_back`）。
+    let wakes = instance.as_mut().and_then(single_instance::Instance::take_wakes);
 
     gpui_kit::application().with_assets(Assets).run(move |cx| {
         // 语言要在组件库之前定下来：组件库初始化的时候已经在读自己的文案了。
@@ -172,6 +203,15 @@ fn main() {
         // `applicationDidFinishLaunching`）。平台不支持隐藏窗口时它自己会
         // 什么都不做，理由见 `src/tray/mod.rs` 的模块文档。
         tray::install(cx, window);
+
+        // 又有人启动了一份：把这一扇窗口唤到前面来。走的是托盘那条"显示主窗口"
+        // 的同一条路（`tray::show_main_window`），缩在托盘里也能叫出来。
+        if let Some(wakes) = wakes {
+            cx.spawn(async move |cx| {
+                single_instance::wake_back(wakes, window, cx, tray::show_main_window).await;
+            })
+            .detach();
+        }
 
         // 把键盘焦点落到 Workspace 上。这一步在 macOS 上尤其关键：
         // `activate_window` 是 `makeKeyAndOrderFront:`，它让窗口成为键窗口，

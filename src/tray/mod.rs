@@ -101,7 +101,7 @@ fn arm(sender: UnboundedSender<Action>) {
 ///
 /// `activate_window` 不能省 —— 只 `show_window` 的话窗口回来了但不抢焦点，
 /// 用户在托盘上点一下却还得再点一次窗口才输得进去字。
-fn show_main_window(main_window: AnyWindowHandle, cx: &mut App) {
+pub fn show_main_window(main_window: AnyWindowHandle, cx: &mut App) {
     let _ = main_window.update(cx, |_, window, _| {
         window.show_window();
         window.activate_window();
