@@ -4,15 +4,23 @@ on:
   push:
     tags:
       - "v*"
-  # 手动运行时可以只挑几个平台跑（调试某一个平台的打包时不必把六台机器全拉起来）。
-  # 勾选框默认全开，和 tag 推送触发时一样是全量；tag 推送没有这些输入，一律全量。
-  # 只勾了一部分时 release 照样发，上面只挂这几个平台的产物 —— tag 已有 release
-  # 的话是往里补传（同名文件覆盖），不会把别的平台已有的产物删掉。
+  # 手动运行有两种用法，看 `tag` 填没填：
+  #
+  # * **填了**（如 v0.1.0）：正式发版，和推 tag 触发一样，构建那个 tag、发 release。
+  # * **留空**：调试构建。不看 tag，直接构建 "Use workflow from" 里选的分支
+  #   （默认 main）此刻的那个提交，产物只挂在这次运行的 Artifacts 里，
+  #   **不发 release、不建 tag**。版本号取 Cargo.toml 的版本加 `-dev.<短 SHA>`，
+  #   安装包文件名里能看出是哪个提交打的。
+  #
+  # 平台勾选框两种用法都管用（调试某一个平台的打包时不必把六台机器全拉起来），
+  # 默认全开；tag 推送没有这些输入，一律全量。正式发版只勾一部分时 release 照样发，
+  # 上面只挂这几个平台的产物 —— tag 已有 release 的话是往里补传（同名文件覆盖），
+  # 不会把别的平台已有的产物删掉。
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag, for example v0.1.0"
-        required: true
+        description: "Release tag, e.g. v0.1.0. Leave empty for a debug build of the selected branch (no release)"
+        required: false
         type: string
       linux_x64:
         description: "Linux x64"
@@ -43,33 +51,75 @@ permissions:
   contents: write
 
 jobs:
-  # 校验 tag、算出这一次要跑哪几个平台。matrix 只能在这里动态算：它是纯
-  # `include` 写法，而 GitHub 先拿 `exclude` 去减基础组合、再追加 `include`，
-  # 往 `exclude` 里填表达式那一招对 include 进来的条目不起作用。
+  # 定下这一次构建什么（哪个提交、版本号、发不发 release）、跑哪几个平台。
+  # 后面的 build / release 一律只认这里的输出，不再各自去猜触发方式。
+  # matrix 只能在这里动态算：它是纯 `include` 写法，而 GitHub 先拿 `exclude`
+  # 去减基础组合、再追加 `include`，往 `exclude` 里填表达式那一招对 include
+  # 进来的条目不起作用。
   plan:
     name: Plan release
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+      ref: ${{ steps.source.outputs.ref }}
+      version: ${{ steps.source.outputs.version }}
+      tag: ${{ steps.source.outputs.tag }}
+      publish: ${{ steps.source.outputs.publish }}
     steps:
-      # workflow_dispatch 传进来的 `tag` 必须是远端已经存在的 tag，否则 build 里
-      # actions/checkout 会以 `+refs/heads/v0.1.0*:... +refs/tags/v0.1.0*:...`
+      # 只有调试构建要它：版本号得从 Cargo.toml 里读。只拉这一个文件、不拉子模块，
+      # 几秒的事。手动运行时 checkout 默认取的就是所选分支的 `github.sha`。
+      - name: Check out Cargo.toml
+        if: github.event_name == 'workflow_dispatch' && inputs.tag == ''
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          sparse-checkout: Cargo.toml
+          sparse-checkout-cone-mode: false
+
+      # 正式发版：workflow_dispatch 传进来的 `tag` 必须是远端已经存在的 tag，
+      # 否则 build 里 actions/checkout 会以 `+refs/heads/v0.1.0*:... +refs/tags/v0.1.0*:...`
       # 去 fetch，两边都命中不了 → git 直接 exit 1，错误信息还藏在重试里，
       # 光看日志要绕一圈才知道是 tag 没推。这里先校验一次，把失败原因写在最
       # 前面。运维侧的正解仍然是先 `git tag v0.1.0 && git push origin v0.1.0`
       # 再 dispatch；这一步只是让漏推 tag 的那次跑死得干脆点。放在 plan 里
       # 只校验一次，失败时也不会白拉起一排构建机。
-      - name: Validate release tag
-        if: github.event_name == 'workflow_dispatch'
+      #
+      # 调试构建：钉死成 `github.sha` 而不是分支名 —— 六台机器起跑有先有后，
+      # 中途有人往 main 推了提交的话，按分支名取会各自拿到不同的代码。
+      - name: Resolve source
+        id: source
         shell: bash
+        # 别写成 `inputs.tag || github.ref_name` 一个表达式：tag 留空时空串在表达式
+        # 里是假值，会退回 ref_name（也就是 `main`），调试构建就永远走不进来，
+        # 只会报 "Invalid release tag: main"。两样分开传，在 bash 里挑。
         env:
-          TAG: ${{ inputs.tag }}
+          IS_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
 
-          if [[ -z "${TAG}" ]]; then
-            echo "workflow_dispatch requires a non-empty 'tag' input"
-            exit 1
+          if [[ "${IS_DISPATCH}" == "true" ]]; then
+            TAG="${INPUT_TAG}"
+          else
+            # tag 推送触发：ref_name 就是那个 tag 的短名。
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ "${IS_DISPATCH}" == "true" && -z "${TAG}" ]]; then
+            cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+            if [[ -z "${cargo_version}" ]]; then
+              echo "Could not read the package version from Cargo.toml"
+              exit 1
+            fi
+            version="${cargo_version}-dev.${GITHUB_SHA::7}"
+            echo "Debug build of ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7} (version ${version}); no release will be published."
+            {
+              echo "ref=${GITHUB_SHA}"
+              echo "version=${version}"
+              echo "tag="
+              echo "publish=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.~-]+)?$ ]]; then
@@ -85,6 +135,16 @@ jobs:
             echo "Create and push it first: git tag ${TAG} && git push origin ${TAG}"
             exit 1
           fi
+
+          # 明确写成 `refs/tags/...`：只给短名时 checkout 会同时按 `heads/` 与
+          # `tags/` 去 fetch，两个都空才失败，报错也更绕。
+          echo "Release build of ${TAG}."
+          {
+            echo "ref=refs/tags/${TAG}"
+            echo "version=${TAG#v}"
+            echo "tag=${TAG}"
+            echo "publish=true"
+          } >> "$GITHUB_OUTPUT"
 
       # 全量平台表在这里，每行第一列对应上面的勾选框名。加平台时两处（还有 env）一起加。
       - name: Select platforms
@@ -148,13 +208,11 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
     steps:
-      # 明确写成 `refs/tags/...`：只给短名时 checkout 会同时按 `heads/` 与
-      # `tags/` 去 fetch，两个都空才失败，报错也更绕。tag push 触发时
-      # `github.ref` 本来就是 `refs/tags/v...`，直接沿用。
+      # 取哪个提交由 plan 定：正式发版是 `refs/tags/v...`，调试构建是钉死的 SHA。
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+          ref: ${{ needs.plan.outputs.ref }}
           fetch-depth: 1
           submodules: recursive
 
@@ -241,7 +299,8 @@ jobs:
             # `Program Files (x86)` 下，别去 `Program Files` 找。两边版本不齐没关系：
             # 仓库里 vendor 的中文译文是 6.4.0+ 那份，比两边都旧，缺的那几条消息
             # 编译器只报警告（`MissingMessagesWarning`）并退回英文原文。
-            # `/D` 传的值对应 .iss 顶部那几个 `#ifndef`：版本号取 tag 去掉前缀的 `v`；`Arch` 是给 Inno 认的架构标识
+            # `/D` 传的值对应 .iss 顶部那几个 `#ifndef`：版本号由 plan 给（正式发版
+            # 是 tag 去掉前缀的 `v`，调试构建是 `<Cargo 版本>-dev.<短 SHA>`）；`Arch` 是给 Inno 认的架构标识
             # （x64 那支必须写 `x64compatible`，`x64` 在 6.3 起是废弃的
             # `x64strict`，会把 ARM64 Windows 挡在门外）；`ArchLabel` 只用于
             # 文件名，保持 `x64` / `arm64` 好认；`OutputDir` 指到 dist 下，
@@ -251,14 +310,19 @@ jobs:
               echo "Inno Setup 6 (ISCC.exe) not found at: $iscc"
               exit 1
             fi
-            version="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-            version="${version#v}"
+            version="${{ needs.plan.outputs.version }}"
             case "${{ matrix.arch }}" in
               x64) inno_arch=x64compatible ;;
               arm64) inno_arch=arm64 ;;
               *) echo "Unsupported Windows arch: ${{ matrix.arch }}"; exit 1 ;;
             esac
-            "$iscc" \
+            # 必须关掉 Git Bash 的参数路径转换：它把以 `/` 开头的参数当成 Unix
+            # 路径，`/DAppVersion=0.1.0` 会被改写成 `C:/Program Files/Git/DAppVersion=0.1.0`，
+            # ISCC 把这几个都当成脚本文件名，报 "You may not specify more than one
+            # script filename."。路径参数上面已经用 `cygpath -aw` 转好了，用不着它。
+            # MSYS_NO_PATHCONV 是 Git for Windows 认的，MSYS2_ARG_CONV_EXCL 是 MSYS2
+            # 认的，两个都设，不赌镜像上 bash 是哪一家。
+            MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' "$iscc" \
               "/DAppVersion=$version" \
               "/DArch=$inno_arch" \
               "/DArchLabel=${{ matrix.arch }}" \
@@ -268,27 +332,29 @@ jobs:
           fi
 
       - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: winssh-pro-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
 
+  # 调试构建（手动运行、tag 留空）整个跳过：产物已经挂在这次运行的 Artifacts 里了。
   release:
     name: Publish GitHub release
-    needs: build
+    needs: [plan, build]
+    if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          tag_name: ${{ needs.plan.outputs.tag }}
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
