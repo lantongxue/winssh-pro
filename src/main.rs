@@ -66,6 +66,17 @@ fn main() {
     // 而不是在启动的第一行 panic 掉整个应用。
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
         .try_init();
+    // 卸载程序专用（见 scripts/win-installer.iss 的 KillRunningApp）：缩在托盘里
+    // 的那份只能强杀，强杀跳过了退出时还原系统代理那一步，而卸完就没有"下次
+    // 启动"替它收拾了 —— 注册表里的代理指着一个死掉的口，用户卸完就断网。
+    // 所以卸载器杀完之后拿这个参数再起一次：只跑那段收拾，不开窗、不碰库。
+    if std::env::args().nth(1).as_deref() == Some("--restore-system-proxy") {
+        if let Err(error) = clash::system_proxy::reconcile() {
+            log::warn!("复原系统代理失败：{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // 在任何一条 TLS 连接之前：rustls 的两个后端都在图上，不先定一个默认的，
     // 不指名后端的 `ClientConfig::builder()` 会 panic（见 `src/tls.rs`）。
     tls::install_default_provider();

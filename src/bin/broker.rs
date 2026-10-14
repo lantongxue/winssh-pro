@@ -255,11 +255,12 @@ mod imp {
     /// 几十秒的事，用同步调用即可。
     fn install_service() -> Result<(), String> {
         let exe = std::env::current_exe().map_err(|e| format!("拿不到自己的 exe 路径：{e}"))?;
-        // binPath 走 UNC 管道路径（`\\?\C:\…`）—— 服务控制管理器在某些版本
-        // 的 Win32 上不认 `\\?\`，但 CreateServiceW 的文档说可以。实测 Win10
-        // 1903+ 与 Win11 全收；老的 Win7/8 得走普通路径。统一用标准格式，
-        // 空格靠引号（lpBinaryPathName 自己就是不解析空格的整串）。
-        let bin_path = exe.to_string_lossy().into_owned();
+        // binPath **必须带引号**：lpBinaryPathName 是一整条命令行，SCM 会按空格
+        // 切。安装包把我们放在 `C:\Program Files\WinSSH Pro\` 下，不带引号的话
+        // SCM 先去试 `C:\Program.exe`、再试 `C:\Program Files\WinSSH.exe` ——
+        // 这就是 Windows 上经典的 unquoted service path：谁能在那两处放一个 exe，
+        // 谁就能借这个 LocalSystem 服务提权，安全扫描器也会把它标红。
+        let bin_path = format!("\"{}\"", exe.to_string_lossy());
         let bin_path_w = to_wide(OsStr::new(&bin_path));
         let name_w = to_wide(OsStr::new(SERVICE_NAME));
         let display_w = to_wide(OsStr::new(SERVICE_DISPLAY_NAME));

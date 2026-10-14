@@ -4,66 +4,61 @@ on:
   push:
     tags:
       - "v*"
+  # 手动运行时可以只挑几个平台跑（调试某一个平台的打包时不必把六台机器全拉起来）。
+  # 勾选框默认全开，和 tag 推送触发时一样是全量；tag 推送没有这些输入，一律全量。
+  # 只勾了一部分时 release 照样发，上面只挂这几个平台的产物 —— tag 已有 release
+  # 的话是往里补传（同名文件覆盖），不会把别的平台已有的产物删掉。
   workflow_dispatch:
     inputs:
       tag:
         description: "Release tag, for example v0.1.0"
         required: true
         type: string
+      linux_x64:
+        description: "Linux x64"
+        type: boolean
+        default: true
+      linux_arm64:
+        description: "Linux arm64"
+        type: boolean
+        default: true
+      windows_x64:
+        description: "Windows x64"
+        type: boolean
+        default: true
+      windows_arm64:
+        description: "Windows arm64"
+        type: boolean
+        default: true
+      macos_x64:
+        description: "macOS x64 (Intel)"
+        type: boolean
+        default: true
+      macos_arm64:
+        description: "macOS arm64 (Apple Silicon)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
 
 jobs:
-  build:
-    name: ${{ matrix.os }}-${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: linux
-            arch: x64
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            extension: ""
-          - os: linux
-            arch: arm64
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            extension: ""
-          - os: windows
-            arch: x64
-            runner: windows-2022
-            target: x86_64-pc-windows-msvc
-            extension: .exe
-          - os: windows
-            arch: arm64
-            runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-            extension: .exe
-          - os: macos
-            arch: x64
-            # macos-13 已于 2025-12-04 下线：退役的标签不报错，任务只是一直排队，
-            # 熬到 24h 被取消，release 那一步跟着 skipped（v0.0.1 就栽在这）。
-            # macos-15-intel 是官方给的 Intel 替代，支持到 2027-08。
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
-            extension: ""
-          - os: macos
-            arch: arm64
-            # macos-14 定于 2026-11-02 下线，同上，提前挪走。
-            runner: macos-15
-            target: aarch64-apple-darwin
-            extension: ""
-
+  # 校验 tag、算出这一次要跑哪几个平台。matrix 只能在这里动态算：它是纯
+  # `include` 写法，而 GitHub 先拿 `exclude` 去减基础组合、再追加 `include`，
+  # 往 `exclude` 里填表达式那一招对 include 进来的条目不起作用。
+  plan:
+    name: Plan release
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      # workflow_dispatch 传进来的 `tag` 必须是远端已经存在的 tag，否则下一步
+      # workflow_dispatch 传进来的 `tag` 必须是远端已经存在的 tag，否则 build 里
       # actions/checkout 会以 `+refs/heads/v0.1.0*:... +refs/tags/v0.1.0*:...`
       # 去 fetch，两边都命中不了 → git 直接 exit 1，错误信息还藏在重试里，
       # 光看日志要绕一圈才知道是 tag 没推。这里先校验一次，把失败原因写在最
       # 前面。运维侧的正解仍然是先 `git tag v0.1.0 && git push origin v0.1.0`
-      # 再 dispatch；这一步只是让漏推 tag 的那次跑死得干脆点。
+      # 再 dispatch；这一步只是让漏推 tag 的那次跑死得干脆点。放在 plan 里
+      # 只校验一次，失败时也不会白拉起一排构建机。
       - name: Validate release tag
         if: github.event_name == 'workflow_dispatch'
         shell: bash
@@ -91,6 +86,68 @@ jobs:
             exit 1
           fi
 
+      # 全量平台表在这里，每行第一列对应上面的勾选框名。加平台时两处（还有 env）一起加。
+      - name: Select platforms
+        id: matrix
+        shell: bash
+        env:
+          IS_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+          LINUX_X64: ${{ inputs.linux_x64 }}
+          LINUX_ARM64: ${{ inputs.linux_arm64 }}
+          WINDOWS_X64: ${{ inputs.windows_x64 }}
+          WINDOWS_ARM64: ${{ inputs.windows_arm64 }}
+          MACOS_X64: ${{ inputs.macos_x64 }}
+          MACOS_ARM64: ${{ inputs.macos_arm64 }}
+        run: |
+          set -euo pipefail
+
+          # macos x64：macos-13 已于 2025-12-04 下线 —— 退役的标签不报错，任务只是
+          # 一直排队，熬到 24h 被取消，release 那一步跟着 skipped（v0.0.1 就栽在这）。
+          # macos-15-intel 是官方给的 Intel 替代，支持到 2027-08。
+          # macos arm64：macos-14 定于 2026-11-02 下线，同上，提前挪到 macos-15。
+          # 一行一个平台：勾选框名 os arch runner target extension（空扩展名写 -）。
+          # 纯 bash 拼 JSON，不靠 jq —— 字段里都是没有引号、空格的标识符，用不着转义。
+          platforms='
+          linux_x64     linux   x64   ubuntu-24.04     x86_64-unknown-linux-gnu  -
+          linux_arm64   linux   arm64 ubuntu-24.04-arm aarch64-unknown-linux-gnu -
+          windows_x64   windows x64   windows-2022     x86_64-pc-windows-msvc    .exe
+          windows_arm64 windows arm64 windows-11-arm   aarch64-pc-windows-msvc   .exe
+          macos_x64     macos   x64   macos-15-intel   x86_64-apple-darwin       -
+          macos_arm64   macos   arm64 macos-15         aarch64-apple-darwin      -
+          '
+
+          include=""
+          names=""
+          while read -r id os arch runner target extension; do
+            [[ -z "${id}" ]] && continue
+            if [[ "${IS_DISPATCH}" == "true" ]]; then
+              # 勾选框名转成上面 env 里的变量名（linux_x64 → LINUX_X64）再取值。
+              var="${id^^}"
+              [[ "${!var:-false}" == "true" ]] || continue
+            fi
+            [[ "${extension}" == "-" ]] && extension=""
+            entry="{\"os\":\"${os}\",\"arch\":\"${arch}\",\"runner\":\"${runner}\",\"target\":\"${target}\",\"extension\":\"${extension}\"}"
+            include="${include:+${include},}${entry}"
+            names="${names:+${names}, }${os}-${arch}"
+          done <<<"${platforms}"
+
+          if [[ -z "${include}" ]]; then
+            echo "No platform selected. Tick at least one platform when running the workflow manually."
+            exit 1
+          fi
+
+          echo "Platforms: ${names}"
+          echo "matrix={\"include\":[${include}]}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.os }}-${{ matrix.arch }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+
+    steps:
       # 明确写成 `refs/tags/...`：只给短名时 checkout 会同时按 `heads/` 与
       # `tags/` 去 fetch，两个都空才失败，报错也更绕。tag push 触发时
       # `github.ref` 本来就是 `refs/tags/v...`，直接沿用。
@@ -144,6 +201,9 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo install --locked cargo-deb cargo-generate-rpm
 
+      # Windows 这一支出两样：`*-setup.exe` 是给人下载的主产物（双击装、
+      # 开始菜单里能卸载），`*.tar.gz` 留着 —— 它是免安装 / 脚本化分发
+      # 更好接的那一份，和 macOS 那边 dmg + tar.gz 并存是一个道理。
       - name: Package release artifact
         shell: bash
         run: |
@@ -174,6 +234,37 @@ jobs:
               "$package_dir/"
             tar -czf "dist/$artifact.tar.gz" -C "$package_dir" \
               "winssh-pro${{ matrix.extension }}" winssh-broker${{ matrix.extension }} wintun.dll
+
+            # 安装包用 Inno Setup 的 ISCC 编（脚本见 scripts/win-installer.iss）。
+            # `windows-2022`（6.7.1）与 `windows-11-arm`（6.6.1）两个镜像都预装了
+            # Inno Setup 6。它自己的安装程序是 32 位的，所以 arm64 镜像上也装在
+            # `Program Files (x86)` 下，别去 `Program Files` 找。两边版本不齐没关系：
+            # 仓库里 vendor 的中文译文是 6.4.0+ 那份，比两边都旧，缺的那几条消息
+            # 编译器只报警告（`MissingMessagesWarning`）并退回英文原文。
+            # `/D` 传的值对应 .iss 顶部那几个 `#ifndef`：版本号取 tag 去掉前缀的 `v`；`Arch` 是给 Inno 认的架构标识
+            # （x64 那支必须写 `x64compatible`，`x64` 在 6.3 起是废弃的
+            # `x64strict`，会把 ARM64 Windows 挡在门外）；`ArchLabel` 只用于
+            # 文件名，保持 `x64` / `arm64` 好认；`OutputDir` 指到 dist 下，
+            # 与同一步里打的 tar.gz 落在一起，好被后面 upload-artifact 一并收走。
+            iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+            if [[ ! -x "$iscc" ]]; then
+              echo "Inno Setup 6 (ISCC.exe) not found at: $iscc"
+              exit 1
+            fi
+            version="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+            version="${version#v}"
+            case "${{ matrix.arch }}" in
+              x64) inno_arch=x64compatible ;;
+              arm64) inno_arch=arm64 ;;
+              *) echo "Unsupported Windows arch: ${{ matrix.arch }}"; exit 1 ;;
+            esac
+            "$iscc" \
+              "/DAppVersion=$version" \
+              "/DArch=$inno_arch" \
+              "/DArchLabel=${{ matrix.arch }}" \
+              "/DSourceDir=$(cygpath -aw "$package_dir")" \
+              "/DOutputDir=$(cygpath -aw dist)" \
+              "$(cygpath -aw scripts/win-installer.iss)"
           fi
 
       - name: Upload release artifact
