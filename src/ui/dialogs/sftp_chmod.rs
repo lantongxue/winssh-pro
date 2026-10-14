@@ -190,7 +190,9 @@ impl Render for SftpChmodDialog {
                             .when(!selected, |button| {
                                 button.secondary().text_color(cx.theme().muted_foreground)
                             })
-                            .w_full()
+                            // 三个档位平分一行。写 `w_full` 的话每个都要整行宽，
+                            // 第一个占满，后两个被挤出对话框右边、只露一条边。
+                            .flex_1()
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.octal.update(cx, |state, cx| {
                                     state.set_value(label.clone(), window, cx);
