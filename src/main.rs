@@ -1,5 +1,11 @@
 //! WinSSH Pro：跨平台原生 SSH 客户端。
 
+// Windows 上 release 版走 GUI 子系统：双击 exe 不再带出一个控制台黑框。
+// debug 版留着控制台，`RUST_LOG` 的日志照旧打在那里。子进程那边各处已
+// 自带 `CREATE_NO_WINDOW`（`clash::runtime`、`terminal::wsl`、
+// `local_file_service`），不靠继承父进程的控制台。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod assets;
 mod assistant;
 mod backup;
