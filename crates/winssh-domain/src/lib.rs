@@ -26,6 +26,10 @@ pub mod trusted_host;
 // 那一份 `locales/`，与根包 `winssh-pro` 共用同一批 yml。`set_locale` 是 rust-i18n
 // 的全局状态，根包启动时定一次，这里的 `t!` 跟着一起切。
 rust_i18n::i18n!("../../locales", fallback = "en");
+// 上面那个宏自己去读 locales/，却不告诉编译器读了什么：这一行把语言表记进 dep-info，
+// 只改文案时 cargo 才会重编本 crate，sccache 也不会把旧产物当命中。locales/ 下
+// 加了文件就照样补一行。没人引用的 const 不进二进制。
+const _: &str = include_str!("../../../locales/app.yml");
 
 // 各 `*Settings` 以 gpui 的 `SharedString` 承载文本；只借这一个类型。
 pub use gpui_kit::SharedString;

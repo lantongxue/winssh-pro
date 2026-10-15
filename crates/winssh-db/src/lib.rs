@@ -25,6 +25,10 @@ use tokio::runtime::Runtime;
 // 本 crate 的 `CARGO_MANIFEST_DIR`（`crates/winssh-db/`），`../../locales` 指回仓库
 // 根那一份 `locales/`，与根包共用同一批 yml；`set_locale` 是全局状态，一起切。
 rust_i18n::i18n!("../../locales", fallback = "en");
+// 上面那个宏自己去读 locales/，却不告诉编译器读了什么：这一行把语言表记进 dep-info，
+// 只改文案时 cargo 才会重编本 crate，sccache 也不会把旧产物当命中。locales/ 下
+// 加了文件就照样补一行。没人引用的 const 不进二进制。
+const _: &str = include_str!("../../../locales/app.yml");
 
 /// 建表语句。`CREATE TABLE IF NOT EXISTS` 是幂等的，每次启动都跑一遍；
 /// 老用户的库文件已存在时原样保留，新字段通过 [`MIGRATIONS`] 补齐。

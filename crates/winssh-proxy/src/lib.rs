@@ -46,6 +46,10 @@ pub use winssh_domain::proxy::{
 // 面向用户的错误文案走多语言查表；`../../locales` 相对本 crate 的 CARGO_MANIFEST_DIR
 // 指回仓库根那一份 `locales/`。
 rust_i18n::i18n!("../../locales", fallback = "en");
+// 上面那个宏自己去读 locales/，却不告诉编译器读了什么：这一行把语言表记进 dep-info，
+// 只改文案时 cargo 才会重编本 crate，sccache 也不会把旧产物当命中。locales/ 下
+// 加了文件就照样补一行。没人引用的 const 不进二进制。
+const _: &str = include_str!("../../../locales/app.yml");
 
 /// 全局代理在进程里的那一份缓存。正本在库里（`settings` 表）。
 static GLOBAL: LazyLock<RwLock<GlobalProxy>> =

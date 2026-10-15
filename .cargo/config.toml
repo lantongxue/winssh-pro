@@ -1,0 +1,20 @@
+# 链接器按平台挑。只动 Windows 那两个目标，别的平台用的已经是快的那一个：
+#
+# - x86_64 Linux：Rust 1.90 起默认就走工具链自带的 rust-lld，不用配。
+# - aarch64 Linux：默认还是系统 ld（bfd），但要换就得先装 mold / lld，这里不强加给
+#   本地环境；CI 上由 release workflow 里 setup-mold 那一步把系统 ld 换成 mold。
+# - macOS：Xcode 15 起的新链接器（ld-prime）本身就是多线程的，换不出什么。
+#
+# Windows 把 MSVC 的 link.exe 换成 rustup 随工具链带的 rust-lld（按 lld-link 的
+# 方式驱动），不用另装。`build.rs` 那条 `/STACK:8388608` 它照认；winres 编出来的
+# 资源虽然叫 `resource.lib`，lld-link 按文件内容而不是扩展名认出它是 .res，照收。
+# `target.<triple>.linker` 对宿主产物（构建脚本、proc-macro）同样生效，
+# 所以这一处就管住了全部链接。
+#
+# 链接参数别往这里的 `rustflags` 里加：那会落到每一个 crate 的编译上，一改就是
+# 整棵依赖树重编（见 `build.rs` 的模块文档）。
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+
+[target.aarch64-pc-windows-msvc]
+linker = "rust-lld.exe"

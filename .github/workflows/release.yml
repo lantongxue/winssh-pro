@@ -50,6 +50,14 @@ on:
 permissions:
   contents: write
 
+env:
+  # 工具链钉死，不跟着 stable 漂：sccache 的缓存键里有 rustc 本身的哈希，stable
+  # 每 6 周一换，缓存就整体作废一次。要升级就改这里（只管 CI，本地开发不受影响）。
+  RUST_TOOLCHAIN: "1.99.0"
+  # Linux 打包工具也钉版本，好按版本号缓存编出来的二进制（见 build 里那两步）。
+  CARGO_DEB_VERSION: "3.8.0"
+  CARGO_GENERATE_RPM_VERSION: "0.21.0"
+
 jobs:
   # 定下这一次构建什么（哪个提交、版本号、发不发 release）、跑哪几个平台。
   # 后面的 build / release 一律只认这里的输出，不再各自去猜触发方式。
@@ -161,10 +169,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          # macos x64：macos-13 已于 2025-12-04 下线 —— 退役的标签不报错，任务只是
-          # 一直排队，熬到 24h 被取消，release 那一步跟着 skipped（v0.0.1 就栽在这）。
-          # macos-15-intel 是官方给的 Intel 替代，支持到 2027-08。
-          # macos arm64：macos-14 定于 2026-11-02 下线，同上，提前挪到 macos-15。
+          # macos arm64：macos-14 定于 2026-11-02 下线 —— 退役的标签不报错，任务只是
+          # 一直排队，熬到 24h 被取消，release 那一步跟着 skipped（v0.0.1 就栽在
+          # 退役的 macos-13 上），所以提前挪到 macos-15。
+          # macos x64：不再起 Intel 机器，在 macos-15（Apple 芯片）上交叉编译
+          # x86_64-apple-darwin。Apple 工具链原生支持两种架构，打包脚本也都按
+          # `target/<triple>/release` 取产物；Intel 那台（macos-15-intel）同样的活
+          # 要多花一半时间，而 macOS 的分钟数最贵，它自己也只支持到 2027-08。
           # 一行一个平台：勾选框名 os arch runner target extension（空扩展名写 -）。
           # 纯 bash 拼 JSON，不靠 jq —— 字段里都是没有引号、空格的标识符，用不着转义。
           platforms='
@@ -172,7 +183,7 @@ jobs:
           linux_arm64   linux   arm64 ubuntu-24.04-arm aarch64-unknown-linux-gnu -
           windows_x64   windows x64   windows-2022     x86_64-pc-windows-msvc    .exe
           windows_arm64 windows arm64 windows-11-arm   aarch64-pc-windows-msvc   .exe
-          macos_x64     macos   x64   macos-15-intel   x86_64-apple-darwin       -
+          macos_x64     macos   x64   macos-15         x86_64-apple-darwin       -
           macos_arm64   macos   arm64 macos-15         aarch64-apple-darwin      -
           '
 
@@ -207,6 +218,35 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
 
+    # 编译缓存走 sccache（GitHub Actions cache 做后端），按源码内容哈希逐个 crate
+    # 地存取，cc 编的 C 代码（tree-sitter 语法、aws-lc、sqlite）也一并缓存。
+    # 不用 Swatinem/rust-cache：它存缓存前只保留 manifest 在仓库根**之外**的依赖，
+    # `refs/`、`vendor/` 下的 gpui、ironrdp-connector、sspi、picky 一律被清掉；
+    # 就算留下了，path 依赖靠 mtime 判新旧，新 checkout 的文件全像刚改过，
+    # 照样整棵重编。这一串偏偏是最重的。
+    #
+    # 只有 main 上的运行（手动运行时选 main，不论填没填 tag）写缓存：tag 推送
+    # 触发的运行存下的缓存只有那个 tag 自己读得到，下一个 tag 用不上，白占配额；
+    # 但它读得到 main 的。GitHub 会清掉 7 天没被访问的缓存，发版隔得久的话，
+    # 先在 main 上跑一次调试构建把缓存热起来。
+    #
+    # sccache 管不了的：构建脚本、proc-macro 和最后的可执行文件（要链接的都不缓存），
+    # 以及根包 `winssh-pro` 自己 —— 它是 bin，每次都编。
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+      # 根包一编就是好几分钟，期间没有可缓存的请求；默认 10 分钟没请求 sccache
+      # 服务就退出，再起来统计就清零了，post 那一步报出来的命中率就不准。
+      SCCACHE_IDLE_TIMEOUT: "0"
+      # sccache 的键里含每个 `--extern` 依赖的文件内容，proc-macro 的 dll 也在内。
+      # MSVC 系链接器默认往 PE 头里写当前时间戳，同一份代码每次链出来的 dll 都
+      # 不一样，所有直接用到 proc-macro 的 crate（serde、tokio、gpui……）就永远
+      # 命中不了。`/Brepro` 把时间戳换成内容哈希。走环境变量而不是 rustflags：
+      # 带了 `--target` 时 rustflags 到不了构建脚本和 proc-macro，而 link.exe 与
+      # lld-link 都会读 `_LINK_`。
+      _LINK_: ${{ matrix.os == 'windows' && '/Brepro' || '' }}
+
     steps:
       # 取哪个提交由 plan 定：正式发版是 `refs/tags/v...`，调试构建是钉死的 SHA。
       - name: Check out source
@@ -238,26 +278,58 @@ jobs:
             protobuf-compiler \
             libprotobuf-dev
 
+      # aarch64 Linux 的默认链接器还是系统 ld（bfd），把它换成 mold。x86_64 Linux
+      # 从 Rust 1.90 起默认就走自带的 rust-lld，Windows 的在 `.cargo/config.toml`，
+      # macOS 的 ld-prime 本来就快 —— 都不用这一步。
+      - name: Use mold linker
+        if: runner.os == 'Linux' && matrix.arch == 'arm64'
+        uses: rui314/setup-mold@v1
+
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
         run: brew install protobuf
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
         with:
-          key: ${{ matrix.target }}
+          version: "v0.18.0"
 
+      # `--timings` 出一份逐 crate 的耗时报告（谁在关键路径上、并行度如何），
+      # 挂在下面那个 cargo-timings-* 产物里，砍依赖、调 opt-level 之前先看它。
       - name: Build release binary
-        run: cargo build --locked --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }} --timings
+
+      - name: Upload build timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cargo-timings-${{ matrix.os }}-${{ matrix.arch }}
+          path: target/cargo-timings/cargo-timing.html
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # cargo-deb / cargo-generate-rpm 从源码编要 3~4 分钟，可 cargo-generate-rpm
+      # 没有官方预编译、cargo-deb 只有 x86_64 的。版本钉在顶上的 env 里，编一次就
+      # 按版本号把两个二进制缓存起来，之后直接复用。
+      - name: Cache Linux package builders
+        id: package-builders
+        if: runner.os == 'Linux'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/bin/cargo-deb
+            ~/.cargo/bin/cargo-generate-rpm
+          key: package-builders-${{ matrix.target }}-cargo-deb-${{ env.CARGO_DEB_VERSION }}-cargo-generate-rpm-${{ env.CARGO_GENERATE_RPM_VERSION }}
 
       - name: Install Linux package builders
-        if: runner.os == 'Linux'
-        run: cargo install --locked cargo-deb cargo-generate-rpm
+        if: runner.os == 'Linux' && steps.package-builders.outputs.cache-hit != 'true'
+        run: cargo install --locked "cargo-deb@${CARGO_DEB_VERSION}" "cargo-generate-rpm@${CARGO_GENERATE_RPM_VERSION}"
 
       # Windows 这一支出两样：`*-setup.exe` 是给人下载的主产物（双击装、
       # 开始菜单里能卸载），`*.tar.gz` 留着 —— 它是免安装 / 脚本化分发
@@ -345,10 +417,13 @@ jobs:
     if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     steps:
+      # 只收安装包那几个产物：同一次运行里还有 cargo-timings-*（构建耗时报告），
+      # 不能跟着发进 release。
       - name: Download release artifacts
         uses: actions/download-artifact@v8
         with:
           path: dist
+          pattern: winssh-pro-*
           merge-multiple: true
 
       - name: Publish release
