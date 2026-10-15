@@ -1,0 +1,13 @@
+[package]
+name = "winssh-desktop"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 远程桌面共享底座：远端光标、不透明帧构造、事件帧通道、剪贴板文本去噪"
+license = "MIT"
+
+[dependencies]
+# VNC / RDP 两条远程桌面共用的底座，只借 gpui 的图像/光标类型与 tokio 通道。
+gpui-kit = { workspace = true }
+tokio = { workspace = true }
+# 帧像素解码/编码用的像素容器。
+image = { workspace = true }

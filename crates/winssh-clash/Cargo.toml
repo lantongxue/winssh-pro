@@ -1,0 +1,40 @@
+[package]
+name = "winssh-clash"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 的 Clash 订阅后端：订阅正文解读、mihomo 子进程起停与外部控制、系统代理、提权 broker 客户端"
+license = "MIT"
+
+[dependencies]
+# 订阅的运行态经应用级 tokio runtime 跑（`db::run` / `db::runtime` / `db::db_dir`）。
+winssh-db = { workspace = true }
+# 与提权 broker 共用的那条命名管道消息协议。
+winssh-broker-protocol = { workspace = true }
+# 订阅正文是 YAML；跟本机 mihomo 外部控制口说话用 reqwest。
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+rust-i18n = { workspace = true }
+# 快照/状态里的文本用 gpui 的 SharedString。
+gpui-kit = { workspace = true }
+# mihomo 内核下载的解包与校验。
+flate2 = { workspace = true }
+zip = { workspace = true }
+dirs = { workspace = true }
+chrono = { workspace = true }
+log = { workspace = true }
+# 给 mihomo 外部控制口生成随机 secret。
+rand = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# 系统代理那一档：注册表读写 + WinInet 广播。
+winreg = { workspace = true }
+# 提权 broker 客户端（ShellExecuteExW(runas)、SCM、AMSI、管道互认等）。
+windows-sys = { workspace = true }
+
+[dev-dependencies]
+# 订阅测试里要开一个 stream 读取任务去验正文解码。
+futures = { workspace = true }

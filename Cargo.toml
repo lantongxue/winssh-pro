@@ -34,10 +34,57 @@ assets = [
 	{ source = "assets/winssh-pro.desktop", dest = "/usr/share/applications/winssh-pro.desktop", mode = "644" },
 ]
 
+# 本工程是一个 Cargo workspace：根包 `winssh-pro` 保留应用外壳（main / ui /
+# build.rs / 两个 bin），领域与后端代码按分层拆进 `crates/*` 下的独立 lib crate
+# （见 AGENTS.md 的「crate 分层与依赖方向」）。依赖只能自上而下：
+# domain ← db ← repository ← 各后端 ← service ← 根包（ui）。
+# 所有第三方依赖的版本钉子统一收在下面的 `[workspace.dependencies]`，各成员
+# crate 用 `dep = { workspace = true }` 继承，避免同一份 gpui / russh / ironrdp
+# 在不同 crate 里钉歪成两份不兼容的类型。`[patch.crates-io]` 与 `[profile.*]`
+# 留在 workspace 根，对全体成员生效。
+[workspace]
+members = ["crates/*"]
+# `refs/`（gpui-kit、alacritty 两个 git 子模块）与 `vendor/`（各补丁副本）各自
+# 是独立的 crate / workspace，只是恰好落在本仓库目录树下、又被我们以 path 依赖
+# 引进来。不 exclude 的话，cargo 会把这些子目录当成“本 workspace 的候选成员”
+# 去解析它们的 `edition.workspace = true` 之类的继承，转而到本根来找
+# `[workspace.package]`（本根没定义）而报错。exclude 让它们各自回到自己
+# 所属的 workspace 根去解析。
+exclude = ["refs", "vendor"]
+resolver = "2"
+
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
 
-[dependencies]
+[workspace.dependencies]
+# 本工程自己的分层 crate（见 `crates/`）。依赖只能自上而下：
+# domain ← db ← repository ← 各后端 ← service ← 根包（ui）。
+winssh-domain = { path = "crates/winssh-domain" }
+winssh-tls = { path = "crates/winssh-tls" }
+winssh-db = { path = "crates/winssh-db" }
+winssh-repository = { path = "crates/winssh-repository" }
+winssh-easytier = { path = "crates/winssh-easytier" }
+winssh-proxy = { path = "crates/winssh-proxy" }
+winssh-ssh = { path = "crates/winssh-ssh" }
+winssh-sftp = { path = "crates/winssh-sftp" }
+winssh-localfs = { path = "crates/winssh-localfs" }
+winssh-s3 = { path = "crates/winssh-s3" }
+winssh-serial = { path = "crates/winssh-serial" }
+winssh-telnet = { path = "crates/winssh-telnet" }
+winssh-webdav = { path = "crates/winssh-webdav" }
+winssh-ftp = { path = "crates/winssh-ftp" }
+winssh-broker-protocol = { path = "crates/winssh-broker-protocol" }
+winssh-clash = { path = "crates/winssh-clash" }
+winssh-assistant = { path = "crates/winssh-assistant" }
+winssh-zmodem = { path = "crates/winssh-zmodem" }
+winssh-terminal = { path = "crates/winssh-terminal" }
+winssh-desktop = { path = "crates/winssh-desktop" }
+winssh-netstats = { path = "crates/winssh-netstats" }
+winssh-vnc = { path = "crates/winssh-vnc" }
+winssh-rdp = { path = "crates/winssh-rdp" }
+winssh-backup = { path = "crates/winssh-backup" }
+winssh-monitor = { path = "crates/winssh-monitor" }
+winssh-service = { path = "crates/winssh-service" }
 anyhow = "1"
 
 # GPUI 与组件库都从 gpui-kit 这一个门面 crate 进来（原 longbridge/gpui-component
@@ -425,7 +472,6 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 # `prebuilt-nasm` 让 aws-lc-sys 使用 crate 里随附的预汇编 .obj，构建机就不必再装 NASM。
 # 这里通过 feature 统一间接作用在 russh 依赖的那份 aws-lc-rs 上，版本与 russh 的要求一致；
 # resolver v2 下这一段只在编译 Windows 目标时生效，不会影响 Linux/macOS。
-[target.'cfg(windows)'.dependencies]
 aws-lc-rs = { version = "1.16.2", features = ["prebuilt-nasm"] }
 # Clash 的「系统代理」那一档（见 `src/clash/system_proxy.rs`）：往
 # `HKCU\…\Internet Settings` 里写 `ProxyEnable` / `ProxyServer`，改完再喊一声
@@ -459,17 +505,119 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security_Authorization",
 ] }
 
+# 根包 `winssh-pro`（应用外壳）自己的依赖：全部经 `workspace = true` 继承上面
+# 那份钉子。随着后端逐层下沉到 `crates/*`，这里会逐步瘦身，最终只剩 UI / main /
+# 托盘 / 单实例这些应用层真正直接用的东西。
+[dependencies]
+winssh-domain = { workspace = true }
+winssh-tls = { workspace = true }
+winssh-db = { workspace = true }
+winssh-easytier = { workspace = true }
+winssh-proxy = { workspace = true }
+winssh-ssh = { workspace = true }
+winssh-sftp = { workspace = true }
+winssh-localfs = { workspace = true }
+winssh-s3 = { workspace = true }
+winssh-serial = { workspace = true }
+winssh-telnet = { workspace = true }
+winssh-webdav = { workspace = true }
+winssh-ftp = { workspace = true }
+winssh-broker-protocol = { workspace = true }
+winssh-clash = { workspace = true }
+winssh-assistant = { workspace = true }
+winssh-zmodem = { workspace = true }
+winssh-terminal = { workspace = true }
+winssh-desktop = { workspace = true }
+winssh-netstats = { workspace = true }
+winssh-vnc = { workspace = true }
+winssh-rdp = { workspace = true }
+winssh-backup = { workspace = true }
+winssh-monitor = { workspace = true }
+winssh-service = { workspace = true }
+anyhow = { workspace = true }
+gpui-kit = { workspace = true }
+gpui-fps = { workspace = true }
+alacritty_terminal = { workspace = true }
+zmodem2 = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+flate2 = { workspace = true }
+zip = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+russh = { workspace = true }
+ssh-key = { workspace = true }
+telnet = { workspace = true }
+serialport = { workspace = true }
+russh-sftp = { workspace = true }
+tokio-socks = { workspace = true }
+tokio-util = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = { workspace = true }
+sea-orm = { workspace = true }
+tokio = { workspace = true }
+dirs = { workspace = true }
+rand = { workspace = true }
+rig-agent = { workspace = true }
+rig-core = { workspace = true }
+rust-i18n = { workspace = true }
+sys-locale = { workspace = true }
+reqwest_dav = { workspace = true }
+suppaftp = { workspace = true }
+rustls-platform-verifier = { workspace = true }
+x509-cert = { workspace = true }
+rust-s3 = { workspace = true }
+reqwest-s3-tls = { workspace = true }
+aes-gcm = { workspace = true }
+pbkdf2 = { workspace = true }
+sha2 = { workspace = true }
+vnc-rs = { workspace = true }
+image = { workspace = true }
+tray-icon = { workspace = true }
+base64 = { workspace = true }
+encoding_rs = { workspace = true }
+ironrdp = { workspace = true }
+ironrdp-tokio = { workspace = true }
+ironrdp-tls = { workspace = true }
+ironrdp-bulk = { workspace = true }
+easytier = { workspace = true }
+easytier-core = { workspace = true }
+rustls = { workspace = true }
+url = { workspace = true }
+cidr = { workspace = true }
+strum = { workspace = true }
+percent-encoding = { workspace = true }
+bytes = { workspace = true }
+reqwest = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+aws-lc-rs = { workspace = true }
+winreg = { workspace = true }
+windows-sys = { workspace = true }
+
 [dev-dependencies]
+# 上层（服务层/助手/端口转发对话框）的测试要用 `winssh-ssh` 里那台进程内假
+# sshd（`ssh::exec::fake`），它门在 `test-support` 特性后面；这里点亮，正式构建不带。
+winssh-ssh = { workspace = true, features = ["test-support"] }
+# 同理：服务层/备份落点的测试要用 `winssh-webdav` 里那台回环假 WebDAV 服务器。
+winssh-webdav = { workspace = true, features = ["test-support"] }
+# 同理：zmodem 传输面板的测试要用 `winssh-terminal` 里那个离线“收件箱”
+# （`take_sent_by_test`）验协议方向。
+winssh-terminal = { workspace = true, features = ["test-support"] }
+# 同理：ui 测试要用服务层各 `*Service::in_memory_blocking` 搭内存库。
+winssh-service = { workspace = true, features = ["test-support"] }
 # 让界面能在无窗口的测试里真的画一遍（`TestAppContext` + `window.draw`）。
 # 有些错只在完整的 layout/prepaint/paint 走完之后才暴露 —— 比如元素树自己
 # 套自己，编译期看不出来，跑起来是栈溢出。门面 crate 的 `test-support` 转开的就是
 # `gpui/test-support`，`#[gpui_kit::test]` 与 `TestAppContext` 由它带出来。
-gpui-kit = { path = "refs/gpui-kit/crates/kit", features = ["test-support"] }
+gpui-kit = { workspace = true, features = ["test-support"] }
 
 # 假服务器要自己解一遍客户端 Provide 出去的 zlib 流（扩展剪贴板的正文），
 # 才验得出"中文真从这条路上走过去了"。和 `vnc-rs` 用的同一份实现，
 # 本来就在依赖树里，多不了多少编译量。
-flate2 = "1"
+flate2 = { workspace = true }
 
 # 剪贴板要的东西 `vnc-rs` 自己不做：扩展剪贴板（RealVNC / TigerVNC / noVNC 的
 # 共同扩展，伪编码 0xc0a1e5ce，UTF-8 + zlib）的消息编解码，以及经典正文按字节

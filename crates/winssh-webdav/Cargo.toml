@@ -1,0 +1,35 @@
+[package]
+name = "winssh-webdav"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 的 WebDAV 后端：PROPFIND、认证探测、流式收发与对象存储"
+license = "MIT"
+
+[features]
+# 把回环假 WebDAV 服务器（`fake_server`）编进来，供上层 crate 的测试共用
+# （服务层/备份落点的测试都拿它对着"真发出去的请求"验路径）。根包在
+# dev-dependencies 里点亮，正式构建不带。
+test-support = []
+
+[dependencies]
+# 路径规整与目录项复用 SFTP 那一层（`sftp::path`）。
+winssh-sftp = { workspace = true }
+# WebDAV 的连接设置在领域层，这里再导出。
+winssh-domain = { workspace = true }
+reqwest_dav = { workspace = true }
+reqwest = { workspace = true }
+bytes = { workspace = true }
+percent-encoding = { workspace = true }
+# 端点 URL 的解析（拆 scheme/authority/路径）。
+url = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }
+rust-i18n = { workspace = true }
+# 下面三个只给 `test-support` 后面的回环假服务器（`fake_server`）用：它编进
+# lib（供上层 crate 的测试共用），所以不能只放 dev-dependencies（那只在编本 crate
+# 自己的测试时才在）。它们都已在整张依赖图里（tokio/base64 是传递依赖，db 是
+# 基础层），多列一行不多编一份东西；webdav → db 也是向下的合法方向。
+tokio = { workspace = true }
+base64 = { workspace = true }
+winssh-db = { workspace = true }

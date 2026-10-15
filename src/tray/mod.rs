@@ -26,9 +26,12 @@
 //! 它自己的工作线程上。菜单与图标事件因此可能来自别的线程，一律经 channel
 //! 送回前台任务处理，不在原生回调里碰 `App`。
 
-mod settings;
+// 关窗缩托盘这个开关的配置缓存与编解码已下沉到 `winssh-domain`（见
+// `winssh_domain::tray`）；服务层直接用那边。这里再导出托盘 UI 自己要用的两个
+// （读开关、改开关），保持 `crate::tray::{close_to_tray, set_global}` 旧路径不变；
+// `encode`/`decode`（落库用的编解码）归服务层直接从领域层取，不在这里再导。
+pub use winssh_domain::tray::{global as close_to_tray, set_global};
 
-pub use settings::{decode, encode, global as close_to_tray, set_global};
 
 use std::sync::OnceLock;
 

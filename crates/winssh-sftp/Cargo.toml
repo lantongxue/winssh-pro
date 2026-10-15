@@ -1,0 +1,14 @@
+[package]
+name = "winssh-sftp"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 的 SFTP 文件面板支撑层：目录项、路径规整与传输条目/状态"
+license = "MIT"
+
+[dependencies]
+# 目录项/传输条目以 gpui 的 SharedString 承载文本。
+gpui-kit = { workspace = true }
+# 文件类型、传输状态等的界面文案走多语言查表。
+rust-i18n = { workspace = true }
+# 远端 mtime 是 Unix 时间戳，按本地时区显示。
+chrono = { workspace = true }

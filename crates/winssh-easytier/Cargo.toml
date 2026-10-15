@@ -1,0 +1,32 @@
+[package]
+name = "winssh-easytier"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 的 EasyTier 组网后端：进程内实例的起停、运行快照与 portal 入口登记"
+license = "MIT"
+
+[dependencies]
+# 领域数据：`EasyTierSettings` 与照它拨号用的 `Host`。
+winssh-domain = { workspace = true }
+# 起 wss/quic 隧道前先把 aws-lc-rs 装成进程默认 rustls 后端。
+winssh-tls = { workspace = true }
+# EasyTier 本体（进程内嵌库）与其控制面。版本/特性钉子见根 Cargo.toml 的注释。
+easytier = { workspace = true }
+easytier-core = { workspace = true }
+# 快照/会话里的文本用 gpui 的 SharedString（与上层同一份类型）。
+gpui-kit = { workspace = true }
+# 面向用户的状态/错误文案走多语言查表。
+rust-i18n = { workspace = true }
+log = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+# 监听端口展开成每种隧道协议一个 URL、虚拟地址/网段。
+chrono = { workspace = true }
+cidr = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+# 会话测试真的在回环上起一张用户态网，再经它的 SOCKS5 入口连一下虚拟 IP，
+# 验“每种隧道都通”；那一步要一个 SOCKS5 客户端。
+tokio-socks = { workspace = true }

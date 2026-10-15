@@ -1,5 +1,10 @@
     use super::*;
     use crate::host::{AuthMethod, Host};
+    // 这个测试以前挂在 ssh 模块内部，`use super::*` 顺手带进了 connection.rs 的
+    // `use anyhow::{bail, Result}` 与 `use rust_i18n::t`。现在它挂在根包的 ssh 桩上，
+    // super 只有再导出的公开项，这几个得自己显式引。
+    use anyhow::{Result, bail};
+    use rust_i18n::t;
 
     fn unreachable_host() -> Host {
         Host {

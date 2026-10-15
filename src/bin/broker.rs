@@ -96,8 +96,9 @@
 
 #![windows_subsystem = "windows"]
 
-#[path = "../clash/broker_protocol.rs"]
-mod broker_protocol;
+// 与 GUI 侧（`winssh-clash`）共用同一份管道消息协议，它已抽成独立的轻 crate
+// （只依 serde），不必再把主包的源文件 `#[path]` 引进来。
+use winssh_broker_protocol as broker_protocol;
 
 #[cfg(windows)]
 mod imp {

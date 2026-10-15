@@ -1,20 +1,6 @@
-//! 智能助手的领域层：模型供应商配置、对话模型与 Agent 运行。
-//!
-//! 分三块：[`config`] 是"用哪家模型、看不看得了图、要不要全自动"这份配置
-//! 连同对话的领域模型（消息、会话、命令卡片）；[`image`] 把剪贴板里贴进来的
-//! 图规整成模型吃得下的样子；[`agent`] 是 rig 那一侧 —— 装配 Agent、工具与
-//! 审核门，把一次提问跑成一场多轮运行。
-//!
-//! 界面（[`crate::ui::panels`] 的助手面板）只认这里的类型和
-//! [`crate::service::AssistantService`]，不直接碰 rig。
+//! 智能助手后端已下沉到 `winssh-assistant`（见 [`winssh_assistant`]）：rig Agent
+//! 运行循环、模型配置与剪贴板图片处理都在那里。这里只做再导出，保持
+//! `crate::assistant::ChatImage` 这些旧路径不变 —— 业务入口是
+//! [`crate::service::AssistantService`]，界面不直接碰 rig。
 
-pub mod agent;
-pub mod config;
-pub mod image;
-
-pub use agent::{AgentEvent, CurrentSession, RunInput, SessionTarget, Turn, run};
-pub use config::{
-    AssistantConfig, ChatMessage, ChatRole, CommandStatus, Conversation, MessageBody, PRESETS,
-    ProviderProtocol, matching_preset, preset,
-};
-pub use image::ChatImage;
+pub use winssh_assistant::*;

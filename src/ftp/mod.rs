@@ -1,22 +1,13 @@
-//! FTP / FTPS：照着一台 [`Host`](crate::host::Host) 把远端当文件面板用。
-//! 协议由 suppaftp 收口，TLS 走 rustls（aws-lc-rs）。
-//!
-//! | 文件 | 干什么 |
-//! | --- | --- |
-//! | [`settings`] | 主机上那份 FTP 配置：明文 / 显式 FTPS / 隐式 FTPS |
-//! | [`client`] | 拨号（直连或经代理）、TLS、登录、能力探测，以及连接池 |
-//! | [`tls`] | 证书信任：系统证书库认的放行，不认的弹框确认、按指纹记进信任库 |
-//! | [`listing`] | MLSD / LIST 两种目录列表折成面板要的条目，纯函数 |
-//!
-//! 文件面板要的那组方法（列目录、传输…）在 [`crate::service::FtpService`]，
-//! 它站在这一层上面。
-//!
-//! 配置存在 [`FtpSettings`] 里，编码后落在 `hosts.ftp_settings` 那一列；
-//! 地址、端口、账号、密码复用 `hosts` 表已有的那几列。
+//! FTP/FTPS 后端已下沉到 `winssh-ftp`（见 [`winssh_ftp`]）：控制/数据连接、TLS
+//! 会话复用、列表解析与证书校验都在那里，`FtpSettings` 经领域层再导出。这里只做
+//! 再导出，保持 `crate::ftp::CertTrust`、`crate::ftp::FtpSettings` 这些旧路径不变 ——
+//! 业务入口是 [`crate::service::FtpService`]。
 
-pub mod client;
-pub mod listing;
-pub mod tls;
-mod settings;
+pub use winssh_ftp::*;
 
-pub use settings::{FtpSecurity, FtpSettings, decode, encode, port_after_switch};
+// 连接层的集成测试跨 ftp + service + proxy + db（要调 `service::FtpService`），
+// 留在根包最合适：这里能同时拿到这几个 crate，而 `winssh-ftp` 在服务层之下、
+// 不该反向依赖它。`super::*` 经上面那行再导出拿到 `CertTrust` 等公开项。
+#[cfg(test)]
+#[path = "../tests/ftp/client.rs"]
+mod client_tests;

@@ -1,0 +1,21 @@
+[package]
+name = "winssh-db"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 数据基建：SeaORM 连接、应用级 tokio runtime、实体定义与建表迁移"
+license = "MIT"
+
+[dependencies]
+# SeaORM 负责 SQLite 访问，sqlx 自带静态编译的 SQLite，不依赖系统安装的库。
+sea-orm = { workspace = true }
+# 异步操作跑在这份应用级 tokio runtime 上（见 `run`）。
+tokio = { workspace = true }
+anyhow = { workspace = true }
+# 用户数据目录（Windows %APPDATA% / macOS ~/Library/Application Support）。
+dirs = { workspace = true }
+# 建表失败、备份旧库这类事件打日志。
+log = { workspace = true }
+# 还原库之前给旧文件加时间戳后缀。
+chrono = { workspace = true }
+# 面向用户的错误文案走多语言查表。
+rust-i18n = { workspace = true }

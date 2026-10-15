@@ -1,0 +1,22 @@
+[package]
+name = "winssh-telnet"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 的 Telnet 后端：Telnet 桥（IAC 过滤/协商）与连接"
+license = "MIT"
+
+[dependencies]
+# 领域数据（`Host`）、代理路由、以及 SSH 那边共用的窗口尺寸类型。
+winssh-domain = { workspace = true }
+winssh-proxy = { workspace = true }
+winssh-ssh = { workspace = true }
+# 纯协议层：把 TcpStream 包成 Telnet<TcpStream>，过滤 IAC 并自动回应协商。
+telnet = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+rust-i18n = { workspace = true }
+
+[dev-dependencies]
+# 桥的测试经应用级 tokio runtime 跑异步读写。
+winssh-db = { workspace = true }

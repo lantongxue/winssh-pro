@@ -1,0 +1,67 @@
+[package]
+name = "winssh-service"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 服务层：界面拿数据的唯一入口，把领域模型转换与业务规则收在这里"
+license = "MIT"
+
+[features]
+# 把各 `*Service::in_memory_blocking`（内存库服务工厂）编进来，供上层（根包）
+# 的 ui 测试搭真库跑。正式构建不带。
+test-support = []
+
+[dependencies]
+# 领域数据与已下沉的各后端；服务层把它们拼成 UI 用的门面。
+winssh-domain = { workspace = true }
+winssh-db = { workspace = true }
+winssh-repository = { workspace = true }
+winssh-ssh = { workspace = true }
+winssh-sftp = { workspace = true }
+winssh-ftp = { workspace = true }
+winssh-webdav = { workspace = true }
+winssh-s3 = { workspace = true }
+winssh-serial = { workspace = true }
+winssh-telnet = { workspace = true }
+winssh-proxy = { workspace = true }
+winssh-clash = { workspace = true }
+winssh-easytier = { workspace = true }
+winssh-assistant = { workspace = true }
+winssh-zmodem = { workspace = true }
+winssh-terminal = { workspace = true }
+winssh-monitor = { workspace = true }
+winssh-backup = { workspace = true }
+winssh-localfs = { workspace = true }
+winssh-netstats = { workspace = true }
+winssh-desktop = { workspace = true }
+
+# 外部依赖：SeaORM/tokio 数据访问，russh/suppaftp 传输类型，多语言与共享类型。
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+sea-orm = { workspace = true }
+russh = { workspace = true }
+russh-sftp = { workspace = true }
+suppaftp = { workspace = true }
+rust-i18n = { workspace = true }
+gpui-kit = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = { workspace = true }
+log = { workspace = true }
+ssh-key = { workspace = true }
+# 各文件后端服务直用其客户端类型：S3(`s3`)、WebDAV(reqwest_dav/reqwest/bytes/
+# percent-encoding)、串口(serialport)，备份解包用 zip。
+rust-s3 = { workspace = true }
+reqwest = { workspace = true }
+reqwest_dav = { workspace = true }
+bytes = { workspace = true }
+percent-encoding = { workspace = true }
+serialport = { workspace = true }
+zip = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]
+# 服务层测试里造/解图片（助手截图上传那条路）。
+image = { workspace = true }

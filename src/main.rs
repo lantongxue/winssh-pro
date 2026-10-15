@@ -23,7 +23,6 @@ mod monitor;
 mod netstats;
 mod proxy;
 mod rdp;
-mod repository;
 mod serial;
 mod service;
 mod session;
@@ -81,6 +80,23 @@ fn main() {
     // 在任何一条 TLS 连接之前：rustls 的两个后端都在图上，不先定一个默认的，
     // 不指名后端的 `ClientConfig::builder()` 会 panic（见 `src/tls.rs`）。
     tls::install_default_provider();
+
+    // “经 Clash 代理”那一档的入口查询：`winssh-proxy` 不认识 mihomo 实例，
+    // 这里把“此刻 Clash 实例的混合端口”登记进去（见 `proxy::set_clash_provider`）。
+    // 无捕获闭包，读的是 Clash 后端自己的全局状态；实例没在跑就是 `None`。
+    proxy::set_clash_provider(|| {
+        let state = clash::runtime::state();
+        match (&state.phase, state.mixed_port) {
+            (clash::Phase::Running, Some(port)) => Some(proxy::ProxyConfig {
+                // mihomo 的混合端口只绑回环，不要认证。
+                host: "127.0.0.1".into(),
+                port,
+                username: Default::default(),
+                password: Default::default(),
+            }),
+            _ => None,
+        }
+    });
 
     // 同一座数据目录只允许跑一份。已经在跑的那份会被唤到前面，这一份就地退出。
     // 位置在这儿：`--restore-system-proxy` 那条卸载器专用的路已经走过了（它不该

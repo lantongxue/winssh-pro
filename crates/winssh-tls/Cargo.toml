@@ -1,0 +1,11 @@
+[package]
+name = "winssh-tls"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 进程级 rustls 加密后端安装（aws-lc-rs 装成默认）"
+license = "MIT"
+
+[dependencies]
+# 只为调 `aws_lc_rs::default_provider().install_default()`。版本就是依赖图上
+# 已有的那一份（EasyTier 的 wss/quic 会另点亮 ring 后端），不多编译一份东西。
+rustls = { workspace = true }

@@ -1,0 +1,33 @@
+[package]
+name = "winssh-vnc"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 的 VNC 后端：RFB 会话、画布、扩展剪贴板、键盘/keysym、光标致、动态分辨率与传输"
+license = "MIT"
+
+[dependencies]
+# 领域数据（`Host`、`VncSettings` 经 settings 再导出）、代理路由、共享桌面底座与流量计数。
+winssh-domain = { workspace = true }
+winssh-proxy = { workspace = true }
+winssh-desktop = { workspace = true }
+winssh-netstats = { workspace = true }
+# 会话在应用级 tokio runtime 上跑 RFB 读循环。
+winssh-db = { workspace = true }
+# RFB 协议客户端（lib 名 `vnc`；本仓库经 [patch] 打过扩展剪贴板补丁）。
+vnc-rs = { workspace = true }
+# 经典剪贴板正文的字符集转换（GBK/Big5/Shift_JIS…）。
+encoding_rs = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+# 画布/帧/光标的像素容器与 SharedString。
+gpui-kit = { workspace = true }
+anyhow = { workspace = true }
+rust-i18n = { workspace = true }
+log = { workspace = true }
+# JPEG 矩形（ TightVNC 扩展）解码回 BGRA。
+image = { workspace = true }
+
+[dev-dependencies]
+# 剪贴板测试自己解一遍扩展正文的 zlib 流，验中文真过了这条路。
+flate2 = { workspace = true }
+

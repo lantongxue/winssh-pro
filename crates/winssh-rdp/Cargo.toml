@@ -1,0 +1,30 @@
+[package]
+name = "winssh-rdp"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 的 RDP 后端：IronRDP 会话状态机、位图/指针、键盘、剪贴板与文件复制通道"
+license = "MIT"
+
+[dependencies]
+# 领域数据（`Host`）、代理路由、共享桌面底座与流量计数；落盘借本地文件工具。
+winssh-domain = { workspace = true }
+winssh-proxy = { workspace = true }
+winssh-desktop = { workspace = true }
+winssh-netstats = { workspace = true }
+winssh-localfs = { workspace = true }
+# RDP 协议栈（门面 + tokio  Framed + TLS 升级 + FastPath 解压）。
+ironrdp = { workspace = true }
+ironrdp-tokio = { workspace = true }
+ironrdp-tls = { workspace = true }
+ironrdp-bulk = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+# 位图/指针像素容器与 SharedString。
+gpui-kit = { workspace = true }
+anyhow = { workspace = true }
+rust-i18n = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+# 位图/帧测试自己合成像素比对解码结果。
+image = { workspace = true }

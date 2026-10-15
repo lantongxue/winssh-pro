@@ -1,0 +1,31 @@
+[package]
+name = "winssh-ssh"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 的 SSH 后端：连接/认证、通道桥、exec、端口转发、SFTP 子系统与密钥生成"
+license = "MIT"
+
+[features]
+# 把进程内假 sshd（`exec::fake`）编进来，供上层 crate 的测试共用（服务层/助手/
+# 端口转发对话框的测试都要一台假对端）。根包在 dev-dependencies 里点亮它，
+# 正式构建不带 —— 与 gpui-kit 的 `test-support` 同一套路子。
+test-support = []
+
+[dependencies]
+# 领域数据：`Host` / `AuthMethod` / `KeyAlgorithm` / `TrustPolicy`。
+winssh-domain = { workspace = true }
+# russh 要在 tokio reactor 上跑，经应用级 runtime 桥接。
+winssh-db = { workspace = true }
+# 拨号前经代理路由定下“经过谁”（`proxy::route` / `proxy::socks5`）。
+winssh-proxy = { workspace = true }
+# SSH 传输与 SFTP 子系统。
+russh = { workspace = true }
+russh-sftp = { workspace = true }
+# 密钥生成与私钥解码（`keygen`、`decode_private_key`）。
+ssh-key = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+anyhow = { workspace = true }
+rust-i18n = { workspace = true }
+log = { workspace = true }

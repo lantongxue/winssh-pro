@@ -40,6 +40,45 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 - 禁止修改 @refs/ 下的代码，如果有功能必须修改底层库才能实现，那么拒绝这次功能开发
 
 
+## workspace 与 crate 分层
+
+本工程是一个 Cargo workspace：根包 `winssh-pro` 只保留应用外壳（`main.rs`、`ui/`、
+`tray/`、`assets.rs`、`i18n.rs`、`single_instance.rs`、`bin/broker.rs` 与 `build.rs`），
+其余按职责拆进 `crates/` 下的独立 crate。第三方依赖的版本钉子统一收在根 `Cargo.toml`
+的 `[workspace.dependencies]`，各 crate 用 `dep = { workspace = true }` 继承；
+`[patch.crates-io]`、`[profile.*]` 也留在根，对全体成员生效。`refs/`（gpui-kit、
+alacritty）与 `vendor/`（各补丁副本）是落在本仓库目录树里的独立 crate / 仓库，靠
+`[workspace]` 的 `exclude = ["refs", "vendor"]` 划出去 —— 不 exclude，cargo 会把它们
+当本 workspace 成员去解析它们的 `edition.workspace = true` 而报错。
+
+依赖只能自上而下，禁止反向：
+
+```
+domain ← tls / db ← repository ← 后端 (ssh · proxy · sftp · s3 · ftp · webdav ·
+  serial · telnet · easytier · clash · broker-protocol · assistant · localfs ·
+  zmodem · terminal · desktop · netstats · vnc · rdp · backup · monitor)
+  ← service ← 根包 (ui / tray / main)
+```
+
+- `winssh-domain`：纯领域数据与编解码（`Host`、各 `*Settings`、`Forward`、代理数据、
+  `Credential`、`TrustedHost`、`Session` 读数、`Snippet`、命令历史、托盘开关）。只借 gpui
+  的 `SharedString` 一个类型，不碰 ui / service，是全图最底层、谁都能依赖它。
+- `winssh-db`（SeaORM 连接 + 实体 + 迁移 + 应用级 tokio runtime）/ `winssh-repository`
+  （纯数据访问）。
+- 各后端 crate：一个协议 / 子系统一个 crate，只依赖领域层与更底层的 crate，**不认识任何
+  界面类型**。
+- `winssh-service`：服务层门面（唯一给 UI 的数据入口）。为免逐文件改路径，它的 `lib.rs`
+  用一组 `pub use winssh_x as x;` 把下层 crate 在本 crate 根上起了别名，服务各文件里的
+  `crate::x::…` 旧路径无需改写即可解析。
+- 根包对每个下沉过的模块留一组 `pub use winssh_*::*` 兼容桩（`src/host.rs`、`src/ssh/`、
+  `src/db/` …），ui 层里的 `crate::host`、`crate::ssh` 等旧路径照旧可用。
+
+给新功能找落点：先认清它属于哪一层，放进对应 crate。遇到本该往下却被上层拖住的环（某后端
+持有面板 `Entity`、或后端调服务层），用 sink/trait、provider 钩子，或把共享的那点数据下移
+来打断，不要把上层 crate 变成下层 crate 的依赖。进程级 config 缓存的 `exclusive_for_test`
+之类的测试工具，一旦被上层 crate 的测试用到，就得放开成 `#[doc(hidden)] pub` 或门在
+`test-support` 特性后面（`#[cfg(test)]` 的东西链进下游 crate 就没了）。
+
 ## 渲染性能
 
 目标 120fps —— **一帧的预算只有 8.3ms**，整棵界面树都得挤在这个数里。
@@ -79,20 +118,27 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 
 ## 测试规则
 
-单元测试一律外移到 `src/tests/`，不在源文件里写内联 `#[cfg(test)] mod tests { ... }`：
+单元测试一律外移到**被测模块所在 crate 的** `src/tests/`，不在源文件里写内联 `#[cfg(test)] mod tests { ... }`（工程已拆成多个 crate，每个 crate 都有自己的 `src/tests/`）：
 
-- **目录镜像源码树**：`src/service/s3_service.rs` 的测试放 `src/tests/service/s3_service.rs`，
-  文件名与被测模块同名。`src/tests/` 只放测试，不放任何生产代码。
+- **目录镜像源码树**：`crates/winssh-service/src/s3_service.rs` 的测试放
+  `crates/winssh-service/src/tests/s3_service.rs`，文件名与被测模块同名。某个 crate 的
+  `src/tests/` 只放该 crate 的测试，不放生产代码。
 - **源文件末尾用 `#[path]` 挂回**：
   ```rust
   #[cfg(test)]
-  #[path = "../tests/service/s3_service.rs"]
+  #[path = "tests/s3_service.rs"]
   mod tests;
   ```
-  平台限定的测试可以在 `cfg` 上加条件（如 `#[cfg(all(test, unix))]`，见 `src/serial/bridge.rs`）。
-- **禁止顶层 `tests/` 集成测试**：本仓库是纯 bin crate（无 `[lib]` 段），顶层集成测试
-  作为外部 crate 链接时看不到任何内部模块，且编译主 crate 不带 `cfg(test)`，
-  所有测试专用 API 会整个消失，直接编不过。
+  路径相对该源文件所在目录：模块在 crate 的 `src/` 根下就用 `tests/x.rs`，在子目录
+  （如 `src/file_copy/incoming.rs`）里就用 `../tests/…`。跨多层的嵌套测试树（如
+  `tests/session/presentation.rs`）靠相对 `#[path]` 挂回，拆 crate 时只改一级 `../` 深度。
+  平台限定的测试可以在 `cfg` 上加条件（如 `#[cfg(all(test, unix))]`）。
+- **不用顶层 `tests/` 集成测试，统一用 `#[path]` 挂回的内联单测**：测试靠 `use super::*;`
+  访问被测模块的私有项，这只有当测试模块与被测模块同在一个编译单元里才成立；放进 crate
+  顶层的 `tests/` 会被 cargo 当独立集成测试 target 编译，看不到内部私有项。所以测试文件虽
+  然物理上在一个叫 `tests` 的目录，必须始经源文件里的 `#[path]` 挂回来（属于该 crate 的
+  `cfg(test)`，不是集成测试）。需要跨 crate 共用的测试工（如假 sshd、内存库服务工厂），
+  用 `test-support` 特性门控，由使用方的 dev-dependencies 点亮，别往 `tests/` 里堆。
 - 测试体用 `use super::*;` 拿被测模块的私有项 —— 外移只是换文件，访问权限不变。
 
 写法上的几条：
@@ -104,7 +150,7 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
   不叫 `test_1`、`test_err`。
 - **线上踩过的坑要在断言旁留注释**：说清楚当时的事故关键词与原因
   （如 OSS 粘段那两条），日后回归或重构的人才知道这条测试在守什么。
-- 异步测试用 `db::runtime().block_on(...)`（见 `src/tests/service/trusted_host_service.rs`）。
+- 异步测试用 `winssh_db::runtime().block_on(...)`（根包里写 `crate::db::runtime`）。
 - 环境敏感、容易随机器漂的测试标 `#[ignore]`，并在注释里记下当时的数
   （`monitor::tests::frame_cost` 那样）。
 
@@ -149,22 +195,16 @@ WinSSH Pro 是一个使用 rust+cargo+gpui+russh 构建的跨平台、原生高�
 不是组件的两处：`src/ui/theme/`（主题、配色、图标这些"画法"）
 和 `src/ui/workspace.rs`（把上面这些拼起来的窗口外壳）。
 
-界面之外的领域层直接放在 `src/` 下，不进 `src/ui/`：
-`host.rs`（主机配置）、`credential.rs`（凭据保险箱）、`session.rs`（会话读数）、
-`command_history.rs`（主机上跑过的命令）、`terminal/`（终端内核）、
-`monitor/`（对端资源采集：采集脚本、解析、速率累加）、
-`easytier/`（组网：实例配置、进程内实例的起停与运行快照，以及别的主机
-"经组网"连接时等它就绪的入口登记处 `easytier::portal`）、
-`clash/`（Clash 订阅：订阅正文的解读与运行配置的生成、mihomo 外部控制口的
-客户端、运行中那个子进程的起停与状态、Windows 系统代理的开关与复原）。
+界面之外的领域与后端已拆成 `crates/` 下的独立 crate（见【workspace 与 crate 分层】），不再堆在根包 `src/` 下：领域数据在 `winssh-domain`（`Host`、`Credential`、`Session` 读数、命令历史等），终端内核在 `winssh-terminal`，对端资源采集在 `winssh-monitor`，组网在 `winssh-easytier`（含等它就绪的入口登记处 `portal`），Clash 订阅在 `winssh-clash`，各传输/文件后端各一个 crate。根包 `src/` 下只留一组 `pub use winssh_*::*` 兼容桩，`crate::host`、`crate::clash::runtime` 等旧路径仍可用。
 
-数据访问走三层，UI 只认最上面那层：
+数据访问走三层，UI 只认最上面那层（各自已拆成 crate；根包里的 `src/service/`、
+`src/repository/`、`src/db/` 是指向对应 crate 的兼容桩）：
 
-| 层 | 目录 | 职责 |
+| 层 | crate | 职责 |
 | --- | --- | --- |
-| `src/service/` | `*Service` | 业务逻辑与领域模型转换，UI 拿数据的唯一入口（`HostService`、`CredentialService`、`MonitorService`） |
-| `src/repository/` | `*Repository` | 数据仓，纯数据访问，不掺业务规则（`HostRepository`、`CredentialRepository`） |
-| `src/db/` | — | SeaORM 连接、应用级 tokio runtime 与实体定义（`db/entities/`） |
+| `winssh-service`（`*Service`） | 根包经 `crate::service::*` | 业务逻辑与领域模型转换，UI 拿数据的唯一入口（`HostService`、`CredentialService`、`MonitorService`） |
+| `winssh-repository`（`*Repository`） | 根包经 `crate::repository::*` | 数据仓，纯数据访问，不掺业务规则（`HostRepository`、`CredentialRepository`） |
+| `winssh-db` | 根包经 `crate::db::*` | SeaORM 连接、应用级 tokio runtime 与实体定义（`db::entities`） |
 
 规矩：**UI 层一律通过服务层读写数据**，禁止直接触达 SeaORM 或 SQL；
 SeaORM 的异步操作跑在 `db::run` 桥接的应用级 tokio runtime 上，

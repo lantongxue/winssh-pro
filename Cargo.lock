@@ -14128,6 +14128,186 @@ dependencies = [
 ]
 
 [[package]]
+name = "winssh-assistant"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "futures",
+ "gpui-kit",
+ "image",
+ "rig-agent",
+ "rig-core",
+ "russh",
+ "rust-i18n",
+ "serde",
+ "serde_json",
+ "winssh-db",
+ "winssh-ssh",
+]
+
+[[package]]
+name = "winssh-backup"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm 0.11.1",
+ "anyhow",
+ "pbkdf2 0.13.0",
+ "rand 0.10.3",
+ "rust-s3",
+ "serde",
+ "sha2 0.11.0",
+ "winssh-s3",
+ "winssh-webdav",
+]
+
+[[package]]
+name = "winssh-broker-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "winssh-clash"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs 6.0.0",
+ "flate2",
+ "futures",
+ "gpui-kit",
+ "log",
+ "rand 0.10.3",
+ "reqwest 0.13.5",
+ "rust-i18n",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tokio",
+ "windows-sys 0.61.2",
+ "winreg 0.56.0",
+ "winssh-broker-protocol",
+ "winssh-db",
+ "zip",
+]
+
+[[package]]
+name = "winssh-db"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs 6.0.0",
+ "log",
+ "rust-i18n",
+ "sea-orm",
+ "tokio",
+]
+
+[[package]]
+name = "winssh-desktop"
+version = "0.1.0"
+dependencies = [
+ "gpui-kit",
+ "image",
+ "tokio",
+]
+
+[[package]]
+name = "winssh-domain"
+version = "0.1.0"
+dependencies = [
+ "cidr",
+ "easytier",
+ "encoding_rs",
+ "gpui-kit",
+ "ironrdp",
+ "log",
+ "rand 0.10.3",
+ "rust-i18n",
+ "serde",
+ "serde_json",
+ "serialport",
+ "strum",
+ "url",
+ "vnc-rs",
+]
+
+[[package]]
+name = "winssh-easytier"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "cidr",
+ "easytier",
+ "easytier-core",
+ "futures",
+ "gpui-kit",
+ "log",
+ "rust-i18n",
+ "tokio",
+ "tokio-socks",
+ "url",
+ "winssh-domain",
+ "winssh-tls",
+]
+
+[[package]]
+name = "winssh-ftp"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "gpui-kit",
+ "log",
+ "rust-i18n",
+ "rustls",
+ "rustls-platform-verifier",
+ "sha2 0.11.0",
+ "suppaftp",
+ "tokio",
+ "winssh-domain",
+ "winssh-proxy",
+ "winssh-sftp",
+ "x509-cert",
+]
+
+[[package]]
+name = "winssh-localfs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs 6.0.0",
+ "gpui-kit",
+ "log",
+ "rust-i18n",
+ "tokio",
+ "winssh-db",
+ "winssh-sftp",
+]
+
+[[package]]
+name = "winssh-monitor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui-kit",
+ "rust-i18n",
+ "winssh-domain",
+]
+
+[[package]]
+name = "winssh-netstats"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "winssh-desktop",
+]
+
+[[package]]
 name = "winssh-pro"
 version = "0.1.0"
 dependencies = [
@@ -14189,8 +14369,277 @@ dependencies = [
  "windows-sys 0.61.2",
  "winreg 0.56.0",
  "winres",
+ "winssh-assistant",
+ "winssh-backup",
+ "winssh-broker-protocol",
+ "winssh-clash",
+ "winssh-db",
+ "winssh-desktop",
+ "winssh-domain",
+ "winssh-easytier",
+ "winssh-ftp",
+ "winssh-localfs",
+ "winssh-monitor",
+ "winssh-netstats",
+ "winssh-proxy",
+ "winssh-rdp",
+ "winssh-s3",
+ "winssh-serial",
+ "winssh-service",
+ "winssh-sftp",
+ "winssh-ssh",
+ "winssh-telnet",
+ "winssh-terminal",
+ "winssh-tls",
+ "winssh-vnc",
+ "winssh-webdav",
+ "winssh-zmodem",
  "x509-cert",
  "zip",
+ "zmodem2",
+]
+
+[[package]]
+name = "winssh-proxy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui-kit",
+ "rust-i18n",
+ "tokio",
+ "tokio-socks",
+ "winssh-domain",
+ "winssh-easytier",
+]
+
+[[package]]
+name = "winssh-rdp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "gpui-kit",
+ "image",
+ "ironrdp",
+ "ironrdp-bulk",
+ "ironrdp-tls",
+ "ironrdp-tokio",
+ "log",
+ "rust-i18n",
+ "tokio",
+ "winssh-desktop",
+ "winssh-domain",
+ "winssh-localfs",
+ "winssh-netstats",
+ "winssh-proxy",
+]
+
+[[package]]
+name = "winssh-repository"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "sea-orm",
+ "winssh-db",
+]
+
+[[package]]
+name = "winssh-s3"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "rust-i18n",
+ "rust-s3",
+ "winssh-domain",
+]
+
+[[package]]
+name = "winssh-serial"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "rust-i18n",
+ "serialport",
+ "tokio",
+ "winssh-domain",
+]
+
+[[package]]
+name = "winssh-service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "dirs 6.0.0",
+ "futures",
+ "gpui-kit",
+ "image",
+ "log",
+ "percent-encoding",
+ "reqwest 0.13.5",
+ "reqwest_dav",
+ "russh",
+ "russh-sftp",
+ "rust-i18n",
+ "rust-s3",
+ "sea-orm",
+ "serde",
+ "serde_json",
+ "serialport",
+ "ssh-key",
+ "suppaftp",
+ "tokio",
+ "tokio-util",
+ "winssh-assistant",
+ "winssh-backup",
+ "winssh-clash",
+ "winssh-db",
+ "winssh-desktop",
+ "winssh-domain",
+ "winssh-easytier",
+ "winssh-ftp",
+ "winssh-localfs",
+ "winssh-monitor",
+ "winssh-netstats",
+ "winssh-proxy",
+ "winssh-repository",
+ "winssh-s3",
+ "winssh-serial",
+ "winssh-sftp",
+ "winssh-ssh",
+ "winssh-telnet",
+ "winssh-terminal",
+ "winssh-webdav",
+ "winssh-zmodem",
+ "zip",
+]
+
+[[package]]
+name = "winssh-sftp"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "gpui-kit",
+ "rust-i18n",
+]
+
+[[package]]
+name = "winssh-ssh"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "rand 0.10.3",
+ "russh",
+ "russh-sftp",
+ "rust-i18n",
+ "ssh-key",
+ "tokio",
+ "tokio-util",
+ "winssh-db",
+ "winssh-domain",
+ "winssh-proxy",
+]
+
+[[package]]
+name = "winssh-telnet"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "rust-i18n",
+ "telnet",
+ "tokio",
+ "winssh-db",
+ "winssh-domain",
+ "winssh-proxy",
+ "winssh-ssh",
+]
+
+[[package]]
+name = "winssh-terminal"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "futures",
+ "gpui-kit",
+ "log",
+ "russh",
+ "rust-i18n",
+ "serde",
+ "serde_json",
+ "tokio",
+ "winssh-domain",
+ "winssh-serial",
+ "winssh-ssh",
+ "winssh-telnet",
+ "winssh-zmodem",
+]
+
+[[package]]
+name = "winssh-tls"
+version = "0.1.0"
+dependencies = [
+ "rustls",
+]
+
+[[package]]
+name = "winssh-vnc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "encoding_rs",
+ "flate2",
+ "futures",
+ "gpui-kit",
+ "image",
+ "log",
+ "rust-i18n",
+ "tokio",
+ "vnc-rs",
+ "winssh-db",
+ "winssh-desktop",
+ "winssh-domain",
+ "winssh-netstats",
+ "winssh-proxy",
+]
+
+[[package]]
+name = "winssh-webdav"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "futures",
+ "percent-encoding",
+ "reqwest 0.13.5",
+ "reqwest_dav",
+ "rust-i18n",
+ "tokio",
+ "url",
+ "winssh-db",
+ "winssh-domain",
+ "winssh-sftp",
+]
+
+[[package]]
+name = "winssh-zmodem"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui-kit",
+ "log",
+ "rust-i18n",
+ "serde",
+ "serde_json",
+ "winssh-localfs",
  "zmodem2",
 ]
 

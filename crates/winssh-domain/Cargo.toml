@@ -1,0 +1,35 @@
+[package]
+name = "winssh-domain"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 领域数据层：纯数据类型与编解码，不依赖 gpui / ui / service"
+license = "MIT"
+
+[dependencies]
+# 领域类型以 serde 落库（各 `*Settings` 编解码成 JSON 存进 `hosts` 表）。
+serde = { workspace = true }
+serde_json = { workspace = true }
+# 各 `*Settings` 的 `label()` 走多语言查表；坏 JSON 退回出厂档时打一行 warn。
+rust-i18n = { workspace = true }
+log = { workspace = true }
+# 保险箱的密码生成（`PasswordRecipe::generate`）要密码学安全的随机源。
+rand = { workspace = true }
+# 领域数据大量以 gpui 的 `SharedString` 承载文本（`Host`、各设置的枚举标签）。
+# 只借这一个类型，**不**依赖 gpui 的界面/组件能力，更不依赖根包的 `ui`；
+# gpui-kit 是钉住那份 gpui 快照的门面，从这里取 `SharedString` 才能保证与
+# 上层是同一份类型。
+gpui-kit = { workspace = true }
+# `EasyTierSettings` 直接承载 EasyTier 的隧道协议枚举与虚拟地址/网段类型。
+cidr = { workspace = true }
+strum = { workspace = true }
+easytier = { workspace = true }
+# EasyTier 的节点地址是 `url::Url`（监听地址与 peer 都用它）。
+url = { workspace = true }
+# `RdpSettings` 承载 IronRDP 的性能标志位。
+ironrdp = { workspace = true }
+# `VncSettings` 承载 vnc-rs 的像素格式与协议版本枚举（lib 名是 `vnc`），
+# 剪贴板字符集那一档还直接给出 `encoding_rs` 的编码表。
+vnc-rs = { workspace = true }
+encoding_rs = { workspace = true }
+# `SerialSettings` 的各档直接折算成 `serialport` 的枚举（数据位/校验/停止位/流控）。
+serialport = { workspace = true }

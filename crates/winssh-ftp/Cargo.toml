@@ -1,0 +1,24 @@
+[package]
+name = "winssh-ftp"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 的 FTP/FTPS 后端：控制/数据连接、TLS 会话复用、列表解析与证书校验"
+license = "MIT"
+
+[dependencies]
+# 领域数据（`Host`、`HostKeyInfo`）、代理路由、以及 SFTP 那一层的目录项/路径规整。
+winssh-domain = { workspace = true }
+winssh-proxy = { workspace = true }
+winssh-sftp = { workspace = true }
+# FTP/FTPS 客户端；TLS 走 rustls(aws-lc-rs)，会话复用要它给的开关。
+suppaftp = { workspace = true }
+rustls = { workspace = true }
+rustls-platform-verifier = { workspace = true }
+# 不受信任证书确认框上的主题/颁发者/有效期从证书里解出来；指纹用 sha2。
+x509-cert = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+gpui-kit = { workspace = true }
+log = { workspace = true }
+rust-i18n = { workspace = true }

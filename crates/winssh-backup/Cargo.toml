@@ -1,0 +1,20 @@
+[package]
+name = "winssh-backup"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 备份同步配置：备份配置模型、口令加解密（AES-GCM/PBKDF2）与 S3/WebDAV 落点参数"
+license = "MIT"
+
+[dependencies]
+# 备份落点复用 S3 / WebDAV 两个后端的类型（presets、store、连接参数）。
+winssh-s3 = { workspace = true }
+winssh-webdav = { workspace = true }
+# 直用 rust-s3 的 `Bucket` / `S3Error`（lib 名 `s3`）做备份上传。
+rust-s3 = { workspace = true }
+# 备份包口令加密：AES-256-GCM + PBKDF2-HMAC-SHA256 + 随机 salt/nonce。
+aes-gcm = { workspace = true }
+pbkdf2 = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }

@@ -1,0 +1,19 @@
+[package]
+name = "winssh-proxy"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 代理路由：拨号前定下经过谁（直连/全局/自定义/经组网/经 Clash）与 SOCKS5 握手"
+license = "MIT"
+
+[dependencies]
+# 代理数据模型（HostProxy / ProxyMode / ProxyConfig / GlobalProxy 与编解码）在领域层，
+# 这里再导出并补上"拨号时到底经过谁"的行为。
+winssh-domain = { workspace = true }
+# "经组网"那一档要等那张网就绪、拿它的入口（`portal::wait`）。
+winssh-easytier = { workspace = true }
+# SOCKS5 握手。
+tokio-socks = { workspace = true }
+tokio = { workspace = true }
+gpui-kit = { workspace = true }
+rust-i18n = { workspace = true }
+anyhow = { workspace = true }
