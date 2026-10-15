@@ -14317,7 +14317,7 @@ dependencies = [
 
 [[package]]
 name = "winssh-pro"
-version = "0.1.0"
+version = "0.0.5"
 dependencies = [
  "aes-gcm 0.11.1",
  "alacritty_terminal",
