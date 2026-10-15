@@ -157,14 +157,19 @@ pub fn install(cx: &mut App, main_window: WindowHandle<Root>) {
         return;
     }
 
-    let tray = match tray_icon::TrayIconBuilder::new()
+    let builder = tray_icon::TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         // 左键留给"唤回窗口"，菜单走右键。
         .with_menu_on_left_click(false)
-        .with_tooltip("WinSSH Pro")
-        .with_icon(icon)
-        .build()
-    {
+        .with_tooltip("WinSSH Pro");
+
+    #[cfg(target_os = "macos")]
+    let builder = builder.with_icon_templated(icon);
+
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.with_icon(icon);
+
+    let tray = match builder.build() {
         Ok(tray) => tray,
         Err(error) => {
             log::warn!("托盘图标建不出来，这次运行没有托盘：{error}");
@@ -200,18 +205,39 @@ pub fn install(cx: &mut App, main_window: WindowHandle<Root>) {
     .detach();
 }
 
-/// 托盘图标的边长。托盘区按 16 逻辑像素画，给 32 是照顾 2 倍屏。
+/// 托盘图标的边长。
+///
+/// - macOS 状态栏：遵循 Apple HIG，采用 44×44 物理像素（在 2x Retina 屏上对应 22pt 逻辑高度），
+///   配合 AppKit 的 template 模式实现系统原生的深浅色与高亮自适应。
+/// - Windows / Linux：托盘区按 16 逻辑像素画，给 32 是照顾 2 倍屏。
+#[cfg(target_os = "macos")]
+const ICON_SIZE: u32 = 44;
+
+#[cfg(not(target_os = "macos"))]
 const ICON_SIZE: u32 = 32;
 
-/// 把内嵌的应用图标解成托盘要的 RGBA 字节。
+/// 把托盘图标解成托盘要的 RGBA 字节。
 ///
-/// 原图是 1024×1024，托盘区只画十几个像素见方，不缩一下白占着一百多万像素
-/// 的内存（Windows 那边还会为它建一张等大的位图）。
+/// macOS 上使用专门遵循 Apple HIG 规范重绘的单色透明模板图标（22pt @2x）；
+/// 其它平台使用内嵌的应用图标缩放至托盘尺寸。
 fn icon_rgba() -> Vec<u8> {
-    let decoded = image::load_from_memory(crate::assets::APP_ICON_PNG)
-        .expect("内嵌的应用图标应当能解开");
-    decoded
-        .resize_exact(ICON_SIZE, ICON_SIZE, image::imageops::FilterType::Lanczos3)
-        .to_rgba8()
-        .into_raw()
+    #[cfg(target_os = "macos")]
+    {
+        let decoded = image::load_from_memory(crate::assets::TRAY_ICON_MACOS_PNG)
+            .expect("内嵌的 macOS 托盘图标应当能解开");
+        decoded.to_rgba8().into_raw()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let decoded = image::load_from_memory(crate::assets::APP_ICON_PNG)
+            .expect("内嵌的应用图标应当能解开");
+        decoded
+            .resize_exact(ICON_SIZE, ICON_SIZE, image::imageops::FilterType::Lanczos3)
+            .to_rgba8()
+            .into_raw()
+    }
 }
+
+#[cfg(test)]
+#[path = "../tests/tray.rs"]
+mod tests;

@@ -1,0 +1,17 @@
+<svg width="44" height="44" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Left Eye: Terminal Prompt Chevron (>) -->
+  <path d="M 8.5 9.5 L 19 16.5 L 8.5 23.5"
+        stroke="black"
+        stroke-width="3.6"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+
+  <!-- Right Eye: Terminal Cursor Pill (|) -->
+  <rect x="30" y="9.5" width="4.5" height="14" rx="2.25" fill="black"/>
+
+  <!-- Smile: Winking Prompt Arc -->
+  <path d="M 8.5 30 C 14 36.5 29.5 36.5 36 27.5"
+        stroke="black"
+        stroke-width="3.6"
+        stroke-linecap="round"/>
+</svg>

@@ -33,7 +33,13 @@ pub const FLAG_EMOJI_FONT_FAMILY: &str = "Twemoji Mozilla";
 /// 应用图标的原始 PNG 字节。托盘要自己解一遍、缩到托盘区那个尺寸再交出去
 /// （`src/tray/mod.rs`），所以这里给的是字节而不是 GPUI 的图片资源 ——
 /// 那条路（`img("app-icon.png")`）是给界面里画的，托盘用不上。
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub const APP_ICON_PNG: &[u8] = include_bytes!("../assets/app-icon.png");
+
+/// macOS 系统状态栏（Menu Bar Extra）专用的模板图标 PNG 字节。
+/// 44×44 像素（对应 22pt @2x Retina），透明底单色掩码，配合 AppKit 模板模式
+/// 自适应系统深浅色与选中高亮态。
+pub const TRAY_ICON_MACOS_PNG: &[u8] = include_bytes!("../assets/macos/tray-icon.png");
 
 /// 要不要给国旗那一类文本显式指名 [`FLAG_EMOJI_FONT_FAMILY`]。
 /// macOS 的系统 Apple Color Emoji 自带彩色国旗，不指名走系统回退链；
