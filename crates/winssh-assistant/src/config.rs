@@ -2,7 +2,7 @@
 //!
 //! 一份配置四样东西：协议（openai / anthropic）、Base URL、API Key、模型名，
 //! 外加两位开关：模型能不能看图（[`AssistantConfig::vision`]，开着时输入行才收
-//! 剪贴板里的图），以及"全自动模式" —— 开着时助手在服务器上执行命令
+//! 剪贴板里的图），以及命令执行模式 —— "自动执行"时助手在服务器上执行命令
 //! 不再逐条送审（见 [`crate::agent`] 的审核门）。
 //!
 //! 库是正本（`settings` 表的 `assistant.config` 一行，JSON 编码），进程里
@@ -74,8 +74,8 @@ pub struct AssistantConfig {
     /// 模型名，例如 `gpt-4o` / `claude-sonnet-4-5`。
     #[serde(default)]
     pub model: String,
-    /// 模型能不能看图。开着时输入行上才收贴进来的图（粘贴键与 Ctrl+V），图随
-    /// 提问一起发过去（见 [`crate::image`]）。
+    /// 模型能不能看图。开着时输入框才收贴进来的图（Ctrl+V），图随提问一起
+    /// 发过去（见 [`crate::image`]）。
     ///
     /// 出厂档关着，而且得用户自己说：兼容端点里不认图片的是多数（DeepSeek、
     /// GLM-4.5、qwen-plus 都是纯文本模型），发过去就是一条 400 —— 而同一个
@@ -83,8 +83,11 @@ pub struct AssistantConfig {
     /// 从地址上猜不出来。
     #[serde(default)]
     pub vision: bool,
-    /// 全自动模式：开着时在服务器上执行命令不再触发人工审核。
-    /// 出厂档关着 —— 每一条命令都要先经用户批准。
+    /// 命令执行模式：开着是"自动执行"，在服务器上执行命令不再触发人工审核；
+    /// 关着是"手动确认"。出厂档关着 —— 每一条命令都要先经用户批准。
+    ///
+    /// 两处能拨它：设置页的开关，和助手输入行左下角那颗模式键。审核门每一条
+    /// 命令都现读缓存里这一位，所以跑到一半拨过去也当场生效。
     #[serde(default)]
     pub auto_execute: bool,
 }
@@ -255,7 +258,8 @@ impl ChatRole {
     }
 }
 
-/// 一行消息的内容：一段话（可能带着几张图），或者一次服务器命令的执行卡片。
+/// 一行消息的内容：一段话（可能带着几张图）、模型开口之前的一段思考，
+/// 或者一次服务器命令的执行卡片。
 #[derive(Clone, Debug, PartialEq)]
 pub enum MessageBody {
     Text {
@@ -264,7 +268,14 @@ pub enum MessageBody {
         /// 随这段话一起发的图（用户贴的截图），按贴进来的先后。助手的话
         /// 现在总是空的。
         images: Vec<ChatImage>,
+        /// 模型说这段话时每秒吐了多少 token（见 [`crate::agent`] 的测速）。
+        /// 用户的话、供应商没报用量的回复、以及量不准的极短回复都是 `None`。
+        tokens_per_sec: Option<f32>,
     },
+    /// 模型开口之前的那段思考（推理模型的 `reasoning_content`、Anthropic 的
+    /// thinking）。只给人看，不进下一轮的历史 —— 模型要的是它自己的结论，
+    /// 而结论在紧跟着的那条 [`Self::Text`] 里。
+    Reasoning { text: SharedString },
     Command {
         command: SharedString,
         /// 在哪台机器上跑的（会话显示名）。
@@ -276,11 +287,17 @@ pub enum MessageBody {
 }
 
 impl MessageBody {
-    /// 一段不带图的话 —— 助手说的每一句，以及大多数提问。
+    /// 一段不带图、没测过速的话 —— 大多数提问，以及量不出速度的回复。
     pub fn text(text: impl Into<SharedString>) -> Self {
+        Self::reply(text, None)
+    }
+
+    /// 模型的一条回复，连同说它时的输出速度。
+    pub fn reply(text: impl Into<SharedString>, tokens_per_sec: Option<f32>) -> Self {
         Self::Text {
             text: text.into(),
             images: Vec::new(),
+            tokens_per_sec,
         }
     }
 }

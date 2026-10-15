@@ -7,12 +7,13 @@
 //!
 //! 面板自己画的只有下半段：消息流与输入行。上半段那条标签条是 Dock 画的，
 //! 三样东西从 [`Panel`] 的钩子递上去 —— 标题是当前对话（点开换一段，
-//! [`Panel::title`]）、全自动那块警示牌（[`Panel::title_suffix`]）、
+//! [`Panel::title`]）、自动执行那块警示牌（[`Panel::title_suffix`]）、
 //! 新开与删除两颗按钮（[`Panel::toolbar_buttons`]）。
 //!
 //! 消息流用组件库的 [`MessageScroller`]（虚拟列表 + 跟尾 + 回到最新），
-//! 消息本体三种画法：用户的话靠右的实底气泡、助手的话靠左的 Markdown、
-//! 命令执行卡片一块带命令与输出的边框盒。
+//! 消息本体四种画法：用户的话靠右的实底气泡、助手的话靠左的 Markdown（脚注
+//! 里复制键旁边写着这条回复的 tokens/s）、模型的思考一段灰字、命令执行卡片
+//! 一块带命令与输出的边框盒。
 //!
 //! 输入行是一块卡片：多行输入框（[`Textarea`]，跟着内容长）在上，发送/停止
 //! 那颗圆键在它右下角，边框、底色与聚焦光环归卡片。回车发送、Shift+回车
@@ -20,13 +21,16 @@
 //!
 //! **图片跟着提问一起发。** 模型开了看图
 //! （[`AssistantConfig::vision`](crate::assistant::AssistantConfig::vision)）时，
-//! 输入行左下角多出一颗粘贴图片的键；在输入框里 Ctrl+V 一张图也一样。图从哪儿
-//! 来归用户自己（系统截图、别的截图工具、浏览器里复制的图、资源管理器里复制的
-//! 图片文件），这里只认剪贴板。贴上的图先排在输入框上方
-//! （[`AssistantPanel::drafts`]），后台规整成模型收的尺寸与格式
-//! （[`ChatImage::prepare`]），按发送时随这一条提问一起走、一起落库。没开看图
-//! 时那颗键不画，Ctrl+V 一张图只换来一句"去设置里打开"——往纯文本模型发图
-//! 换来的只是一条 400。
+//! 在输入框里 Ctrl+V 一张图，它就排到输入框上方。图从哪儿来归用户自己（系统
+//! 截图、别的截图工具、浏览器里复制的图、资源管理器里复制的图片文件），这里
+//! 只认剪贴板。贴上的图先排在输入框上方（[`AssistantPanel::drafts`]），后台
+//! 规整成模型收的尺寸与格式（[`ChatImage::prepare`]），按发送时随这一条提问
+//! 一起走、一起落库。没开看图时 Ctrl+V 一张图只换来一句"去设置里打开"——
+//! 往纯文本模型发图换来的只是一条 400。
+//!
+//! **命令执行模式就在输入行左下角**（[`ExecutionModeMenu`]）：手动确认 /
+//! 自动执行，拨的是和设置页同一位配置。运行侧每条命令都现读它，所以审核卡片
+//! 弹到一半拨过去，这一场后面的命令就照新的来。
 //!
 //! **命令卡片默认是收起的**：一条 `cat /etc/os-release; free -h; df -hT`
 //! 的输出能有几十行，摊开来会把对话本身顶出屏幕。收着的时候留一行截断的
@@ -34,12 +38,29 @@
 //! 记在 [`AssistantPanel::expanded`]（按消息 id），换对话就清空 —— 虚拟
 //! 列表按量出来的高度排版，所以开合之后那一行要重新量（[`Self::remeasure`]）。
 //!
-//! **模型的话是流着上屏的。** 运行侧每吐一小段就来一条
-//! [`AgentEvent::TextDelta`]，[`Self::stream_delta`] 把它接在正在写的那条
-//! 消息后面；这一轮说完了来一条 [`AgentEvent::Text`]（规范全文），
-//! [`Self::commit_stream`] 整条替换掉再落库。所以屏上先有字、库里后有记录，
-//! 和命令卡片"先落库再上屏"是反的 —— 流式输出就是这个意思。半路被停掉或
-//! 者出错时，说到一半的那条也会照样留下来。
+//! **模型的话是流着上屏的，一轮一轮地。** 运行侧每吐一小段就来一条
+//! [`AgentEvent::TextDelta`]（思考是 [`AgentEvent::ReasoningDelta`]），
+//! [`Self::stream_delta`] / [`Self::reasoning_delta`] 把它接在这一轮正在写的那条
+//! 后面；这一轮说完了来一条 [`AgentEvent::TurnEnd`]（规范全文），
+//! [`Self::end_turn`] 把这一轮的两条整条替换、收起、关掉，再按屏上的先后落库。
+//! 所以屏上先有字、库里后有记录，和命令卡片"先落库再上屏"是反的 —— 流式输出
+//! 就是这个意思。半路被停掉或者出错时，说到一半的那几条也会照样留下来。
+//!
+//! 一轮的界限只认 `TurnEnd`，而它**每一轮都来**、来在工具执行之前 —— 所以
+//! 一场带工具的运行在屏上一定是"思考 → 工具卡片 → 思考 → 回答"。栽过：
+//! 收尾原先只在正文非空白时才来，模型叫工具之前吐的那个 `"\n\n"` 开了一条
+//! 却永远没关，第二轮的回答接到了它尾巴上，跑到了工具卡片前面。
+//!
+//! **思考是灰字，想完就收起来。** 推理模型开口之前那段思考自成一条消息，
+//! 摊开着、标题上一道流光写着"思考中"。开口说话的那一刻（或者这一轮收尾、
+//! 只叫了工具的那种）就算想完了，它自己收起来（[`Self::fold_reasoning`]），
+//! 之后点标题还能摊开看。开合和命令卡片共用 [`AssistantPanel::expanded`]：
+//! 思考中那条是放进去的，想完拿出来。
+//!
+//! **读终端是一问一答。** 模型调 `read_terminal`（只在用户明确要求时）时
+//! 运行侧发来 [`AgentEvent::ReadTerminal`]，这里从当前会话那个面板的活动
+//! 窗格读最后几行送回去（[`Self::read_terminal`]）。只读当前会话 —— 槽里
+//! 空着（本机 Shell、断开的会话）就答"没有"，和命令能落到哪儿是同一个答案。
 //!
 //! **审核卡片不进消息流**：它是一次要用户答复的暂态，固定画在输入行上方，
 //! 批准或拒绝之后就消失 —— 拒绝会往消息流里落一张"已拒绝"的卡片，批准的
@@ -86,6 +107,7 @@ use gpui_kit::component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     message::{Message, MessageAlignment, MessageContent, MessageFooter},
     message_scroller::{MessageScroller, MessageScrollerState},
+    shimmer::ShimmerText,
     spinner::Spinner,
     text::TextView,
     v_flex,
@@ -99,12 +121,14 @@ use gpui_kit::{
 
 use crate::assistant::{
     self, AgentEvent, ChatImage, ChatMessage, ChatRole, CommandStatus, Conversation,
-    CurrentSession, MessageBody, RunInput, Turn, config as assistant_config,
+    CurrentSession, MessageBody, RunInput, Turn, TurnOutput, config as assistant_config,
     image::looks_like_image,
 };
 use crate::service::AssistantService;
+use crate::ui::menus::{ExecutionMode, ExecutionModeMenu};
 use crate::ui::panels::{SessionEvent, TerminalPanel};
 use crate::ui::theme::{AppIcon, palette};
+use crate::ui::windows::persist_assistant_config;
 use rust_i18n::t;
 
 /// 右侧 dock 的初始宽度。之后由用户拖，Dock 自己记着。
@@ -137,6 +161,12 @@ const CARD_HEAD_SELECTOR: &str = "assistant-card-head";
 /// 命令卡片上那块输出在调试边界表里的名字。收着的时候它压根不画 ——
 /// 查不到它正是"默认收起"的证据。
 const CARD_OUTPUT_SELECTOR: &str = "assistant-card-output";
+
+/// 一段思考的正文在调试边界表里的名字。和命令卡片的输出一样，收着就不画。
+const REASONING_BODY_SELECTOR: &str = "assistant-reasoning-body";
+
+/// 回复脚注里那行 tokens/s 在调试边界表里的名字。
+const SPEED_SELECTOR: &str = "assistant-speed";
 
 /// 输入框空着的时候占几行。一行的框看起来像个搜索栏，而这里等的是一个问题
 /// —— 两行既摆得下一句话，也不至于在一块 380px 宽的面板里喧宾夺主。
@@ -200,7 +230,7 @@ enum Incoming {
     File(PathBuf),
 }
 
-/// 正在一个字一个字往外写的那条助手消息。
+/// 正在一个字一个字往外写的那条助手消息（一段话，或者一段思考）。
 ///
 /// 原文单独留一份而不是每次从消息里读回来：`SharedString` 是不可变的，
 /// 追加一段就得把整条重拼一次，攒在这儿只拼一次。
@@ -236,8 +266,11 @@ pub struct AssistantPanel {
     drafts: Vec<Draft>,
     /// 一场运行正在进行。进行中不许发第二条、不许切换或删除对话。
     running: bool,
-    /// 正在流式写入的那条消息，没有就是这一轮还没开口（或者已经说完了）。
+    /// 这一轮正在流式写入的正文，没有就是这一轮还没开口（或者已经收尾了）。
     streaming: Option<Streaming>,
+    /// 这一轮正在流式写入的思考。和 `streaming` 一样只活到这一轮收尾
+    /// （[`Self::end_turn`]）；开口说话之后它还在，只是已经收起来了。
+    reasoning: Option<Streaming>,
     pending: Option<PendingApproval>,
     /// "停止"按钮。置位后运行在下一个模型/工具边界收口。
     cancel: Arc<AtomicBool>,
@@ -341,6 +374,7 @@ impl AssistantPanel {
             drafts: Vec::new(),
             running: false,
             streaming: None,
+            reasoning: None,
             pending: None,
             cancel: Arc::new(AtomicBool::new(false)),
             _run: None,
@@ -454,9 +488,17 @@ impl AssistantPanel {
 
     // ─── 流式输出 ───────────────────────────────────────────────────────────
 
-    /// 模型又吐出一小段字：接到正在写的那条后面，这一轮还没开口就先开一条。
+    /// 模型又吐出一小段字：接到这一轮正在写的那条后面，还没开口就先开一条。
+    ///
+    /// 只有空白的那几段不开新的一条：模型常在叫工具之前先吐一个 `"\n\n"`，
+    /// 为它开一条只会在对话里留一块空白。开口说话的那一刻，这一轮的思考就算
+    /// 想完了，收起来。
     fn stream_delta(&mut self, delta: &str, cx: &mut Context<Self>) {
         let Some(streaming) = self.streaming.as_mut() else {
+            if delta.trim().is_empty() {
+                return;
+            }
+            self.fold_reasoning(cx);
             self.push_message(
                 ChatMessage {
                     id: Self::local_id(),
@@ -482,27 +524,147 @@ impl AssistantPanel {
         self.remeasure(index, cx);
     }
 
-    /// 这一轮说完了：把屏上那条换成规范全文。
+    /// 思考又来了一小段：接到这一轮正在写的那段后面，还没想过就先开一条。
     ///
-    /// 是**替换**不是追加 —— 增量是暂定的（rig 允许一轮被重试作废），
-    /// 而且文字与工具调用的先后在这一步才定下来。这一轮压根没说话（只叫了
-    /// 工具）时不会走到这儿；真走到了却没有在写的那条，就当普通消息落一条。
-    fn commit_stream(&mut self, body: MessageBody, cx: &mut Context<Self>) {
-        let Some(streaming) = self.streaming.take() else {
-            return self.push_message(
+    /// 新开的那条是摊开的（放进 `expanded`）—— 想的过程就是给人看的；
+    /// 想完了 [`Self::fold_reasoning`] 再收起来。
+    fn reasoning_delta(&mut self, delta: &str, cx: &mut Context<Self>) {
+        let Some(reasoning) = self.reasoning.as_mut() else {
+            if delta.trim().is_empty() {
+                return;
+            }
+            let id = Self::local_id();
+            self.expanded.insert(id.clone());
+            self.push_message(
                 ChatMessage {
-                    id: Self::local_id(),
+                    id,
                     role: ChatRole::Assistant,
-                    body,
+                    body: MessageBody::Reasoning {
+                        text: delta.to_owned().into(),
+                    },
                 },
                 cx,
             );
-        };
-        let Some(message) = self.messages.get_mut(streaming.index) else {
+            self.reasoning = Some(Streaming {
+                index: self.messages.len() - 1,
+                text: delta.to_owned(),
+            });
             return;
         };
-        message.body = body;
-        self.remeasure(streaming.index, cx);
+
+        reasoning.text.push_str(delta);
+        let index = reasoning.index;
+        let text = SharedString::from(reasoning.text.as_str());
+        let Some(message) = self.messages.get_mut(index) else {
+            return;
+        };
+        message.body = MessageBody::Reasoning { text };
+        self.remeasure(index, cx);
+    }
+
+    /// 这一轮的思考想完了：收起来。只管屏上的开合 —— 换规范全文、落库都等
+    /// [`Self::end_turn`]。
+    fn fold_reasoning(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.reasoning.as_ref().map(|reasoning| reasoning.index) else {
+            return;
+        };
+        if let Some(message) = self.messages.get(index) {
+            let id = message.id.clone();
+            self.expanded.remove(&id);
+            self.remeasure(index, cx);
+        }
+    }
+
+    /// 这一轮说完了：思考与正文都换成规范全文、收起来，关掉这一轮。返回要
+    /// 落库的那几条，按屏上的先后。
+    ///
+    /// `output` 是运行侧报的规范内容（[`AgentEvent::TurnEnd`]）；`None` 是没等到
+    /// 它（用户按了停、中途出错），那就按流出来的样子留下。
+    ///
+    /// 不管这一轮流出过什么，走完这里两个槽都是空的 —— 下一轮的字一定另起
+    /// 一条，排在这一轮的工具卡片后面（见模块文档里栽过的那一次）。规范全文
+    /// 说这一轮其实没有正文、屏上却开了一条的（被重试作废的增量），那条撤掉。
+    fn end_turn(&mut self, output: Option<TurnOutput>, cx: &mut Context<Self>) -> Vec<MessageBody> {
+        let mut finished = Vec::new();
+
+        let canonical = output
+            .as_ref()
+            .map(|output| output.reasoning.clone())
+            .filter(|text| !text.trim().is_empty());
+        match self.reasoning.take() {
+            Some(slot) => {
+                let body = MessageBody::Reasoning {
+                    text: canonical.unwrap_or(slot.text).into(),
+                };
+                if let Some(message) = self.messages.get_mut(slot.index) {
+                    message.body = body.clone();
+                    let id = message.id.clone();
+                    self.expanded.remove(&id);
+                }
+                self.remeasure(slot.index, cx);
+                finished.push(body);
+            }
+            // 思考没流出来、规范内容里却有（不流思考的供应商）：补一条收着的。
+            None => {
+                if let Some(text) = canonical {
+                    let body = MessageBody::Reasoning { text: text.into() };
+                    self.push_message(
+                        ChatMessage {
+                            id: Self::local_id(),
+                            role: ChatRole::Assistant,
+                            body: body.clone(),
+                        },
+                        cx,
+                    );
+                    finished.push(body);
+                }
+            }
+        }
+
+        let slot = self.streaming.take();
+        let body = match output {
+            Some(output) => (!output.text.trim().is_empty())
+                .then(|| MessageBody::reply(output.text, output.tokens_per_sec)),
+            None => slot
+                .as_ref()
+                .filter(|slot| !slot.text.trim().is_empty())
+                .map(|slot| MessageBody::text(slot.text.clone())),
+        };
+        match (slot, body) {
+            (Some(slot), Some(body)) => {
+                if let Some(message) = self.messages.get_mut(slot.index) {
+                    message.body = body.clone();
+                }
+                self.remeasure(slot.index, cx);
+                finished.push(body);
+            }
+            (Some(slot), None) => self.remove_message(slot.index, cx),
+            (None, Some(body)) => {
+                self.push_message(
+                    ChatMessage {
+                        id: Self::local_id(),
+                        role: ChatRole::Assistant,
+                        body: body.clone(),
+                    },
+                    cx,
+                );
+                finished.push(body);
+            }
+            (None, None) => {}
+        }
+        finished
+    }
+
+    /// 撤掉第 `index` 行。
+    fn remove_message(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.messages.len() {
+            return;
+        }
+        let removed = self.messages.remove(index);
+        self.expanded.remove(&removed.id);
+        self.scroller
+            .update(cx, |state, cx| _ = state.splice(index..index + 1, 0, cx));
+        cx.notify();
     }
 
     /// 第 `index` 行的内容变了，让虚拟列表重新量它。
@@ -572,8 +734,8 @@ impl AssistantPanel {
     /// 往输入行上贴几张图。规整在后台做：先占一块转圈的位子，规整完换成
     /// 缩略图，规整不了的撤掉并说一声。
     ///
-    /// 模型没开看图就一张都不收 —— 输入行上那两颗键这时本来就不画，走到这里的
-    /// 只会是 Ctrl+V。超出 [`MAX_DRAFTS`] 的那几张不收，也说一声。
+    /// 模型没开看图就一张都不收，只说一声去设置里打开。超出 [`MAX_DRAFTS`]
+    /// 的那几张不收，也说一声。
     fn attach(&mut self, incoming: Vec<Incoming>, window: &mut Window, cx: &mut Context<Self>) {
         if incoming.is_empty() {
             return;
@@ -645,7 +807,6 @@ impl AssistantPanel {
     ///
     /// **剪贴板里有字就按字贴。** 从 Excel、Word、网页复制出来的东西常常字和
     /// 一张渲染图一起带着，这时候用户要的是字；截图工具放进剪贴板的只有图。
-    /// 真想要那张图，输入行左下角的粘贴键只认图。
     fn paste_into_composer(
         &mut self,
         item: &ClipboardItem,
@@ -666,17 +827,32 @@ impl AssistantPanel {
         true
     }
 
-    /// 输入行上那颗粘贴键：剪贴板里有图（或图片文件）就贴上来，字不管。
-    fn paste_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let images = cx
-            .read_from_clipboard()
-            .map(|item| clipboard_images(&item))
-            .unwrap_or_default();
-        if images.is_empty() {
-            window.push_notification(t!("assistant.no_clipboard_image"), cx);
+    // ─── 读终端与执行模式 ───────────────────────────────────────────────────
+
+    /// 模型要读的那几行：当前会话那个面板活动窗格上最后 `lines` 行。
+    ///
+    /// 槽里空着就不读，哪怕中心区停着一个本机 Shell —— 助手够得着的只有当前
+    /// 那条会话，命令落不到的地方，屏上的字也不该被它拿走。
+    fn read_terminal(&self, lines: usize, cx: &App) -> Option<String> {
+        self.session.get()?;
+        self.current.as_ref()?.read(cx).recent_output(lines, cx)
+    }
+
+    /// 输入行左下角那颗模式键选了一档：写回配置（缓存当场换、落库在后台），
+    /// 重画这扇窗 —— 标签条上的警示牌和模式键都跟着它。
+    ///
+    /// 不管有没有在跑：运行侧每条命令现读这一位，拨过去就是为了让这一场
+    /// 后面的命令照新的来。面板自己不记这一位（画的时候现读配置），所以
+    /// 这里用不着 `self`。
+    fn set_execution_mode(mode: ExecutionMode, window: &mut Window, cx: &mut App) {
+        let mut config = assistant_config::global();
+        if config.auto_execute == mode.is_auto() {
             return;
         }
-        self.attach(images, window, cx);
+        config.auto_execute = mode.is_auto();
+        persist_assistant_config(config, cx);
+        // 那个函数重画不了发起调用的这扇窗（窗口此刻被借走了），这里补上。
+        window.refresh();
     }
 
     // ─── 发送与运行 ─────────────────────────────────────────────────────────
@@ -725,12 +901,14 @@ impl AssistantPanel {
             .messages
             .iter()
             .filter_map(|message| match &message.body {
-                MessageBody::Text { text, images } => Some(Turn {
+                MessageBody::Text { text, images, .. } => Some(Turn {
                     role: message.role,
                     text: text.to_string(),
                     images: images.clone(),
                 }),
-                MessageBody::Command { .. } => None,
+                // 思考只给人看（见 [`MessageBody::Reasoning`]），命令卡片见
+                // [`HISTORY_LIMIT`]。
+                MessageBody::Reasoning { .. } | MessageBody::Command { .. } => None,
             })
             .collect();
         let start = turns.len().saturating_sub(HISTORY_LIMIT);
@@ -739,6 +917,7 @@ impl AssistantPanel {
         let body = MessageBody::Text {
             text: prompt.clone().into(),
             images: images.clone(),
+            tokens_per_sec: None,
         };
         self.push_message(
             ChatMessage {
@@ -786,7 +965,7 @@ impl AssistantPanel {
             // rig 在 tokio 上跑（reqwest 要它的 reactor），这里只当泵。
             //
             // 命令卡片仍是先落库再上屏；模型的话不能这么办 —— 流式输出的
-            // 意思就是先上屏，等这一轮说完了（`Text`）再把规范全文落库。
+            // 意思就是先上屏，等这一轮说完了（`TurnEnd`）再把规范全文落库。
             let run = crate::db::runtime().spawn(assistant::run(RunInput {
                 config,
                 session,
@@ -797,8 +976,29 @@ impl AssistantPanel {
                 cancel,
             }));
 
+            // 一轮收尾交出来的那几条，按屏上的先后落库。
+            let save = async |finished: Vec<MessageBody>| {
+                let Some(id) = &conversation else {
+                    return;
+                };
+                for body in finished {
+                    if let Err(error) = service.append_message(id, ChatRole::Assistant, body).await
+                    {
+                        log::warn!("助手消息存不下去：{error:#}");
+                    }
+                }
+            };
+
             while let Some(event) = events_rx.next().await {
                 let (role, body) = match event {
+                    // 一小段思考：接到正在写的那段后面，不落库。
+                    AgentEvent::ReasoningDelta(delta) => {
+                        let alive = this.update(cx, |this, cx| this.reasoning_delta(&delta, cx));
+                        if alive.is_err() {
+                            return;
+                        }
+                        continue;
+                    }
                     // 一小段字：接到正在写的那条消息尾巴上，不落库。
                     AgentEvent::TextDelta(delta) => {
                         let alive = this.update(cx, |this, cx| this.stream_delta(&delta, cx));
@@ -807,20 +1007,14 @@ impl AssistantPanel {
                         }
                         continue;
                     }
-                    // 这一轮说完了：屏上那条换成规范全文，然后落库。
-                    AgentEvent::Text(text) => {
-                        let body = MessageBody::text(text);
-                        let alive =
-                            this.update(cx, |this, cx| this.commit_stream(body.clone(), cx));
-                        if alive.is_err() {
+                    // 这一轮说完了：屏上那两条换成规范全文、收起来，然后落库。
+                    AgentEvent::TurnEnd(output) => {
+                        let Ok(finished) =
+                            this.update(cx, |this, cx| this.end_turn(Some(output), cx))
+                        else {
                             return;
-                        }
-                        if let Some(id) = &conversation
-                            && let Err(error) =
-                                service.append_message(id, ChatRole::Assistant, body).await
-                        {
-                            log::warn!("助手消息存不下去：{error:#}");
-                        }
+                        };
+                        save(finished).await;
                         continue;
                     }
                     AgentEvent::Command {
@@ -855,6 +1049,17 @@ impl AssistantPanel {
                         }
                         continue;
                     }
+                    // 模型要读终端：现读现答，不落库（读走了什么由运行侧随后
+                    // 发来的那张卡片交代）。
+                    AgentEvent::ReadTerminal(request) => {
+                        let output =
+                            this.read_with(cx, |this, cx| this.read_terminal(request.lines, cx));
+                        let Ok(output) = output else {
+                            return;
+                        };
+                        _ = request.respond.send(output);
+                        continue;
+                    }
                 };
                 if let Some(id) = &conversation
                     && let Err(error) = service.append_message(id, role, body.clone()).await
@@ -876,20 +1081,13 @@ impl AssistantPanel {
                 }
             }
 
-            // 流里还挂着半条（用户按了停，或者中途出错）就按说到一半的样子
-            // 留下来：屏上已经写着它了，重开应用该还在。
+            // 这一轮没等到收尾（用户按了停，或者中途出错）：想到一半、说到
+            // 一半的那几条按流出来的样子留下 —— 屏上已经写着它们了，重开应用
+            // 该还在。
             let leftover = this
-                .update(cx, |this, _| this.streaming.take())
-                .ok()
-                .flatten()
-                .filter(|streaming| !streaming.text.trim().is_empty());
-            if let (Some(id), Some(streaming)) = (&conversation, leftover)
-                && let Err(error) = service
-                    .append_message(id, ChatRole::Assistant, MessageBody::text(streaming.text))
-                    .await
-            {
-                log::warn!("说到一半那条存不下去：{error:#}");
-            }
+                .update(cx, |this, cx| this.end_turn(None, cx))
+                .unwrap_or_default();
+            save(leftover).await;
 
             // 通道关了 = 运行收尾。错误摆进消息流而不是弹通知：它是这段
             // 对话的一部分，用户切回来还该看得见出了什么事。
@@ -1076,6 +1274,13 @@ impl AssistantPanel {
 
         let messages = Rc::new(self.messages.clone());
         let expanded = Rc::new(self.expanded.clone());
+        // 正在想的那一条：标题写"思考中"，别的都写"思考过程"。开口说话之后
+        // 槽还在（等这一轮收尾），但已经不算在想了。
+        let thinking = self
+            .reasoning
+            .as_ref()
+            .filter(|_| self.streaming.is_none())
+            .map(|reasoning| reasoning.index);
         let this = cx.entity().downgrade();
         MessageScroller::new(
             "assistant-transcript",
@@ -1094,7 +1299,7 @@ impl AssistantPanel {
                         })
                     },
                 };
-                render_message(message, disclosure, cx)
+                render_message(message, disclosure, thinking == Some(index), cx)
             },
         )
         .with_bottom_fade(cx.theme().background)
@@ -1213,11 +1418,11 @@ impl AssistantPanel {
     ///
     /// 运行中输入框还在（可以先打下一句），发送键换成停止键。
     ///
-    /// 贴上的图排在输入框上方（[`Self::render_drafts`]）；粘贴图片那颗键在
-    /// 左下角，和发送键同一行 —— 只在模型开了看图时才画。
+    /// 贴上的图排在输入框上方（[`Self::render_drafts`]）；命令执行模式那颗键
+    /// 在左下角，和发送键同一行。
     fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.composer.focus_handle(cx).is_focused(window);
-        let vision = assistant_config::global().vision;
+        let mode = ExecutionMode::from_auto(assistant_config::global().auto_execute);
         let this = cx.entity().downgrade();
 
         div().flex_shrink_0().px_3().pb_3().child(
@@ -1244,18 +1449,10 @@ impl AssistantPanel {
                 )
                 .child(
                     h_flex()
-                        .when(vision, |this| {
-                            this.child(
-                                Button::new("assistant-paste-image")
-                                    .ghost()
-                                    .small()
-                                    .icon(AppIcon::ClipboardPaste)
-                                    .tooltip(t!("assistant.paste_image"))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.paste_image(window, cx)
-                                    })),
-                            )
-                        })
+                        .child(
+                            ExecutionModeMenu::new("assistant-execution-mode", mode)
+                                .on_change(Self::set_execution_mode),
+                        )
                         .child(self.render_send_button(cx).ml_auto()),
                 ),
         )
@@ -1363,8 +1560,8 @@ impl Panel for AssistantPanel {
             .child(self.render_conversation_menu(title, cx))
     }
 
-    /// 全自动模式亮一块警示牌：命令不送审是要一眼看得见的状态，所以它钉在
-    /// 标签条右端，而不是混在对话里。
+    /// 自动执行亮一块警示牌：命令不送审是要一眼看得见的状态，所以它钉在
+    /// 标签条右端，而不是混在对话里（输入行上那颗模式键也同样是琥珀色）。
     fn title_suffix(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<impl IntoElement> {
         assistant_config::global().auto_execute.then(|| {
             div()
@@ -1409,10 +1606,14 @@ impl Render for AssistantPanel {
             .size_full()
             .bg(cx.theme().background)
             .child(div().flex_1().min_h_0().child(self.render_transcript(cx)))
-            // 运行指示：泵还开着、没在等审核、也还没开口说话时，说明模型在想
-            // 或者命令在跑。字一旦流出来，那行字本身就是进度，不必再转圈。
+            // 运行指示：泵还开着、没在等审核、也还没开口说话（或者流出思考）
+            // 时，说明模型在等首字或者命令在跑。字一旦流出来，那行字本身就是
+            // 进度，不必再转圈。
             .when(
-                self.running && self.pending.is_none() && self.streaming.is_none(),
+                self.running
+                    && self.pending.is_none()
+                    && self.streaming.is_none()
+                    && self.reasoning.is_none(),
                 |this| {
                     this.child(
                         h_flex()
@@ -1437,7 +1638,7 @@ impl Render for AssistantPanel {
     }
 }
 
-/// 一张命令卡片的开合：现在是摊开的吗，点一下该翻给谁。
+/// 一张命令卡片（或一段思考）的开合：现在是摊开的吗，点一下该翻给谁。
 ///
 /// 行渲染器一次只交出一条消息，挑哪种画法的是 [`render_message`] 自己 ——
 /// 所以文字消息也会收到一份，只是用不上。
@@ -1460,9 +1661,22 @@ struct Disclosure {
 ///
 /// 贴着图的提问，图排在气泡上方（[`render_message_images`]）；只贴了图、没写
 /// 字的那条不画气泡，也就没有复制键 —— 没有字可复制。
-fn render_message(message: &ChatMessage, disclosure: Disclosure, cx: &App) -> AnyElement {
+///
+/// 模型的回复在复制键旁边写着它的输出速度（[`render_speed`]）。
+///
+/// `thinking`：这一条是不是正在流的那段思考，只有思考那种画法用得上。
+fn render_message(
+    message: &ChatMessage,
+    disclosure: Disclosure,
+    thinking: bool,
+    cx: &App,
+) -> AnyElement {
     match &message.body {
-        MessageBody::Text { text, images } => {
+        MessageBody::Text {
+            text,
+            images,
+            tokens_per_sec,
+        } => {
             let from_user = message.role == ChatRole::User;
             let has_text = !text.is_empty();
             Message::new()
@@ -1491,9 +1705,18 @@ fn render_message(message: &ChatMessage, disclosure: Disclosure, cx: &App) -> An
                         }),
                 )
                 .when(has_text, |this| {
-                    this.footer(MessageFooter::new().child(render_copy_button(&message.id, text)))
+                    this.footer(
+                        MessageFooter::new()
+                            .child(render_copy_button(&message.id, text))
+                            .when_some(*tokens_per_sec, |this, speed| {
+                                this.child(render_speed(speed))
+                            }),
+                    )
                 })
                 .into_any_element()
+        }
+        MessageBody::Reasoning { text } => {
+            render_reasoning(message, text, disclosure, thinking, cx)
         }
         MessageBody::Command {
             command,
@@ -1602,6 +1825,88 @@ fn render_copy_button(id: &SharedString, text: &SharedString) -> Button {
             cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
             window.push_notification(t!("assistant.copied"), cx);
         })
+}
+
+/// 一条回复的输出速度，写在复制键旁边：`42.5 tokens/s`。
+///
+/// 只是一行字：脚注那一排本来就是小号的灰字（[`MessageFooter`] 给的），
+/// 它跟着走就对齐了。
+fn render_speed(tokens_per_sec: f32) -> impl IntoElement {
+    div()
+        .debug_selector(|| SPEED_SELECTOR.to_string())
+        .child(format!("{tokens_per_sec:.1} tokens/s"))
+}
+
+/// 模型的一段思考：一行可点的标题，摊开时下面是一段灰字。
+///
+/// 正在想的那一段是摊开的，标题上一道流光写着"思考中"；想完就收起来
+/// （开合归 [`AssistantPanel::expanded`]，见模块文档），标题换成"思考过程"，
+/// 点一下再摊开。
+///
+/// 正文是纯文本不是 Markdown：思考是草稿，排成标题、列表反倒像结论；而且
+/// 它常常有几千字，摊开着一边流一边按 Markdown 重排太贵。左边一道竖线把它
+/// 和正式回复隔开 —— 那是引用的样子，说的是"这是过程，不是答案"。
+///
+/// 外层是 block `div()`：标题与正文上下摞着，不需要 flex 再量一遍。
+fn render_reasoning(
+    message: &ChatMessage,
+    text: &SharedString,
+    disclosure: Disclosure,
+    thinking: bool,
+    cx: &App,
+) -> AnyElement {
+    let Disclosure { open, toggle } = disclosure;
+    let muted = cx.theme().muted_foreground;
+
+    div()
+        .w_full()
+        .min_w_0()
+        .child(
+            h_flex()
+                .id(SharedString::from(format!(
+                    "assistant-reasoning-head-{}",
+                    message.id
+                )))
+                .gap_1()
+                .items_center()
+                .text_xs()
+                .text_color(muted)
+                .cursor_pointer()
+                .on_click(move |_, _, cx| toggle(cx))
+                .child(match thinking {
+                    true => ShimmerText::new(t!("assistant.reasoning_live"))
+                        .id(SharedString::from(format!(
+                            "assistant-reasoning-shimmer-{}",
+                            message.id
+                        )))
+                        .into_any_element(),
+                    false => div()
+                        .child(t!("assistant.reasoning_done"))
+                        .into_any_element(),
+                })
+                .child(
+                    Icon::new(match open {
+                        true => IconName::ChevronDown,
+                        false => IconName::ChevronRight,
+                    })
+                    .with_size(px(12.))
+                    .flex_shrink_0(),
+                ),
+        )
+        .when(open && !text.is_empty(), |this| {
+            this.child(
+                div()
+                    .mt_1p5()
+                    .pl_3()
+                    .border_l_2()
+                    .border_color(cx.theme().border)
+                    .text_sm()
+                    .text_color(muted)
+                    .debug_selector(|| REASONING_BODY_SELECTOR.to_string())
+                    .child(text.clone()),
+            )
+        })
+        .into_any_element()
 }
 
 /// 命令执行卡片：状态行、命令、输出（有的话）。

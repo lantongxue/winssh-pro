@@ -5,6 +5,7 @@
 //! 全部交给 [`gpui_kit::component::menu`]。
 
 mod desktop_session_menu;
+mod execution_mode_menu;
 mod host_menu;
 mod local_entry_menu;
 mod settings_menu;
@@ -12,6 +13,7 @@ mod sftp_entry_menu;
 mod terminal_menu;
 
 pub use desktop_session_menu::{DesktopSessionAction, DesktopSessionKind, DesktopSessionMenu};
+pub use execution_mode_menu::{ExecutionMode, ExecutionModeMenu};
 pub use host_menu::{HostAction, HostActionHandler, HostMenu};
 pub use local_entry_menu::{LocalEntryAction, LocalEntryActionHandler, LocalEntryMenu};
 #[allow(unused_imports)]

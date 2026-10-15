@@ -709,3 +709,37 @@
             "取消之后没有提议了"
         );
     }
+
+    /// 智能助手"看看终端"读的是缓冲最底下那几行：滚进回卷区的也算，
+    /// 光标下面那片空行不算。
+    #[test]
+    fn tail_text_reads_through_the_scrollback() {
+        let mut offline = Offline::new();
+        // 24 行的屏幕写 60 行，前面那些已经滚进回卷区了。
+        for n in 0..60 {
+            offline.write(format!("line {n}\r\n").as_bytes());
+        }
+        assert_eq!(
+            tail_text(&offline.term.lock(), 3),
+            "line 57\nline 58\nline 59"
+        );
+        assert_eq!(
+            tail_text(&offline.term.lock(), 50).lines().next(),
+            Some("line 10"),
+            "要的行数比一屏多时该接着往回卷区里读"
+        );
+    }
+
+    /// 输出不满一屏：光标停在上半截，下面那十几行空着。按行数硬切的话，
+    /// 要的那几行会被空行挤出去 —— 读回来的只该是写过的那几行。
+    #[test]
+    fn tail_text_skips_the_blank_screen_below_the_cursor() {
+        let mut offline = Offline::new();
+        offline.write(b"$ df -h\r\n/dev/vda1  40G  12G  28G  30% /\r\n$ ");
+        assert_eq!(
+            tail_text(&offline.term.lock(), 2),
+            "/dev/vda1  40G  12G  28G  30% /\n$"
+        );
+        assert_eq!(last_lines("a  \n\n  \n", 5), "a", "行尾空白与末尾空行都剪掉");
+        assert_eq!(last_lines("", 5), "");
+    }

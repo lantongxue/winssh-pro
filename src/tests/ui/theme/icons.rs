@@ -11,7 +11,6 @@
             AppIcon::Activity.path(),
             AppIcon::Archive.path(),
             AppIcon::Cable.path(),
-            AppIcon::ClipboardPaste.path(),
             AppIcon::Columns2.path(),
             AppIcon::Rows2.path(),
             AppIcon::Square.path(),

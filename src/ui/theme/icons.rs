@@ -19,9 +19,6 @@ pub enum AppIcon {
     /// 组件库默认图标集没带这一枚（`Cable` 只在全量目录里，默认不内嵌，
     /// 取不到字节），所以自带一份。
     Cable,
-    /// 带箭头进板的剪贴板：把剪贴板里的图贴进助手的输入行。组件库默认
-    /// 图标集没带这一枚，自带一份（同 [`Self::Cable`]）。
-    ClipboardPaste,
     /// 竖着一分为二的方框：左右分屏。
     Columns2,
     /// 横着一分为二的方框：上下分屏。
@@ -93,7 +90,6 @@ impl IconNamed for AppIcon {
             Self::Activity => "icons/activity.svg",
             Self::Archive => "icons/archive.svg",
             Self::Cable => "icons/cable.svg",
-            Self::ClipboardPaste => "icons/clipboard-paste.svg",
             Self::Columns2 => "icons/columns-2.svg",
             Self::Rows2 => "icons/rows-2.svg",
             Self::Square => "icons/square.svg",

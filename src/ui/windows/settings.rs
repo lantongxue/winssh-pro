@@ -119,10 +119,14 @@ fn persist_terminal_font(value: TerminalFont, cx: &mut App) {
 
 /// 换掉智能助手配置：进程里那份缓存立刻生效，落库派到后台。
 ///
-/// 缓存先换的理由同 [`persist_proxy`]：助手抽屉按下"发送"读的就是缓存那份。
-/// 重画所有窗口 —— 抽屉标题行上"自动"那块警示牌、输入行上贴图那颗键，都
-/// 跟着这里的开关走。
-fn persist_assistant_config(config: AssistantConfig, cx: &mut App) {
+/// 缓存先换的理由同 [`persist_proxy`]：助手面板按下"发送"读的就是缓存那份，
+/// 审核门每一条命令也现读它的执行模式。重画所有窗口 —— 面板标签条上"自动"
+/// 那块警示牌、输入行上那颗执行模式键、这一页的开关，都跟着这里走。
+///
+/// 助手面板输入行上的模式键也走这一条（所以是 `pub`）：两处拨的是同一位，
+/// 落库与重画都该是同一套。注意它当场重画不了**发起调用的那扇窗**
+/// （见 `handle.update` 那一圈），那扇窗要调用方自己 `window.refresh()`。
+pub fn persist_assistant_config(config: AssistantConfig, cx: &mut App) {
     assistant_config::set_global(config.clone());
     for handle in cx.windows() {
         _ = handle.update(cx, |_, window, _| window.refresh());

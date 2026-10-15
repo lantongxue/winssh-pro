@@ -26,8 +26,9 @@ use crate::{
     repository::AssistantRepository,
 };
 
-/// 消息 `kind` 列的两档。
+/// 消息 `kind` 列的三档。
 const KIND_TEXT: &str = "text";
+const KIND_REASONING: &str = "reasoning";
 const KIND_COMMAND: &str = "command";
 
 /// 标题最多留多少个字符：取自第一条提问，够认出这段对话就行。
@@ -175,13 +176,16 @@ impl AssistantService {
                 session: Set(String::new()),
                 status: Set(String::new()),
                 created_at: Set(now.clone()),
+                tokens_per_sec: Set(None),
             };
             match &body {
                 MessageBody::Text {
                     text,
                     images: attached,
+                    tokens_per_sec,
                 } => {
                     model.content = Set(text.to_string());
+                    model.tokens_per_sec = Set(tokens_per_sec.map(f64::from));
                     images = attached
                         .iter()
                         .enumerate()
@@ -195,6 +199,10 @@ impl AssistantService {
                             data: Set(image.bytes().to_vec()),
                         })
                         .collect();
+                }
+                MessageBody::Reasoning { text } => {
+                    model.kind = Set(KIND_REASONING.to_owned());
+                    model.content = Set(text.to_string());
                 }
                 MessageBody::Command {
                     command,
@@ -224,18 +232,22 @@ impl AssistantService {
 
 /// 一行数据（连同挂在它上面的图）翻成领域模型。
 fn hydrate(row: ai_message::Model, images: Vec<ChatImage>) -> ChatMessage {
-    let body = if row.kind == KIND_COMMAND {
-        MessageBody::Command {
+    let body = match row.kind.as_str() {
+        KIND_COMMAND => MessageBody::Command {
             command: row.command.into(),
             session: row.session.into(),
             output: row.output.into(),
             status: CommandStatus::from_str_or_default(&row.status),
-        }
-    } else {
-        MessageBody::Text {
+        },
+        KIND_REASONING => MessageBody::Reasoning {
+            text: row.content.into(),
+        },
+        // 认不出的档按一段话读回：别的版本多出来的东西，至少还看得见字。
+        _ => MessageBody::Text {
             text: row.content.into(),
             images,
-        }
+            tokens_per_sec: row.tokens_per_sec.map(|speed| speed as f32),
+        },
     };
     ChatMessage {
         id: row.id.into(),

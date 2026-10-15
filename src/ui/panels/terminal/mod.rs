@@ -695,6 +695,16 @@ impl TerminalPanel {
         })
     }
 
+    /// 活动窗格终端上最后 `lines` 行的文本（回卷区也算），智能助手的
+    /// `read_terminal` 读的就是它。终端没开出来时是 `None`。
+    ///
+    /// 读的是**活动窗格**：分屏时用户盯着的是焦点所在的那一半，问"终端里
+    /// 那个报错"指的也是它。
+    pub fn recent_output(&self, lines: usize, cx: &App) -> Option<String> {
+        let emulator = self.active_pane()?.read(cx).emulator()?;
+        Some(emulator.read(cx).tail_text(lines))
+    }
+
     // ─── 子面板 ─────────────────────────────────────────────────────────────
 
     /// 监控面板的三件事：关掉自己、把诊断命令送进终端、报一份新读数。

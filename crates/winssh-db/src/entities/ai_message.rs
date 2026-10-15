@@ -1,7 +1,8 @@
 //! `ai_messages` 表：智能助手对话里的一条消息。
 //!
-//! `kind` 分两档：`text` 是一段话（`content` 有值），`command` 是一次
-//! 服务器命令的执行卡片（`command` / `output` / `session` / `status` 有值）。
+//! `kind` 分三档：`text` 是一段话、`reasoning` 是模型开口前的那段思考
+//! （两者都只有 `content` 有值），`command` 是一次服务器命令的执行卡片
+//! （`command` / `output` / `session` / `status` 有值）。
 //! 两档怎么翻成领域模型见 [`crate::service::assistant_service`]。
 
 use sea_orm::entity::prelude::*;
@@ -15,7 +16,7 @@ pub struct Model {
     /// `user` / `assistant`，认不出的按 `assistant` 读回。
     #[sea_orm(default_value = "assistant")]
     pub role: String,
-    /// `text` / `command`。
+    /// `text` / `reasoning` / `command`。
     #[sea_orm(default_value = "text")]
     pub kind: String,
     #[sea_orm(default_value = "")]
@@ -33,6 +34,9 @@ pub struct Model {
     /// 落下的时间，一段对话内按它升序排；同一秒的再按 id 兜底。
     #[sea_orm(default_value = "")]
     pub created_at: String,
+    /// 模型这条回复每秒吐了多少 token。只有 `text` 档、助手说的话才有；
+    /// 供应商没报用量、或者这一行早于这一列时是空的。
+    pub tokens_per_sec: Option<f64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

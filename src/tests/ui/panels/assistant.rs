@@ -30,6 +30,7 @@
                 body: MessageBody::Text {
                     text: "看看 web-01 磁盘还剩多少，报错截图在这".into(),
                     images: vec![sample_image(), sample_image()],
+                    tokens_per_sec: None,
                 },
             },
             // 只贴了图、没写字的提问：不画气泡，也没有复制键。
@@ -39,6 +40,7 @@
                 body: MessageBody::Text {
                     text: "".into(),
                     images: vec![sample_image()],
+                    tokens_per_sec: None,
                 },
             },
             ChatMessage {
@@ -61,21 +63,29 @@
                     status: CommandStatus::Denied,
                 },
             },
+            // 想完了的一段思考：收着，只剩一行标题。
+            ChatMessage {
+                id: "m5".into(),
+                role: ChatRole::Assistant,
+                body: MessageBody::Reasoning {
+                    text: "先看 df，再看 inode".into(),
+                },
+            },
             ChatMessage {
                 id: "m4".into(),
                 role: ChatRole::Assistant,
-                body: MessageBody::text("根分区还有 **28G** 可用。"),
+                body: MessageBody::reply("根分区还有 **28G** 可用。", Some(42.5)),
             },
         ]
     }
 
-    /// 三种消息画法齐上阵地画一整帧：气泡、Markdown、带图的提问、三种状态的
-    /// 命令卡片，外加标签条上那三样（对话菜单、警示牌、两颗按钮）和输入行上
-    /// 的图片排（规整完的、还在规整的）。深 builder 链上的错只有真的画一遍才
-    /// 掉得出来。
+    /// 四种消息画法齐上阵地画一整帧：气泡、带速度的 Markdown 回复、带图的
+    /// 提问、收着的与正在想的思考、三种状态的命令卡片，外加标签条上那三样
+    /// （对话菜单、警示牌、两颗按钮）和输入行上的图片排（规整完的、还在规整
+    /// 的）。深 builder 链上的错只有真的画一遍才掉得出来。
     ///
-    /// 全自动与看图都开着画：[`Panel::title_suffix`] 那块警示牌、输入行上的
-    /// 贴图键只有这一档才画。
+    /// 自动执行与看图都开着画：[`Panel::title_suffix`] 那块警示牌只有这一档
+    /// 才画，输入行上的模式键这一档是琥珀色那套；最后拨回手动确认再画一帧。
     #[gpui_kit::test]
     fn the_panel_draws_every_message_shape(cx: &mut gpui_kit::TestAppContext) {
         let _exclusive = assistant_config::exclusive_for_test();
@@ -98,6 +108,8 @@
                         image: None,
                     },
                 ];
+                // 正在想的那一段：摊开着，标题上走流光。
+                panel.reasoning_delta("磁盘满了的话", cx);
                 cx.notify();
             });
         });
@@ -107,9 +119,13 @@
 
         harness.read_with(cx, |harness, cx| {
             let panel = harness.assistant.read(cx);
-            assert_eq!(panel.messages.len(), 5);
+            assert_eq!(panel.messages.len(), 7);
             assert!(!panel.running);
         });
+
+        assistant_config::set_global(assistant_config::AssistantConfig::default());
+        harness.update(cx, |harness, cx| harness.assistant.update(cx, |_, cx| cx.notify()));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 
     /// 审核卡片开着也要画得通，而且"拒绝"要落一张 Denied 卡片、
@@ -181,7 +197,9 @@
         fn text_of(message: &ChatMessage) -> &str {
             match &message.body {
                 MessageBody::Text { text, .. } => text.as_ref(),
-                MessageBody::Command { .. } => panic!("这条该是文字消息"),
+                MessageBody::Reasoning { .. } | MessageBody::Command { .. } => {
+                    panic!("这条该是文字消息")
+                }
             }
         }
 
@@ -202,7 +220,7 @@
         });
 
         panel.update(cx, |panel, cx| {
-            panel.commit_stream(MessageBody::text("根分区还有 **28G** 可用。"), cx);
+            panel.end_turn(Some(reply("根分区还有 **28G** 可用。")), cx);
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         panel.read_with(cx, |panel, _| {
@@ -401,7 +419,7 @@
             assert!(panel.drafts.is_empty(), "发出去之后输入行上的图该清空");
             let Some(ChatMessage {
                 role: ChatRole::User,
-                body: MessageBody::Text { text, images },
+                body: MessageBody::Text { text, images, .. },
                 ..
             }) = panel.messages.last()
             else {
@@ -411,6 +429,239 @@
             assert_eq!(images, &vec![sample_image()]);
             assert!(panel.running);
             panel._run = None;
+        });
+    }
+
+    /// 一轮的规范全文：只有正文。
+    fn reply(text: &str) -> TurnOutput {
+        TurnOutput {
+            text: text.into(),
+            ..Default::default()
+        }
+    }
+
+    /// 思考：一边想一边摊开着写灰字（增量落在同一条上）；一开口说话它就收
+    /// 起来，回复另起一条；这一轮收尾时两条按先后交出去落库。
+    ///
+    /// 查的是画出来的那一帧：用户要看到的是"想的时候看得见、想完自己收起"，
+    /// 集合对了而 `when` 写反、标题传不到开合，正文照样会摆在那儿。
+    #[gpui_kit::test]
+    fn thinking_streams_open_and_folds_once_the_answer_starts(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (_root, panel, cx) = root_harness(cx, Vec::new());
+
+        panel.update(cx, |panel, cx| {
+            panel.reasoning_delta("用户问磁盘，", cx);
+            panel.reasoning_delta("先跑 df。", cx);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.messages.len(), 1, "一段思考的增量该落在同一条上");
+            assert_eq!(
+                panel.messages[0].body,
+                MessageBody::Reasoning {
+                    text: "用户问磁盘，先跑 df。".into()
+                }
+            );
+        });
+        assert!(
+            cx.debug_bounds(REASONING_BODY_SELECTOR).is_some(),
+            "想的时候思考该摊开着"
+        );
+
+        panel.update(cx, |panel, cx| panel.stream_delta("根分区还有 28G", cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.messages.len(), 2, "回复该另起一条");
+            assert!(panel.expanded.is_empty(), "一开口说话思考就该收起来");
+        });
+        assert!(
+            cx.debug_bounds(REASONING_BODY_SELECTOR).is_none(),
+            "开口说话之后思考还摊着"
+        );
+
+        let finished = panel.update(cx, |panel, cx| {
+            panel.end_turn(
+                Some(TurnOutput {
+                    reasoning: "用户问磁盘，先跑 df。".into(),
+                    text: "根分区还有 28G 可用。".into(),
+                    tokens_per_sec: Some(30.0),
+                }),
+                cx,
+            )
+        });
+        assert_eq!(
+            finished,
+            [
+                MessageBody::Reasoning {
+                    text: "用户问磁盘，先跑 df。".into()
+                },
+                MessageBody::reply("根分区还有 28G 可用。", Some(30.0)),
+            ],
+            "收尾要按屏上的先后交出两条去落库"
+        );
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.reasoning.is_none() && panel.streaming.is_none());
+            assert_eq!(panel.messages.len(), 2, "收尾是替换，不多出一条");
+        });
+    }
+
+    /// 带工具的一场在屏上必须是"思考 → 工具卡片 → 思考 → 回答"。
+    ///
+    /// 线上栽过（读终端那一场）：第一轮模型叫工具之前先吐了一个 `"\n\n"`，
+    /// 面板为它开了一条正文，而那一轮的收尾因为正文是空白的根本没来 ——
+    /// 第二轮的回答于是接到了那条空白的尾巴上，排到了工具卡片**前面**，第二轮
+    /// 的思考反倒落在了最后，回答上方还空着一块。这里照着那一场的事件先后
+    /// 原样回放一遍。
+    #[gpui_kit::test]
+    fn a_tool_run_reads_think_card_think_answer(cx: &mut gpui_kit::TestAppContext) {
+        let (_root, panel, cx) = root_harness(cx, Vec::new());
+
+        let finished = panel.update(cx, |panel, cx| {
+            let mut finished = Vec::new();
+            // 第一轮：想 → 一个空白的正文 → 叫工具 → 收尾（正文报成空串）。
+            panel.reasoning_delta("用户要看终端在跑什么，", cx);
+            panel.stream_delta("\n\n", cx);
+            finished.extend(panel.end_turn(
+                Some(TurnOutput {
+                    reasoning: "用户要看终端在跑什么，".into(),
+                    ..Default::default()
+                }),
+                cx,
+            ));
+            // 工具跑完，卡片上屏。
+            panel.push_message(
+                ChatMessage {
+                    id: "card".into(),
+                    role: ChatRole::Assistant,
+                    body: MessageBody::Command {
+                        command: "读取终端输出（最近 30 行）".into(),
+                        session: "web-01".into(),
+                        output: "PING qq.com".into(),
+                        status: CommandStatus::Ok,
+                    },
+                },
+                cx,
+            );
+            // 第二轮：再想 → 回答 → 收尾。
+            panel.reasoning_delta("是 ping qq.com。", cx);
+            panel.stream_delta("你当前执行的命令是 ping qq.com。", cx);
+            finished.extend(panel.end_turn(
+                Some(TurnOutput {
+                    reasoning: "是 ping qq.com。".into(),
+                    text: "你当前执行的命令是 ping qq.com。".into(),
+                    tokens_per_sec: Some(25.7),
+                }),
+                cx,
+            ));
+            finished
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let shape = |body: &MessageBody| match body {
+            MessageBody::Reasoning { .. } => "思考",
+            MessageBody::Command { .. } => "卡片",
+            MessageBody::Text { .. } => "回答",
+        };
+        panel.read_with(cx, |panel, _| {
+            let order: Vec<_> = panel.messages.iter().map(|m| shape(&m.body)).collect();
+            assert_eq!(
+                order,
+                ["思考", "卡片", "思考", "回答"],
+                "回答跑到卡片前面、或者多出一块空白了"
+            );
+        });
+        // 落库的先后（卡片由泵另外落，不在收尾交出来的这几条里）。
+        assert_eq!(
+            finished.iter().map(shape).collect::<Vec<_>>(),
+            ["思考", "思考", "回答"]
+        );
+    }
+
+    /// 被停掉、出错时没等到收尾：想到一半、说到一半的照样留下来交去落库，
+    /// 两个槽也照样关掉。
+    #[gpui_kit::test]
+    fn an_interrupted_turn_keeps_what_was_streamed(cx: &mut gpui_kit::TestAppContext) {
+        let (_root, panel, cx) = root_harness(cx, Vec::new());
+        let finished = panel.update(cx, |panel, cx| {
+            panel.reasoning_delta("先看看", cx);
+            panel.stream_delta("根分区还", cx);
+            panel.end_turn(None, cx)
+        });
+        assert_eq!(
+            finished,
+            [
+                MessageBody::Reasoning {
+                    text: "先看看".into()
+                },
+                MessageBody::text("根分区还"),
+            ]
+        );
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.messages.len(), 2);
+            assert!(panel.reasoning.is_none() && panel.streaming.is_none());
+        });
+    }
+
+    /// 模型的回复在复制键旁边写着 tokens/s；没测出速度的（用户的话、老消息）
+    /// 那一格不画，不摆一个 0。
+    #[gpui_kit::test]
+    fn a_reply_shows_its_speed_beside_the_copy_key(cx: &mut gpui_kit::TestAppContext) {
+        let (_root, _panel, cx) = root_harness(
+            cx,
+            vec![ChatMessage {
+                id: "m1".into(),
+                role: ChatRole::Assistant,
+                body: MessageBody::reply("根分区还有 28G。", Some(42.5)),
+            }],
+        );
+        assert!(cx.debug_bounds(COPY_SELECTOR).is_some());
+        assert!(
+            cx.debug_bounds(SPEED_SELECTOR).is_some(),
+            "复制键旁边该写着速度"
+        );
+        assert_eq!(format!("{:.1} tokens/s", 42.5_f32), "42.5 tokens/s");
+    }
+
+    #[gpui_kit::test]
+    fn a_reply_without_a_speed_draws_no_speed(cx: &mut gpui_kit::TestAppContext) {
+        let (_root, _panel, cx) = root_harness(
+            cx,
+            vec![ChatMessage {
+                id: "m1".into(),
+                role: ChatRole::Assistant,
+                body: MessageBody::text("根分区还有 28G。"),
+            }],
+        );
+        assert!(cx.debug_bounds(COPY_SELECTOR).is_some());
+        assert!(cx.debug_bounds(SPEED_SELECTOR).is_none());
+    }
+
+    /// 读终端只读当前会话：中心区停着的是一个不连任何东西的空壳（本机 Shell
+    /// 也是这样 —— 没有 SSH 连接可借），槽里就是空的，模型要读也只拿到"没有"。
+    /// 命令落不到的地方，屏上的字也不该被拿走。
+    #[gpui_kit::test]
+    fn reading_the_terminal_needs_a_live_session(cx: &mut gpui_kit::TestAppContext) {
+        let (harness, cx) = dock_harness(cx, Vec::new());
+        let (dock_area, panel) = harness.read_with(cx, |harness, _| {
+            (harness.dock_area.clone(), harness.assistant.clone())
+        });
+        cx.update(|window, cx| {
+            let session = TerminalPanel::new_detached(dock_area.downgrade(), window, cx);
+            dock_area.update(cx, |area, cx| {
+                area.add_panel_view(panel_handle(session), DockPlacement::Center, None, window, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        panel.read_with(cx, |panel, cx| {
+            assert!(panel.current.is_some(), "中心区那个面板该认出来");
+            assert!(panel.session.get().is_none());
+            assert_eq!(panel.read_terminal(100, cx), None);
         });
     }
 

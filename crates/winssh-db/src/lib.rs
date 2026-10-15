@@ -108,8 +108,10 @@ const SCHEMA: [&str; 13] = [
         created_at   TEXT    NOT NULL DEFAULT '',
         updated_at   TEXT    NOT NULL DEFAULT ''
     )",
-    // 对话里的每一条消息。`kind` 分两档：`text` 是一段话，`command` 是一次
-    // 服务器命令的执行卡片（command / output / session / status 四列才有值）。
+    // 对话里的每一条消息。`kind` 分三档：`text` 是一段话，`reasoning` 是模型
+    // 开口之前的那段思考（都只用 content 一列），`command` 是一次服务器命令的
+    // 执行卡片（command / output / session / status 四列才有值）。
+    // `tokens_per_sec` 只有模型的话才有：那一轮每秒吐了多少 token。
     // 删一段对话连带删光它的消息，不留孤儿。
     "CREATE TABLE IF NOT EXISTS ai_messages (
         id              TEXT    PRIMARY KEY,
@@ -121,7 +123,8 @@ const SCHEMA: [&str; 13] = [
         output          TEXT    NOT NULL DEFAULT '',
         session         TEXT    NOT NULL DEFAULT '',
         status          TEXT    NOT NULL DEFAULT '',
-        created_at      TEXT    NOT NULL DEFAULT ''
+        created_at      TEXT    NOT NULL DEFAULT '',
+        tokens_per_sec  REAL
     )",
     // 消息上贴着的图（用户发的截图）。挂在消息上而不是对话上：一张图属于那一次
     // 提问。删对话 → 删消息 → 删图，两层级联，不留孤儿。字节是规整过的 PNG /
@@ -211,7 +214,7 @@ const SCHEMA: [&str; 13] = [
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 28] = [
+const MIGRATIONS: [&str; 29] = [
     // 连接类型（见 [`crate::host::HostKind`]）。老库补出来的是 `ssh` ——
     // 这一列出现之前存的每一台主机都是 SSH，出厂值不改变任何人的行为。
     "ALTER TABLE hosts ADD COLUMN kind TEXT NOT NULL DEFAULT 'ssh'",
@@ -287,6 +290,9 @@ const MIGRATIONS: [&str; 28] = [
     "ALTER TABLE clash_subscriptions ADD COLUMN user_agent TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE clash_subscriptions ADD COLUMN auto_update_hours INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE clash_subscriptions ADD COLUMN notes TEXT NOT NULL DEFAULT ''",
+    // ── 智能助手：模型每条回复的输出速度 ──
+    // 可空：这一列出现之前的回复没量过，用户自己的话本来就没有这回事。
+    "ALTER TABLE ai_messages ADD COLUMN tokens_per_sec REAL",
 ];
 
 /// 数据层专用的 tokio runtime，进程生命周期内只建一次。

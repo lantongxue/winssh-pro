@@ -1615,6 +1615,12 @@ impl Emulator {
         term.bounds_to_string(start, end)
     }
 
+    /// 缓冲最底下那 `lines` 行的文本（回卷区也算）—— 智能助手"看看终端"读的
+    /// 就是它。末尾的空行不算，见 [`tail_text`]。
+    pub fn tail_text(&self, lines: usize) -> String {
+        tail_text(&self.term.lock(), lines)
+    }
+
     /// 选中的文本。没选中任何东西时是 `None`。
     pub fn selected_text(&self) -> Option<String> {
         self.term
@@ -1758,6 +1764,35 @@ impl Drop for Emulator {
 }
 
 impl EventEmitter<EmulatorEvent> for Emulator {}
+
+/// 缓冲最底下那 `lines` 行的文本，末尾的空行不算。
+///
+/// 光标常常停在屏幕中间（刚清过屏、输出不满一屏），它下面那半屏是空的 ——
+/// 照着缓冲底边硬切 `lines` 行，用户想让人看的那几行反倒被空行挤出去。所以
+/// 多取一屏，转成文本之后再从尾巴上剪掉空行（[`last_lines`]）。
+///
+/// 只取这一段而不是整个缓冲：回卷区能有上万行，"看看最后一百行"不该先拼出
+/// 几 MB 的字符串再扔掉。
+fn tail_text(term: &Term<EventProxy>, lines: usize) -> String {
+    let span = lines.saturating_add(term.screen_lines());
+    let bottom = term.bottommost_line();
+    let top = std::cmp::max(term.topmost_line(), bottom - span.saturating_sub(1));
+    let text = term.bounds_to_string(
+        AlacPoint::new(top, Column(0)),
+        AlacPoint::new(bottom, term.last_column()),
+    );
+    last_lines(&text, lines)
+}
+
+/// 一段文本的最后 `count` 行：先剪掉末尾的空行，每行行尾的空白也去掉。
+fn last_lines(text: &str, count: usize) -> String {
+    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+    let end = lines
+        .iter()
+        .rposition(|line| !line.is_empty())
+        .map_or(0, |last| last + 1);
+    lines[end.saturating_sub(count)..end].join("\n")
+}
 
 /// 把一段字节同时喂给屏幕和标记扫描器，认出来的命令追加进 `recorded`。
 /// 返回值是"这一段里记下了新的命令"。

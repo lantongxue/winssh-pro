@@ -85,6 +85,7 @@
                     MessageBody::Text {
                         text: "这个报错是什么意思".into(),
                         images: shots.clone(),
+                        tokens_per_sec: None,
                     },
                 )
                 .await
@@ -99,7 +100,7 @@
                 .unwrap();
 
             let messages = service.messages(&chat.id).await.unwrap();
-            let MessageBody::Text { text, images } = &messages[0].body else {
+            let MessageBody::Text { text, images, .. } = &messages[0].body else {
                 panic!("第一条该是文字消息");
             };
             assert_eq!(text.as_ref(), "这个报错是什么意思");
@@ -117,6 +118,49 @@
                 left.is_empty(),
                 "删对话该把图连带删光：还剩 {} 张",
                 left.len()
+            );
+        });
+    }
+
+    /// 模型的思考与带速度的回复：思考按自己那一档读回来，排在回复前面；
+    /// 回复的 tokens/s 原样读回，用户的话没有这回事。
+    #[test]
+    fn reasoning_and_reply_speed_round_trip() {
+        db::runtime().block_on(async {
+            let service = AssistantService::in_memory().await.unwrap();
+            let chat = service.create_conversation("磁盘满了吗").await.unwrap();
+            for (role, body) in [
+                (ChatRole::User, MessageBody::text("磁盘满了吗")),
+                (
+                    ChatRole::Assistant,
+                    MessageBody::Reasoning {
+                        text: "先看 df，再看 inode".into(),
+                    },
+                ),
+                (
+                    ChatRole::Assistant,
+                    MessageBody::reply("根分区还有 28G。", Some(42.5)),
+                ),
+            ] {
+                service.append_message(&chat.id, role, body).await.unwrap();
+            }
+
+            let bodies: Vec<_> = service
+                .messages(&chat.id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|message| message.body)
+                .collect();
+            assert_eq!(
+                bodies,
+                [
+                    MessageBody::text("磁盘满了吗"),
+                    MessageBody::Reasoning {
+                        text: "先看 df，再看 inode".into(),
+                    },
+                    MessageBody::reply("根分区还有 28G。", Some(42.5)),
+                ]
             );
         });
     }

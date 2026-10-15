@@ -150,10 +150,33 @@
         });
     }
 
-    /// 审核门：批准放行、拒绝换成 Skip、全自动直接放行、按了停止就 Stop，
+    /// 一道新的审核门。执行模式不在这里给 —— 它现读进程里那份配置。
+    fn new_gate(
+        events: mpsc::UnboundedSender<AgentEvent>,
+        session: CurrentSession,
+        cancelled: bool,
+    ) -> Gate {
+        Gate {
+            events,
+            session,
+            cancel: Arc::new(AtomicBool::new(cancelled)),
+            first_delta: Mutex::new(None),
+        }
+    }
+
+    /// 把进程里那份配置拨到某个执行模式。
+    fn set_auto(auto: bool) {
+        crate::config::set_global(AssistantConfig {
+            auto_execute: auto,
+            ..Default::default()
+        });
+    }
+
+    /// 审核门：批准放行、拒绝换成 Skip、自动执行直接放行、按了停止就 Stop，
     /// 没有会话时连问都不问。
     #[test]
     fn the_gate_translates_decisions_into_actions() {
+        let _exclusive = crate::config::exclusive_for_test();
         winssh_db::runtime().block_on(async {
             const ARGS: &str = r#"{"command":"rm -rf /tmp/x"}"#;
 
@@ -165,37 +188,25 @@
             };
 
             // 没有会话可操作：不发审核事件，直接回一句给模型。
+            set_auto(false);
             let (tx, mut rx) = mpsc::unbounded();
-            let gate = Gate {
-                events: tx,
-                session: CurrentSession::default(),
-                auto: false,
-                cancel: Arc::new(AtomicBool::new(false)),
-            };
+            let gate = new_gate(tx, CurrentSession::default(), false);
             assert!(matches!(gate.review(ARGS).await, ToolCallAction::Skip(_)));
             assert!(rx.try_recv().is_err(), "没有会话时不该惊动用户");
 
-            // 全自动：不送审，直接放行。
+            // 自动执行：不送审，直接放行。
+            set_auto(true);
             let (tx, mut rx) = mpsc::unbounded();
-            let gate = Gate {
-                events: tx,
-                session: current(),
-                auto: true,
-                cancel: Arc::new(AtomicBool::new(false)),
-            };
+            let gate = new_gate(tx, current(), false);
             assert!(matches!(gate.review(ARGS).await, ToolCallAction::Run));
-            assert!(rx.try_recv().is_err(), "全自动模式不该发审核事件");
+            assert!(rx.try_recv().is_err(), "自动执行不该发审核事件");
 
-            // 手动档：批准 → Run，拒绝 → Skip。审核事件里带着命令原文，
+            // 手动确认：批准 → Run，拒绝 → Skip。审核事件里带着命令原文，
             // 目标写的是当前会话 —— 模型本来就没得选。
+            set_auto(false);
             for (approve, want_run) in [(true, true), (false, false)] {
                 let (tx, mut rx) = mpsc::unbounded();
-                let gate = Gate {
-                    events: tx,
-                    session: current(),
-                    auto: false,
-                    cancel: Arc::new(AtomicBool::new(false)),
-                };
+                let gate = new_gate(tx, current(), false);
                 let decide = async {
                     let Some(AgentEvent::Approval(request)) = rx.next().await else {
                         panic!("该有一条审核事件");
@@ -217,12 +228,7 @@
             let (db, _) = target("db-02").await;
             let (tx, mut rx) = mpsc::unbounded();
             let session = current();
-            let gate = Gate {
-                events: tx,
-                session: session.clone(),
-                auto: false,
-                cancel: Arc::new(AtomicBool::new(false)),
-            };
+            let gate = new_gate(tx, session.clone(), false);
             let decide = async {
                 let Some(AgentEvent::Approval(request)) = rx.next().await else {
                     panic!("该有一条审核事件");
@@ -237,15 +243,150 @@
             );
 
             // 停止按钮压倒一切。
+            set_auto(true);
             let (tx, _rx) = mpsc::unbounded();
-            let gate = Gate {
-                events: tx,
-                session: current(),
-                auto: true,
-                cancel: Arc::new(AtomicBool::new(true)),
-            };
+            let gate = new_gate(tx, current(), true);
             assert!(matches!(gate.review(ARGS).await, ToolCallAction::Stop(_)));
         });
+    }
+
+    /// 执行模式是**每一条命令现读**的，不在开跑那一刻定格。
+    ///
+    /// 输入行上那颗模式键就是为这个场景放的：审核卡片一张接一张地弹，用户
+    /// 拨到"自动执行"，这一场后面的命令就该直接跑 —— 定格的话，它得等到
+    /// 下一次提问才生效，那颗键在最需要它的时候不管用。
+    #[test]
+    fn switching_the_mode_mid_run_applies_to_the_next_command() {
+        let _exclusive = crate::config::exclusive_for_test();
+        winssh_db::runtime().block_on(async {
+            const ARGS: &str = r#"{"command":"systemctl restart nginx"}"#;
+            let (web, _) = target("web-01").await;
+            let session = CurrentSession::default();
+            session.set(Some(web));
+            let (tx, mut rx) = mpsc::unbounded();
+            let gate = new_gate(tx, session, false);
+
+            set_auto(false);
+            let decide = async {
+                let Some(AgentEvent::Approval(request)) = rx.next().await else {
+                    panic!("手动确认该送审");
+                };
+                _ = request.respond.send(true);
+            };
+            let (action, ()) = futures::join!(gate.review(ARGS), decide);
+            assert!(matches!(action, ToolCallAction::Run));
+
+            // 同一道门、同一场运行，用户拨了模式键。
+            set_auto(true);
+            assert!(matches!(gate.review(ARGS).await, ToolCallAction::Run));
+            assert!(rx.try_recv().is_err(), "拨到自动执行之后不该再送审");
+        });
+    }
+
+    /// 读终端：工具向界面要最后几行，界面送回来的原样交给模型，同时往对话里
+    /// 落一张卡片 —— 读走了什么，用户得看得见。
+    #[test]
+    fn read_terminal_asks_the_panel_and_leaves_a_card() {
+        winssh_db::runtime().block_on(async {
+            let (web, _) = target("web-01").await;
+            let session = CurrentSession::default();
+            session.set(Some(web));
+            let (tx, mut rx) = mpsc::unbounded();
+            let tool = ReadTerminal { session, events: tx };
+
+            let panel = async {
+                let Some(AgentEvent::ReadTerminal(request)) = rx.next().await else {
+                    panic!("该先向界面要终端输出");
+                };
+                assert_eq!(request.lines, DEFAULT_TERMINAL_LINES, "没给行数就按默认读");
+                _ = request
+                    .respond
+                    .send(Some("nginx: [emerg] bind() to 0.0.0.0:80 failed".into()));
+            };
+            let mut context = ToolContext::new();
+            let (payload, ()) = futures::join!(
+                tool.call(&mut context, ReadTerminalArgs { lines: None }),
+                panel
+            );
+            let payload = payload.unwrap();
+            assert_eq!(payload["output"], "nginx: [emerg] bind() to 0.0.0.0:80 failed");
+            assert_eq!(payload["session"], "web-01");
+
+            let Some(AgentEvent::Command {
+                session, output, ok, ..
+            }) = rx.next().await
+            else {
+                panic!("读完该落一张卡片");
+            };
+            assert_eq!(session, "web-01");
+            assert!(output.contains("bind()"));
+            assert!(ok);
+        });
+    }
+
+    /// 读不到终端（眼下没有会话在前面，或者界面说前面没有可读的）：模型在
+    /// `error` 里读到原因；没有会话时连界面都不惊动，也不落卡片。
+    #[test]
+    fn read_terminal_without_a_session_reports_why() {
+        winssh_db::runtime().block_on(async {
+            let (tx, mut rx) = mpsc::unbounded();
+            let tool = ReadTerminal {
+                session: CurrentSession::default(),
+                events: tx,
+            };
+            let payload = tool
+                .call(&mut ToolContext::new(), ReadTerminalArgs { lines: Some(20) })
+                .await
+                .unwrap();
+            assert!(payload["error"].as_str().unwrap().contains("nothing was read"));
+            assert!(rx.try_recv().is_err(), "没有会话时不该向界面要东西");
+
+            let (web, _) = target("web-01").await;
+            let session = CurrentSession::default();
+            session.set(Some(web));
+            let (tx, mut rx) = mpsc::unbounded();
+            let tool = ReadTerminal { session, events: tx };
+            let panel = async {
+                let Some(AgentEvent::ReadTerminal(request)) = rx.next().await else {
+                    panic!("该向界面要终端输出");
+                };
+                assert_eq!(request.lines, MAX_TERMINAL_LINES, "行数要封顶");
+                _ = request.respond.send(None);
+            };
+            let mut context = ToolContext::new();
+            let (payload, ()) = futures::join!(
+                tool.call(&mut context, ReadTerminalArgs { lines: Some(100_000) }),
+                panel
+            );
+            assert!(payload.unwrap()["error"].is_string());
+            assert!(rx.try_recv().is_err(), "没读到就不该落卡片");
+        });
+    }
+
+    /// 终端输出截的是尾巴：要紧的是最后那几行（报错、提示符）。
+    #[test]
+    fn terminal_output_keeps_its_tail_when_clipped() {
+        let long = format!("{}TAIL", "x".repeat(MAX_TOOL_OUTPUT));
+        let clipped = clip_tail(&long);
+        assert!(clipped.starts_with("[earlier output truncated]"));
+        assert!(clipped.ends_with("TAIL"), "最后那几行不能被切掉");
+        assert_eq!(clip_tail("short"), "short");
+    }
+
+    /// 测速：输出 token 数除以吐字的时长；量不准的（没报用量、一口气到的）不报。
+    #[test]
+    fn speed_is_tokens_over_streaming_time() {
+        assert_eq!(tokens_per_second(50, Duration::from_secs(2)), Some(25.0));
+        assert_eq!(
+            tokens_per_second(0, Duration::from_secs(2)),
+            None,
+            "供应商没报用量时不该显示 0 tokens/s"
+        );
+        assert_eq!(
+            tokens_per_second(3, Duration::from_millis(5)),
+            None,
+            "一口气到的回复除出来是几百 tokens/s 的假数"
+        );
     }
 
     /// 一张规整过的小图。
@@ -361,4 +502,39 @@
         };
         assert_eq!(content.len(), 1);
         assert!(matches!(content[0], UserContent::Image(_)));
+    }
+
+    /// 一轮的收尾报的是规范内容里的思考与正文，正文只有空白就报空串。
+    ///
+    /// 线上栽过（"读终端"那一场顺序乱了）：模型叫工具之前先吐了一个
+    /// `"\n\n"`，原先的收尾只在正文非空白时才报，界面那条空白消息于是一直
+    /// 没关，下一轮的回答接到了它尾巴上、排到了工具卡片前面。现在空白正文
+    /// 也照样收尾，只是报成空串。
+    #[test]
+    fn a_turn_reports_its_reasoning_and_text_even_when_blank() {
+        let output = turn_output(
+            &[
+                AssistantContent::reasoning("用户要看终端，"),
+                AssistantContent::text("\n\n"),
+                AssistantContent::tool_call(
+                    "call-1",
+                    "read_terminal",
+                    serde_json::json!({ "lines": 30 }),
+                ),
+            ],
+            None,
+        );
+        assert_eq!(output.reasoning, "用户要看终端，");
+        assert_eq!(output.text, "", "叫工具之前那个空白不是一句话");
+
+        let output = turn_output(
+            &[
+                AssistantContent::text("执行的是 "),
+                AssistantContent::text("ping qq.com"),
+            ],
+            Some(25.7),
+        );
+        assert_eq!(output.reasoning, "");
+        assert_eq!(output.text, "执行的是 \n\nping qq.com");
+        assert_eq!(output.tokens_per_sec, Some(25.7));
     }

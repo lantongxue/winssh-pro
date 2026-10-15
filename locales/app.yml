@@ -470,11 +470,11 @@ settings.assistant_execution:
   en: Command Execution
   zh-CN: 命令执行
 settings.assistant_auto:
-  en: Fully automatic mode
-  zh-CN: 全自动模式
+  en: Auto-run
+  zh-CN: 自动执行
 settings.assistant_auto_hint:
-  en: Run server commands without asking for approval. Off means every command needs your confirmation.
-  zh-CN: 在服务器上执行命令不再逐条确认。关闭时每条命令均需确认。
+  en: Run server commands without asking for approval. Off is Ask first — every command needs your confirmation. Also switchable from the assistant’s input box.
+  zh-CN: 在服务器上执行命令不再逐条确认。关闭即「手动确认」，每条命令均需确认。助手输入框左下角也可切换。
 settings.tab_backup:
   en: Backup & Sync
   zh-CN: 备份同步
@@ -4824,12 +4824,21 @@ assistant.stop:
 assistant.thinking:
   en: Working…
   zh-CN: 正在处理…
+assistant.reasoning_live:
+  en: Thinking…
+  zh-CN: 思考中…
+assistant.reasoning_done:
+  en: Thought process
+  zh-CN: 思考过程
+assistant.terminal_read:
+  en: Read terminal output (last %{lines} lines)
+  zh-CN: 读取终端输出（最近 %{lines} 行）
 assistant.empty_title:
   en: WinSSH Pro AI Assistant
   zh-CN: WinSSH Pro 智能助手
 assistant.empty_hint:
-  en: I can run commands on the session you currently have open to diagnose and fix issues — switch tabs and I follow you there. Every command asks for your approval before it runs; I never touch local files.
-  zh-CN: 我可以在当前打开的会话上执行命令，帮你排查和处理问题 —— 切换标签页即跟随到对应机器。每条命令执行前均需审核；不会触碰本机文件。
+  en: I can run commands on the session you currently have open to diagnose and fix issues — switch tabs and I follow you there. By default every command asks for your approval first (switch modes at the bottom left); I never touch local files.
+  zh-CN: 我可以在当前打开的会话上执行命令，帮你排查和处理问题 —— 切换标签页即跟随到对应机器。默认每条命令执行前均需你确认（左下角可切换模式）；不会触碰本机文件。
 assistant.current_session:
   en: 'Current session:'
   zh-CN: 当前会话：
@@ -4870,18 +4879,12 @@ assistant.untitled:
   en: New chat
   zh-CN: 新对话
 # 图片：贴进输入行，以及把它们规整成模型收的样子（src/assistant/image.rs）
-assistant.paste_image:
-  en: Paste image from clipboard
-  zh-CN: 粘贴剪贴板里的图片
 assistant.remove_image:
   en: Remove image
   zh-CN: 移除图片
 assistant.vision_off:
   en: This model isn’t set up for images. Turn on Image input in Settings → AI Assistant.
   zh-CN: 此模型未开启图片支持，可在「设置 → AI 助手」中开启「支持图片输入」。
-assistant.no_clipboard_image:
-  en: There’s no image on the clipboard.
-  zh-CN: 剪贴板中无图片。
 assistant.too_many_images:
   en: A message can carry at most %{count} images.
   zh-CN: 一条提问最多带 %{count} 张图片。
@@ -4903,6 +4906,22 @@ assistant.image_too_large:
 assistant.image_unreadable:
   en: 'Couldn’t read %{path}'
   zh-CN: 无法读取 %{path}
+# 命令执行模式：助手输入行左下角那颗键（src/ui/menus/execution_mode_menu.rs）
+execution_mode.manual:
+  en: Ask first
+  zh-CN: 手动确认
+execution_mode.auto:
+  en: Auto-run
+  zh-CN: 自动执行
+execution_mode.manual_hint:
+  en: Every command waits for your approval
+  zh-CN: 每条命令执行前都需要你批准
+execution_mode.auto_hint:
+  en: Commands run without asking
+  zh-CN: 命令直接执行，不再逐条确认
+execution_mode.tooltip:
+  en: Command execution mode
+  zh-CN: 命令执行模式
 
 # ── 主机信任确认弹窗 ──────────────────────────────────────────────────────────
 host_trust.title:

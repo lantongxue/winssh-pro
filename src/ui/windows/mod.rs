@@ -16,5 +16,5 @@ mod trusted_hosts;
 
 pub use credential_vault::CredentialVaultWindow;
 pub use host_form::HostFormWindow;
-pub use settings::{SettingsWindow, show_fps_monitor};
+pub use settings::{SettingsWindow, persist_assistant_config, show_fps_monitor};
 pub use trusted_hosts::TrustedHostsWindow;
