@@ -8,6 +8,8 @@ license = "MIT"
 [dependencies]
 # 助手的一条工具就是在活着的 SSH 会话上跑命令，经 `winssh-ssh` 拿句柄。
 winssh-ssh = { workspace = true }
+# 传输方向与远端路径的写法（`~`、拼接、取名）和 SFTP 面板用同一份。
+winssh-sftp = { workspace = true }
 # Agent 运行循环要经应用级 tokio runtime 跑。
 winssh-db = { workspace = true }
 # 供应商无关的模型/工具契约 + builder + 运行循环。
@@ -24,8 +26,18 @@ base64 = { workspace = true }
 # 剪贴板截图的解码/缩放/再编码。
 image = { workspace = true }
 gpui-kit = { workspace = true }
+# 本机家目录（展开 `~`）与"下载"文件夹（下载没说放哪儿时的去处）。
+dirs = { workspace = true }
+# 本机文件工具（见 `local.rs`）：列目录复用本地文件服务；读、写、搜跑在
+# blocking 线程上；搜索用 ripgrep 那套遍历、glob 与正则。
+winssh-localfs = { workspace = true }
+tokio = { workspace = true }
+ignore = { workspace = true }
+globset = { workspace = true }
+regex = { workspace = true }
 rust-i18n = { workspace = true }
 
 [dev-dependencies]
 # 工具测试要一个假 sshd（`winssh_ssh::exec::fake`），门在 `test-support` 后面。
 winssh-ssh = { workspace = true, features = ["test-support"] }
+tempfile = { workspace = true }

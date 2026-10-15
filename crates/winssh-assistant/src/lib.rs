@@ -1,8 +1,10 @@
 //! 智能助手的领域层：模型供应商配置、对话模型与 Agent 运行。
 //!
-//! 分三块：[`config`] 是"用哪家模型、看不看得了图、命令要不要先问"这份配置
+//! 分五块：[`config`] 是"用哪家模型、看不看得了图、命令要不要先问"这份配置
 //! 连同对话的领域模型（消息、会话、命令卡片）；[`image`] 把剪贴板里贴进来的
-//! 图规整成模型吃得下的样子；[`agent`] 是 rig 那一侧 —— 装配 Agent、工具与
+//! 图规整成模型吃得下的样子；[`transfer`] 是文件上传/下载的契约与本机路径
+//! 规则（搬字节的实现在服务层）；[`local`] 是操作本机（不是服务器）文件的
+//! 四样工具的实现与审核规则；[`agent`] 是 rig 那一侧 —— 装配 Agent、工具与
 //! 审核门，把一次提问跑成一场多轮运行。
 //!
 //! 界面（[`crate::ui::panels`] 的助手面板）只认这里的类型和
@@ -19,12 +21,19 @@ const _: &str = include_str!("../../../locales/app.yml");
 pub mod agent;
 pub mod config;
 pub mod image;
+pub mod local;
+pub mod transfer;
 
 pub use agent::{
-    AgentEvent, CurrentSession, RunInput, SessionTarget, TerminalRequest, Turn, TurnOutput, run,
+    AgentEvent, ApprovalRequest, CurrentSession, Proposal, RunInput, SessionTarget,
+    TerminalRequest, TransferUpdate, Turn, TurnOutput, run,
 };
 pub use config::{
     AssistantConfig, ChatMessage, ChatRole, CommandStatus, Conversation, MessageBody, PRESETS,
     ProviderProtocol, matching_preset, preset,
 };
 pub use image::ChatImage;
+pub use local::{LocalAction, LocalReview};
+pub use transfer::{
+    FileTransfer, ProgressFn, TransferCard, TransferDirection, TransferOutcome, TransferRequest,
+};

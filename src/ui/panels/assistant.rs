@@ -62,6 +62,19 @@
 //! 窗格读最后几行送回去（[`Self::read_terminal`]）。只读当前会话 —— 槽里
 //! 空着（本机 Shell、断开的会话）就答"没有"，和命令能落到哪儿是同一个答案。
 //!
+//! **本机文件操作的卡片写着"本机"。** `read_file` 这四样碰的是用户自己这台
+//! 电脑，结果和命令一样落成一张卡片（[`AgentEvent::Command`]），来处一格写的
+//! 不是会话名而是"本机"；审核卡片上写清做什么、写什么、会不会覆盖、是不是
+//! 放密钥的地方（[`render_local_proposal`]）。
+//!
+//! **文件传输是一张带进度条的卡片。** 模型调 `upload` / `download`（用户在对话里
+//! 说了本机路径才会调）时，审核卡片上写着方向和两端路径 —— 传输**每一次**都送审，
+//! 自动执行档也一样（见 [`crate::assistant::agent`]）。批准之后运行侧报来
+//! [`TransferUpdate::Started`]，这里先摆一张"传输中"的卡片（不落库），进度一路
+//! 更新到 [`AssistantPanel::transfers`] 里，[`TransferUpdate::Finished`] 来了再把
+//! 这一行换成搬完的那张、落库。搬字节的是服务层的 [`AssistantTransfer`]（SFTP），
+//! 发起运行时塞给运行侧。
+//!
 //! **审核卡片不进消息流**：它是一次要用户答复的暂态，固定画在输入行上方，
 //! 批准或拒绝之后就消失 —— 拒绝会往消息流里落一张"已拒绝"的卡片，批准的
 //! 那条则等命令跑完由执行结果卡片交代。
@@ -84,7 +97,7 @@
 //! 模型的话反过来（见上面那段）—— 两条路殊途同归：重开应用读回来的，和
 //! 当时屏上看到的是同一份。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -107,6 +120,7 @@ use gpui_kit::component::{
     menu::{DropdownMenu as _, PopupMenuItem},
     message::{Message, MessageAlignment, MessageContent, MessageFooter},
     message_scroller::{MessageScroller, MessageScrollerState},
+    progress::Progress,
     shimmer::ShimmerText,
     spinner::Spinner,
     text::TextView,
@@ -121,10 +135,12 @@ use gpui_kit::{
 
 use crate::assistant::{
     self, AgentEvent, ChatImage, ChatMessage, ChatRole, CommandStatus, Conversation,
-    CurrentSession, MessageBody, RunInput, Turn, TurnOutput, config as assistant_config,
-    image::looks_like_image,
+    CurrentSession, LocalAction, LocalReview, MessageBody, Proposal, RunInput, TransferCard,
+    TransferDirection,
+    TransferUpdate, Turn, TurnOutput, config as assistant_config, image::looks_like_image,
 };
-use crate::service::AssistantService;
+use crate::service::{AssistantService, AssistantTransfer};
+use crate::sftp::human_size;
 use crate::ui::menus::{ExecutionMode, ExecutionModeMenu};
 use crate::ui::panels::{SessionEvent, TerminalPanel};
 use crate::ui::theme::{AppIcon, palette};
@@ -188,6 +204,9 @@ const SEND_BUTTON_SIZE: Pixels = px(28.);
 /// 反过来给它一个小一号的按钮尺寸，让那 0.75 倍落在合适的地方。
 const STOP_ICON_BOX: Pixels = px(21.);
 
+/// 写本机文件的审核卡片上，正文最多摆几行。
+const WRITE_PREVIEW_LINES: usize = 12;
+
 /// 一条提问最多贴几张图。每张图每一轮都要随整段上下文重发一遍，五张已经是
 /// 七八千个 token；真要对照更多截图，分几次问比一次塞进去答得好。
 const MAX_DRAFTS: usize = 5;
@@ -206,12 +225,22 @@ const PREVIEW_EDGE: f32 = 360.;
 /// 输入行上缩略图那颗移除键的调试名。每张一个同名的，测试只摆一张（同复制键）。
 const DRAFT_REMOVE_SELECTOR: &str = "assistant-draft-remove";
 
-/// 一条等着用户答复的命令。`respond` 送回 `true`（批准）或 `false`（拒绝）；
-/// 直接丢掉它（停止运行时）等于让运行收口。
+/// 一件等着用户答复的事（一条命令或一次传输）。`respond` 送回 `true`（批准）
+/// 或 `false`（拒绝）；直接丢掉它（停止运行时）等于让运行收口。
 struct PendingApproval {
     session: SharedString,
-    command: SharedString,
+    proposal: Proposal,
     respond: Option<oneshot::Sender<bool>>,
+}
+
+/// 一次正在搬的传输：它那张卡片在第几行，搬到哪儿了。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct LiveTransfer {
+    /// 在 [`AssistantPanel::messages`] 里的下标。和 [`Streaming::index`] 一样，
+    /// 运行期间没有谁删消息，所以它是稳的。
+    index: usize,
+    transferred: u64,
+    total: u64,
 }
 
 /// 输入行上一张等着随下一条提问发出去的图。
@@ -272,6 +301,8 @@ pub struct AssistantPanel {
     /// （[`Self::end_turn`]）；开口说话之后它还在，只是已经收起来了。
     reasoning: Option<Streaming>,
     pending: Option<PendingApproval>,
+    /// 正在搬的那几次传输，按运行侧给的传输编号。
+    transfers: HashMap<u64, LiveTransfer>,
     /// "停止"按钮。置位后运行在下一个模型/工具边界收口。
     cancel: Arc<AtomicBool>,
     /// 事件泵。面板没了它跟着没，运行侧发现通道关了自己收口。
@@ -376,6 +407,7 @@ impl AssistantPanel {
             streaming: None,
             reasoning: None,
             pending: None,
+            transfers: HashMap::new(),
             cancel: Arc::new(AtomicBool::new(false)),
             _run: None,
             _composer_subscription,
@@ -678,6 +710,75 @@ impl AssistantPanel {
         cx.notify();
     }
 
+    // ─── 文件传输 ───────────────────────────────────────────────────────────
+
+    /// 运行侧报来一次传输的进展。开始：摆一张"传输中"的卡片；进度：记下；
+    /// 结束：把那一行换成搬完的卡片，交出去落库。
+    fn transfer_update(
+        &mut self,
+        update: TransferUpdate,
+        cx: &mut Context<Self>,
+    ) -> Option<MessageBody> {
+        match update {
+            TransferUpdate::Started { id, card } => {
+                let index = self.messages.len();
+                self.transfers.insert(
+                    id,
+                    LiveTransfer {
+                        index,
+                        ..Default::default()
+                    },
+                );
+                self.push_message(
+                    ChatMessage {
+                        id: Self::local_id(),
+                        role: ChatRole::Assistant,
+                        body: MessageBody::Transfer(card),
+                    },
+                    cx,
+                );
+                None
+            }
+            TransferUpdate::Progress {
+                id,
+                transferred,
+                total,
+            } => {
+                if let Some(live) = self.transfers.get_mut(&id) {
+                    live.transferred = transferred;
+                    live.total = total;
+                    cx.notify();
+                }
+                None
+            }
+            TransferUpdate::Finished { id, card } => {
+                let live = self.transfers.remove(&id)?;
+                let body = MessageBody::Transfer(card);
+                let message = self.messages.get_mut(live.index)?;
+                message.body = body.clone();
+                // 进度条换成了一行数目或者一句原因，行高变了。
+                self.remeasure(live.index, cx);
+                Some(body)
+            }
+        }
+    }
+
+    /// 运行收尾时还挂着的传输：运行侧没报结束就没了（不该发生，但运行可能
+    /// 中途崩掉）。屏上那张别一直写着"传输中"，记成失败；不落库 —— 它到底
+    /// 搬没搬完，这边说不准。
+    fn abandon_transfers(&mut self, cx: &mut Context<Self>) {
+        for (_, live) in self.transfers.drain() {
+            if let Some(MessageBody::Transfer(card)) = self
+                .messages
+                .get_mut(live.index)
+                .map(|message| &mut message.body)
+            {
+                card.status = CommandStatus::Failed;
+            }
+        }
+        cx.notify();
+    }
+
     // ─── 多会话管理 ─────────────────────────────────────────────────────────
 
     /// 新开一段空白对话。真正的建档等第一条提问 —— 一段没说过话的对话
@@ -906,9 +1007,11 @@ impl AssistantPanel {
                     text: text.to_string(),
                     images: images.clone(),
                 }),
-                // 思考只给人看（见 [`MessageBody::Reasoning`]），命令卡片见
-                // [`HISTORY_LIMIT`]。
-                MessageBody::Reasoning { .. } | MessageBody::Command { .. } => None,
+                // 思考只给人看（见 [`MessageBody::Reasoning`]），命令与传输
+                // 卡片见 [`HISTORY_LIMIT`]。
+                MessageBody::Reasoning { .. }
+                | MessageBody::Command { .. }
+                | MessageBody::Transfer { .. } => None,
             })
             .collect();
         let start = turns.len().saturating_sub(HISTORY_LIMIT);
@@ -974,6 +1077,7 @@ impl AssistantPanel {
                 images,
                 events: events_tx,
                 cancel,
+                transfer: Arc::new(AssistantTransfer),
             }));
 
             // 一轮收尾交出来的那几条，按屏上的先后落库。
@@ -1035,11 +1139,22 @@ impl AssistantPanel {
                             },
                         },
                     ),
+                    // 一次传输的进展：开始和进度只上屏，结束那张落库。
+                    AgentEvent::Transfer(update) => {
+                        let Ok(finished) = this.update(cx, |this, cx| this.transfer_update(update, cx))
+                        else {
+                            return;
+                        };
+                        if let Some(body) = finished {
+                            save(vec![body]).await;
+                        }
+                        continue;
+                    }
                     AgentEvent::Approval(request) => {
                         let alive = this.update(cx, |this, cx| {
                             this.pending = Some(PendingApproval {
                                 session: request.session,
-                                command: request.command.into(),
+                                proposal: request.proposal,
                                 respond: Some(request.respond),
                             });
                             cx.notify();
@@ -1099,6 +1214,7 @@ impl AssistantPanel {
             _ = this.update(cx, |this, cx| {
                 this.running = false;
                 this.pending = None;
+                this.abandon_transfers(cx);
                 if let Some(reason) = failure {
                     this.push_message(
                         ChatMessage {
@@ -1127,7 +1243,7 @@ impl AssistantPanel {
     }
 
     /// 审核：批准（`true`）或拒绝（`false`）。拒绝往消息流里落一张卡片 ——
-    /// 批准的那条等命令跑完由执行结果卡片交代，这里不重复记。
+    /// 批准的那条等命令跑完（传输搬完）由结果卡片交代，这里不重复记。
     fn decide(&mut self, approve: bool, cx: &mut Context<Self>) {
         let Some(mut pending) = self.pending.take() else {
             return;
@@ -1136,11 +1252,25 @@ impl AssistantPanel {
             _ = respond.send(approve);
         }
         if !approve {
-            let body = MessageBody::Command {
-                command: pending.command,
-                session: pending.session,
-                output: SharedString::default(),
-                status: CommandStatus::Denied,
+            let body = match pending.proposal {
+                Proposal::Command(command) => MessageBody::Command {
+                    command: command.into(),
+                    session: pending.session,
+                    output: SharedString::default(),
+                    status: CommandStatus::Denied,
+                },
+                Proposal::Transfer(request) => MessageBody::Transfer(TransferCard::planned(
+                    pending.session,
+                    &request,
+                    CommandStatus::Denied,
+                )),
+                // 本机文件操作被拒绝也落一张命令卡片，来处写的是"本机"。
+                Proposal::Local(review) => MessageBody::Command {
+                    command: review.action.describe().into(),
+                    session: pending.session,
+                    output: SharedString::default(),
+                    status: CommandStatus::Denied,
+                },
             };
             if let Some(id) = self.active.clone() {
                 let service = self.service.clone();
@@ -1274,6 +1404,13 @@ impl AssistantPanel {
 
         let messages = Rc::new(self.messages.clone());
         let expanded = Rc::new(self.expanded.clone());
+        // 正在搬的那几张卡片按行号认，行渲染器只拿得到行号。
+        let live: Rc<HashMap<usize, LiveTransfer>> = Rc::new(
+            self.transfers
+                .values()
+                .map(|live| (live.index, *live))
+                .collect(),
+        );
         // 正在想的那一条：标题写"思考中"，别的都写"思考过程"。开口说话之后
         // 槽还在（等这一轮收尾），但已经不算在想了。
         let thinking = self
@@ -1299,7 +1436,13 @@ impl AssistantPanel {
                         })
                     },
                 };
-                render_message(message, disclosure, thinking == Some(index), cx)
+                render_message(
+                    message,
+                    disclosure,
+                    thinking == Some(index),
+                    live.get(&index),
+                    cx,
+                )
             },
         )
         .with_bottom_fade(cx.theme().background)
@@ -1345,12 +1488,73 @@ impl AssistantPanel {
             )
     }
 
-    /// 审核卡片：固定在输入行上方的一块警示区。
+    /// 审核卡片：固定在输入行上方的一块警示区。命令写原文；传输写方向、
+    /// 两端路径，要覆盖的话再加一行提醒。
     fn render_approval(
         &self,
         pending: &PendingApproval,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let session = pending.session.clone();
+        let (title, body): (SharedString, AnyElement) = match &pending.proposal {
+            Proposal::Command(command) => (
+                t!("assistant.approval_title", session => session).into(),
+                div()
+                    .w_full()
+                    .p_2()
+                    .rounded_md()
+                    .bg(palette::recessed(cx))
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_xs()
+                    .child(command.clone())
+                    .into_any_element(),
+            ),
+            Proposal::Transfer(request) => (
+                match request.direction {
+                    TransferDirection::Upload => {
+                        t!("assistant.transfer_approval_upload", session => session)
+                    }
+                    TransferDirection::Download => {
+                        t!("assistant.transfer_approval_download", session => session)
+                    }
+                }
+                .into(),
+                div()
+                    .w_full()
+                    .p_2()
+                    .rounded_md()
+                    .bg(palette::recessed(cx))
+                    .text_xs()
+                    .child(render_path_row(
+                        t!("assistant.transfer_from"),
+                        request.source(),
+                        cx,
+                    ))
+                    .child(render_path_row(
+                        t!("assistant.transfer_to"),
+                        request.destination(),
+                        cx,
+                    ))
+                    .when(request.overwrite, |this| {
+                        this.child(
+                            div()
+                                .pt_1()
+                                .text_color(palette::coral())
+                                .child(t!("assistant.transfer_overwrite")),
+                        )
+                    })
+                    .into_any_element(),
+            ),
+            Proposal::Local(review) => (
+                match review.action.writes() {
+                    true => t!("assistant.local_approval_write"),
+                    false => t!("assistant.local_approval_title"),
+                }
+                .into(),
+                render_local_proposal(review, cx).into_any_element(),
+            ),
+        };
+
         v_flex()
             .flex_shrink_0()
             .mx_3()
@@ -1368,18 +1572,9 @@ impl AssistantPanel {
                     .text_xs()
                     .text_color(palette::amber())
                     .child(Icon::new(IconName::TriangleAlert).with_size(px(14.)))
-                    .child(t!("assistant.approval_title", session => pending.session.clone())),
+                    .child(title),
             )
-            .child(
-                div()
-                    .w_full()
-                    .p_2()
-                    .rounded_md()
-                    .bg(palette::recessed(cx))
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_xs()
-                    .child(pending.command.clone()),
-            )
+            .child(body)
             .child(
                 h_flex()
                     .gap_2()
@@ -1664,11 +1859,13 @@ struct Disclosure {
 ///
 /// 模型的回复在复制键旁边写着它的输出速度（[`render_speed`]）。
 ///
-/// `thinking`：这一条是不是正在流的那段思考，只有思考那种画法用得上。
+/// `thinking`：这一条是不是正在流的那段思考，只有思考那种画法用得上；
+/// `live`：这一条是不是正在搬的传输，只有传输卡片用得上。
 fn render_message(
     message: &ChatMessage,
     disclosure: Disclosure,
     thinking: bool,
+    live: Option<&LiveTransfer>,
     cx: &App,
 ) -> AnyElement {
     match &message.body {
@@ -1724,6 +1921,7 @@ fn render_message(
             output,
             status,
         } => render_command_card(message, command, session, output, *status, disclosure, cx),
+        MessageBody::Transfer(card) => render_transfer_card(message, card, live, cx),
     }
 }
 
@@ -2034,6 +2232,208 @@ fn render_command_card(
             )
         })
         .into_any_element()
+}
+
+/// 一张传输卡片：方向、会话与状态一行，两端路径各一行，再往下是进度条
+/// （搬着的时候）、搬了多少（搬完了）或者失败原因。
+///
+/// 不开合：两端路径就是这张卡片的身份，比命令输出短得多，收起来反倒看不出
+/// 搬的是什么。
+fn render_transfer_card(
+    message: &ChatMessage,
+    card: &TransferCard,
+    live: Option<&LiveTransfer>,
+    cx: &App,
+) -> AnyElement {
+    let (tone, label): (Hsla, SharedString) = match (live, card.status) {
+        (Some(_), _) => (palette::magenta(), t!("assistant.transfer_running").into()),
+        (None, CommandStatus::Ok) => (palette::green(), t!("assistant.transfer_done").into()),
+        (None, CommandStatus::Failed) => (palette::coral(), t!("assistant.status_failed").into()),
+        (None, CommandStatus::Denied) => (palette::amber(), t!("assistant.status_denied").into()),
+    };
+    let (icon, direction): (AppIcon, SharedString) = match card.direction {
+        TransferDirection::Upload => (AppIcon::Upload, t!("assistant.transfer_upload").into()),
+        TransferDirection::Download => {
+            (AppIcon::Download, t!("assistant.transfer_download").into())
+        }
+    };
+
+    v_flex()
+        .id(SharedString::from(format!(
+            "assistant-transfer-{}",
+            message.id
+        )))
+        .w_full()
+        .min_w_0()
+        .gap_1p5()
+        .p_2p5()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(palette::surface(cx))
+        .text_xs()
+        .child(
+            h_flex()
+                .gap_1p5()
+                .items_center()
+                .child(Icon::new(icon).with_size(px(14.)).text_color(tone))
+                .child(div().flex_shrink_0().child(direction))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(card.session.clone()),
+                )
+                .child(div().flex_shrink_0().text_color(tone).child(label)),
+        )
+        .child(render_path_row(
+            t!("assistant.transfer_from"),
+            card.source.clone(),
+            cx,
+        ))
+        .child(render_path_row(
+            t!("assistant.transfer_to"),
+            card.destination.clone(),
+            cx,
+        ))
+        .map(|this| match (live, card.status) {
+            (Some(live), _) => {
+                // 目录要先走完一遍才知道总数，那之前转着等。
+                let fraction = match live.total {
+                    0 => None,
+                    total => Some((live.transferred as f32 / total as f32).min(1.)),
+                };
+                this.child(
+                    Progress::new(SharedString::from(format!(
+                        "assistant-transfer-progress-{}",
+                        message.id
+                    )))
+                    .xsmall()
+                    .w_full()
+                    .value(fraction.unwrap_or(0.) * 100.)
+                    .loading(fraction.is_none())
+                    .color(palette::magenta()),
+                )
+                .child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!(
+                            "{} / {}",
+                            human_size(live.transferred),
+                            human_size(live.total)
+                        )),
+                )
+            }
+            (None, CommandStatus::Ok) => this.child(
+                div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!(
+                        "assistant.transfer_summary",
+                        files => card.files,
+                        size => human_size(card.bytes),
+                    )),
+            ),
+            (None, CommandStatus::Failed) if !card.error.is_empty() => {
+                this.child(div().text_color(palette::coral()).child(card.error.clone()))
+            }
+            _ => this,
+        })
+        .into_any_element()
+}
+
+/// 本机文件操作的审核正文：做什么（一行等宽字），要写的话再带上正文开头；
+/// 会盖掉已有文件、碰到放密钥的地方各一行提醒。
+///
+/// 正文只摆开头 [`WRITE_PREVIEW_LINES`] 行：整篇可能有一兆，审核卡片固定在
+/// 输入行上方，摆不下也不该摆下 —— 要紧的是"往哪儿写、写的是什么东西"。
+fn render_local_proposal(review: &LocalReview, cx: &App) -> impl IntoElement {
+    let preview = match &review.action {
+        LocalAction::Write { content, .. } => {
+            let mut lines = content.lines();
+            let mut shown: String = lines
+                .by_ref()
+                .take(WRITE_PREVIEW_LINES)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if shown.chars().count() > OUTPUT_DISPLAY_CHARS {
+                shown = shown.chars().take(OUTPUT_DISPLAY_CHARS).collect();
+                shown.push('…');
+            } else if lines.next().is_some() {
+                shown.push_str("\n…");
+            }
+            Some(shown)
+        }
+        _ => None,
+    };
+
+    div()
+        .w_full()
+        .p_2()
+        .rounded_md()
+        .bg(palette::recessed(cx))
+        .text_xs()
+        .child(
+            div()
+                .font_family(cx.theme().mono_font_family.clone())
+                .child(review.action.describe()),
+        )
+        .when_some(preview, |this, preview| {
+            this.child(
+                div()
+                    .mt_1p5()
+                    .pt_1p5()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_color(cx.theme().muted_foreground)
+                    .child(preview),
+            )
+        })
+        .when(review.replaces, |this| {
+            this.child(
+                div()
+                    .pt_1()
+                    .text_color(palette::coral())
+                    .child(t!("assistant.local_replaces")),
+            )
+        })
+        .when(review.sensitive, |this| {
+            this.child(
+                div()
+                    .pt_1()
+                    .text_color(palette::coral())
+                    .child(t!("assistant.local_sensitive")),
+            )
+        })
+}
+
+/// 一行路径：左边一个小标签（从 / 到），右边是等宽的路径，长了就折行 ——
+/// 路径的尾巴（文件名）恰恰是最要紧的那一截，截掉它不如多占一行。
+fn render_path_row(
+    label: impl Into<SharedString>,
+    path: impl Into<SharedString>,
+    cx: &App,
+) -> impl IntoElement {
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .gap_1p5()
+        .items_start()
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_color(cx.theme().muted_foreground)
+                .child(label.into()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .font_family(cx.theme().mono_font_family.clone())
+                .child(path.into()),
+        )
 }
 
 #[cfg(test)]

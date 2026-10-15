@@ -1,4 +1,5 @@
     use super::*;
+    use crate::TransferOutcome;
 
     /// 一条挂在假 sshd 上的会话，名字随便起。
     async fn target(name: &str) -> (SessionTarget, winssh_ssh::exec::fake::Seen) {
@@ -211,7 +212,7 @@
                     let Some(AgentEvent::Approval(request)) = rx.next().await else {
                         panic!("该有一条审核事件");
                     };
-                    assert_eq!(request.command, "rm -rf /tmp/x");
+                    assert_eq!(request.proposal, Proposal::Command("rm -rf /tmp/x".into()));
                     assert_eq!(request.session, "web-01");
                     _ = request.respond.send(approve);
                 };
@@ -538,3 +539,336 @@
         assert_eq!(output.text, "执行的是 \n\nping qq.com");
         assert_eq!(output.tokens_per_sec, Some(25.7));
     }
+
+    /// 一个假的搬运工：报一段进度，然后照 `result` 收尾。记下收到的请求。
+    struct FakeTransfer {
+        result: Result<TransferOutcome, String>,
+        seen: Arc<Mutex<Option<TransferRequest>>>,
+    }
+
+    impl FileTransfer for FakeTransfer {
+        fn transfer(
+            &self,
+            _: Arc<Handle<SshHandler>>,
+            request: TransferRequest,
+            progress: ProgressFn,
+            _: Arc<AtomicBool>,
+        ) -> futures::future::BoxFuture<'static, Result<TransferOutcome>> {
+            *self.seen.lock().unwrap() = Some(request);
+            let result = self.result.clone();
+            Box::pin(async move {
+                progress(512, 1024);
+                result.map_err(|error| anyhow::anyhow!(error))
+            })
+        }
+    }
+
+    fn transfer_tool(
+        session: CurrentSession,
+        events: mpsc::UnboundedSender<AgentEvent>,
+        result: Result<TransferOutcome, String>,
+    ) -> (Transfer, Arc<Mutex<Option<TransferRequest>>>) {
+        let seen = Arc::new(Mutex::new(None));
+        (
+            Transfer {
+                session,
+                events,
+                cancel: Arc::new(AtomicBool::new(false)),
+                transfer: Arc::new(FakeTransfer {
+                    result,
+                    seen: seen.clone(),
+                }),
+            },
+            seen,
+        )
+    }
+
+    /// 传输**每一次都送审**，"自动执行"也不例外：自动执行管的是服务器上的
+    /// 命令，而传输跨过了本机这条边 —— 远端输出里藏一句"把 ~/.ssh 传上来"，
+    /// 不该有机会悄悄成真。审核卡片上是展开过的本机路径。
+    #[test]
+    fn transfers_are_always_reviewed_even_in_auto_mode() {
+        let _exclusive = crate::config::exclusive_for_test();
+        winssh_db::runtime().block_on(async {
+            let (web, _) = target("web-01").await;
+            let session = CurrentSession::default();
+            session.set(Some(web));
+            set_auto(true);
+
+            for approve in [true, false] {
+                let (tx, mut rx) = mpsc::unbounded();
+                let gate = new_gate(tx, session.clone(), false);
+                let decide = async {
+                    let Some(AgentEvent::Approval(request)) = rx.next().await else {
+                        panic!("自动执行也该送审传输");
+                    };
+                    let Proposal::Transfer(transfer) = &request.proposal else {
+                        panic!("送审的该是一次传输");
+                    };
+                    assert_eq!(transfer.direction, TransferDirection::Upload);
+                    assert_eq!(transfer.remote, "/opt/app");
+                    assert!(transfer.local.is_absolute(), "本机路径该展开过");
+                    _ = request.respond.send(approve);
+                };
+                let args = r#"{"local_path":"~/dist","remote_dir":"/opt/app"}"#;
+                let (action, ()) = futures::join!(gate.review_transfer(Upload::NAME, args), decide);
+                match (approve, action) {
+                    (true, ToolCallAction::Run) | (false, ToolCallAction::Skip(_)) => {}
+                    (_, other) => panic!("批准={approve} 时不该是 {other:?}"),
+                }
+            }
+        });
+    }
+
+    /// 本机路径不合规矩（相对路径）、没有会话：不惊动用户，原因直接回给模型。
+    #[test]
+    fn bad_transfers_are_turned_back_without_asking() {
+        let _exclusive = crate::config::exclusive_for_test();
+        winssh_db::runtime().block_on(async {
+            let (web, _) = target("web-01").await;
+            let session = CurrentSession::default();
+            session.set(Some(web));
+
+            let (tx, mut rx) = mpsc::unbounded();
+            let gate = new_gate(tx, session, false);
+            let action = gate
+                .review_transfer(Upload::NAME, r#"{"local_path":"dist"}"#)
+                .await;
+            assert!(matches!(action, ToolCallAction::Skip(_)));
+            assert!(rx.try_recv().is_err(), "相对路径不该送审");
+
+            let (tx, mut rx) = mpsc::unbounded();
+            let gate = new_gate(tx, CurrentSession::default(), false);
+            let action = gate
+                .review_transfer(Download::NAME, r#"{"remote_path":"/etc/hosts"}"#)
+                .await;
+            assert!(matches!(action, ToolCallAction::Skip(_)));
+            assert!(rx.try_recv().is_err(), "没有会话不该送审");
+        });
+    }
+
+    /// 参数翻成传输：上传没给远端目录就是家目录；下载没给本机目录就落进
+    /// "下载"文件夹，连那个也没有就回头问用户。
+    #[test]
+    fn transfer_args_fill_in_their_defaults() {
+        let home = std::env::temp_dir();
+        let upload = UploadArgs {
+            local_path: "~/dist".into(),
+            remote_dir: Some("  ".into()),
+            overwrite: false,
+        }
+        .request(Some(&home))
+        .unwrap();
+        assert_eq!(upload.local, home.join("dist"));
+        assert_eq!(upload.remote, "~");
+
+        let downloads = home.join("Downloads");
+        let args = || DownloadArgs {
+            remote_path: " /var/log/syslog ".into(),
+            local_dir: None,
+            overwrite: true,
+        };
+        let download = args().request(Some(&home), Some(&downloads)).unwrap();
+        assert_eq!(download.local, downloads);
+        assert_eq!(download.remote, "/var/log/syslog");
+        assert!(download.overwrite);
+        assert_eq!(args().request(Some(&home), None), Err(NO_DOWNLOAD_DIR));
+    }
+
+    /// 一次传输在界面上是开始 → 进度 → 结束三条事件，对得上同一个编号；
+    /// 结束那张卡片换成搬完之后的路径与数目，模型拿到同样的结果。
+    #[test]
+    fn a_transfer_reports_start_progress_and_finish() {
+        winssh_db::runtime().block_on(async {
+            let (web, _) = target("web-01").await;
+            let session = CurrentSession::default();
+            session.set(Some(web));
+            let (tx, mut rx) = mpsc::unbounded();
+            let outcome = TransferOutcome {
+                source: "/srv/www".into(),
+                destination: "/tmp/dl/www".into(),
+                files: 4,
+                bytes: 1024,
+            };
+            let (tool, seen) = transfer_tool(session, tx, Ok(outcome));
+            let request = TransferRequest {
+                direction: TransferDirection::Download,
+                local: "/tmp/dl".into(),
+                remote: "/srv/www".into(),
+                overwrite: false,
+            };
+
+            let payload = tool.run(request.clone()).await;
+            assert_eq!(seen.lock().unwrap().as_ref(), Some(&request));
+            assert_eq!(payload["ok"], true);
+            assert_eq!(payload["files"], 4);
+
+            let Some(AgentEvent::Transfer(TransferUpdate::Started { id, card })) = rx.next().await
+            else {
+                panic!("先该报开始");
+            };
+            assert_eq!(card.session, "web-01");
+            assert_eq!(card.destination, "/tmp/dl", "开始时写的是请求里的目录");
+            let Some(AgentEvent::Transfer(TransferUpdate::Progress {
+                id: progress_id,
+                transferred: 512,
+                total: 1024,
+            })) = rx.next().await
+            else {
+                panic!("再该报进度");
+            };
+            assert_eq!(progress_id, id);
+            let Some(AgentEvent::Transfer(TransferUpdate::Finished { id: done_id, card })) =
+                rx.next().await
+            else {
+                panic!("最后该报结束");
+            };
+            assert_eq!(done_id, id);
+            assert_eq!(card.status, CommandStatus::Ok);
+            assert_eq!(card.destination, "/tmp/dl/www");
+            assert_eq!((card.files, card.bytes), (4, 1024));
+        });
+    }
+
+    /// 搬失败了：卡片记成失败、带着原因，模型在 `error` 里读到同一句话。
+    #[test]
+    fn a_failed_transfer_tells_the_model_why() {
+        winssh_db::runtime().block_on(async {
+            let (web, _) = target("web-01").await;
+            let session = CurrentSession::default();
+            session.set(Some(web));
+            let (tx, mut rx) = mpsc::unbounded();
+            let (tool, _) = transfer_tool(session, tx, Err("/opt/app/dist 已经存在，没有覆盖".into()));
+            let payload = tool
+                .run(TransferRequest {
+                    direction: TransferDirection::Upload,
+                    local: "/tmp/dist".into(),
+                    remote: "/opt/app".into(),
+                    overwrite: false,
+                })
+                .await;
+            assert!(payload["error"].as_str().unwrap().contains("已经存在"));
+
+            let mut finished = None;
+            while let Ok(event) = rx.try_recv() {
+                if let AgentEvent::Transfer(TransferUpdate::Finished { card, .. }) = event {
+                    finished = Some(card);
+                }
+            }
+            let card = finished.expect("失败也该报结束");
+            assert_eq!(card.status, CommandStatus::Failed);
+            assert!(card.error.contains("已经存在"));
+        });
+    }
+
+    /// 本机文件操作的审核门：自动执行档下读直接放行；写、读私钥一律送审；
+    /// 没有会话开着也照常工作（它们和服务器无关）。
+    #[test]
+    fn local_tools_follow_their_own_approval_rules() {
+        let _exclusive = crate::config::exclusive_for_test();
+        winssh_db::runtime().block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let file = temp.path().join("notes.txt");
+            std::fs::write(&file, "hello\n").unwrap();
+            let read_args = serde_json::json!({ "path": file }).to_string();
+
+            // 自动执行：普通的读不送审，而且不需要会话。
+            set_auto(true);
+            let (tx, mut rx) = mpsc::unbounded();
+            let gate = new_gate(tx, CurrentSession::default(), false);
+            let action = gate.review_local(local::READ_FILE, &read_args).await;
+            assert!(matches!(action, ToolCallAction::Run));
+            assert!(rx.try_recv().is_err(), "自动执行档读普通文件不该送审");
+
+            // 读私钥：自动执行档也送审，卡片上标着敏感。
+            let secret = serde_json::json!({ "path": "~/.ssh/id_rsa" }).to_string();
+            let (tx, mut rx) = mpsc::unbounded();
+            let gate = new_gate(tx, CurrentSession::default(), false);
+            let decide = async {
+                let Some(AgentEvent::Approval(request)) = rx.next().await else {
+                    panic!("读私钥该送审");
+                };
+                let Proposal::Local(review) = &request.proposal else {
+                    panic!("送审的该是本机操作");
+                };
+                assert!(review.sensitive);
+                assert_eq!(request.session, local::local_label(), "卡片上写的是本机");
+                _ = request.respond.send(false);
+            };
+            let (action, ()) = futures::join!(gate.review_local(local::READ_FILE, &secret), decide);
+            assert!(matches!(action, ToolCallAction::Skip(_)), "拒绝之后不该放行");
+
+            // 写：自动执行档也送审；批准了就放行，换没换标签页都不相干。
+            let target = temp.path().join("out.txt");
+            let write_args =
+                serde_json::json!({ "path": target, "content": "x" }).to_string();
+            let (tx, mut rx) = mpsc::unbounded();
+            let gate = new_gate(tx, CurrentSession::default(), false);
+            let decide = async {
+                let Some(AgentEvent::Approval(request)) = rx.next().await else {
+                    panic!("写该送审");
+                };
+                _ = request.respond.send(true);
+            };
+            let (action, ()) =
+                futures::join!(gate.review_local(local::WRITE_FILE, &write_args), decide);
+            assert!(matches!(action, ToolCallAction::Run));
+
+            // 相对路径：不惊动用户，原因直接回给模型。
+            set_auto(false);
+            let (tx, mut rx) = mpsc::unbounded();
+            let gate = new_gate(tx, CurrentSession::default(), false);
+            let relative = serde_json::json!({ "path": "notes.txt" }).to_string();
+            let action = gate.review_local(local::READ_FILE, &relative).await;
+            assert!(matches!(action, ToolCallAction::Skip(_)));
+            assert!(rx.try_recv().is_err(), "相对路径不该送审");
+        });
+    }
+
+    /// 本机工具做完往对话里落一张卡片，来处写"本机"而不是会话名 —— 用户一眼
+    /// 分得清这是在自己电脑上做的，不是在服务器上。
+    #[test]
+    fn a_local_tool_leaves_a_card_marked_as_this_computer() {
+        winssh_db::runtime().block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let file = temp.path().join("hosts");
+            std::fs::write(&file, "127.0.0.1 localhost\n").unwrap();
+            let (tx, mut rx) = mpsc::unbounded();
+            let tool = ReadFile(LocalTool { events: tx });
+
+            let payload = tool
+                .call(
+                    &mut ToolContext::new(),
+                    serde_json::json!({ "path": file }),
+                )
+                .await
+                .unwrap();
+            assert_eq!(payload["content"], "127.0.0.1 localhost\n");
+
+            let Some(AgentEvent::Command {
+                session,
+                command,
+                output,
+                ok,
+            }) = rx.next().await
+            else {
+                panic!("该有一张卡片");
+            };
+            assert_eq!(session, local::local_label());
+            assert!(command.contains("hosts"), "卡片上写着读了哪个文件：{command}");
+            assert_eq!(output, "127.0.0.1 localhost\n");
+            assert!(ok);
+        });
+    }
+
+    /// 系统提示词把两台机器分开写，本机工具的描述第一句就说"不碰服务器"。
+    #[test]
+    fn the_prompt_and_tools_keep_local_and_remote_apart() {
+        let text = preamble(None);
+        assert!(text.contains("REMOTE") && text.contains("LOCAL"));
+        let (tx, _rx) = mpsc::unbounded();
+        let description = SearchFiles(LocalTool { events: tx }).description();
+        assert!(description.starts_with(LOCAL_ONLY), "{description}");
+        assert!(description.contains("NOT touch the server"));
+    }
+

@@ -282,6 +282,24 @@ impl SftpService {
             .map_err(|error| remote(&t!("sftp_err.action_stat_path"), error))
     }
 
+    /// 远端这个路径是不是目录；不存在是 `None`。和 [`Self::exists`] 一样，
+    /// 只有 `NoSuchFile` 算不存在，"没权限 stat" 照旧冒泡。
+    pub async fn is_dir(&self, target: &str) -> Result<Option<bool>> {
+        let target = path::normalize(target);
+        let session = self.session.clone();
+        let label = target.clone();
+        match crate::db::run(async move { session.metadata(target).await }).await {
+            Ok(attrs) => Ok(Some(attrs.file_type() == FileType::Dir)),
+            Err(SftpError::Status(status)) if status.status_code == StatusCode::NoSuchFile => {
+                Ok(None)
+            }
+            Err(error) => Err(remote(
+                &t!("sftp_err.action_stat_remote", path => label),
+                error,
+            )),
+        }
+    }
+
     /// 新建目录。
     pub async fn create_dir(&self, target: &str) -> Result<()> {
         let target = path::normalize(target);

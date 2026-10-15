@@ -1,9 +1,11 @@
 //! `ai_messages` 表：智能助手对话里的一条消息。
 //!
-//! `kind` 分三档：`text` 是一段话、`reasoning` 是模型开口前的那段思考
+//! `kind` 分四档：`text` 是一段话、`reasoning` 是模型开口前的那段思考
 //! （两者都只有 `content` 有值），`command` 是一次服务器命令的执行卡片
-//! （`command` / `output` / `session` / `status` 有值）。
-//! 两档怎么翻成领域模型见 [`crate::service::assistant_service`]。
+//! （`command` / `output` / `session` / `status` 有值），`transfer` 是一次文件
+//! 传输的卡片（方向在 `command`、失败原因在 `output`、两端路径与字节数是
+//! `content` 里的一串 JSON）。
+//! 各档怎么翻成领域模型见 `winssh_service::assistant_service`。
 
 use sea_orm::entity::prelude::*;
 
@@ -16,7 +18,7 @@ pub struct Model {
     /// `user` / `assistant`，认不出的按 `assistant` 读回。
     #[sea_orm(default_value = "assistant")]
     pub role: String,
-    /// `text` / `reasoning` / `command`。
+    /// `text` / `reasoning` / `command` / `transfer`。
     #[sea_orm(default_value = "text")]
     pub kind: String,
     #[sea_orm(default_value = "")]

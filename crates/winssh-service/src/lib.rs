@@ -43,6 +43,7 @@ rust_i18n::i18n!("../../locales", fallback = "en");
 const _: &str = include_str!("../../../locales/app.yml");
 
 pub mod assistant_service;
+pub mod assistant_transfer;
 pub mod backup_service;
 pub mod clash_subscription_service;
 pub mod command_history_service;
@@ -64,6 +65,7 @@ pub mod trusted_host_service;
 pub mod webdav_service;
 
 pub use assistant_service::AssistantService;
+pub use assistant_transfer::AssistantTransfer;
 pub use backup_service::BackupService;
 pub use clash_subscription_service::ClashSubscriptionService;
 pub use command_history_service::CommandHistoryService;

@@ -4833,12 +4833,108 @@ assistant.reasoning_done:
 assistant.terminal_read:
   en: Read terminal output (last %{lines} lines)
   zh-CN: 读取终端输出（最近 %{lines} 行）
+assistant.transfer_local_missing:
+  en: "%{path} does not exist on this computer"
+  zh-CN: 本机找不到 %{path}
+assistant.transfer_remote_missing:
+  en: "%{path} does not exist on the server"
+  zh-CN: 远端找不到 %{path}
+assistant.transfer_not_a_dir:
+  en: "%{path} is not a folder"
+  zh-CN: "%{path} 不是文件夹"
+assistant.transfer_no_name:
+  en: "%{path} has no name to copy under (a root directory cannot be transferred)"
+  zh-CN: "%{path} 没有名字可用（根目录不能整个传输）"
+assistant.transfer_exists:
+  en: "%{path} already exists and was not overwritten"
+  zh-CN: "%{path} 已经存在，没有覆盖"
+assistant.transfer_aborted:
+  en: The transfer task ended unexpectedly
+  zh-CN: 传输任务意外中止
+assistant.transfer_upload:
+  en: Upload
+  zh-CN: 上传
+assistant.transfer_download:
+  en: Download
+  zh-CN: 下载
+assistant.transfer_done:
+  en: Done
+  zh-CN: 已完成
+assistant.transfer_running:
+  en: Transferring…
+  zh-CN: 传输中…
+assistant.transfer_summary:
+  en: "%{files} file(s) · %{size}"
+  zh-CN: "%{files} 个文件 · %{size}"
+assistant.transfer_approval_upload:
+  en: 'Upload to %{session}?'
+  zh-CN: 上传到 %{session}？
+assistant.transfer_approval_download:
+  en: 'Download from %{session}?'
+  zh-CN: 从 %{session} 下载？
+assistant.transfer_overwrite:
+  en: Existing files at the destination will be overwritten
+  zh-CN: 目标处已有的同名文件将被覆盖
+assistant.transfer_from:
+  en: From
+  zh-CN: 从
+assistant.transfer_to:
+  en: To
+  zh-CN: 到
+assistant.local_machine:
+  en: This computer
+  zh-CN: 本机
+assistant.local_read:
+  en: Read %{path}
+  zh-CN: 读取 %{path}
+assistant.local_read_from:
+  en: Read %{path} (from line %{line})
+  zh-CN: 读取 %{path}（第 %{line} 行起）
+assistant.local_write:
+  en: Write %{path} (%{size})
+  zh-CN: 写入 %{path}（%{size}）
+assistant.local_list:
+  en: List %{path}
+  zh-CN: 列出 %{path}
+assistant.local_search:
+  en: Search %{path} for %{query}
+  zh-CN: 在 %{path} 中搜索 %{query}
+assistant.local_missing:
+  en: "%{path} does not exist on this computer"
+  zh-CN: 本机找不到 %{path}
+assistant.local_is_dir:
+  en: "%{path} is a folder, not a file"
+  zh-CN: "%{path} 是文件夹，不是文件"
+assistant.local_not_dir:
+  en: "%{path} is not a folder"
+  zh-CN: "%{path} 不是文件夹"
+assistant.local_exists:
+  en: "%{path} already exists and was not overwritten"
+  zh-CN: "%{path} 已经存在，没有覆盖"
+assistant.local_binary:
+  en: "%{path} is a binary file and cannot be read as text"
+  zh-CN: "%{path} 是二进制文件，不能按文本读取"
+assistant.local_no_match:
+  en: No matches
+  zh-CN: 没有找到匹配项
+assistant.local_approval_title:
+  en: Allow this on your computer?
+  zh-CN: 允许在本机执行这项文件操作？
+assistant.local_approval_write:
+  en: Allow writing this file on your computer?
+  zh-CN: 允许在本机写入这个文件？
+assistant.local_replaces:
+  en: The existing file will be overwritten
+  zh-CN: 将覆盖已有文件
+assistant.local_sensitive:
+  en: This location holds keys or credentials
+  zh-CN: 这里存放着密钥或凭据
 assistant.empty_title:
   en: WinSSH Pro AI Assistant
   zh-CN: WinSSH Pro 智能助手
 assistant.empty_hint:
-  en: I can run commands on the session you currently have open to diagnose and fix issues — switch tabs and I follow you there. By default every command asks for your approval first (switch modes at the bottom left); I never touch local files.
-  zh-CN: 我可以在当前打开的会话上执行命令，帮你排查和处理问题 —— 切换标签页即跟随到对应机器。默认每条命令执行前均需你确认（左下角可切换模式）；不会触碰本机文件。
+  en: I can run commands on the session you currently have open to diagnose and fix issues — switch tabs and I follow you there — read, write and search files on this computer, and upload or download files between the two. By default commands and file reads ask for your approval first (switch modes at the bottom left); file writes, transfers and anything touching keys or credentials always do.
+  zh-CN: 我可以在当前打开的会话上执行命令，帮你排查和处理问题（切换标签页即跟随到对应机器）；也能读写、搜索本机上的文件，并在本机与服务器之间上传、下载。默认命令与读取本机文件前均需你确认（左下角可切换模式）；写入本机文件、传输文件，以及涉及密钥或凭据的操作一律需要确认。
 assistant.current_session:
   en: 'Current session:'
   zh-CN: 当前会话：

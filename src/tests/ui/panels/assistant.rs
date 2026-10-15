@@ -140,7 +140,7 @@
             panel.running = true;
             panel.pending = Some(PendingApproval {
                 session: "web-01".into(),
-                command: "systemctl restart nginx".into(),
+                proposal: Proposal::Command("systemctl restart nginx".into()),
                 respond: Some(respond),
             });
             cx.notify();
@@ -171,6 +171,184 @@
         );
     }
 
+    fn upload_request(overwrite: bool) -> crate::assistant::TransferRequest {
+        crate::assistant::TransferRequest {
+            direction: TransferDirection::Upload,
+            local: "/home/kali/dist".into(),
+            remote: "/opt/app".into(),
+            overwrite,
+        }
+    }
+
+    /// 传输的审核卡片也要画得通（含"将覆盖"那行），拒绝落一张 Denied 的
+    /// 传输卡片，两端路径照审核卡片上写的。
+    #[gpui_kit::test]
+    fn denying_a_transfer_records_a_transfer_card(cx: &mut gpui_kit::TestAppContext) {
+        let (harness, cx) = dock_harness(cx, Vec::new());
+        let panel = harness.read_with(cx, |harness, _| harness.assistant.clone());
+
+        let (respond, decision) = oneshot::channel();
+        panel.update(cx, |panel, cx| {
+            panel.running = true;
+            panel.pending = Some(PendingApproval {
+                session: "web-01".into(),
+                proposal: Proposal::Transfer(upload_request(true)),
+                respond: Some(respond),
+            });
+            cx.notify();
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        panel.update(cx, |panel, cx| panel.decide(false, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        panel.read_with(cx, |panel, _| {
+            let Some(ChatMessage {
+                body: MessageBody::Transfer(card),
+                ..
+            }) = panel.messages.last()
+            else {
+                panic!("拒绝该落一张传输卡片");
+            };
+            assert_eq!(card.status, CommandStatus::Denied);
+            assert_eq!(card.source.as_ref(), "/home/kali/dist");
+            assert_eq!(card.destination.as_ref(), "/opt/app");
+        });
+        assert_eq!(decision.now_or_never().and_then(Result::ok), Some(false));
+    }
+
+    /// 一次传输在对话里只占**一行**：开始摆一张带进度条的卡片，进度只改数，
+    /// 结束把同一行换成搬完的那张、交出去落库 —— 不是再追加一张。
+    #[gpui_kit::test]
+    fn a_transfer_card_lives_in_one_row_from_start_to_finish(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (harness, cx) = dock_harness(cx, Vec::new());
+        let panel = harness.read_with(cx, |harness, _| harness.assistant.clone());
+        let planned = TransferCard::planned("web-01".into(), &upload_request(false), CommandStatus::Ok);
+
+        panel.update(cx, |panel, cx| {
+            let saved = panel.transfer_update(
+                TransferUpdate::Started {
+                    id: 7,
+                    card: planned.clone(),
+                },
+                cx,
+            );
+            assert!(saved.is_none(), "开始那张不落库");
+            // 目录还没走完，总数是 0：进度条转着等。
+            panel.transfer_update(
+                TransferUpdate::Progress {
+                    id: 7,
+                    transferred: 0,
+                    total: 0,
+                },
+                cx,
+            );
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        panel.update(cx, |panel, cx| {
+            panel.transfer_update(
+                TransferUpdate::Progress {
+                    id: 7,
+                    transferred: 512,
+                    total: 2048,
+                },
+                cx,
+            );
+            assert_eq!(panel.transfers[&7].transferred, 512);
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let done = TransferCard {
+            destination: "/opt/app/dist".into(),
+            files: 3,
+            bytes: 2048,
+            ..planned
+        };
+        panel.update(cx, |panel, cx| {
+            let saved = panel.transfer_update(
+                TransferUpdate::Finished {
+                    id: 7,
+                    card: done.clone(),
+                },
+                cx,
+            );
+            assert_eq!(saved, Some(MessageBody::Transfer(done.clone())), "结束那张该交出去落库");
+            assert_eq!(panel.messages.len(), 1, "结束是换掉那一行，不是再追加一张");
+            assert_eq!(panel.messages[0].body, MessageBody::Transfer(done));
+            assert!(panel.transfers.is_empty());
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// 运行侧没报结束就收摊了：那张卡片别一直写着"传输中"。
+    #[gpui_kit::test]
+    fn an_abandoned_transfer_is_marked_failed(cx: &mut gpui_kit::TestAppContext) {
+        let (harness, cx) = dock_harness(cx, Vec::new());
+        let panel = harness.read_with(cx, |harness, _| harness.assistant.clone());
+        panel.update(cx, |panel, cx| {
+            let card = TransferCard::planned("web-01".into(), &upload_request(false), CommandStatus::Ok);
+            panel.transfer_update(TransferUpdate::Started { id: 1, card }, cx);
+            panel.abandon_transfers(cx);
+            assert!(panel.transfers.is_empty());
+            let MessageBody::Transfer(card) = &panel.messages[0].body else {
+                panic!("该是传输卡片");
+            };
+            assert_eq!(card.status, CommandStatus::Failed);
+        });
+    }
+
+    /// 写本机文件的审核卡片画得通（带正文开头、覆盖与敏感两行提醒），拒绝
+    /// 落一张命令卡片，来处写"本机"。
+    #[gpui_kit::test]
+    fn denying_a_local_write_records_a_card_from_this_computer(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (harness, cx) = dock_harness(cx, Vec::new());
+        let panel = harness.read_with(cx, |harness, _| harness.assistant.clone());
+        let review = LocalReview {
+            action: LocalAction::Write {
+                path: "/home/kali/.ssh/config".into(),
+                content: (1..40).map(|n| format!("line {n}\n")).collect(),
+                overwrite: true,
+            },
+            sensitive: true,
+            replaces: true,
+        };
+
+        let (respond, decision) = oneshot::channel();
+        panel.update(cx, |panel, cx| {
+            panel.running = true;
+            panel.pending = Some(PendingApproval {
+                session: crate::assistant::local::local_label(),
+                proposal: Proposal::Local(review.clone()),
+                respond: Some(respond),
+            });
+            cx.notify();
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        panel.update(cx, |panel, cx| panel.decide(false, cx));
+        panel.read_with(cx, |panel, _| {
+            let Some(ChatMessage {
+                body:
+                    MessageBody::Command {
+                        status: CommandStatus::Denied,
+                        command,
+                        session,
+                        ..
+                    },
+                ..
+            }) = panel.messages.last()
+            else {
+                panic!("拒绝该落一张 Denied 卡片");
+            };
+            assert_eq!(command.as_ref(), review.action.describe());
+            assert_eq!(session, &crate::assistant::local::local_label());
+        });
+        assert_eq!(decision.now_or_never().and_then(Result::ok), Some(false));
+    }
+
     /// 标签条上换对话那颗按钮得真的画在屏幕上。
     ///
     /// 栽过一次：顺手实现了 [`Panel::tab_name`]，而 `render_tabs` 一看它有值
@@ -197,9 +375,9 @@
         fn text_of(message: &ChatMessage) -> &str {
             match &message.body {
                 MessageBody::Text { text, .. } => text.as_ref(),
-                MessageBody::Reasoning { .. } | MessageBody::Command { .. } => {
-                    panic!("这条该是文字消息")
-                }
+                MessageBody::Reasoning { .. }
+                | MessageBody::Command { .. }
+                | MessageBody::Transfer(_) => panic!("这条该是文字消息"),
             }
         }
 
@@ -564,7 +742,7 @@
 
         let shape = |body: &MessageBody| match body {
             MessageBody::Reasoning { .. } => "思考",
-            MessageBody::Command { .. } => "卡片",
+            MessageBody::Command { .. } | MessageBody::Transfer(_) => "卡片",
             MessageBody::Text { .. } => "回答",
         };
         panel.read_with(cx, |panel, _| {

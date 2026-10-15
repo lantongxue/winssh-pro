@@ -222,6 +222,14 @@ sea-orm = { version = "2.0", features = ["sqlx-sqlite", "runtime-tokio", "macros
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "fs", "process"] }
 # 跨平台的应用数据目录（Windows 是 %APPDATA%，macOS 是 ~/Library/Application Support）。
 dirs = "6"
+# 智能助手的本机 `search_files`：ripgrep 那套目录遍历（认 .gitignore、跳隐藏
+# 目录、不跟软链接）、文件名 glob 与正文正则。三个本来就在依赖树里（别的库
+# 间接带进来的），这里只是变成直接依赖。
+ignore = "0.4"
+globset = "0.4"
+regex = "1"
+# 本机文件工具的单测在临时目录里搭一棵小树。
+tempfile = "3"
 
 # 保险箱要的随机源：生成随机密码（`credential::PasswordRecipe::generate`）与
 # 生成 SSH 密钥对（`ssh::keygen`）。`rand::rng()` 是 `ThreadRng`，密码学安全 ——

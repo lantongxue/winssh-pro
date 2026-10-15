@@ -19,7 +19,7 @@ use std::sync::{LazyLock, RwLock};
 use gpui_kit::SharedString;
 use serde::{Deserialize, Serialize};
 
-use crate::ChatImage;
+use crate::{ChatImage, TransferCard};
 
 /// 模型供应商说话用的协议。国内外主流厂商基本都兼容这几种之一。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,8 +266,8 @@ impl ChatRole {
     }
 }
 
-/// 一行消息的内容：一段话（可能带着几张图）、模型开口之前的一段思考，
-/// 或者一次服务器命令的执行卡片。
+/// 一行消息的内容：一段话（可能带着几张图）、模型开口之前的一段思考、
+/// 一次服务器命令的执行卡片，或者一次文件传输的卡片。
 #[derive(Clone, Debug, PartialEq)]
 pub enum MessageBody {
     Text {
@@ -292,6 +292,8 @@ pub enum MessageBody {
         output: SharedString,
         status: CommandStatus,
     },
+    /// 一次上传或下载（见 [`crate::transfer`]）。和命令卡片一样不进历史。
+    Transfer(TransferCard),
 }
 
 impl MessageBody {

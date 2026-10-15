@@ -1,4 +1,5 @@
     use super::*;
+    use crate::assistant::TransferDirection;
     use sea_orm::EntityTrait as _;
 
     /// 对话与两种消息的整条来回：建对话、塞消息、读回来一字不差、
@@ -53,6 +54,37 @@
                 service.messages(&chat.id).await.unwrap().is_empty(),
                 "外键该把消息连带删光"
             );
+        });
+    }
+
+    /// 传输卡片也要能原样存了再读回来：方向、两端路径、搬了多少、失败原因
+    /// 各有各的落处（命令那几列 + content 里那串 JSON），错一处就是重开应用
+    /// 之后卡片缺胳膊少腿。
+    #[test]
+    fn transfer_cards_round_trip() {
+        db::runtime().block_on(async {
+            let service = AssistantService::in_memory().await.unwrap();
+            let chat = service.create_conversation("传一下日志").await.unwrap();
+            let card = TransferCard {
+                direction: TransferDirection::Download,
+                session: "web-01".into(),
+                source: "/var/log/nginx/error.log".into(),
+                destination: "/home/kali/Downloads/error.log".into(),
+                status: CommandStatus::Failed,
+                files: 3,
+                bytes: 12_345,
+                error: "No space left on device".into(),
+            };
+            service
+                .append_message(
+                    &chat.id,
+                    ChatRole::Assistant,
+                    MessageBody::Transfer(card.clone()),
+                )
+                .await
+                .unwrap();
+            let read = service.messages(&chat.id).await.unwrap();
+            assert_eq!(read.last().unwrap().body, MessageBody::Transfer(card));
         });
     }
 

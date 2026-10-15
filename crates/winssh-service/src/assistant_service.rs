@@ -18,7 +18,10 @@ use rust_i18n::t;
 use sea_orm::{ActiveValue::Set, DatabaseConnection, TransactionTrait as _};
 
 use crate::{
-    assistant::{ChatImage, ChatMessage, ChatRole, CommandStatus, Conversation, MessageBody},
+    assistant::{
+        ChatImage, ChatMessage, ChatRole, CommandStatus, Conversation, MessageBody, TransferCard,
+        transfer::{direction_from_str, direction_str},
+    },
     db::{
         self,
         entities::{ai_conversation, ai_image, ai_message},
@@ -26,10 +29,28 @@ use crate::{
     repository::AssistantRepository,
 };
 
-/// 消息 `kind` 列的三档。
+/// 消息 `kind` 列的四档。
 const KIND_TEXT: &str = "text";
 const KIND_REASONING: &str = "reasoning";
 const KIND_COMMAND: &str = "command";
+const KIND_TRANSFER: &str = "transfer";
+
+/// 传输卡片在 `content` 列里的那一串 JSON。
+///
+/// 别的几样搭现成的列：方向进 `command`、会话进 `session`、状态进 `status`、
+/// 失败原因进 `output` —— 两端路径与搬了多少没有对口的列，与其为一种卡片
+/// 加四列，不如收进一串 JSON。坏了也只是这张卡片读回来缺路径。
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct TransferContent {
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    destination: String,
+    #[serde(default)]
+    files: usize,
+    #[serde(default)]
+    bytes: u64,
+}
 
 /// 标题最多留多少个字符：取自第一条提问，够认出这段对话就行。
 const TITLE_CHARS: usize = 40;
@@ -216,6 +237,19 @@ impl AssistantService {
                     model.output = Set(output.to_string());
                     model.status = Set(status.as_str().to_owned());
                 }
+                MessageBody::Transfer(card) => {
+                    model.kind = Set(KIND_TRANSFER.to_owned());
+                    model.command = Set(direction_str(card.direction).to_owned());
+                    model.session = Set(card.session.to_string());
+                    model.status = Set(card.status.as_str().to_owned());
+                    model.output = Set(card.error.to_string());
+                    model.content = Set(serde_json::to_string(&TransferContent {
+                        source: card.source.to_string(),
+                        destination: card.destination.to_string(),
+                        files: card.files,
+                        bytes: card.bytes,
+                    })?);
+                }
             }
             let txn = this.db.begin().await?;
             this.repo.insert_message(&txn, model).await?;
@@ -239,6 +273,19 @@ fn hydrate(row: ai_message::Model, images: Vec<ChatImage>) -> ChatMessage {
             output: row.output.into(),
             status: CommandStatus::from_str_or_default(&row.status),
         },
+        KIND_TRANSFER => {
+            let content: TransferContent = serde_json::from_str(&row.content).unwrap_or_default();
+            MessageBody::Transfer(TransferCard {
+                direction: direction_from_str(&row.command),
+                session: row.session.into(),
+                source: content.source.into(),
+                destination: content.destination.into(),
+                status: CommandStatus::from_str_or_default(&row.status),
+                files: content.files,
+                bytes: content.bytes,
+                error: row.output.into(),
+            })
+        }
         KIND_REASONING => MessageBody::Reasoning {
             text: row.content.into(),
         },
