@@ -1,6 +1,6 @@
 //! 智能助手的模型供应商配置。
 //!
-//! 一份配置四样东西：协议（openai / anthropic）、Base URL、API Key、模型名，
+//! 一份配置四样东西：协议（openai / responses / anthropic）、Base URL、API Key、模型名，
 //! 外加两位开关：模型能不能看图（[`AssistantConfig::vision`]，开着时输入行才收
 //! 剪贴板里的图），以及命令执行模式 —— "自动执行"时助手在服务器上执行命令
 //! 不再逐条送审（见 [`crate::agent`] 的审核门）。
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ChatImage;
 
-/// 模型供应商说话用的协议。国内外主流厂商基本都兼容这两种之一。
+/// 模型供应商说话用的协议。国内外主流厂商基本都兼容这几种之一。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderProtocol {
@@ -29,17 +29,22 @@ pub enum ProviderProtocol {
     /// DeepSeek、Zhipu、千问的兼容端点都讲这一种。
     #[default]
     OpenAi,
+    /// OpenAI Responses 协议（`/responses`）。OpenAI 自家主推的新接口，
+    /// 兼容端点里讲它的还是少数，所以不是缺省档。
+    #[serde(rename = "responses")]
+    OpenAiResponses,
     /// Anthropic Messages 协议（`/v1/messages`）。
     Anthropic,
 }
 
 impl ProviderProtocol {
-    pub const ALL: [Self; 2] = [Self::OpenAi, Self::Anthropic];
+    pub const ALL: [Self; 3] = [Self::OpenAi, Self::OpenAiResponses, Self::Anthropic];
 
-    /// 落库与下拉用的 ascii 词。
+    /// 落库与下拉用的 ascii 词。和 serde 的那个词保持一致。
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::OpenAi => "openai",
+            Self::OpenAiResponses => "responses",
             Self::Anthropic => "anthropic",
         }
     }
@@ -47,15 +52,18 @@ impl ProviderProtocol {
     /// 认不出的按缺省档（openai）读回：兼容端点里它是多数派。
     pub fn from_str_or_default(value: &str) -> Self {
         match value {
+            "responses" => Self::OpenAiResponses,
             "anthropic" => Self::Anthropic,
             _ => Self::OpenAi,
         }
     }
 
-    /// 界面上的展示名。协议名是专有名词，不进 i18n。
+    /// 界面上的展示名。协议名是专有名词，不进 i18n。两档 OpenAI 按接口名
+    /// 区分 —— 同一个 Base URL 下两种都可能讲，光写"OpenAI"分不出来。
     pub fn label(&self) -> &'static str {
         match self {
-            Self::OpenAi => "OpenAI",
+            Self::OpenAi => "OpenAI Chat Completions",
+            Self::OpenAiResponses => "OpenAI Responses",
             Self::Anthropic => "Anthropic",
         }
     }

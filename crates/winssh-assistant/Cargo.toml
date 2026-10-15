@@ -25,3 +25,7 @@ base64 = { workspace = true }
 image = { workspace = true }
 gpui-kit = { workspace = true }
 rust-i18n = { workspace = true }
+
+[dev-dependencies]
+# 工具测试要一个假 sshd（`winssh_ssh::exec::fake`），门在 `test-support` 后面。
+winssh-ssh = { workspace = true, features = ["test-support"] }

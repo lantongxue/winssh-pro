@@ -60,3 +60,29 @@
         config.model = "gpt-4o".into();
         assert!(config.ready());
     }
+
+    /// 落库走 serde、设置页下拉走 `as_str`/`from_str_or_default`，两条路上的
+    /// 词必须是同一个 —— 对不上的话下拉里选了 Responses，重启后读回来却是
+    /// 缺省的 Chat Completions。
+    #[test]
+    fn protocol_word_is_the_same_on_both_paths() {
+        for protocol in ProviderProtocol::ALL {
+            let json = serde_json::to_string(&protocol).unwrap();
+            assert_eq!(json, format!("\"{}\"", protocol.as_str()));
+            assert_eq!(ProviderProtocol::from_str_or_default(protocol.as_str()), protocol);
+        }
+    }
+
+    /// 选了 Responses 协议的配置存进去再读回来，还是 Responses。
+    #[test]
+    fn responses_protocol_round_trips() {
+        let config = AssistantConfig {
+            protocol: ProviderProtocol::OpenAiResponses,
+            base_url: "https://api.openai.com/v1".into(),
+            api_key: "sk-xxx".into(),
+            model: "gpt-5".into(),
+            ..Default::default()
+        };
+        assert!(encode(&config).contains(r#""protocol":"responses""#));
+        assert_eq!(decode(&encode(&config)), config);
+    }

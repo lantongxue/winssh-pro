@@ -375,6 +375,19 @@ pub async fn run(input: RunInput) -> Result<()> {
                 .with_context(|| t!("assistant.client_failed").to_string())?;
             drive(client.completion_model(config.model.trim()), input).await
         }
+        ProviderProtocol::OpenAiResponses => {
+            // rig 的 `openai::Client` 缺省就是 Responses API（`/responses`）；
+            // 系统提示词走顶层的 `instructions`，每轮 `RequestPatch` 换掉的
+            // preamble 也落在那儿。
+            let mut builder = openai::Client::builder().api_key(config.api_key.as_str());
+            if !config.base_url.trim().is_empty() {
+                builder = builder.base_url(config.base_url.trim());
+            }
+            let client = builder
+                .build()
+                .with_context(|| t!("assistant.client_failed").to_string())?;
+            drive(client.completion_model(config.model.trim()), input).await
+        }
         ProviderProtocol::Anthropic => {
             let mut builder = anthropic::Client::builder().api_key(config.api_key.as_str());
             if !config.base_url.trim().is_empty() {
