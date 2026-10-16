@@ -186,6 +186,34 @@ pub struct DraggedRemoteEntries {
     pub entries: Rc<Vec<FileEntry>>,
 }
 
+impl DraggedRemoteEntries {
+    /// 拖进终端时拼成的那串 shell 参数：跳过 `..`，按选中顺序空格隔开，
+    /// 含空白或 shell 元字符的路径用单引号包起来（单引号本身拆成 `'\''`）。
+    pub fn shell_paths(&self) -> Option<String> {
+        let mut out = String::new();
+        for entry in self.entries.iter().filter(|entry| !entry.is_parent()) {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(&shell_quote_path(entry.path.as_str()));
+        }
+        (!out.is_empty()).then_some(out)
+    }
+}
+
+/// 给远端路径做 POSIX shell 转义：只含常规路径字符时原样返回，
+/// 含空格、引号、括号、`$` 等字符时用单引号包裹。
+fn shell_quote_path(path: &str) -> String {
+    if !path.is_empty()
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-' | b'+'))
+    {
+        return path.to_owned();
+    }
+    format!("'{}'", path.replace('\'', r"'\''"))
+}
+
 /// 远端条目拖拽时的半透明浮动预览。
 struct RemoteDragPreview {
     entries: Rc<Vec<FileEntry>>,

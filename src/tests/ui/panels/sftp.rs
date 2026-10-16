@@ -307,3 +307,37 @@
             t!("sftp.names_and_more", head => format!("a{sep}b"), count => 3)
         );
     }
+
+    #[test]
+    fn shell_quote_path_leaves_plain_paths_alone_and_quotes_metacharacters() {
+        assert_eq!(shell_quote_path("/var/log/syslog"), "/var/log/syslog");
+        assert_eq!(
+            shell_quote_path("/opt/app_v1.2-rc+build/run.sh"),
+            "/opt/app_v1.2-rc+build/run.sh"
+        );
+        assert_eq!(shell_quote_path("/root/my file.txt"), "'/root/my file.txt'");
+        assert_eq!(shell_quote_path("/tmp/a(1)$b.log"), "'/tmp/a(1)$b.log'");
+        assert_eq!(shell_quote_path("/tmp/it's here"), r"'/tmp/it'\''s here'");
+        assert_eq!(shell_quote_path("/data/中文.txt"), "'/data/中文.txt'");
+    }
+
+    #[test]
+    fn dragged_remote_entries_joins_escaped_paths_with_spaces_and_skips_parent() {
+        let dragged = DraggedRemoteEntries {
+            entries: Rc::new(vec![
+                parent_row(),
+                entry("plain.txt"),
+                entry("with space.log"),
+                entry("it's.conf"),
+            ]),
+        };
+        assert_eq!(
+            dragged.shell_paths().as_deref(),
+            Some(r"/tmp/plain.txt '/tmp/with space.log' '/tmp/it'\''s.conf'")
+        );
+
+        let only_parent = DraggedRemoteEntries {
+            entries: Rc::new(vec![parent_row()]),
+        };
+        assert_eq!(only_parent.shell_paths(), None);
+    }

@@ -31,8 +31,8 @@ pub use monitor::{MonitorEvent, MonitorPanel};
 pub use rdp::RdpPanel;
 pub use s3_host::DockedS3Panel;
 pub use sftp::{
-    ExtendSelectionDown, ExtendSelectionUp, OpenSelection, SelectAllEntries, SftpPanel,
-    SftpPanelEvent,
+    DraggedRemoteEntries, ExtendSelectionDown, ExtendSelectionUp, OpenSelection, SelectAllEntries,
+    SftpPanel, SftpPanelEvent,
 };
 pub use sftp_host::DockedSftpPanel;
 // `SftpEditorPanel` 与 `SavedHandler` 只在 `panels` 内部用（`sftp.rs` 直接从

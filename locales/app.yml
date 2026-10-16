@@ -3878,6 +3878,9 @@ terminal.search_close:
 terminal.session_failed:
   en: This session could not be started
   zh-CN: 此会话无法启动
+terminal.drop_to_paste_paths:
+  en: Release to paste the remote paths
+  zh-CN: 释放鼠标粘贴远端路径
 
 # ── 监控面板 ─────────────────────────────────────────────────────────────
 monitor.filter_placeholder:

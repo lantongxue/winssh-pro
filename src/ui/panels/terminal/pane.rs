@@ -26,6 +26,7 @@ use std::{
 use alacritty_terminal::selection::SelectionType;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
+    StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -55,6 +56,7 @@ use crate::{
         dialogs::{HostTrustDialog, TrustDecision, TrustDecisionHandler},
         elements::{TerminalGridElement, cell_at, point_at},
         menus::{TerminalAction, TerminalActionHandler, TerminalMenu, terminal_menu_allowed},
+        panels::DraggedRemoteEntries,
         theme::{AppIcon, ansi, palette},
     },
 };
@@ -1032,6 +1034,45 @@ impl TerminalPane {
         }
     }
 
+    /// 远端文件拖进终端时盖在网格上的那层提示遮罩。
+    ///
+    /// 与 SFTP 栏里下载/上传的遮罩同一套做法（见 `sftp.rs` 的 `local-drop-overlay`）：
+    /// 平时 `invisible` 不占布局不吃事件，只有 `DraggedRemoteEntries` 悬停进来才被
+    /// `drag_over` 翻成可见 —— 也就是说本地文件、主机的拖拽经过终端时它不会探头。
+    fn render_drop_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("terminal-remote-drop-overlay")
+            .absolute()
+            .inset_0()
+            .m_1()
+            .rounded_lg()
+            .invisible()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .bg(ansi::background(cx).opacity(0.92))
+            .border_2()
+            .border_dashed()
+            .border_color(palette::sky())
+            .shadow_lg()
+            .drag_over::<DraggedRemoteEntries>(|style, _, _, _| style.visible())
+            .on_drop(cx.listener(Self::on_drop_remote_entries))
+            .child(
+                Icon::new(AppIcon::Terminal)
+                    .with_size(px(36.))
+                    .text_color(palette::sky()),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .font_semibold()
+                    .text_color(cx.theme().foreground)
+                    .child(SharedString::from(t!("terminal.drop_to_paste_paths"))),
+            )
+    }
+
     fn on_tab(&mut self, _: &Tab, window: &mut Window, cx: &mut Context<Self>) {
         self.send_raw(b"\x09".as_slice(), window, cx);
     }
@@ -1238,6 +1279,29 @@ impl TerminalPane {
         let Some(emulator) = self.emulator.clone() else {
             return;
         };
+        emulator.update(cx, |emulator, cx| emulator.paste(&text, cx));
+    }
+
+    /// 从 SFTP 面板拖远端文件落进这个终端：把路径做 shell 转义后按空格拼好粘进来，
+    /// 不加回车，并把焦点收回到这个窗格好接着敲命令。
+    ///
+    /// 落点有两处：网格根 div 与拖起来时盖在上面的遮罩（后者接住悬停在遮罩正上方
+    /// 的释放），两边同一句话。
+    fn on_drop_remote_entries(
+        &mut self,
+        dragged: &DraggedRemoteEntries,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(text) = dragged.shell_paths() else {
+            return;
+        };
+        let Some(emulator) = self.emulator.clone() else {
+            return;
+        };
+        cx.focus_self(window);
+        self.cursor_visible = true;
+        cx.emit(TerminalPaneEvent::Changed);
         emulator.update(cx, |emulator, cx| emulator.paste(&text, cx));
     }
 
@@ -1801,6 +1865,7 @@ impl Render for TerminalPane {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Middle, cx.listener(Self::on_mouse_up))
+            .on_drop(cx.listener(Self::on_drop_remote_entries))
             .child(TerminalGridElement::new(
                 emulator,
                 focused,
@@ -1811,6 +1876,8 @@ impl Render for TerminalPane {
             // 开关一次抖一屏。一个贴右上、一个贴左上，不打架。
             .children(self.render_zmodem_strip(cx))
             .children(self.render_search_bar(cx))
+            // 拖远端文件的提示遮罩浮在最上面一格（absolute），作为最后一个可见层。
+            .child(self.render_drop_overlay(cx))
             .context_menu(self.context_menu_builder(cx))
             .into_any_element()
     }
