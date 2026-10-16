@@ -122,27 +122,17 @@ impl FileEntry {
         }
     }
 
-    /// 修改时间：七天以内说"多久前"，再远给绝对时间。
+    /// 修改时间：一律给绝对的完整时间（本地时区）。
     ///
-    /// `now` 由调用方给，是为了让这段逻辑可测（见单测），不是为了取时间方便。
-    pub fn modified_label(&self, now: SystemTime) -> String {
+    /// 早前是"七天内说多久前"，但日志类目录里滚动一屏全是"N 分钟前"，反而看不出
+    /// 两个文件的先后，所以改成永远展示 `%Y-%m-%d %H:%M`。
+    pub fn modified_label(&self) -> String {
         let Some(modified) = self.modified else {
             return t!("entry.modified_unknown").to_string();
         };
-        // 对端时钟比本地快的时候差值是负的 —— 那也是"刚刚"，不要写"-3 hours ago"。
-        let Ok(elapsed) = now.duration_since(modified) else {
-            return t!("entry.modified_just_now").to_string();
-        };
-        let delta = elapsed.as_secs() as i64;
-        match delta {
-            0..=59 => t!("entry.modified_just_now").to_string(),
-            60..=3599 => t!("entry.modified_minutes", count => delta / 60).to_string(),
-            3600..=86399 => t!("entry.modified_hours", count => delta / 3600).to_string(),
-            86400..=604799 => t!("entry.modified_days", count => delta / 86400).to_string(),
-            _ => chrono::DateTime::<chrono::Local>::from(modified)
-                .format("%Y-%m-%d %H:%M")
-                .to_string(),
-        }
+        chrono::DateTime::<chrono::Local>::from(modified)
+            .format("%Y-%m-%d %H:%M")
+            .to_string()
     }
 
     /// 扩展名（原样，大小写都在里面，比较的地方自己转小写），没有就 `None`。

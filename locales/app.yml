@@ -4602,18 +4602,6 @@ local_file.read_dir_failed:
 entry.modified_unknown:
   en: —
   zh-CN: —
-entry.modified_just_now:
-  en: just now
-  zh-CN: 刚刚
-entry.modified_minutes:
-  en: "%{count} min ago"
-  zh-CN: "%{count} 分钟前"
-entry.modified_hours:
-  en: "%{count} h ago"
-  zh-CN: "%{count} 小时前"
-entry.modified_days:
-  en: "%{count} d ago"
-  zh-CN: "%{count} 天前"
 
 # ── 数据库 ───────────────────────────────────────────────────────────────
 db.open_failed:

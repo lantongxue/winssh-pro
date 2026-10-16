@@ -31,7 +31,6 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     rc::Rc,
-    time::SystemTime,
 };
 
 use gpui_kit::component::{
@@ -602,7 +601,6 @@ impl TableDelegate for LocalTableDelegate {
         let Some(col) = self.columns.get(col_ix) else {
             return div().into_any_element();
         };
-        let now = SystemTime::now();
 
         match col.key.as_ref() {
             "name" => h_flex()
@@ -638,7 +636,7 @@ impl TableDelegate for LocalTableDelegate {
                 .text_xs()
                 .font_family(cx.theme().mono_font_family.clone())
                 .text_color(palette::idle(cx))
-                .child(entry.modified_label(now))
+                .child(entry.modified_label())
                 .into_any_element(),
             _ => div().into_any_element(),
         }
@@ -854,7 +852,6 @@ impl TableDelegate for RemoteTableDelegate {
         let Some(col) = self.columns.get(col_ix) else {
             return div().into_any_element();
         };
-        let now = SystemTime::now();
 
         match col.key.as_ref() {
             "name" => h_flex()
@@ -905,7 +902,7 @@ impl TableDelegate for RemoteTableDelegate {
                 .text_xs()
                 .font_family(cx.theme().mono_font_family.clone())
                 .text_color(palette::idle(cx))
-                .child(entry.modified_label(now))
+                .child(entry.modified_label())
                 .into_any_element(),
             "action" => {
                 let menu_handler = self.menu_handler.clone();

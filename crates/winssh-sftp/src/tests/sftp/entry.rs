@@ -61,44 +61,35 @@
     }
 
     #[test]
-    fn modified_relative_then_absolute() {
+    fn modified_always_shows_the_absolute_local_time() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         let mut file = entry("f", FileKind::File, 0, None);
 
-        // 每一档比的是语言表里对应的那一条，不写死中文 —— 测试跑在缺省的
-        // 英文档上，写死中文只会在"代码是对的"时候红。
-        file.modified = Some(now - Duration::from_secs(30));
-        assert_eq!(file.modified_label(now), t!("entry.modified_just_now"));
-        file.modified = Some(now - Duration::from_secs(5 * 60));
-        assert_eq!(
-            file.modified_label(now),
-            t!("entry.modified_minutes", count => 5)
-        );
-        file.modified = Some(now - Duration::from_secs(3 * 3600));
-        assert_eq!(
-            file.modified_label(now),
-            t!("entry.modified_hours", count => 3)
-        );
-        file.modified = Some(now - Duration::from_secs(2 * 86400));
-        assert_eq!(
-            file.modified_label(now),
-            t!("entry.modified_days", count => 2)
-        );
-        file.modified = Some(now + Duration::from_secs(3600));
-        assert_eq!(
-            file.modified_label(now),
-            t!("entry.modified_just_now"),
-            "对端时钟快了也不该写负数"
-        );
-        file.modified = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000));
-        let label = file.modified_label(now);
-        assert_eq!(
-            label.len(),
-            16,
-            "绝对时间形如 2020-09-13 12:26，实际：{label}"
-        );
+        // 修改时间一律展示 `%Y-%m-%d %H:%M`，不再区分"近 vs 远"（早前七天内是
+        // "N 分钟/小时/天前"，被反映滚动一屏看不出先后才改的）。
+        let cases = [
+            now - Duration::from_secs(30),
+            now - Duration::from_secs(5 * 60),
+            now - Duration::from_secs(3 * 3600),
+            now - Duration::from_secs(2 * 86400),
+            now + Duration::from_secs(3600), // 对端时钟比本地快时也一样给绝对时间
+        ];
+        for modified in cases {
+            file.modified = Some(modified);
+            let label = file.modified_label();
+            assert_eq!(
+                label.len(),
+                16,
+                "绝对时间形如 2020-09-13 12:26，实际：{label}"
+            );
+            let expect = chrono::DateTime::<chrono::Local>::from(modified)
+                .format("%Y-%m-%d %H:%M")
+                .to_string();
+            assert_eq!(label, expect);
+        }
+
         file.modified = None;
-        assert_eq!(file.modified_label(now), "—");
+        assert_eq!(file.modified_label(), "—");
     }
 
     #[test]
