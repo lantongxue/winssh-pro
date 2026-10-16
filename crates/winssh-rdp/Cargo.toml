@@ -3,7 +3,7 @@ name = "winssh-rdp"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 的 RDP 后端：IronRDP 会话状态机、位图/指针、键盘、剪贴板与文件复制通道"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 领域数据（`Host`）、代理路由、共享桌面底座与流量计数；落盘借本地文件工具。

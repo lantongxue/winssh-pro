@@ -3,7 +3,7 @@ name = "winssh-ssh"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 的 SSH 后端：连接/认证、通道桥、exec、端口转发、SFTP 子系统与密钥生成"
-license = "MIT"
+license = "Apache-2.0"
 
 [features]
 # 把进程内假 sshd（`exec::fake`）编进来，供上层 crate 的测试共用（服务层/助手/

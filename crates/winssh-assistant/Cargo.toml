@@ -3,7 +3,7 @@ name = "winssh-assistant"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 的智能助手后端：rig Agent 运行时、模型配置与剪贴板图片处理"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 助手的一条工具就是在活着的 SSH 会话上跑命令，经 `winssh-ssh` 拿句柄。

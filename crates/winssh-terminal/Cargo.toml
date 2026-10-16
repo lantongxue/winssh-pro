@@ -3,7 +3,7 @@ name = "winssh-terminal"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 终端内核：VT 解析/屏幕缓冲（alacritty_terminal）、Emulator、键位、搜索、shell 集成、WSL、光标/字体/配色全局"
-license = "MIT"
+license = "Apache-2.0"
 
 [features]
 # 把 Emulator 的“协议方向收件箱”（`sent_by_test` / `take_sent_by_test`）编进来，

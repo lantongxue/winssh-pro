@@ -3,7 +3,7 @@ name = "winssh-localfs"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 本地文件系统工具：下载目录、可写目录、唯一本地路径、列本地目录、用系统程序打开"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 列本地目录复用 SFTP 面板那套目录项类型（`FileEntry` / `FileKind`）。

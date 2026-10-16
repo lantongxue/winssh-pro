@@ -3,7 +3,7 @@ name = "winssh-ftp"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 的 FTP/FTPS 后端：控制/数据连接、TLS 会话复用、列表解析与证书校验"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 领域数据（`Host`、`HostKeyInfo`）、代理路由、以及 SFTP 那一层的目录项/路径规整。

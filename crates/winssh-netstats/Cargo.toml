@@ -3,7 +3,7 @@ name = "winssh-netstats"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 远程会话流量计数：上下行字节计数、链路时延采样与事件泵"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 事件泵经桌面底座的帧通道收发。

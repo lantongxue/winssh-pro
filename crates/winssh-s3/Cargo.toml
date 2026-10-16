@@ -3,7 +3,7 @@ name = "winssh-s3"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 的 S3 对象存储后端：SigV4 客户端、列桶/列对象、服务商预设"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # S3 的连接设置（`S3Settings` / `S3Addressing`）在领域层，这里再导出。

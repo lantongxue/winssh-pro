@@ -3,7 +3,7 @@ name = "winssh-service"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 服务层：界面拿数据的唯一入口，把领域模型转换与业务规则收在这里"
-license = "MIT"
+license = "Apache-2.0"
 
 [features]
 # 把各 `*Service::in_memory_blocking`（内存库服务工厂）编进来，供上层（根包）

@@ -3,7 +3,7 @@ name = "winssh-easytier"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 的 EasyTier 组网后端：进程内实例的起停、运行快照与 portal 入口登记"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 领域数据：`EasyTierSettings` 与照它拨号用的 `Host`。

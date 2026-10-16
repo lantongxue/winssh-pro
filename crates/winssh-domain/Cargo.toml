@@ -3,7 +3,7 @@ name = "winssh-domain"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 领域数据层：纯数据类型与编解码，不依赖 gpui / ui / service"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 领域类型以 serde 落库（各 `*Settings` 编解码成 JSON 存进 `hosts` 表）。

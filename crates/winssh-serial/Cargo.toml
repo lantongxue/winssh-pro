@@ -3,7 +3,7 @@ name = "winssh-serial"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 的本机串口后端：串口桥（读写线程）与连接"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 领域数据：照 `Host` 拨号（设备路径在 hostname 里）。

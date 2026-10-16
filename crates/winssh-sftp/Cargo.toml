@@ -3,7 +3,7 @@ name = "winssh-sftp"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 的 SFTP 文件面板支撑层：目录项、路径规整与传输条目/状态"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 目录项/传输条目以 gpui 的 SharedString 承载文本。

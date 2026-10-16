@@ -3,7 +3,7 @@ name = "winssh-repository"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 数据仓：纯数据访问，不掺业务规则（领域模型转换在服务层）"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 数据仓直接操作 SeaORM 实体，实体与连接都在 `winssh-db`。

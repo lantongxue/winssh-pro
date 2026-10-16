@@ -3,7 +3,7 @@ name = "winssh-vnc"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 的 VNC 后端：RFB 会话、画布、扩展剪贴板、键盘/keysym、光标致、动态分辨率与传输"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 领域数据（`Host`、`VncSettings` 经 settings 再导出）、代理路由、共享桌面底座与流量计数。

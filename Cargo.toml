@@ -3,7 +3,7 @@ name = "winssh-pro"
 version = "0.0.5"
 edition = "2024"
 description = "A native cross-platform SSH client"
-license = "MIT"
+license = "Apache-2.0"
 
 # Clash 那一档要的提权小助手（见 `src/bin/broker.rs`）：GUI 留在用户态，
 # 拨 TUN 时经 UAC 把它拉起来，由它代为启动/看住 mihomo。发版产物名用连字符

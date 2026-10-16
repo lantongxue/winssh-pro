@@ -3,7 +3,7 @@ name = "winssh-clash"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 的 Clash 订阅后端：订阅正文解读、mihomo 子进程起停与外部控制、系统代理、提权 broker 客户端"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 订阅的运行态经应用级 tokio runtime 跑（`db::run` / `db::runtime` / `db::db_dir`）。

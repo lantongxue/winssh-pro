@@ -3,7 +3,7 @@ name = "winssh-db"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 数据基建：SeaORM 连接、应用级 tokio runtime、实体定义与建表迁移"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # SeaORM 负责 SQLite 访问，sqlx 自带静态编译的 SQLite，不依赖系统安装的库。

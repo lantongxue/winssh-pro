@@ -3,7 +3,7 @@ name = "winssh-proxy"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 代理路由：拨号前定下经过谁（直连/全局/自定义/经组网/经 Clash）与 SOCKS5 握手"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 代理数据模型（HostProxy / ProxyMode / ProxyConfig / GlobalProxy 与编解码）在领域层，

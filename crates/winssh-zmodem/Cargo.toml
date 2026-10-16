@@ -3,7 +3,7 @@ name = "winssh-zmodem"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 的 ZMODEM 会话层：rz/sz 状态机、签名嗅探与下载目录配置"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 落盘只借本地文件工具那一份（下载起始目录、唯一本地路径）。

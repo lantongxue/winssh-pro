@@ -3,7 +3,7 @@ name = "winssh-webdav"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 的 WebDAV 后端：PROPFIND、认证探测、流式收发与对象存储"
-license = "MIT"
+license = "Apache-2.0"
 
 [features]
 # 把回环假 WebDAV 服务器（`fake_server`）编进来，供上层 crate 的测试共用

@@ -3,7 +3,7 @@ name = "winssh-broker-protocol"
 version = "0.1.0"
 edition = "2024"
 description = "WinSSH Pro 提权 broker 与其 GUI 侧共用的那条命名管道/AMSI 消息协议（Command/Event 编解码）"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # 协议消息的编解码。整份只依赖 serde + std —— 它是 GUI（winssh-clash）与提权
