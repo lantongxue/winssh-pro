@@ -38,7 +38,9 @@ pub const APP_ICON_PNG: &[u8] = include_bytes!("../assets/app-icon.png");
 
 /// macOS 系统状态栏（Menu Bar Extra）专用的模板图标 PNG 字节。
 /// 44×44 像素（对应 22pt @2x Retina），透明底单色掩码，配合 AppKit 模板模式
-/// 自适应系统深浅色与选中高亮态。
+/// 自适应系统深浅色与选中高亮态。只有 macOS 的托盘路径会读它
+/// （`src/tray/mod.rs`），其它平台应该走 [`APP_ICON_PNG`] 那条。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const TRAY_ICON_MACOS_PNG: &[u8] = include_bytes!("../assets/macos/tray-icon.png");
 
 /// 要不要给国旗那一类文本显式指名 [`FLAG_EMOJI_FONT_FAMILY`]。
