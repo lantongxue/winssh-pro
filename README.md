@@ -25,7 +25,7 @@
 - SSH、SFTP、Telnet、串口、VNC、RDP、FTP、WebDAV、S3 在同一个窗口里管理
 - 文件传输支持拖拽、断点续传和 Zmodem（rz/sz），SFTP 面板内嵌文本编辑器
 - 主机按分组管理；密码、私钥、令牌统一放在凭据保险箱，建主机时取用
-- 支持 ProxyJump 跳板主机和 SOCKS/HTTP 代理，可全局配置也可按主机单独指定
+- 支持 ProxyJump 跳板主机和 SOCKS5 代理，可全局配置也可按主机单独指定
 - 本地、远程、动态三类端口转发，配置跟随主机保存
 - 内嵌 EasyTier 组网，网络就绪后主机自动经虚拟网络接入
 - Clash 订阅管理
