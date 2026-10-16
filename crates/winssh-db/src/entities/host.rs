@@ -100,6 +100,10 @@ pub struct Model {
     /// 装的是什么、为什么要用户点头见 [`crate::terminal::shell_integration`]。
     #[sea_orm(default_value = false)]
     pub shell_integration: bool,
+    /// SFTP 面板的收藏夹：JSON 编码的一串字符串（远端目录的绝对路径），
+    /// 空串就是"这台主机什么都没收藏"。见 [`crate::host::Host::favorites`]。
+    #[sea_orm(default_value = "")]
+    pub favorites: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

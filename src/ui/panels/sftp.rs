@@ -50,7 +50,7 @@ use gpui_kit::{
     AnyElement, App, AppContext as _, AsyncApp, ClipboardItem, Context, Div, Entity, EventEmitter,
     ExternalPaths, FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, Modifiers,
     MouseButton, ParentElement as _, Pixels, Point, Render, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px,
 };
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -66,7 +66,7 @@ use crate::ui::{
 use crate::{
     host::Host,
     service::{
-        FileService, LocalFileService, TransferEvent, TransferHandle, TransferJob,
+        FileService, HostService, LocalFileService, TransferEvent, TransferHandle, TransferJob,
         unique_local_path,
     },
     sftp::{
@@ -140,6 +140,13 @@ pub enum SftpPanelEvent {
     /// 面板自己够不到 `DockArea`（它嵌在终端标签页里），而中心区的标签页由宿主管，
     /// 所以把建好的编辑器面板发上去，由宿主 [`crate::ui::panels::TerminalPanel`] 挂。
     OpenEditor(Entity<SftpEditorPanel>),
+    /// 面板手上的主机记录改了**非表单字段**（目前是收藏夹），并且已经落库。
+    ///
+    /// 宿主（终端标签页）拿它换掉自己持有的那份 `Host` 快照 —— 那份快照会传给
+    /// 下一个新建的 SFTP 栏，不换的话新栏拿到的还是开会话那一刻的旧收藏夹，
+    /// 关掉 SFTP 再开就像没收藏过。有终端可报的宿主（终端标签页）才接这一条，
+    /// 独立面板（FTP/S3/WebDAV 那几个 `*_host.rs`）没有自己的 `Host` 快照，忽略。
+    HostChanged(Host),
 }
 
 gpui_kit::actions!(
@@ -1071,6 +1078,12 @@ pub struct SftpPanel {
 
     local_table: Entity<TableState<LocalTableDelegate>>,
     remote_table: Entity<TableState<RemoteTableDelegate>>,
+    /// 书签按钮点开那份收藏下拉：builder 第一次跑时把实体留下来，
+    /// 删某一行时拿来 `PopupMenu::rebuild` —— 不然行虽然在内存里没了，
+    /// 屏幕上那份菜单还是建时那份，要关掉重开才会变（见
+    /// [`Self::remove_favorite`]）。菜单关掉（`dismiss`）时 gpui-kit 自己
+    /// 会把 `DropdownMenuState::menu` 置成 `None`，那份菜单实体自然释放。
+    favorites_menu: Option<Entity<PopupMenu>>,
 
     /// 中间那格路径：里面是**完整**路径（`~/logs` 也行）。不像原型那样把前导 `/`
     /// 当装饰画在输入框外面 —— 那样从别处粘一段路径进来会多出一个斜杠。
@@ -1388,6 +1401,7 @@ impl SftpPanel {
                 remote_path: String::new(),
                 local_table,
                 remote_table,
+                favorites_menu: None,
                 path_input,
                 filter,
                 resizable_state,
@@ -2602,6 +2616,240 @@ impl SftpPanel {
         self.set_copied(path, label, cx);
     }
 
+    /// ⭐ 与下拉里"加当前目录"背后的同一个开关：已收藏就移除，未收藏就追加。
+    ///
+    /// 写库先乐观地改内存（按钮立刻换色），写完再对齐：`HostService::update_favorites`
+    /// 整份重写收藏夹，失败就把内存那份回滚 —— 不让界面和库长期漂移。
+    fn toggle_current_favorite(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if path.is_empty() {
+            return;
+        }
+        // 上限挡一道：太长不卡 UI，但下拉里 60 行以上就没法读了
+        // （工具栏菜单与 SFTP 面板上限同步是产品决策，不是技术上限）。
+        const MAX_FAVORITES: usize = 60;
+
+        let mut next: Vec<SharedString> = self.host.favorites.clone();
+        let removing = next.iter().any(|f| *f == path);
+        if removing {
+            next.retain(|f| *f != path);
+        } else if next.len() < MAX_FAVORITES {
+            next.push(path.into());
+        } else {
+            // 满了别无声吞掉，告诉用户一下。
+            window.push_notification(t!("sftp.favorites_full"), cx);
+            return;
+        }
+        // 这一下是要么"加 path"要么"删 path"，回滚时就知道往哪边倒。
+        let rollback_added = !removing;
+        self.persist_favorites(next, Some((path.into(), rollback_added)), window, cx);
+    }
+
+    /// 从下拉里删掉一条收藏 —— 行的那颗垃圾桶按下去就到这。
+    ///
+    /// 不在收藏夹里、或者本来就是空串时无事发生（下拉里那颗按钮按理也点不到
+    /// 这种状态，但弹层已经收回时事件可能晚一拍才到）。
+    fn remove_favorite(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if path.is_empty() {
+            return;
+        }
+        if !self.host.favorites.iter().any(|f| *f == path) {
+            return;
+        }
+        let mut next: Vec<SharedString> = self.host.favorites.clone();
+        next.retain(|f| *f != path);
+        self.persist_favorites(next, Some((path.into(), false)), window, cx);
+
+        // 那一份还开着的菜单也得立刻收掉被删的一行：
+        // `dropdown_menu` 的 builder 只在菜单头一次打开时跑（见
+        // `gpui_kit::component::menu::DropdownMenuPopover`），之后那份 `PopupMenu`
+        // 一直用着建时那份 `menu_items` —— 仅仅发 `cx.notify` 只够重画面板自己。
+        // `PopupMenu::rebuild` 整个换掉行集，留下菜单开着，用户接下来的下一个
+        // 删除（或跳转）不必再开一次菜单。
+        //
+        // 菜单若是没开着（用户在上个弹层里删了就关），这一份实体已经被窗口丢
+        // 掉了，`upgrade` 返回 None，什么都不做。
+        if let Some(menu) = self.favorites_menu.clone() {
+            let favorites: Vec<SharedString> = self.host.favorites.clone();
+            let current = self.remote_path.clone();
+            let panel = cx.entity().downgrade();
+            menu.update(cx, |menu, cx| {
+                menu.rebuild(window, cx, |menu, window, cx| {
+                    Self::build_favorites_menu(menu, &favorites, &current, &panel, window, cx)
+                });
+            });
+        }
+    }
+
+    /// 收藏下拉的内容。三处共用：书签按钮的 builder（菜单第一次打开时）、
+    /// 删一行后的原地重建。all 传进来的 collection 是 `&[SharedString]` 而不是
+    /// 直接读 `self.host.favorites`：rebuild 闭包要的是 `'static`，拿不到 `&self`；
+    /// 而面板状态在调用者手上时该是什么快照就该是什么快照。
+    fn build_favorites_menu(
+        menu: PopupMenu,
+        favorites: &[SharedString],
+        current: &String,
+        panel: &WeakEntity<SftpPanel>,
+        _: &mut Window,
+        _: &mut Context<PopupMenu>,
+    ) -> PopupMenu {
+        // 比正常菜单宽一档：路径要是被截到看不见 `.env` 这类尾段，
+        // 这颗菜单就等于不能用。尾端那颗垃圾桶不占位 —— 菜单行的内边距余量够。
+        let mut menu = menu.min_w(px(320.)).max_w(px(560.));
+        if favorites.is_empty() {
+            menu = menu.item(PopupMenuItem::new(t!("sftp.favorites_empty")).disabled(true));
+        }
+        for path in favorites.iter() {
+            let target_for_label = path.clone();
+            let target_for_jump = path.clone();
+            let target_for_trash = path.clone();
+            let is_current = *path == current.as_str();
+            let p_jump = panel.clone();
+            let p_remove = panel.clone();
+
+            // 每一行是自定义 render：左书签 + monospace 路径（点击行=跳过去），
+            // 尾端垃圾桶（点击=从收藏夹里删，行不动 —— `stop_propagation` 拦住
+            // 行的 on_click，不然一颗删会顺带跳一次目录）。
+            let item = PopupMenuItem::element(move |_, cx| {
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(target_for_label.clone()),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!(
+                            "sftp-fav-rm-{target_for_trash}"
+                        )))
+                        .ghost()
+                        .xsmall()
+                        .flex_shrink_0()
+                        .icon(
+                            Icon::new(AppIcon::Trash)
+                                .with_size(px(11.))
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .tooltip(t!("sftp.favorite_remove_tooltip"))
+                        .on_click({
+                            let p = p_remove.clone();
+                            let target = target_for_trash.clone();
+                            move |_, window, app| {
+                                // 拦住行本身的 on_click —— 不然移除一条还顺带
+                                // 跳一次目录。`Button::on_click` 的签名跟菜单行
+                                // 一样是 `(&ClickEvent, &mut Window, &mut App)`，
+                                // 所以 window 直接是活的那一个。
+                                app.stop_propagation();
+                                if let Some(panel) = p.upgrade() {
+                                    panel.update(app, |this, cx| {
+                                        this.remove_favorite(target.as_str(), window, cx);
+                                    });
+                                }
+                            }
+                        }),
+                    )
+            })
+            .icon(
+                Icon::new(AppIcon::Bookmark)
+                    .with_size(px(11.))
+                    .text_color(palette::amber()),
+            )
+            .checked(is_current)
+            .on_click(move |_, window, app| {
+                let target = target_for_jump.clone();
+                if let Some(panel) = p_jump.upgrade() {
+                    panel.update(app, |this, cx| {
+                        this.load_remote(target.as_str(), window, cx);
+                    });
+                }
+            });
+            menu = menu.item(item);
+        }
+
+        // 尾巴固定的"加当前目录 / 取消收藏当前目录"入口：跟在 ⭐ 上做同一件事，
+        // 但点开下拉里想"把这条加进去"是很自然的反应，所以留这一行。
+        if !current.is_empty() {
+            let p_toggle = panel.clone();
+            let path = current.clone();
+            menu = menu.separator().item(
+                PopupMenuItem::new(if favorites.iter().any(|f| f.as_str() == current.as_str()) {
+                    t!("sftp.favorite_remove_current")
+                } else {
+                    t!("sftp.favorite_add_current")
+                })
+                .on_click(move |_, window, app| {
+                    let path = path.clone();
+                    if let Some(panel) = p_toggle.upgrade() {
+                        panel.update(app, |this, cx| {
+                            this.toggle_current_favorite(&path, window, cx);
+                        });
+                    }
+                }),
+            );
+        }
+        menu
+    }
+
+    /// 收藏夹变迁的统一落库路径：先乐观改内存，后台写一次 `update_favorites`，
+    /// 写失败就把内存回滚。
+    ///
+    /// `rollback_path` 说清楚"写失败时把哪条拨回哪边"：
+    /// - `Some((path, true))`：这一下是要"加 path"，写失败就得把它从内存里删掉；
+    /// - `Some((path, false))`：这一下是要"删 path"，写失败就得把它插回去；
+    /// - `None`：不拨 —— 整份 `next` 已经是目标态，失败把内存拨回旧值。
+    ///
+    /// 调用方有两个（`toggle_current_favorite` 与 `remove_favorite`），第一次容易
+    /// 写出来的错是**只改内存不写库**，所以落库不再下沉到具体方法里做。
+    fn persist_favorites(
+        &mut self,
+        next: Vec<SharedString>,
+        rollback_path: Option<(SharedString, bool)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let before = self.host.favorites.clone();
+        self.host.favorites = next.clone();
+        cx.notify();
+
+        let host_id = self.host.id.to_string();
+        let panel = cx.entity().downgrade();
+        let service = HostService::open();
+        cx.spawn_in(window, async move |_, cx| {
+            let result = service.update_favorites(&host_id, &next).await;
+            if let Some(panel) = panel.upgrade() {
+                panel.update(cx, |this, cx| match result {
+                    // 落库了才往外报：宿主拿这份 `Host` 换掉自己那份快照
+                    // （它要传给下一个新建的 SFTP 栏）。失败时也不报 ——
+                    // 让宿主同步一个没落库的值，比不同步更糟。
+                    Ok(()) => cx.emit(SftpPanelEvent::HostChanged(this.host.clone())),
+                    Err(_) => {
+                        // 写失败把内存里那份拨回去 —— 界面不该对用户撒谎。
+                        this.host.favorites = match rollback_path {
+                            Some((path, added)) => {
+                                if added {
+                                    let mut v = this.host.favorites.clone();
+                                    v.retain(|f| *f != path);
+                                    v
+                                } else {
+                                    let mut v = this.host.favorites.clone();
+                                    v.push(path);
+                                    v
+                                }
+                            }
+                            None => before,
+                        };
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+
     /// 右键菜单（以及行内悬停按钮）共用的分发：菜单只报"要干什么"，怎么做在这儿。
     ///
     /// `entries` 是菜单对着的那些条目。只对单个条目成立的动作（编辑、改名、chmod、
@@ -3005,7 +3253,7 @@ impl SftpPanel {
     /// 队列收起时不画 `v_resizable`：藏起来的那一栏仍会在上缘留一根拖不动的把手。
     /// 不画它还有个好处 —— [`ResizableState`] 只在分栏画出来时才被碰，收起再拉开，
     /// 拖出来的高度还在。
-    fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_body(&mut self, cx: &mut Context<Self>) -> AnyElement {
         // id 带上主机：两个会话分屏摆在一屏上时，各自的分栏状态互不串线
         // （同 `render_panes`）。
         //
@@ -3047,7 +3295,7 @@ impl SftpPanel {
 
     /// 双栏表格那一块。怎么撑满由调用方给：直接挂在面板上时是 `flex_1`，进
     /// `v_resizable` 时由外面那个 `resizable_panel` 定高。
-    fn render_files(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_files(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .min_w_0()
@@ -3061,7 +3309,7 @@ impl SftpPanel {
     /// 单栏时不画 `h_resizable`：藏起来的那个面板仍会在左缘留一根拖不动的把手。
     /// 不画它还有个好处 —— [`ResizableState`] 只在分栏画出来时才被碰，切回双栏
     /// 时拖出来的比例还在。
-    fn render_panes(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_panes(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if !self.dual {
             return self.render_remote_pane(cx).into_any_element();
         }
@@ -3537,7 +3785,7 @@ impl SftpPanel {
 
     /// 右半：这台主机的文件系统。拖进来本机文件就是往这一栏传。
     /// 和左栏一样撑满所在的 `resizable_panel`；单栏模式下就是它自己铺满。
-    fn render_remote_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_remote_pane(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let current_remote_path = self.remote_path.clone();
 
         v_flex()
@@ -3826,12 +4074,21 @@ impl SftpPanel {
             }))
     }
 
-    /// 面包屑那一行，右边带条目数与刚复制过的路径。
-    fn render_breadcrumb(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// 面包屑那一行：导航段、当前路径的收藏切换（⭐）、收藏夹入口（📌），
+    /// 末尾是条目计数与刚复制过的路径。
+    fn render_breadcrumb(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let segments = breadcrumbs(&self.remote_path);
         let last = segments.len().saturating_sub(1);
         let copied = self.copied.clone();
         let count = self.remote.view.len();
+        let current = if self.remote_path.is_empty() {
+            None
+        } else {
+            Some(self.remote_path.clone())
+        };
+        let is_favorite = current
+            .as_ref()
+            .is_some_and(|path| self.host.favorites.iter().any(|f| f == path));
 
         h_flex()
             .id("sftp-panel-breadcrumb")
@@ -3895,6 +4152,37 @@ impl SftpPanel {
                             )
                     })),
             )
+            // 收藏切换：一颗星。当前路径已在收藏夹里是实心亮星，否则是空星；
+            // 服务还没起来（连不上时）整颗不画 —— 不能收藏一个还到不了的地方。
+            .when_some(current, |this, path| {
+                this.child(
+                    Button::new("sftp-favorite-toggle")
+                        .ghost()
+                        .xsmall()
+                        .flex_shrink_0()
+                        .icon(if is_favorite {
+                            Icon::new(IconName::StarFill)
+                                .with_size(px(12.))
+                                .text_color(palette::amber())
+                        } else {
+                            Icon::new(IconName::Star)
+                                .with_size(px(12.))
+                                .text_color(palette::idle(cx))
+                        })
+                        .tooltip(if is_favorite {
+                            t!("sftp.favorite_remove_tooltip")
+                        } else {
+                            t!("sftp.favorite_add_tooltip")
+                        })
+                        .disabled(self.service.is_none())
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.toggle_current_favorite(&path, window, cx);
+                        })),
+                )
+            })
+            // 收藏夹入口：一颗书签。点开下拉是这台主机保存的所有目录，
+            // 点谁跳过去。空的时候这一项也留着，告诉用户收藏是有的、只是还没加东西。
+            .child(self.render_favorites_menu(cx))
             .child(
                 div()
                     .flex_shrink_0()
@@ -3915,6 +4203,53 @@ impl SftpPanel {
                         .max_w(px(180.))
                         .child(SharedString::from(t!("sftp.copied", path => path))),
                 )
+            })
+    }
+
+    /// 收藏夹入口：书签按钮 + 下拉。下拉是这台主机存的所有收藏目录，
+    /// 按加入先后列；每行是书签图标加一条路径；点一行就 `load_remote` 过去。
+    /// 顶部那行"收藏/取消收藏当前目录"是冗余但顺手的入口 —— 跟旁边那颗 ⭐
+    /// 做的是同一件事，只是点的位置不一样（用户在下拉里想找"加这一条"
+    /// 是很自然的反应）。
+    ///
+    /// 入口用书签（[`AppIcon::Bookmark`]）而不是星：⭐ 已经说的是"当前目录
+    /// 的收藏状态"（实心=已收藏 / 空心=未收藏），列表入口再用一颗星，两颗
+    /// 并排根本分不清哪颗是状态哪颗是入口。
+    fn render_favorites_menu(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let panel = cx.entity().downgrade();
+        let favorites: Vec<SharedString> = self.host.favorites.clone();
+        let current = self.remote_path.clone();
+        let service_ready = self.service.is_some();
+
+        Button::new("sftp-favorites-menu")
+            .ghost()
+            .xsmall()
+            .flex_shrink_0()
+            .icon(
+                Icon::new(AppIcon::Bookmark)
+                    .with_size(px(12.))
+                    .text_color(if favorites.is_empty() {
+                        palette::idle(cx)
+                    } else {
+                        palette::amber()
+                    }),
+            )
+            .tooltip(t!("sftp.favorites_menu_tooltip"))
+            .disabled(!service_ready)
+            .dropdown_menu(move |menu, window, cx| {
+                // 拿住这份菜单：deletion 触发的重建要它（`gpui-kit` 的
+                // `dropdown_menu` builder 只在菜单头一次开时跑，那之后
+                // `PopupMenu` 一直收在 `DropdownMenuState` 里 —— 行变了
+                // 这份菜单不知道）。
+                let panel_for_rebuild = panel.clone();
+                let menu_entity = cx.entity();
+                let _ = panel_for_rebuild.upgrade().map(|p| {
+                    p.update(cx, |this, _| {
+                        this.favorites_menu = Some(menu_entity.clone());
+                    });
+                });
+
+                Self::build_favorites_menu(menu, &favorites, &current, &panel, window, cx)
             })
     }
 

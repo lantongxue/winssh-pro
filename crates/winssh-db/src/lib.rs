@@ -65,7 +65,8 @@ const SCHEMA: [&str; 13] = [
         s3_settings TEXT NOT NULL DEFAULT '',
         ftp_settings TEXT NOT NULL DEFAULT '',
         webdav_settings TEXT NOT NULL DEFAULT '',
-        shell_integration INTEGER NOT NULL DEFAULT 0
+        shell_integration INTEGER NOT NULL DEFAULT 0,
+        favorites    TEXT    NOT NULL DEFAULT ''
     )",
     // 保险箱。和 hosts 之间没有外键：主机存的是凭据的内容本身，不是一个指向
     // 这里的 id（见 `crate::credential` 的模块文档），删一条凭据不牵动任何主机。
@@ -214,7 +215,7 @@ const SCHEMA: [&str; 13] = [
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 29] = [
+const MIGRATIONS: [&str; 30] = [
     // 连接类型（见 [`crate::host::HostKind`]）。老库补出来的是 `ssh` ——
     // 这一列出现之前存的每一台主机都是 SSH，出厂值不改变任何人的行为。
     "ALTER TABLE hosts ADD COLUMN kind TEXT NOT NULL DEFAULT 'ssh'",
@@ -293,6 +294,9 @@ const MIGRATIONS: [&str; 29] = [
     // ── 智能助手：模型每条回复的输出速度 ──
     // 可空：这一列出现之前的回复没量过，用户自己的话本来就没有这回事。
     "ALTER TABLE ai_messages ADD COLUMN tokens_per_sec REAL",
+    // ── SFTP 面板收藏夹 ──
+    // 老库补出来是空串：那一列出现之前没有任何主机有夹子里有东西，与出厂态一致。
+    "ALTER TABLE hosts ADD COLUMN favorites TEXT NOT NULL DEFAULT ''",
 ];
 
 /// 数据层专用的 tokio runtime，进程生命周期内只建一次。

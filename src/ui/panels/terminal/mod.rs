@@ -195,6 +195,7 @@ fn display_host(id: String, name: SharedString, platform: SharedString) -> Host 
         ftp: Default::default(),
         webdav: Default::default(),
         shell_integration: false,
+        favorites: Vec::new(),
     }
 }
 
@@ -342,6 +343,7 @@ impl TerminalPanel {
             ftp: Default::default(),
             webdav: Default::default(),
             shell_integration: false,
+            favorites: Vec::new(),
         };
         Self::build(host, Source::Detached, None, dock_area, window, cx)
     }
@@ -767,6 +769,16 @@ impl TerminalPanel {
                             );
                         });
                     }
+                }
+                SftpPanelEvent::HostChanged(host) => {
+                    // 换快照：收藏夹已经落库，这个标签页手上的 `Host` 是下一次
+                    // 开 SFTP 栏时面板拿到的那份 —— 不换的话，新一栏启动时读到的
+                    // 是开会话那一刻的旧收藏夹，关上再开就像没收藏过。
+                    this.host = host.clone();
+                    // 主机列表（HostExplorer）听见这一声也会回库重读一份，
+                    // 跟 shell 集成同一个广播（`save_shell_integration`）。
+                    cx.emit(SessionEvent::HostChanged);
+                    cx.notify();
                 }
             },
         )

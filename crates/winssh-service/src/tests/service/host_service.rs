@@ -624,6 +624,84 @@
         });
     }
 
+    /// 收藏夹存得住、读得回，且先后顺序就是用户加的顺序。
+    #[test]
+    fn favorites_round_trip_in_insertion_order() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            assert!(host.favorites.is_empty(), "新主机没有收藏夹");
+
+            let dirs: Vec<SharedString> = vec!["/root".into(), "/opt/api".into(), "/var/log".into()];
+            service.update_favorites(&host.id, &dirs).await.unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].favorites, dirs);
+        });
+    }
+
+    /// 主机表单不认这一列，改一次连接配置不该把收藏夹抹掉 ——
+    /// 和转发规则、shell 集成是同一条边界。
+    #[test]
+    fn editing_a_host_keeps_its_favorites() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            let dirs: Vec<SharedString> = vec!["/root".into()];
+            service.update_favorites(&host.id, &dirs).await.unwrap();
+
+            service
+                .update_host(&host.id, "分组", draft("web-01-renamed"))
+                .await
+                .unwrap();
+
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].favorites, dirs, "收藏夹被表单抹掉了");
+        });
+    }
+
+    /// 副本是同一台机器的另一份配置，收藏夹一并照抄 —— 与转发规则、shell 集成同口径。
+    #[test]
+    fn a_duplicate_copies_the_favorites() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            let dirs: Vec<SharedString> = vec!["/var/log".into()];
+            service.update_favorites(&host.id, &dirs).await.unwrap();
+
+            let copy = service.duplicate_host(&host.id).await.unwrap();
+            assert_eq!(copy.favorites, dirs);
+        });
+    }
+
+    /// 整份清空也是一次合法的写：去掉最后一颗也是保存。
+    #[test]
+    fn clearing_the_favorites_is_a_save_too() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            let dirs: Vec<SharedString> = vec!["/var/log".into()];
+            service.update_favorites(&host.id, &dirs).await.unwrap();
+
+            service.update_favorites(&host.id, &[]).await.unwrap();
+            let groups = service.load_groups().await.unwrap();
+            assert!(groups[0].hosts[0].favorites.is_empty());
+        });
+    }
+
+    #[test]
+    fn favorites_for_a_missing_host_fail() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            assert!(
+                service
+                    .update_favorites("nope", &["/root".into()])
+                    .await
+                    .is_err()
+            );
+        });
+    }
+
     #[test]
     fn forwards_for_a_missing_host_fail() {
         db::runtime().block_on(async {

@@ -153,6 +153,7 @@
             ftp: Default::default(),
             webdav: Default::default(),
             shell_integration: false,
+            favorites: Vec::new(),
         };
         let config = connector_config(&host, desktop, &host.rdp);
         ConnectionResult {

@@ -31,6 +31,7 @@
             ftp: Default::default(),
             webdav: Default::default(),
             shell_integration: false,
+            favorites: Vec::new(),
         }
     }
 

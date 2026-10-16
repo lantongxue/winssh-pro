@@ -68,6 +68,7 @@
                 ..settings
             },
             shell_integration: false,
+            favorites: Vec::new(),
         }
     }
 

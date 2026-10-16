@@ -10,6 +10,7 @@
         let paths = [
             AppIcon::Activity.path(),
             AppIcon::Archive.path(),
+            AppIcon::Bookmark.path(),
             AppIcon::Cable.path(),
             AppIcon::Columns2.path(),
             AppIcon::Rows2.path(),

@@ -313,7 +313,10 @@ impl DockedSftpPanel {
                     }
                 }
                 // 没有终端可送命令，也没有"把面板拉得多高"要改 —— 两个都吃掉。
-                SftpPanelEvent::SendCommand(_) | SftpPanelEvent::SetHeight(_) => {}
+                // 同 `ftp_host.rs`：独立面板不持 `Host` 快照，忽略。
+                SftpPanelEvent::SendCommand(_)
+                | SftpPanelEvent::SetHeight(_)
+                | SftpPanelEvent::HostChanged(_) => {}
             },
         )
         .detach();

@@ -260,7 +260,11 @@ impl DockedFtpPanel {
                         });
                     }
                 }
-                SftpPanelEvent::SendCommand(_) | SftpPanelEvent::SetHeight(_) => {}
+                // 独立面板没有自己的 `Host` 快照可更新，也没有终端可发命令：
+                // 收藏夹写在库里的那一份才是真相，下一次开面板时重读就有了。
+                SftpPanelEvent::SendCommand(_)
+                | SftpPanelEvent::SetHeight(_)
+                | SftpPanelEvent::HostChanged(_) => {}
             },
         )
         .detach();

@@ -34,6 +34,7 @@
                 ftp: Default::default(),
                 webdav: Default::default(),
                 shell_integration: false,
+                favorites: Vec::new(),
             },
             "生产环境".into(),
         )
@@ -76,6 +77,7 @@
                 ftp: Default::default(),
                 webdav: Default::default(),
                 shell_integration: false,
+                favorites: Vec::new(),
             },
             "生产环境".into(),
         )

@@ -27,6 +27,7 @@
             vnc: Default::default(),
             rdp: Default::default(),
             shell_integration: false,
+            favorites: Vec::new(),
         }
     }
 

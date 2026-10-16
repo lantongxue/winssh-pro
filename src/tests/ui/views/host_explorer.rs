@@ -27,6 +27,7 @@
             tags: tags.into_iter().map(SharedString::from).collect(),
             proxy: Default::default(),
             shell_integration: false,
+            favorites: Vec::new(),
         }
     }
 

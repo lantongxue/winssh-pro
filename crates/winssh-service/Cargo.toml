@@ -65,3 +65,8 @@ base64 = { workspace = true }
 [dev-dependencies]
 # 服务层测试里造/解图片（助手截图上传那条路）。
 image = { workspace = true }
+# 单元测试要 webdav 那个 `#[cfg(any(test, feature = "test-support"))]` 门控的
+# fake 服务（`webdav::fake_server`）。在 dev-deps 里单独点亮，不影响
+# `[dependencies]` 里那份静态链接。`sftp::fake` 等其它本来就没这个 feature 门。
+winssh-webdav = { workspace = true, features = ["test-support"] }
+winssh-ssh = { workspace = true, features = ["test-support"] }

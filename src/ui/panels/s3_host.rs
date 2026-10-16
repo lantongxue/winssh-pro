@@ -182,7 +182,10 @@ impl DockedS3Panel {
                         });
                     }
                 }
-                SftpPanelEvent::SendCommand(_) | SftpPanelEvent::SetHeight(_) => {}
+                // 同 `ftp_host.rs`：独立面板不持 `Host` 快照，忽略。
+                SftpPanelEvent::SendCommand(_)
+                | SftpPanelEvent::SetHeight(_)
+                | SftpPanelEvent::HostChanged(_) => {}
             },
         )
         .detach();

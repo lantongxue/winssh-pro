@@ -250,6 +250,24 @@ impl HostRepository {
         Ok(result.rows_affected)
     }
 
+    /// 只改一台主机的 SFTP 收藏夹那一列。
+    ///
+    /// 与上面三条同一个道理：调用方（SFTP 面板右侧那一颗 ⭐/📌）手上只有
+    /// 整份收藏夹（在内存里加/减过），整份重写进库；别的列它既不知道也不该动。
+    pub async fn update_host_favorites(
+        &self,
+        conn: &impl ConnectionTrait,
+        id: &str,
+        favorites: &str,
+    ) -> Result<u64, DbErr> {
+        let result = host::Entity::update_many()
+            .col_expr(host::Column::Favorites, Expr::value(favorites))
+            .filter(host::Column::Id.eq(id))
+            .exec(conn)
+            .await?;
+        Ok(result.rows_affected)
+    }
+
     /// 改一台主机的落位：换到哪个分组、排在第几位。
     pub async fn update_host_position(
         &self,

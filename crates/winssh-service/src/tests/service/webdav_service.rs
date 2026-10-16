@@ -125,6 +125,7 @@
                 allow_invalid_certs: false,
             },
             shell_integration: false,
+            favorites: Vec::new(),
         }
     }
 

@@ -4199,6 +4199,27 @@ sftp.drop_to_upload:
 sftp.deleting:
   en: Deleting…
   zh-CN: 正在删除…
+sftp.favorite_add_tooltip:
+  en: Add current directory to favorites
+  zh-CN: 把当前目录加进收藏夹
+sftp.favorite_remove_tooltip:
+  en: Remove current directory from favorites
+  zh-CN: 把当前目录从收藏夹里去掉
+sftp.favorites_menu_tooltip:
+  en: Show favorite directories
+  zh-CN: 打开远端目录收藏夹
+sftp.favorites_empty:
+  en: (empty) Star the current directory to pin it here
+  zh-CN: （空）点星把当前目录钉进来
+sftp.favorites_full:
+  en: Favorites list is full
+  zh-CN: 收藏夹满了
+sftp.favorite_add_current:
+  en: Star current directory
+  zh-CN: 收藏当前目录
+sftp.favorite_remove_current:
+  en: Unstar current directory
+  zh-CN: 取消收藏当前目录
 sftp.quick_jump:
   en: Common ▾
   zh-CN: 常用 ▾

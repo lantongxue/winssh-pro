@@ -366,6 +366,12 @@ pub struct Host {
     /// 上打一行字"，所以出厂是关的，打开之前要用户看过那一行并点头 ——
     /// 送的是什么见 [`crate::terminal::shell_integration::SCRIPT`]。
     pub shell_integration: bool,
+    /// SFTP 面板"收藏夹"里的那些远端目录，按用户加进去的先后排。
+    ///
+    /// 不进 [`HostDraft`]：跟转发规则、shell 集成一个口径 —— 它是连上这台主机
+    /// 之后在 SFTP 面板里点星星攒出来的，主机表单不该管、也不能顺手抹掉。每次
+    /// 都是整份重写，见 [`HostService::update_favorites`]。
+    pub favorites: Vec<SharedString>,
 }
 
 impl Host {
@@ -496,6 +502,33 @@ pub fn decode_tags(raw: &str) -> Vec<SharedString> {
         Ok(tags) => tags,
         Err(error) => {
             log::warn!("hosts.tags 解析失败，按空标签处理：{error}");
+            Vec::new()
+        }
+    }
+}
+
+/// 把 SFTP 收藏夹写成 `hosts.favorites` 那一列。
+///
+/// 空列表编成空串而不是 `[]`：老库补出来的那一列默认就是空串，两者读回来
+/// 都是"这台主机什么都没收藏"（同 [`crate::forward::encode`] 的口径）。
+pub fn encode_favorites(dirs: &[SharedString]) -> String {
+    if dirs.is_empty() {
+        return String::new();
+    }
+    serde_json::to_string(dirs).unwrap_or_default()
+}
+
+/// 从 `hosts.favorites` 那一列读回收藏夹。读不动就当没有 —— 与
+/// [`decode_tags`] 同一个理由：为一列坏掉的 JSON 让整个主机列表打不开
+/// 不成比例。
+pub fn decode_favorites(raw: &str) -> Vec<SharedString> {
+    if raw.trim().is_empty() {
+        return Vec::new();
+    }
+    match serde_json::from_str::<Vec<SharedString>>(raw) {
+        Ok(dirs) => dirs,
+        Err(error) => {
+            log::warn!("hosts.favorites 解析失败，这台主机的收藏夹按空处理：{error}");
             Vec::new()
         }
     }

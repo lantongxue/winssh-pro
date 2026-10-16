@@ -65,6 +65,7 @@
             ftp: Default::default(),
             webdav: Default::default(),
             shell_integration: false,
+            favorites: Vec::new(),
         };
         assert_eq!(host.address(), "root@10.0.0.1");
 

@@ -124,6 +124,9 @@ impl HostService {
                         // 往对端打字这件事只能由用户自己在命令历史那扇窗里开
                         // （[`Self::update_shell_integration`]）。
                         shell_integration: Set(false),
+                        // 收藏夹同理不在表单里，新主机是空的；它由 SFTP 面板右侧
+                        // 那一颗 ⭐/📌 在用户连上以后自己攒（[`Self::update_favorites`]）。
+                        favorites: Set(String::new()),
                     },
                 )
                 .await?;
@@ -154,6 +157,7 @@ impl HostService {
                 ftp: draft.ftp,
                 webdav: draft.webdav,
                 shell_integration: false,
+                favorites: Vec::new(),
             })
         })
         .await
@@ -186,13 +190,15 @@ impl HostService {
                         key_content: Set(draft.key_content.clone()),
                         key_passphrase: Set(draft.key_passphrase.clone()),
                         jump_host_id: Set(draft.jump_host_id.clone()),
-                        // 表单不认这四列，别把用户在监控面板里调好的节奏、
+                        // 表单不认这五列，别把用户在监控面板里调好的节奏、
                         // 在端口转发对话框里加的规则、在命令历史里开的 shell
-                        // 集成顺手抹掉。`NotSet` 的列不会进 UPDATE 语句。
+                        // 集成、在 SFTP 面板里攒的收藏夹顺手抹掉。`NotSet` 的列
+                        // 不会进 UPDATE 语句。
                         monitor_interval_secs: ActiveValue::NotSet,
                         status_interval_secs: ActiveValue::NotSet,
                         forwards: ActiveValue::NotSet,
                         shell_integration: ActiveValue::NotSet,
+                        favorites: ActiveValue::NotSet,
                         tags: Set(crate::host::encode_tags(&draft.tags)),
                         proxy: Set(crate::proxy::encode(&draft.proxy)),
                         vnc_settings: Set(winssh_domain::settings::vnc::encode(&draft.vnc)),
@@ -306,6 +312,7 @@ impl HostService {
                         ftp_settings: Set(source.ftp_settings.clone()),
                         webdav_settings: Set(source.webdav_settings.clone()),
                         shell_integration: Set(source.shell_integration),
+                        favorites: Set(source.favorites.clone()),
                     },
                 )
                 .await?;
@@ -340,6 +347,7 @@ impl HostService {
                 ftp: crate::ftp::decode(&source.ftp_settings),
                 webdav: crate::webdav::decode(&source.webdav_settings),
                 shell_integration: source.shell_integration,
+                favorites: crate::host::decode_favorites(&source.favorites),
             })
         })
         .await
@@ -399,6 +407,30 @@ impl HostService {
             let affected = this
                 .repo
                 .update_host_forwards(&this.db, &id, &encoded)
+                .await?;
+            ensure!(
+                affected == 1,
+                "{}",
+                t!("host_service.host_missing", id => id)
+            );
+            Ok(())
+        })
+        .await
+    }
+
+    /// 把这台主机的 SFTP 收藏夹整份写回去。
+    ///
+    /// 与 `update_forwards`、`update_shell_integration` 同一个套路：表单不认
+    /// 这一列，收藏夹是连上以后在 SFTP 面板里点那种星加出来的。整份重写
+    /// 而不是按条增删 —— 每次实际上是从面板内存里新算出来的整份列表。
+    pub async fn update_favorites(&self, id: &str, favorites: &[SharedString]) -> Result<()> {
+        let this = self.clone();
+        let id = id.to_owned();
+        let encoded = crate::host::encode_favorites(favorites);
+        db::run(async move {
+            let affected = this
+                .repo
+                .update_host_favorites(&this.db, &id, &encoded)
                 .await?;
             ensure!(
                 affected == 1,
@@ -505,6 +537,7 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                     ftp: crate::ftp::decode(&host.ftp_settings),
                     webdav: crate::webdav::decode(&host.webdav_settings),
                     shell_integration: host.shell_integration,
+                    favorites: crate::host::decode_favorites(&host.favorites),
                 })
                 .collect(),
         })

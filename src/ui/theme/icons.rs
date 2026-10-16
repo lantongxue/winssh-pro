@@ -15,6 +15,11 @@ pub enum AppIcon {
     Activity,
     /// 打包箱：`.tar.gz`、`.zip` 这类归档。
     Archive,
+    /// 缎带书签：收藏夹的入口（SFTP 远端目录收藏那一颗）。组件库默认图标集
+    /// 没带这一枚（`Bookmark` 只在全量目录里，默认不内嵌，取不到字节），
+    /// 所以自带一份 —— 收藏**列表**用的是它，收藏**状态**用的是
+    /// `IconName::Star` / `StarFill`，两枚形状不同才分得开。
+    Bookmark,
     /// 一头插头、一头裸线的线缆：串口协议的专属配置页，也是串口这一类。
     /// 组件库默认图标集没带这一枚（`Cable` 只在全量目录里，默认不内嵌，
     /// 取不到字节），所以自带一份。
@@ -89,6 +94,7 @@ impl IconNamed for AppIcon {
         match self {
             Self::Activity => "icons/activity.svg",
             Self::Archive => "icons/archive.svg",
+            Self::Bookmark => "icons/bookmark.svg",
             Self::Cable => "icons/cable.svg",
             Self::Columns2 => "icons/columns-2.svg",
             Self::Rows2 => "icons/rows-2.svg",
