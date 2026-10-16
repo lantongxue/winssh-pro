@@ -12,7 +12,7 @@
 
 [winssh.net](https://winssh.net) · [Releases](https://github.com/lantongxue/winssh-pro/releases) · [Issues](https://github.com/lantongxue/winssh-pro/issues)
 
-<img src="https://winssh.net/screenshots/overview-zh.webp" width="900" alt="WinSSH Pro 主界面" />
+<img src="docs/overview-zh.webp" width="900" alt="WinSSH Pro 主界面" />
 
 </div>
 
