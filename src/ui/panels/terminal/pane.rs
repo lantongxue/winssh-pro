@@ -32,6 +32,7 @@ use gpui_kit::component::{
     input::{Input, InputEvent, InputState},
     menu::ContextMenuExt as _,
     progress::Progress,
+    scroll::Scrollbar,
     v_flex,
 };
 use gpui_kit::{
@@ -62,7 +63,10 @@ use crate::{
 };
 use rust_i18n::t;
 
-use super::ime::TerminalInputHandler;
+use super::{
+    ime::TerminalInputHandler,
+    scrollbar::{GridScroll, TerminalScrollHandle},
+};
 
 actions!(
     session,
@@ -192,6 +196,8 @@ pub struct TerminalPane {
     preedit: SharedString,
     /// 上一次报给输入法的光标格。变了才让平台挪候选窗，不必每帧都挪。
     ime_anchor: Option<Bounds<Pixels>>,
+    /// 右边那条回卷区滚动条读写的把手（见 [`super::scrollbar`]）。
+    scroll_handle: TerminalScrollHandle,
     focus_handle: FocusHandle,
 }
 
@@ -215,6 +221,7 @@ impl TerminalPane {
                 cursor_visible: true,
                 preedit: SharedString::default(),
                 ime_anchor: None,
+                scroll_handle: TerminalScrollHandle::default(),
                 focus_handle,
             };
             match origin {
@@ -1084,6 +1091,45 @@ impl TerminalPane {
         anchor.is_some()
     }
 
+    // ─── 滚动条 ─────────────────────────────────────────────────────────────
+
+    /// 和滚动条结一次账：拖动要去的那一行先落实到终端，再把网格实际停在哪儿
+    /// 报给条。两半都放在窗格这边，条（跑在鼠标回调里）就永远不必绕过窗格
+    /// 去碰终端。
+    fn sync_scrollbar(&mut self, emulator: &Entity<Emulator>, cx: &mut Context<Self>) {
+        if let Some(target) = self.scroll_handle.take_pending() {
+            emulator.update(cx, |emulator, cx| emulator.scroll_to(target, cx));
+        }
+        let Some(rows) = emulator.read(cx).scrollback() else {
+            return;
+        };
+        self.scroll_handle.sync(GridScroll {
+            rows,
+            line_height: self.grid.line_height,
+            viewport: self.grid.bounds,
+        });
+    }
+
+    /// 回卷区滚动条，竖在网格右边。
+    ///
+    /// 轨道只覆盖格子本身那几行（`self.grid` 的高度），不含网格下面那截放不下
+    /// 一整行的余量 —— 算进去的话滑块到底时就差那么一截贴不到底。网格上沿
+    /// 贴着窗格（`TerminalGridElement` 上边距为 0），所以从顶上起。
+    fn render_scrollbar(&self) -> impl IntoElement {
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .h(self.grid.bounds.size.height)
+            // 显隐跟着主题走（和侧边栏、各列表一致），不在这里单独定。
+            .child(
+                Scrollbar::vertical(&self.scroll_handle)
+                    .id("terminal-scrollbar")
+                    .viewport_from_layout(),
+            )
+    }
+
     /// 远端文件拖进终端时盖在网格上的那层提示遮罩。
     ///
     /// 与 SFTP 栏里下载/上传的遮罩同一套做法（见 `sftp.rs` 的 `local-drop-overlay`）：
@@ -1863,6 +1909,7 @@ impl Render for TerminalPane {
         // 元素在 prepaint 里才量得出真实尺寸，所以这里读的是上一帧的结果
         // —— 差一帧对这两个用处都没有影响。
         self.grid = emulator.read(cx).bounds();
+        self.sync_scrollbar(&emulator, cx);
         let focused = self.terminal_is_focused(window);
         // 焦点一走，输入处理器就不再登记，输入法收尾时上屏的字也送不回来了
         // —— 留着的组字串只会永远浮在那儿。锚点一并忘掉，下次聚焦时再推一次。
@@ -1942,6 +1989,8 @@ impl Render for TerminalPane {
                         }
                     }),
             )
+            // 滚动条紧跟网格画，压在格子上、垫在搜索栏这些浮层下面。
+            .child(self.render_scrollbar())
             // 搜索栏与 ZMODEM 进度条浮在网格上（`absolute`），所以放在网格
             // 之后当兄弟画，而不是把网格顶下去 —— 顶下去会让终端重排，
             // 开关一次抖一屏。一个贴右上、一个贴左上，不打架。

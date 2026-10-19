@@ -37,7 +37,7 @@ pub mod shell_integration;
 pub mod wsl;
 
 pub use emulator::{
-    Content, Cursor, Emulator, EmulatorEvent, GridCell, GridPoint, TerminalBounds,
+    Content, Cursor, Emulator, EmulatorEvent, GridCell, GridPoint, Scrollback, TerminalBounds,
     is_default_background,
 };
 pub use search::{SearchQuery, SearchState, rows_under_the_bar};

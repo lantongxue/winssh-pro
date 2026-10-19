@@ -292,6 +292,17 @@ pub struct Content {
     pub mode: TermMode,
 }
 
+/// 回卷区的样子，按行计。见 [`Emulator::scrollback`]。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Scrollback {
+    /// 视口上面攒了多少行历史。备用屏（vim、htop）没有回卷区，恒为 0。
+    pub history: usize,
+    /// 视口往回滚过了其中多少行，0 是贴着最新的输出。
+    pub display_offset: usize,
+    /// 视口有几行。
+    pub screen_lines: usize,
+}
+
 /// 模拟器往外发的消息。
 ///
 /// 只有"外面需要跟着变"的才发出来。屏幕内容变了不在其列 —— 那走
@@ -1497,6 +1508,30 @@ impl Emulator {
         }
         self.term.lock().scroll_display(scroll);
         self.refresh(cx);
+    }
+
+    /// 把视口滚到"往回看 `display_offset` 行"的位置。滚动条拖动时用它。
+    pub fn scroll_to(&mut self, display_offset: usize, cx: &mut Context<Self>) {
+        let current = self.term.lock().grid().display_offset();
+        let delta = display_offset as i32 - current as i32;
+        if delta != 0 {
+            self.scroll(Scroll::Delta(delta), cx);
+        }
+    }
+
+    /// 回卷区此刻的样子，读的是活的 `Term` 而不是上一帧的快照 —— 滚轮刚滚过
+    /// 的那一帧，快照还没重取，滚动条按它画就会慢一拍。
+    ///
+    /// 只试着拿锁：读线程正握着锁时返回 `None`，滚动条沿用上一帧的样子，
+    /// 不为了刷一个滑块把整帧卡在锁上。
+    pub fn scrollback(&self) -> Option<Scrollback> {
+        let term = self.term.try_lock_unfair()?;
+        let grid = term.grid();
+        Some(Scrollback {
+            history: grid.history_size(),
+            display_offset: grid.display_offset(),
+            screen_lines: grid.screen_lines(),
+        })
     }
 
     /// 对端此刻是不是要自己收鼠标。

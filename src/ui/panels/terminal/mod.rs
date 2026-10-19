@@ -23,6 +23,7 @@
 
 mod ime;
 mod pane;
+mod scrollbar;
 mod split;
 
 pub use pane::{BackTab, CloseSearch, CopySelection, Find, PasteClipboard, Tab};
