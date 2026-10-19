@@ -53,6 +53,9 @@ const ZMODEM_CONFIG_KEY: &str = "terminal.zmodem";
 /// Clash 那一档 TUN 的偏好在 `settings` 表里的键。存的是一份 JSON
 /// （[`crate::clash::tun_settings::TunSettings`]）。
 const TUN_SETTINGS_KEY: &str = crate::clash::tun_settings::SETTING_KEY;
+/// 自动更新偏好在 `settings` 表里的键。存的是一份 JSON
+/// （[`crate::update::UpdatePreferences`]）。
+const UPDATE_PREFERENCES_KEY: &str = "update.preferences";
 
 /// 应用级偏好的业务入口。廉价克隆：界面各处各拿一份，共享同一条连接。
 #[derive(Clone)]
@@ -101,6 +104,7 @@ impl SettingService {
                 this.load_zmodem_config().await,
                 this.load_tun_settings().await,
                 this.load_close_to_tray().await,
+                this.load_update_preferences().await,
             )
         });
         match loaded.0 {
@@ -138,6 +142,10 @@ impl SettingService {
         match loaded.8 {
             Ok(close_to_tray) => crate::tray::set_global(close_to_tray),
             Err(error) => log::warn!("关窗缩托盘的开关读不出来，这次运行按出厂档处理：{error:#}"),
+        }
+        match loaded.9 {
+            Ok(preferences) => crate::update::set_global(preferences),
+            Err(error) => log::warn!("更新偏好读不出来，这次运行按出厂档处理：{error:#}"),
         }
     }
 
@@ -384,6 +392,35 @@ impl SettingService {
         db::run(async move {
             this.repo
                 .set(&this.db, TUN_SETTINGS_KEY, &encoded)
+                .await
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    /// 库里那份自动更新偏好。没写过就是出厂档（自动检查开着、没跳过任何版本）。
+    pub async fn load_update_preferences(&self) -> Result<crate::update::UpdatePreferences> {
+        let this = self.clone();
+        db::run(async move {
+            let raw = this.repo.get(&this.db, UPDATE_PREFERENCES_KEY).await?;
+            Ok(crate::update::decode(&raw.unwrap_or_default()))
+        })
+        .await
+    }
+
+    /// 写回自动更新偏好，并同时换掉进程里那份缓存。
+    ///
+    /// 缓存先换：设置里改完这一格，下一次启动检查就该按新的走，而落库是异步的。
+    pub async fn save_update_preferences(
+        &self,
+        preferences: crate::update::UpdatePreferences,
+    ) -> Result<()> {
+        crate::update::set_global(preferences.clone());
+        let this = self.clone();
+        let encoded = crate::update::encode(&preferences);
+        db::run(async move {
+            this.repo
+                .set(&this.db, UPDATE_PREFERENCES_KEY, &encoded)
                 .await
                 .map_err(Into::into)
         })

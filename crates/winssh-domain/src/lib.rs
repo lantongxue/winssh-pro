@@ -19,6 +19,7 @@ pub mod settings;
 pub mod snippet;
 pub mod tray;
 pub mod trusted_host;
+pub mod update;
 
 // 领域类型里那些 `label()` 走多语言查表，`rust_i18n::t!` 会展开成本 crate 的
 // `_rust_i18n_t!`，所以这一份语言表要在本 crate 根上装一次。路径相对本 crate 的

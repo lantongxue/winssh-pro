@@ -5753,3 +5753,84 @@ tray.show_window:
 tray.quit:
   en: Quit WinSSH Pro
   zh-CN: 退出 WinSSH Pro
+settings.update:
+  en: Updates
+  zh-CN: 软件更新
+settings.auto_check_updates:
+  en: Check for updates on launch
+  zh-CN: 启动时检查更新
+settings.check_updates:
+  en: Check now
+  zh-CN: 立即检查
+update.title:
+  en: Update available
+  zh-CN: 发现新版本
+update.available:
+  en: WinSSH Pro %{version} is available
+  zh-CN: 新版本 %{version} 可以安装
+update.checking:
+  en: Checking for updates…
+  zh-CN: 正在检查更新…
+update.up_to_date:
+  en: You are running the latest version
+  zh-CN: 当前已是最新版本
+update.check_failed:
+  en: "Update check failed: %{error}"
+  zh-CN: "检查更新失败：%{error}"
+update.downloading:
+  en: "Downloading %{size} · %{speed}"
+  zh-CN: "正在下载 %{size} · %{speed}"
+update.verifying:
+  en: Verifying the signature…
+  zh-CN: 正在验证签名…
+update.ready:
+  en: Downloaded and verified. Ready to install.
+  zh-CN: 已下载并通过签名验证，可以安装了。
+update.installing:
+  en: Installing…
+  zh-CN: 正在安装…
+update.later:
+  en: Later
+  zh-CN: 稍后
+update.skip:
+  en: Skip this version
+  zh-CN: 跳过此版本
+update.download:
+  en: Download
+  zh-CN: 下载
+update.install:
+  en: Install and restart
+  zh-CN: 安装并重启
+update.working:
+  en: Working…
+  zh-CN: 处理中…
+update.open_release:
+  en: Open download page
+  zh-CN: 打开发布页
+update.no_asset:
+  en: No package is available for this platform; download it from the release page.
+  zh-CN: 这个版本没有适用于当前平台的安装包，请到发布页下载。
+update.installed_restart:
+  en: Update installed. Restart WinSSH Pro to use it.
+  zh-CN: 更新已安装，重启 WinSSH Pro 后生效。
+update.manual_required:
+  en: This copy cannot update itself; download the new version from the release page.
+  zh-CN: 这份安装无法自动更新，请到发布页下载新版本。
+update.manual.portable:
+  en: The portable build is not updated automatically; download the new version from the release page.
+  zh-CN: 免安装版不支持自动更新，请到发布页下载新版本。
+update.manual.not_package_managed:
+  en: WinSSH Pro was not installed by the system package manager; download the new version from the release page.
+  zh-CN: WinSSH Pro 不是由系统包管理器安装的，请到发布页下载新版本。
+update.manual.not_app:
+  en: Not running from an app bundle; download the new version from the release page.
+  zh-CN: 当前不是从应用包运行的，请到发布页下载新版本。
+update.manual.not_writable:
+  en: The application folder is not writable; move WinSSH Pro to Applications and try again.
+  zh-CN: 应用目录不可写，请把 WinSSH Pro 移到「应用程序」后再试。
+update.manual.auth_cancelled:
+  en: Authentication was cancelled.
+  zh-CN: 已取消认证。
+update.manual.not_signed:
+  en: This release is not signed, so it cannot be installed automatically; download it from the release page.
+  zh-CN: 这个版本没有发布签名，无法自动安装，请到发布页下载。

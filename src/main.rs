@@ -241,8 +241,61 @@ fn main() {
             .update(cx, |_, window, cx| {
                 window.defer(cx, move |window, cx| {
                     window.focus(&focus_handle, cx);
+                    // 焦点落定之后再看一眼有没有新版本：早于这一帧弹窗的话，
+                    // 窗口本身还没画出来，弹层会挂在半路上。
+                    maybe_check_for_updates(cx);
                 });
             })
             .expect("设置初始焦点失败");
     });
+}
+
+/// 启动后的自动更新检查。
+///
+/// 只在正式版上做：`-dev` 构建（调试构建产出的版本号）自己就比任何正式版
+/// "低"，检查出来的永远是"有新版本"，只会打扰开发者。偏好里关掉了自动检查
+/// 时也不做 —— 用户仍然可以在设置里手动点"检查更新"。
+///
+/// 查出来的版本与"跳过此版本"一致时不弹窗；检查失败只记日志，不打扰用户
+/// （开机弹一句"检查更新失败"没有任何可操作的方向）。
+fn maybe_check_for_updates(cx: &mut gpui_kit::App) {
+    if !crate::service::UpdateService::checkable(env!("CARGO_PKG_VERSION")) {
+        return;
+    }
+    cx.spawn(async move |cx| {
+        // 先查一次，之后每 24 小时再查一次：长开着的窗口也会等到下一个版本。
+        // 关掉自动检查只影响"查不查"，不拆掉这个循环 —— 设置里重新打开时，
+        // 最多等一天就会恢复，不必重启应用。
+        loop {
+            let preferences = crate::service::update::global();
+            if preferences.auto_check_updates {
+                let result = crate::service::UpdateService
+                    .check(env!("CARGO_PKG_VERSION"))
+                    .await;
+                match result {
+                    Ok(Some(update)) => {
+                        // 跳过的是这个版本就不再打扰；出了更新的版本仍然会弹。
+                        if update.version != preferences.skipped_version {
+                            cx.update(|cx| {
+                                // 弹在哪个窗口：优先已经打开着的任一窗口
+                                // （用户可能正开着设置），没有就作罢。
+                                let Some(handle) = cx.windows().first().copied() else {
+                                    return;
+                                };
+                                _ = handle.update(cx, |_, window, cx| {
+                                    crate::ui::UpdateDialog::open(update, window, cx);
+                                });
+                            });
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => log::info!("检查更新失败：{error:#}"),
+                }
+            }
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(24 * 60 * 60))
+                .await;
+        }
+    })
+    .detach();
 }

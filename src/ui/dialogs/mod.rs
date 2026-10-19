@@ -8,6 +8,7 @@
 //! 命令面板是例外：它常驻在 [`crate::ui::Workspace`] 上，`open()` 因此收的是
 //! 那个常驻实体，把结果通过 [`CommandPaletteEvent`] 发回去。
 
+mod app_update;
 mod backup_restore;
 mod cert_trust;
 mod clash_form;
@@ -27,6 +28,7 @@ mod snippet_params;
 mod sudo_password;
 mod zmodem_transfer;
 
+pub use app_update::UpdateDialog;
 pub use backup_restore::BackupRestoreDialog;
 pub use cert_trust::CertTrustDialog;
 

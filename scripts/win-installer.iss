@@ -108,7 +108,11 @@ Filename: "{app}\winssh-broker.exe"; Parameters: "--install-service"; StatusMsg:
 ; 照原样拉起来，不替用户把它卸了。升级默认沿用上次的安装目录（UsePreviousAppDir），
 ; 新 exe 落在同一个路径，服务登记的 binPath 仍然有效。
 Filename: "{sys}\net.exe"; Parameters: "start {#BrokerService}"; Flags: runhidden waituntilterminated; Check: ShouldRestartBroker
-Filename: "{app}\winssh-pro.exe"; Description: "{cm:LaunchProgram,WinSSH Pro}"; Flags: nowait postinstall skipifsilent
+; 自动更新用 /SILENT 跑安装包：`skipifsilent` 会把这一条也跳掉，装完就
+; 没有进程了。改成"静默时也运行"，并由 `runasoriginaluser` 保证新进程以
+; 当前登录用户身份起 —— 安装包自己在提权，不加这个的话新应用会以管理员
+; 身份跑起来，配置目录也跟着变了。
+Filename: "{app}\winssh-pro.exe"; Description: "{cm:LaunchProgram,WinSSH Pro}"; Flags: nowait postinstall runasoriginaluser
 
 ; 不写 [UninstallRun]：卸载前那几步（结束程序、卸 broker 服务、还原系统代理）
 ; 有严格的先后，统一放在 [Code] 的 CurUninstallStepChanged 里按顺序跑。

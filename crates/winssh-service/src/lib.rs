@@ -9,7 +9,7 @@
 // 等旧路径无需逐文件改写就能解析到新的 crate。（用 `pub use`：既作 crate 内路径
 // 别名，又不触发 unused_imports。）
 pub use winssh_domain::{
-    command_history, credential, forward, host, session, snippet, tray, trusted_host,
+    command_history, credential, forward, host, session, snippet, tray, trusted_host, update,
 };
 // `crate::vnc` / `crate::rdp` 在服务层只用作连接设置的编解码（都在领域的 settings 里）。
 pub use winssh_domain::settings::{rdp, vnc};
@@ -32,6 +32,7 @@ pub use winssh_telnet as telnet;
 pub use winssh_terminal as terminal;
 pub use winssh_webdav as webdav;
 pub use winssh_zmodem as zmodem;
+pub use winssh_updater as updater;
 use winssh_assistant as assistant;
 
 // 面向用户的文案走多语言查表，`t!` 展开成本 crate 的 `_rust_i18n_t!`；
@@ -63,6 +64,7 @@ pub mod sudo_auth;
 pub mod ssh_service;
 pub mod telnet_service;
 pub mod trusted_host_service;
+pub mod update_service;
 pub mod webdav_service;
 
 pub use assistant_service::AssistantService;
@@ -86,4 +88,5 @@ pub use sudo_auth::{SudoAsk, SudoPrompt, sftp_launch};
 pub use ssh_service::SshService;
 pub use telnet_service::TelnetService;
 pub use trusted_host_service::TrustedHostService;
+pub use update_service::UpdateService;
 pub use webdav_service::WebdavService;

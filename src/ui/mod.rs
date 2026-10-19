@@ -34,6 +34,7 @@ mod views;
 mod windows;
 mod workspace;
 
+pub use dialogs::UpdateDialog;
 pub use theme::appearance::observe as observe_appearance;
 pub use workspace::Workspace;
 

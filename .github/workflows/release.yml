@@ -73,6 +73,9 @@ jobs:
       version: ${{ steps.source.outputs.version }}
       tag: ${{ steps.source.outputs.tag }}
       publish: ${{ steps.source.outputs.publish }}
+      # tag 带预发布段（`v0.1.0-beta.1`）时 GitHub 上标成 prerelease：
+      # 官网与客户端更新检查默认只看正式版，想收 beta 的用户才看得到。
+      prerelease: ${{ steps.source.outputs.prerelease }}
     steps:
       # 只有调试构建要它：版本号得从 Cargo.toml 里读。只拉这一个文件、不拉子模块，
       # 几秒的事。手动运行时 checkout 默认取的就是所选分支的 `github.sha`。
@@ -126,6 +129,7 @@ jobs:
               echo "version=${version}"
               echo "tag="
               echo "publish=false"
+              echo "prerelease=false"
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -147,11 +151,17 @@ jobs:
           # 明确写成 `refs/tags/...`：只给短名时 checkout 会同时按 `heads/` 与
           # `tags/` 去 fetch，两个都空才失败，报错也更绕。
           echo "Release build of ${TAG}."
+          # `v0.1.0-beta.1` 这类带预发布段的 tag 标成 prerelease（上面那条
+          # 正则允许 `-` 之后接任意标识符）。官网与客户端的更新检查默认只看
+          # 正式版，想收 beta 的用户才看得到。
+          prerelease=false
+          [[ "${TAG#v}" == *-* ]] && prerelease=true
           {
             echo "ref=refs/tags/${TAG}"
             echo "version=${TAG#v}"
             echo "tag=${TAG}"
             echo "publish=true"
+            echo "prerelease=${prerelease}"
           } >> "$GITHUB_OUTPUT"
 
       # 全量平台表在这里，每行第一列对应上面的勾选框名。加平台时两处（还有 env）一起加。
@@ -255,6 +265,15 @@ jobs:
           ref: ${{ needs.plan.outputs.ref }}
           fetch-depth: 1
           submodules: recursive
+
+      # 版本号的**唯一**注入点：把 tag 上的版本写进当次 checkout 的 Cargo.toml
+      # 和 Cargo.lock，之后所有读 `CARGO_PKG_VERSION` 的地方自动跟着对 ——
+      # 设置 → 关于、winres 写进 exe 的 FileVersion、Info.plist、dmg 文件名、
+      # deb/rpm 的包元数据。详见 scripts/set-version.sh 开头的说明。
+      # 这一步不改仓库里的提交，tag 指向的仍是最初那个提交。
+      - name: Stamp version from tag
+        shell: bash
+        run: ./scripts/set-version.sh "${{ needs.plan.outputs.version }}"
 
       # `protobuf-compiler` 给 EasyTier 组网（`easytier-proto` 的构建脚本用
       # prost-build 现编 protobuf，要 `protoc`）。Windows 上那个构建脚本自己
@@ -417,6 +436,16 @@ jobs:
     if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     steps:
+      # 发版日志要算 [上一个 tag, 本 tag] 之间的提交，所以得带完整历史 ——
+      # fetch-depth: 1 时 `git describe --tags` 一个 tag 都看不到，git-cliff
+      # 会把整个仓库历史当成一次发版。这次 checkout 只为了 git 历史与
+      # cliff.toml，产物仍来自上面的 artifact。
+      - name: Check out history for changelog
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+          fetch-depth: 0
+
       # 只收安装包那几个产物：同一次运行里还有 cargo-timings-*（构建耗时报告），
       # 不能跟着发进 release。
       - name: Download release artifacts
@@ -426,10 +455,79 @@ jobs:
           pattern: winssh-pro-*
           merge-multiple: true
 
+      # 用 git-cliff 而不是 GitHub 的 generate_release_notes：后者只列**已合并
+      # 的 PR**，而这个仓库的提交都是直接推到 main 的，于是正文永远只有一行
+      # 「Full Changelog」（v0.0.5、v0.0.6 都是这样）。git-cliff 读的是提交
+      # 信息本身，按 cliff.toml 里的前缀归进「新功能 / 问题修复 / 性能 …」，
+      # 同时把 docs/ci/chore 这类内部提交筛掉。
+      - name: Install git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff@2.14.2
+
+      - name: Generate changelog
+        shell: bash
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git-cliff --config cliff.toml --tag "${TAG}" --latest --strip header \
+            -o NOTES.md
+          # 链接部分 git-cliff 不生成，自己补；上一个 tag 没有（首个版本）
+          # 时就不写这一行。
+          prev="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          {
+            echo
+            if [[ -n "${prev}" ]]; then
+              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${prev}...${TAG}"
+            else
+              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/commits/${TAG}"
+            fi
+          } >> NOTES.md
+          cat NOTES.md
+
+      # 给每个安装包出一份 detached minisign 签名（`<文件>.minisig`）。客户端
+      # 下载后先验签再执行，防止更新接口或下载源被换掉时推出一个伪造的包。
+      #
+      # 密钥由仓库维护者生成一次、放进 Actions Secrets：
+      #   minisign -G -W -p winssh-pro.pub -s winssh-pro.key
+      #   gh secret set MINISIGN_SECRET_KEY < winssh-pro.key
+      # `-W` 表示私钥不加密 —— minisign 的密码是从 /dev/tty 读的，CI 里没有
+      # tty，加密的私钥根本跑不通。私钥只存在于 Actions Secret 里，不出现在
+      # 仓库与日志中。
+      #
+      # 没配密钥时这一步跳过（发版照常，客户端则因为验不了签名只提供手动
+      # 下载链接，不自动安装）—— 所以先合并 CI、之后再补密钥也不会卡住发版。
+      - name: Sign release assets
+        shell: bash
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${MINISIGN_SECRET_KEY}" ]]; then
+            echo "::warning::MINISIGN_SECRET_KEY is not set; skipping signatures"
+            exit 0
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+          key_file="$(mktemp)"
+          trap 'rm -f "${key_file}"' EXIT
+          printf '%s\n' "${MINISIGN_SECRET_KEY}" > "${key_file}"
+          chmod 600 "${key_file}"
+          for file in dist/*; do
+            minisign -S -s "${key_file}" -m "${file}" -x "${file}.minisig"
+          done
+
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.plan.outputs.tag }}
           files: dist/*
-          generate_release_notes: true
+          body_path: NOTES.md
+          prerelease: ${{ needs.plan.outputs.prerelease }}
+          # 正文已经由 git-cliff 写好；GitHub 生成的那份在直接推 main 的
+          # 仓库里是空的（见上面 Generate changelog 的说明）。
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+
           fail_on_unmatched_files: true

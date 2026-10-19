@@ -33,6 +33,7 @@ winssh-backup = { workspace = true }
 winssh-localfs = { workspace = true }
 winssh-netstats = { workspace = true }
 winssh-desktop = { workspace = true }
+winssh-updater = { workspace = true }
 
 # 外部依赖：SeaORM/tokio 数据访问，russh/suppaftp 传输类型，多语言与共享类型。
 anyhow = { workspace = true }

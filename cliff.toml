@@ -1,0 +1,64 @@
+# git-cliff 配置：把提交历史按类型整理成发版日志。
+#
+# 发版时由 `.github/workflows/release.yml` 的 release job 调起：
+#
+#     git-cliff --tag v0.0.6 --latest --strip header -o NOTES.md
+#
+# `--latest` 只渲染 `--tag` 与它之前最近一个 tag 之间的提交；`--strip header`
+# 去掉脚本自带的标题。生成的内容同时写进 GitHub Release 正文与客户端的更新
+# 弹窗（云函数把 release 的 body 原样转给客户端），所以这里的措辞是给用户看的。
+#
+# 分组只看提交信息的前缀，仓库一直用的就是 `feat(scope): 说明` 这套写法。
+# 没有前缀或认不出的提交由 `filter_unconventional = true` 直接丢掉，不让
+# `fix typo` 这类内部提交混进用户日志。
+#
+# 想让某次发版多一段人工说明（升级注意事项、数据迁移提醒），在仓库根放一个
+# `docs/release-notes/<tag>.md` 是没法自动接的 —— git-cliff 只能在一个文件里
+# 接固定内容。更实际的做法是发版后在 GitHub 上直接编辑 release 正文。
+
+[changelog]
+header = ""
+body = """
+{% if version %}\
+## {{ version }}
+{% else %}\
+## Unreleased
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | split(pat="|") | last | trim }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}**：{% endif %}{{ commit.message | split(pat="\n") | first | trim }}
+{%- endfor %}
+{% endfor %}\n
+"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+commit_preprocessors = [
+  # 去掉 Co-Authored-By 这类尾注，它们不进用户日志。
+  { pattern = '(?m)^Co-Authored-By:.*$', replace = '' },
+]
+commit_parsers = [
+  { message = "^feat", group = "1|新功能" },
+  { message = "^fix", group = "2|问题修复" },
+  { message = "^perf", group = "3|性能" },
+  { message = "^refactor", group = "4|重构" },
+  { message = "^revert", group = "5|回滚" },
+  # 内部改动不进用户日志：文档、CI、依赖升级、格式化、测试。
+  { message = "^docs", skip = true },
+  { message = "^ci", skip = true },
+  { message = "^chore", skip = true },
+  { message = "^style", skip = true },
+  { message = "^test", skip = true },
+  { message = "^build", skip = true },
+]
+protect_breaking_commits = false
+filter_commits = false
+tag_pattern = "v[0-9]*"
+skip_tags = ""
+ignore_tags = ""
+sort_commits = "oldest"

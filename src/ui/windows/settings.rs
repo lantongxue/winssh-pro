@@ -39,11 +39,11 @@ use crate::assistant::{
 use crate::backup::{self, BackupConfig, BackupProtocol, S3Config, S3Preset, WebdavConfig};
 use crate::i18n;
 use crate::proxy::{self, GlobalProxy, ProxyConfig};
-use crate::service::{BackupService, SettingService};
+use crate::service::{BackupService, SettingService, UpdateService, update as update_prefs};
 use crate::terminal::cursor;
 use crate::terminal::font::{self, TerminalFont};
 use crate::terminal::scheme;
-use crate::ui::dialogs::BackupRestoreDialog;
+use crate::ui::dialogs::{BackupRestoreDialog, UpdateDialog};
 use crate::ui::theme::{AppIcon, appearance, palette};
 use crate::zmodem::config as zmodem_config;
 use rust_i18n::t;
@@ -149,6 +149,21 @@ fn persist_terminal_scheme(id: SharedString, cx: &mut App) {
     cx.background_spawn(async move {
         if let Err(error) = SettingService::open().save_terminal_scheme(id).await {
             log::error!("终端配色存不下去：{error:#}");
+        }
+    })
+    .detach();
+}
+
+/// 换掉自动更新的偏好。缓存立刻生效、落库派到后台；不用重画窗口 ——
+/// 读它的只有"关于"页的开关本身与下一次启动检查。
+fn persist_update_preferences(preferences: update_prefs::UpdatePreferences, cx: &mut App) {
+    update_prefs::set_global(preferences.clone());
+    cx.background_spawn(async move {
+        if let Err(error) = SettingService::open()
+            .save_update_preferences(preferences)
+            .await
+        {
+            log::error!("更新偏好存不下去：{error:#}");
         }
     })
     .detach();
@@ -803,7 +818,7 @@ impl SettingsWindow {
             .page(self.proxy_page())
             .page(self.assistant_page())
             .page(self.backup_page(cx))
-            .page(Self::about_page())
+            .page(self.about_page())
     }
 
     fn general_page(&self, cx: &App) -> SettingPage {
@@ -1677,7 +1692,7 @@ impl SettingsWindow {
     ///
     /// 以前那两段介绍（"跨平台高性能…"、"使用 Rust、GPUI 与 Russh 深度构建…"）
     /// 是写给还没装的人看的，装完之后每次开设置都要再读一遍。
-    fn about_page() -> SettingPage {
+    fn about_page(&self) -> SettingPage {
         SettingPage::new(t!("settings.tab_about"))
             .icon(IconName::Info)
             .resettable(false)
@@ -1716,6 +1731,67 @@ impl SettingsWindow {
                     .keywords(["WinSSH", "Version", "About"]),
                 ),
             )
+            .group(
+                SettingGroup::new().title(t!("settings.update")).item(SettingItem::new(
+                    t!("settings.auto_check_updates"),
+                    SettingField::switch(
+                        |_: &App| crate::service::update::global().auto_check_updates,
+                        |checked: bool, cx: &mut App| {
+                            let preferences = crate::service::update::UpdatePreferences {
+                                auto_check_updates: checked,
+                                ..crate::service::update::global()
+                            };
+                            persist_update_preferences(preferences, cx);
+                        },
+                    ),
+                )),
+            )
+            .group(
+                SettingGroup::new().item(SettingItem::render({
+                    let this_entity = self.self_entity.clone();
+                    move |_options: &RenderOptions, _window, cx| {
+                        let this_check = this_entity.clone();
+                        let blue = palette::blue();
+                        let variant = ButtonCustomVariant::new(cx)
+                            .color(blue)
+                            .foreground(palette::on_accent())
+                            .hover(blue.lighten(0.08))
+                            .active(blue.darken(0.08));
+                        h_flex().gap_2().pt_2().child(
+                            Button::new("settings-check-updates")
+                                .custom(variant)
+                                .bg(blue)
+                                .rounded(cx.theme().radius)
+                                .label(t!("settings.check_updates"))
+                                .on_click(move |_, window, cx| {
+                                    this_check.update(cx, |this, cx| {
+                                        this.check_updates(window, cx);
+                                    });
+                                }),
+                        )
+                    }
+                })),
+            )
+    }
+
+    /// "检查更新"按钮：无论自动检查开没开都真的去查一次，并把结果告诉用户。
+    ///
+    /// 查出新版本就弹 [`UpdateDialog`]；没有就说"已是最新"。检查失败要把
+    /// 原因摆出来 —— 静默失败会让用户以为按钮坏了。
+    fn check_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.push_notification(t!("update.checking"), cx);
+        cx.spawn_in(window, async move |_this, cx| {
+            let result = UpdateService.check(env!("CARGO_PKG_VERSION")).await;
+            _ = cx.update(|window, cx| match result {
+                Ok(Some(update)) => UpdateDialog::open(update, window, cx),
+                Ok(None) => window.push_notification(t!("update.up_to_date"), cx),
+                Err(error) => window.push_notification(
+                    t!("update.check_failed", error => format!("{error:#}")),
+                    cx,
+                ),
+            });
+        })
+        .detach();
     }
 }
 

@@ -85,6 +85,7 @@ winssh-rdp = { path = "crates/winssh-rdp" }
 winssh-backup = { path = "crates/winssh-backup" }
 winssh-monitor = { path = "crates/winssh-monitor" }
 winssh-service = { path = "crates/winssh-service" }
+winssh-updater = { path = "crates/winssh-updater" }
 anyhow = "1"
 
 # GPUI 与组件库都从 gpui-kit 这一个门面 crate 进来（原 longbridge/gpui-component
@@ -136,6 +137,8 @@ futures = "0.3"
 async-trait = "0.1"
 flate2 = "1"
 zip = { version = "8", default-features = false, features = ["deflate"] }
+# macOS 更新包是 `.tar.gz`（与发版产物同一份），解包用 tar + flate2。
+tar = "0.4"
 log = "0.4"
 env_logger = "0.11"
 
@@ -311,6 +314,10 @@ reqwest-s3-tls = { package = "reqwest", version = "0.12", default-features = fal
 aes-gcm = "0.11.1"
 pbkdf2 = "0.13.0"
 sha2 = "0.11.0"
+# 更新包的签名验证（纯 Rust、零依赖的 minisign 校验器）。发版时 CI 用 minisign
+# 给每个产物出 `.minisig`，客户端下载后先验签再执行 —— 更新接口或下载源被换掉
+# 时，伪造的包过不了这一关。见 crates/winssh-updater/src/signature.rs。
+minisign-verify = "0.3.0"
 # 注意：这一份在文件末尾被 `[patch.crates-io]` 换成了打过补丁的本地副本
 # （`vendor/vnc-rs`）—— 剪贴板那两处上游绕不开的事都落在那里，见那条注释。
 vnc-rs = "0.6.0"

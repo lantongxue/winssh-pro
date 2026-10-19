@@ -1,0 +1,25 @@
+[package]
+name = "winssh-updater"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 自动更新：检查更新接口、下载与校验、按平台安装"
+license = "Apache-2.0"
+
+[dependencies]
+# 更新偏好（`UpdatePreferences`）与更新弹窗展示的纯数据类型。
+winssh-domain = { workspace = true }
+# 下载任务跑在应用级 runtime 上（与 mihomo 下载器同一条）。
+winssh-db = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+dirs = { workspace = true }
+reqwest = { workspace = true }
+# 下载后的完整性校验：先比 sha256（防传输损坏），再验 minisign（防伪造）。
+sha2 = { workspace = true }
+minisign-verify = { workspace = true }
+# macOS 更新包是 tar.gz。
+flate2 = { workspace = true }
+tar = { workspace = true }
