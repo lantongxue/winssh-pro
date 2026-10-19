@@ -12,6 +12,10 @@ pub struct Model {
     pub id: String,
     /// 标题，取自第一条提问的开头。
     pub title: String,
+    /// 这段对话绑定的主机 id（见 `crate::assistant::Conversation::host_id`）。
+    /// 空串是升级前的旧对话（没有归属），不在任何主机的列表里出现。
+    #[sea_orm(default_value = "")]
+    pub host_id: String,
     /// `YYYY-MM-DD HH:MM:SS`，格式的理由见 [`super::snippet::Model::created_at`]。
     #[sea_orm(default_value = "")]
     pub created_at: String,

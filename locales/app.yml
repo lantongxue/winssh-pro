@@ -5010,6 +5010,12 @@ assistant.current_session:
 assistant.no_session:
   en: none open
   zh-CN: 没有打开的会话
+assistant.host_disconnected:
+  en: The bound host's session has disconnected. Reconnect it or start a new chat to continue.
+  zh-CN: 本对话绑定的主机会话已断开，重连或新建对话后再继续。
+assistant.chat_needs_session:
+  en: Open a session first, then start a chat bound to that host.
+  zh-CN: 先打开一个会话，再开始绑定到该主机的对话。
 assistant.not_configured:
   en: Configure a model provider in Settings → AI Assistant first.
   zh-CN: 请先在 设置 → AI 助手 里配置模型供应商。

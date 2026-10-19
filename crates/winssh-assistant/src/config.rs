@@ -346,6 +346,9 @@ impl CommandStatus {
 pub struct Conversation {
     pub id: SharedString,
     pub title: SharedString,
+    /// 这段对话绑定的主机 id（发起时所处标签页的主机）。
+    /// 切换主机标签页时助手只加载这台主机名下的对话；空串是升级前的旧对话。
+    pub host_id: SharedString,
 }
 
 #[cfg(test)]

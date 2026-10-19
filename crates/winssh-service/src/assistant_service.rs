@@ -88,26 +88,33 @@ impl AssistantService {
             .expect("初始化内存数据库失败")
     }
 
-    /// 全部对话，最近动过的在最前。
-    pub async fn conversations(&self) -> Result<Vec<Conversation>> {
+    /// 某台主机名下的全部对话，最近动过的在最前。
+    pub async fn conversations_for_host(&self, host_id: &str) -> Result<Vec<Conversation>> {
         let this = self.clone();
+        let host_id = host_id.to_owned();
         db::run(async move {
-            let rows = this.repo.load_conversations(&this.db).await?;
+            let rows = this.repo.load_conversations(&this.db, &host_id).await?;
             Ok(rows
                 .into_iter()
                 .map(|row| Conversation {
                     id: row.id.into(),
                     title: row.title.into(),
+                    host_id: row.host_id.into(),
                 })
                 .collect())
         })
         .await
     }
 
-    /// 新开一段对话，标题取自第一条提问的开头。返回带 id 的记录。
-    pub async fn create_conversation(&self, first_prompt: &str) -> Result<Conversation> {
+    /// 新开一段对话并绑定到 `host_id`，标题取自第一条提问的开头。返回带 id 的记录。
+    pub async fn create_conversation(
+        &self,
+        first_prompt: &str,
+        host_id: &str,
+    ) -> Result<Conversation> {
         let this = self.clone();
         let title = conversation_title(first_prompt);
+        let host_id = host_id.to_owned();
         db::run(async move {
             let id: SharedString = format!("chat-{}", nanos()).into();
             let now = timestamp();
@@ -117,12 +124,17 @@ impl AssistantService {
                     ai_conversation::ActiveModel {
                         id: Set(id.to_string()),
                         title: Set(title.to_string()),
+                        host_id: Set(host_id.clone()),
                         created_at: Set(now.clone()),
                         updated_at: Set(now),
                     },
                 )
                 .await?;
-            Ok(Conversation { id, title })
+            Ok(Conversation {
+                id,
+                title,
+                host_id: host_id.into(),
+            })
         })
         .await
     }

@@ -79,12 +79,14 @@
 //! 批准或拒绝之后就消失 —— 拒绝会往消息流里落一张"已拒绝"的卡片，批准的
 //! 那条则等命令跑完由执行结果卡片交代。
 //!
-//! **助手只操作当前打开的那条会话。** 这块面板是那格 [`CurrentSession`] 的
-//! 看门人：中心区换了活动标签页（Dock 的 `LayoutChanged`）、那条会话连上或
-//! 断了（[`SessionEvent::LivenessChanged`]）、以及每次发问之前，都重认一遍
-//! 并换掉槽里那一条。运行侧握的是同一格，所以跑到一半切标签页也立刻生效，
-//! 模型在下一次开口前就会读到新的那台机器。输入行上方那条会话名写的就是
-//! 它 —— 命令会落在哪儿，用户不该靠猜。
+//! **对话按主机绑定，助手只操作当前主机。** 这块面板是那格
+//! [`CurrentSession`] 的看门人：中心区换了活动标签页（Dock 的 `LayoutChanged`）、
+//! 那条会话连上或断了（[`SessionEvent::LivenessChanged`]）、以及每次发问之前，
+//! 都重认一遍并按这台主机加载对话（[`AssistantService::conversations_for_host`]）——
+//! 切到哪台就只看那台名下的对话，命令落在哪儿与看得见的对话始终同一台。
+//! **运行中的那一场除外**：进行期间会话槽钉在发起那台上，切标签页不改它，
+//! 这一场只跑在原主机；跑完之后下一次事件才恢复跟随。输入行上方那条会话名
+//! 写的就是它 —— 断没断也写在那儿，命令会落在哪儿，用户不该靠猜。
 //!
 //! **"当前会话"只认中心区。** 这块面板自己也停在 Dock 里，但
 //! [`TerminalPanel::active_in`] 只走中心区的布局树，所以它不会把自己
@@ -283,6 +285,10 @@ pub struct AssistantPanel {
     _liveness: Option<Subscription>,
     _layout: Option<Subscription>,
     conversations: Vec<Conversation>,
+    /// 当前这段对话所属的主机 id（= 最近一次空闲跟随时的活动主机）。
+    /// 切换主机标签页时助手只加载这台主机名下的对话；`None` 是活动标签页
+    /// 不是可绑定的远端会话（没开终端、本机 Shell、或已断开的会话）。
+    host_of: Option<SharedString>,
     /// 当前对话。`None` = 空白的新对话，发第一条时才建档。
     active: Option<SharedString>,
     messages: Vec<ChatMessage>,
@@ -331,7 +337,6 @@ impl AssistantPanel {
     ) -> Self {
         let mut this = Self::build(service, dock_area, window, cx);
         this.refresh_session(window, cx);
-        this.load_conversations(cx);
         this
     }
 
@@ -397,6 +402,7 @@ impl AssistantPanel {
             _liveness: None,
             _layout,
             conversations: Vec::new(),
+            host_of: None,
             active: None,
             messages: Vec::new(),
             expanded: HashSet::new(),
@@ -414,12 +420,23 @@ impl AssistantPanel {
         }
     }
 
-    /// 启动时把对话列表和最近那段的消息读进来。读不出来只记日志 ——
-    /// 面板照常可用，从一段空白对话开始。
-    fn load_conversations(&mut self, cx: &mut Context<Self>) {
+    /// 按当前绑定的主机（[`Self::host_of`]）重读对话列表，并把最近一段的消息
+    /// 读回来。主机为空（没开可绑定的会话）就是清空。
+    ///
+    /// 读不出来只记日志 —— 面板照常可用，从一段空白对话开始。
+    fn reload_conversations(&mut self, cx: &mut Context<Self>) {
+        let Some(host_id) = self.host_of.clone() else {
+            self.conversations.clear();
+            self.active = None;
+            self.set_messages(Vec::new(), cx);
+            return;
+        };
+        // 先清掉上一台主机残下的快照，等库的这一拍里不会串到别的主机上。
+        self.active = None;
+        self.set_messages(Vec::new(), cx);
         let service = self.service.clone();
         cx.spawn(async move |this, cx| {
-            let conversations = match service.conversations().await {
+            let conversations = match service.conversations_for_host(&host_id).await {
                 Ok(conversations) => conversations,
                 Err(error) => {
                     log::warn!("助手对话列表读不出来：{error:#}");
@@ -432,9 +449,12 @@ impl AssistantPanel {
                 None => Vec::new(),
             };
             _ = this.update(cx, |this, cx| {
-                this.conversations = conversations;
-                this.active = latest;
-                this.set_messages(messages, cx);
+                // 等库的这一拍里用户又切到别的主机就别覆盖。
+                if this.host_of.as_ref() == Some(&host_id) {
+                    this.conversations = conversations;
+                    this.active = latest;
+                    this.set_messages(messages, cx);
+                }
             });
         })
         .detach();
@@ -442,12 +462,32 @@ impl AssistantPanel {
 
     // ─── 当前会话 ───────────────────────────────────────────────────────────
 
-    /// 重认一遍"助手眼下能操作的是哪台机器"，答案换了就换掉那一格。
+    /// 重认一遍"助手眼下能操作的是哪台机器"，并按这台主机加载对话。
     ///
     /// 三处叫它：中心区布局一动（换标签页正是其中一种）、当前那条会话的存活
     /// 翻面、以及每次发问之前。认的是 [`TerminalPanel::active_in`] ——
     /// 和侧边栏发命令片段认的是同一条"当前会话"。
+    ///
+    /// **对话跟着主机走，但运行中的那一场不跟。** 空闲时切到哪台就加载那台的
+    /// 对话；一场运行进行期间，[`Self::host_of`] 与会话槽钉在发起那台上，切标签
+    /// 页不把会话槽改到别的机器（运行握的还是这一格，见 [`Self::session`]），
+    /// 只随这条会话自己的重连/断开刷新。跑完之后下一次事件再恢复跟随。
     fn refresh_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 运行中：绑定主机就是发起那一场时活动的面板（存活订阅挂在它身上）。
+        // 只刷它自己的存活，不跟活动标签页切机器。
+        if self.running {
+            if let Some(current) = self.current.clone() {
+                let target = current.read(cx).session_target(cx);
+                let before = self.session.get().map(|target| target.id);
+                let after = target.as_ref().map(|target| target.id.clone());
+                self.session.set(target);
+                if before != after {
+                    cx.notify();
+                }
+            }
+            return;
+        }
+
         let panel = self
             .dock_area
             .upgrade()
@@ -471,9 +511,16 @@ impl AssistantPanel {
         }
 
         let target = panel.and_then(|panel| panel.read(cx).session_target(cx));
+        let active_host = target.as_ref().map(|target| target.id.clone());
         let before = self.session.get().map(|target| target.id);
-        let after = target.as_ref().map(|target| target.id.clone());
+        let after = active_host.clone();
         self.session.set(target);
+
+        // 活动主机换了（含从有到无、从无到有）：切到这台主机的对话列表。
+        if self.host_of != active_host {
+            self.host_of = active_host;
+            self.reload_conversations(cx);
+        }
         // 布局事件比"当前会话变了"频繁得多（拖一次分隔条就是一串），
         // 答案没变就别让面板跟着重画。
         if before != after {
@@ -997,6 +1044,14 @@ impl AssistantPanel {
         // 不该有第二种答案。
         self.refresh_session(window, cx);
 
+        // 绑定的主机会话断了（host_of 有值但够不着机器）：这一条发不出去 ——
+        // 让模型给出一串打不到任何机器的命令不如先说清楚。够不着机器但仍可操作
+        // 本机的无主机态（host_of 为空）不在这里拦。
+        if self.host_of.is_some() && self.session.get().is_none() {
+            window.push_notification(t!("assistant.host_disconnected"), cx);
+            return;
+        }
+
         // 对话历史在这一刻定格；当前会话不定格，它跟着标签页走。
         let turns: Vec<Turn> = self
             .messages
@@ -1037,13 +1092,15 @@ impl AssistantPanel {
         let session = self.session.clone();
         let service = self.service.clone();
         let active = self.active.clone();
+        // 这段对话落库时绑定的主机；无活动会话的无主机态落空串。
+        let host_id = self.host_of.clone().unwrap_or_default();
         let (events_tx, mut events_rx) = mpsc::unbounded();
 
         self._run = Some(cx.spawn_in(window, async move |this, cx| {
             // 第一条提问才建档。建不出来（库坏了）就只跑不存，界面照常。
             let conversation = match active {
                 Some(id) => Some(id),
-                None => match service.create_conversation(&prompt).await {
+                None => match service.create_conversation(&prompt, &host_id).await {
                     Ok(chat) => {
                         let id = chat.id.clone();
                         _ = this.update(cx, |this, cx| {
@@ -1211,7 +1268,7 @@ impl AssistantPanel {
                 Ok(Err(error)) => Some(format!("{error:#}")),
                 Err(join_error) => Some(join_error.to_string()),
             };
-            _ = this.update(cx, |this, cx| {
+            _ = this.update_in(cx, |this, window, cx| {
                 this.running = false;
                 this.pending = None;
                 this.abandon_transfers(cx);
@@ -1225,6 +1282,9 @@ impl AssistantPanel {
                         cx,
                     );
                 }
+                // 这一场跑完了，恢复"跟随活动标签页"：这期间用户若切到了别的
+                // 主机，此刻就把对话换成那台的。
+                this.refresh_session(window, cx);
                 cx.notify();
             });
         }));
@@ -1452,14 +1512,18 @@ impl AssistantPanel {
 
     /// 当前会话条：助手这一刻能操作的那台机器，就画在输入行上方。
     ///
-    /// 它不是装饰：助手只操作当前这条会话，用户切标签页就是换机器 ——
-    /// 命令会落在哪儿，得看得见。
+    /// 它不是装饰：对话绑着一台主机，命令会落在哪儿、这台现在断没断，得看得见。
+    /// 绑定的主机断了（`host_of` 有值但会话槽空着）与"根本没开会话"分开写，
+    /// 前者是"等你重连这一台"，后者是"打开一个会话再聊"。
     fn render_current_session(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let session = self.session.get();
         let connected = session.is_some();
-        let label: SharedString = session
-            .map(|target| target.name)
-            .unwrap_or_else(|| t!("assistant.no_session").into());
+        let disconnected = self.host_of.is_some() && !connected;
+        let label: SharedString = match session {
+            Some(target) => target.name,
+            None if disconnected => t!("assistant.host_disconnected").into(),
+            None => t!("assistant.no_session").into(),
+        };
 
         h_flex()
             .flex_shrink_0()

@@ -12,12 +12,14 @@ use winssh_db::entities::{ai_conversation, ai_image, ai_message};
 pub struct AssistantRepository;
 
 impl AssistantRepository {
-    /// 全部对话，最近动过的在最前；同一秒的再按 id 兜一道，顺序稳定。
+    /// 某台主机名下的对话，最近动过的在最前；同一秒的再按 id 兜一道，顺序稳定。
     pub async fn load_conversations(
         &self,
         conn: &impl ConnectionTrait,
+        host_id: &str,
     ) -> Result<Vec<ai_conversation::Model>, DbErr> {
         ai_conversation::Entity::find()
+            .filter(ai_conversation::Column::HostId.eq(host_id))
             .order_by_desc(ai_conversation::Column::UpdatedAt)
             .order_by_desc(ai_conversation::Column::Id)
             .all(conn)

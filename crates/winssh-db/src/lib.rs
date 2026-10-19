@@ -107,6 +107,7 @@ const SCHEMA: [&str; 13] = [
     "CREATE TABLE IF NOT EXISTS ai_conversations (
         id           TEXT    PRIMARY KEY,
         title        TEXT    NOT NULL,
+        host_id      TEXT    NOT NULL DEFAULT '',
         created_at   TEXT    NOT NULL DEFAULT '',
         updated_at   TEXT    NOT NULL DEFAULT ''
     )",
@@ -216,7 +217,7 @@ const SCHEMA: [&str; 13] = [
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 31] = [
+const MIGRATIONS: [&str; 32] = [
     // 连接类型（见 [`crate::host::HostKind`]）。老库补出来的是 `ssh` ——
     // 这一列出现之前存的每一台主机都是 SSH，出厂值不改变任何人的行为。
     "ALTER TABLE hosts ADD COLUMN kind TEXT NOT NULL DEFAULT 'ssh'",
@@ -302,6 +303,11 @@ const MIGRATIONS: [&str; 31] = [
     // 空串就是出厂档"标准子系统"—— 这一列出现之前每台主机开 SFTP 走的都是它，
     // 老库补出来不改变任何人的连法，更不会在升级之后悄悄开始 sudo。
     "ALTER TABLE hosts ADD COLUMN sftp_settings TEXT NOT NULL DEFAULT ''",
+    // ── 智能助手：对话绑定主机 ──
+    // 每段对话记下它发起时所处标签页的主机 id（见 `crate::assistant::Conversation`），
+    // 切换主机标签时助手只加载这台主机的对话。老库补出来是空串 = 旧对话没有归属，
+    // 不会在任何主机的对话列表里冒出来，不改变既有行为。
+    "ALTER TABLE ai_conversations ADD COLUMN host_id TEXT NOT NULL DEFAULT ''",
 ];
 
 /// 数据层专用的 tokio runtime，进程生命周期内只建一次。

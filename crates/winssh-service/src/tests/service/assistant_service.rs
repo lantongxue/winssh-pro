@@ -8,13 +8,14 @@
     fn conversations_and_messages_round_trip() {
         db::runtime().block_on(async {
             let service = AssistantService::in_memory().await.unwrap();
-            assert!(service.conversations().await.unwrap().is_empty());
+            assert!(service.conversations_for_host("host-a").await.unwrap().is_empty());
 
             let chat = service
-                .create_conversation("帮我看看 web-01 上 nginx 为什么起不来，然后修好它")
+                .create_conversation("帮我看看 web-01 上 nginx 为什么起不来，然后修好它", "host-a")
                 .await
                 .unwrap();
             assert!(chat.title.starts_with("帮我看看 web-01"));
+            assert_eq!(chat.host_id.as_ref(), "host-a");
 
             service
                 .append_message(&chat.id, ChatRole::User, MessageBody::text("nginx 起不来"))
@@ -49,7 +50,7 @@
             );
 
             service.delete_conversation(&chat.id).await.unwrap();
-            assert!(service.conversations().await.unwrap().is_empty());
+            assert!(service.conversations_for_host("host-a").await.unwrap().is_empty());
             assert!(
                 service.messages(&chat.id).await.unwrap().is_empty(),
                 "外键该把消息连带删光"
@@ -64,7 +65,7 @@
     fn transfer_cards_round_trip() {
         db::runtime().block_on(async {
             let service = AssistantService::in_memory().await.unwrap();
-            let chat = service.create_conversation("传一下日志").await.unwrap();
+            let chat = service.create_conversation("传一下日志", "host-a").await.unwrap();
             let card = TransferCard {
                 direction: TransferDirection::Download,
                 session: "web-01".into(),
@@ -106,7 +107,7 @@
         db::runtime().block_on(async {
             let service = AssistantService::in_memory().await.unwrap();
             let chat = service
-                .create_conversation("这个报错是什么意思")
+                .create_conversation("这个报错是什么意思", "host-a")
                 .await
                 .unwrap();
             let shots = vec![png(40, 30), png(8, 8)];
@@ -160,7 +161,7 @@
     fn reasoning_and_reply_speed_round_trip() {
         db::runtime().block_on(async {
             let service = AssistantService::in_memory().await.unwrap();
-            let chat = service.create_conversation("磁盘满了吗").await.unwrap();
+            let chat = service.create_conversation("磁盘满了吗", "host-a").await.unwrap();
             for (role, body) in [
                 (ChatRole::User, MessageBody::text("磁盘满了吗")),
                 (
@@ -205,4 +206,60 @@
         let title = conversation_title(&long);
         assert_eq!(title.chars().count(), TITLE_CHARS + 1, "截断后缀省略号");
         assert!(!conversation_title("   ").is_empty(), "空提问有兜底名");
+    }
+
+    /// 对话落库时带上它绑定的主机 id，读回来也在。
+    #[test]
+    fn create_conversation_tags_host_id() {
+        db::runtime().block_on(async {
+            let service = AssistantService::in_memory().await.unwrap();
+            let chat = service
+                .create_conversation("看看这台怎么样", "host-42")
+                .await
+                .unwrap();
+            assert_eq!(chat.host_id.as_ref(), "host-42");
+            let listed = service.conversations_for_host("host-42").await.unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].host_id.as_ref(), "host-42");
+        });
+    }
+
+    /// 切换主机标签时只加载当前主机的对话：建 A、B 两段后按主机各得其一；
+    /// 默认空串（升级前的旧对话）不归属任何主机、不出现在任一查询里。
+    #[test]
+    fn conversations_for_host_only_returns_that_host() {
+        db::runtime().block_on(async {
+            let service = AssistantService::in_memory().await.unwrap();
+            service
+                .create_conversation("A 上的事", "host-a")
+                .await
+                .unwrap();
+            service
+                .create_conversation("B 上的事", "host-b")
+                .await
+                .unwrap();
+            // 直接塞一行空 host_id，模拟升级前没有归属的旧对话。
+            use sea_orm::ActiveValue::Set;
+            service
+                .repo
+                .insert_conversation(
+                    &service.db,
+                    ai_conversation::ActiveModel {
+                        id: Set("chat-legacy".into()),
+                        title: Set("旧对话".into()),
+                        host_id: Set(String::new()),
+                        created_at: Set("2020-01-01 00:00:00".into()),
+                        updated_at: Set("2020-01-01 00:00:00".into()),
+                    },
+                )
+                .await
+                .unwrap();
+
+            let a = service.conversations_for_host("host-a").await.unwrap();
+            assert_eq!(a.len(), 1, "A 只该看到自己那一段，不串 B、也不串旧对话");
+            assert_eq!(a[0].title.as_ref(), "A 上的事");
+            let b = service.conversations_for_host("host-b").await.unwrap();
+            assert_eq!(b.len(), 1, "B 同样只该看到自己那一段");
+            assert_eq!(b[0].title.as_ref(), "B 上的事");
+        });
     }
