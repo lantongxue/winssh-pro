@@ -3833,9 +3833,6 @@ terminal.banner_fell_back:
 terminal.banner_ssh_hint:
   en: "Hint: check the host address, port, user name and password/key; the remote needs sshd running."
   zh-CN: 提示：检查主机地址、端口、用户名与密码/密钥；远端需运行 SSH 服务。
-terminal.ssh_failed_notify:
-  en: "SSH connection to %{name} failed, fell back to this machine: %{error}"
-  zh-CN: SSH 连接 %{name} 失败，已回退到本机：%{error}
 terminal.banner_connecting_telnet:
   en: Connecting over Telnet…
   zh-CN: 正在通过 Telnet 连接...

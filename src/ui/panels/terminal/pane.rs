@@ -366,7 +366,8 @@ impl TerminalPane {
     /// 2. 有记录 → `TrustPolicy::Verify`；无记录 → `TrustPolicy::CaptureAndAbort`。
     /// 3. 连接失败且 capture 槽有值 → 首次连接未知主机，弹信任确认框。
     /// 4. 用户确认 → （可选）保存记录 → 发起第二次连接；用户拒绝 → 写拒绝提示。
-    /// 5. 其他连接错误（网络、认证、密钥变更）→ 回退到本机 shell（保持已有行为）。
+    /// 5. 其他连接错误（网络、认证、密钥变更）→ 把失败信息直接写进终端，
+    ///    不退回本机 shell（见 [`Self::show_ssh_failure`]）。
     fn dial_ssh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let host = self.host.clone();
         let placeholder = self.show_placeholder(
@@ -445,7 +446,7 @@ impl TerminalPane {
                                             let _ =
                                                 entity.update_in(cx, |this, _, cx| match outcome {
                                                     Ok(conn) => this.adopt(conn, cx),
-                                                    Err(e) => this.handle_fallback(&e, &ph, cx),
+                                                    Err(e) => this.show_ssh_failure(&e, &ph, cx),
                                                 });
                                         })
                                         .detach();
@@ -462,7 +463,7 @@ impl TerminalPane {
                     } else {
                         // 真实连接错误（网络不通、认证失败、密钥变更等）
                         let _ = this.update(cx, |this, cx| {
-                            this.handle_fallback(&error, &placeholder, cx);
+                            this.show_ssh_failure(&error, &placeholder, cx);
                         });
                     }
                 }
@@ -479,8 +480,9 @@ impl TerminalPane {
     ///    `TerminalPaneEvent::Connected`，面板那边的 `self.ssh` 保持 `None`，
     ///    SFTP 栏与监控栏自然挂不上。
     ///
-    /// 失败仍然回退到本机 shell：与 SSH 走同一条 `handle_fallback`，让界面
-    /// 始终可用；不同点只是错误文案（下面 `banner_telnet_failed` 那一条）。
+    /// 失败仍回退到本机 shell（[`Self::handle_fallback_telnet`]）：Telnet 没有
+    /// 信任/密钥那一层，拨不上多半只是对端 `telnetd` 没起，给一个本机 shell
+    /// 让界面照用。（SSH 那边不再回退，见 [`Self::show_ssh_failure`]。）
     fn dial_telnet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let host = self.host.clone();
         let placeholder = self.show_placeholder(
@@ -529,9 +531,9 @@ impl TerminalPane {
 
     /// Telnet 拨不上时的错误展示与本机回退。
     ///
-    /// 与 SSH 那边 [`Self::handle_fallback`] 是同一套流程，只有顶部那一行
-    /// 错误文案不同（说的不是 "SSH"）—— 复用会误导用户"是不是 SSH 挂了"，
-    /// 拆开来写各自的话。剩下的行为（回落到本机 shell + 弹通知）完全一致。
+    /// 自成一套：回落到本机 shell + 弹通知。顶部那一行错误文案说的不是
+    /// "SSH"（[`Self::show_ssh_failure`] 不回落，且写成 "SSH" 会误导
+    /// 用户"是不是 SSH 挂了"），所以拆开写各自的话。
     fn handle_fallback_telnet(
         &mut self,
         error: &anyhow::Error,
@@ -647,10 +649,15 @@ impl TerminalPane {
         cx.notify();
     }
 
-    /// SSH 失败时展示错误并回退到本机 shell，保持界面始终可用。
+    /// SSH 连不上：把失败信息直接写进终端，**不**退回本机 shell。
     ///
-    /// 这是原本 `dial()` 内嵌的错误处理逻辑提取而来，供信任流程重试失败也复用。
-    fn handle_fallback(
+    /// 与串口 [`Self::show_serial_failure`] 同形 —— 占位终端已经挂在
+    /// `self.emulator` 上（[`Self::show_placeholder`] 挂的），错误就地留在
+    /// 标签页里，用户看完改配置重开即可。悄悄起一个本机 shell 反而会把
+    /// 真正的失败盖住，让人误以为连上了这台机器。
+    ///
+    /// 信任流程重试失败（[`Self::dial_ssh`] 里那条）也走这里。
+    fn show_ssh_failure(
         &mut self,
         error: &anyhow::Error,
         placeholder: &Entity<Emulator>,
@@ -659,35 +666,12 @@ impl TerminalPane {
         let err_text = format!("{error:#}");
         placeholder.update(cx, |em, cx| {
             let msg = format!(
-                "\r\n\x1b[31m{}\x1b[0m\r\n\x1b[33m{}\x1b[0m\r\n\x1b[90m{}\x1b[0m\r\n\r\n",
+                "\r\n\x1b[31m{}\x1b[0m\r\n\x1b[90m{}\x1b[0m\r\n\r\n",
                 t!("terminal.banner_ssh_failed", error => err_text),
-                t!("terminal.banner_fell_back"),
                 t!("terminal.banner_ssh_hint"),
             );
             em.write_output(msg.as_bytes(), cx);
         });
-        match Emulator::spawn(None, cx) {
-            Ok(local) => {
-                self.attach_emulator(&local, cx);
-                let banner = self.banner_fallback();
-                local.update(cx, |em, cx| em.write_output(banner.as_bytes(), cx));
-                self.emulator = Some(local);
-                self.error = None;
-                let name = self.host.name.clone();
-                cx.emit(TerminalPaneEvent::Notify(SharedString::from(t!(
-                    "terminal.ssh_failed_notify",
-                    name => name,
-                    error => err_text,
-                ))));
-            }
-            Err(local_err) => {
-                self.error = Some(SharedString::from(t!(
-                    "terminal.both_failed",
-                    error => err_text,
-                    local_error => format!("{local_err:#}"),
-                )));
-            }
-        }
         cx.notify();
     }
 
@@ -770,8 +754,8 @@ impl TerminalPane {
         self.error = None;
         self.remote_shell = true;
         // 这台主机上开着开关就在这儿装。只有这条路会走到 —— SSH 拨不通时
-        // 顶上来的是本机 shell（见 [`Self::dial`]），那不是用户点头要装的
-        // 那台机器，一个字都不该往里打。
+        // 错误直接留在占位终端里（见 [`Self::show_ssh_failure`]），不会拿到
+        // 别处机器去自作主张地装集成。
         //
         // 读的是**此刻**的 `self.host`：拨号那会儿用户可能刚在命令历史里把
         // 开关扳开，[`Self::set_shell_integration`] 已经把新值推下来了。
