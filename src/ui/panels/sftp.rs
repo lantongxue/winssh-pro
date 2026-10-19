@@ -19,8 +19,10 @@
 //! - **面板不碰协议**。只调 service，`russh`、SFTP 报文、`std::fs` 都不出现在这个
 //!   文件里。连接这件事归宿主 [`TerminalPanel`]：连不上时面板会收到一句原因并把它
 //!   显示在空状态里（见 [`SftpPanel::attach`]），要点重试就报一个 [`SftpPanelEvent::Reconnect`]。
-//! - **过滤与隐藏文件开关同时作用于两栏**。原型只让右栏响应，可两栏画的是同一个
-//!   模型、同一套表头，一半听一半不听更难解释；而且两栏并排看时，顺序不一致就没法对照。
+//! - **过滤只作用于右栏（远端）**，输入框捞的是远端那一屏里的那一个文件；本地栏
+//!   用户自己熟、条目也少，过滤反而把左右对照的关系也滤掉。隐藏文件开关仍作用
+//!   于两栏 —— 它是"这栏要不要画 `.`-开头文件"的画法选择，两栏听同一个开关
+//!   才对照得上。
 //!   列表固定按名称排（目录在前），表头只报列名、不提供排序。
 //! - **同时最多两条传输**，其余排队。它们复用同一条 SSH 连接，多开只是在抢同一个
 //!   窗口，两条已经够把它填满。
@@ -1671,14 +1673,15 @@ impl SftpPanel {
     ///
     /// 不在 render 里现算：那一步要为每个条目做两次 `to_lowercase` 再排一遍序，
     /// 而它只在条目或过滤词变化时才会变。顺序固定按名称（目录永远在前）——
-    /// 表头只报列名，不提供点着排序的入口。
+    /// 表头只报列名，不提供点着排序的入口。过滤词只对右栏生效（本地栏不需要
+    /// 过滤，过滤反而抹掉左右对照）。
     fn rebuild_view(&mut self, cx: &mut Context<Self>) {
         let needle = self.filter.read(cx).value().to_lowercase();
         let show_hidden = self.show_hidden;
 
         let local_at_root = self.local_dir.parent().is_none();
         let remote_at_root = self.at_root();
-        rebuild_pane(&mut self.local, &needle, show_hidden, true, local_at_root);
+        rebuild_pane(&mut self.local, "", show_hidden, true, local_at_root);
         rebuild_pane(&mut self.remote, &needle, show_hidden, true, remote_at_root);
         // 过滤词一改、目录一重列，选中集里可能有些路径已经不在列表上了。
         self.local.prune_selection();

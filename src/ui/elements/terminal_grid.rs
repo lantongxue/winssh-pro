@@ -21,12 +21,17 @@
 //! 交互不在这里：按键、滚轮、拖选都挂在外面那个 `div` 上
 //! （见 [`crate::ui::panels::TerminalPanel`]），元素只管画。
 //! [`point_at`] 是它们唯一需要的换算：指针位置落在哪个格子上。
+//!
+//! 输入法算半个例外：组字串（preedit）由外面交进来，元素只负责把它画在
+//! 光标那一格上；输入处理器也是外面造的，元素只在 paint 里替它登记 ——
+//! `Window::handle_input` 只能在 paint 里调，而候选窗该贴着哪一格，
+//! 也只有取完快照的这里才知道。
 
 use gpui_kit::{
     App, Bounds, CursorStyle, Element, ElementId, Entity, Font, FontFeatures, FontStyle,
     FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
-    LayoutId, Pixels, Point, Rgba, ShapedLine, StrikethroughStyle, Style, TextAlign, TextRun,
-    UnderlineStyle, Window, fill, outline, point, px, relative, size,
+    LayoutId, Pixels, Point, Rgba, ShapedLine, SharedString, StrikethroughStyle, Style, TextAlign,
+    TextRun, UnderlineStyle, Window, fill, outline, point, px, relative, size,
 };
 
 use alacritty_terminal::{term::search::Match, vte::ansi::CursorShape};
@@ -71,6 +76,18 @@ struct StyleKey {
     strike: bool,
 }
 
+/// 不带任何装饰的一种字形，只有颜色。
+fn cell_key(color: Hsla) -> StyleKey {
+    StyleKey {
+        color,
+        bold: false,
+        italic: false,
+        underline: false,
+        undercurl: false,
+        strike: false,
+    }
+}
+
 /// 一段连续的文字：同一行、同一套字形与颜色，紧挨着的若干格。
 struct Run {
     /// 这一段第一个字符落在第几行第几列。
@@ -80,21 +97,35 @@ struct Run {
     /// 所以它和 `text` 的长度不是一回事。
     cells: usize,
     key: StyleKey,
+    /// 这一段是纯 ASCII，后面还能再接（见 [`Run::accepts`]）。
+    ascii: bool,
 }
 
 impl Run {
-    fn new(at: GridPoint, character: char, key: StyleKey) -> Self {
+    fn new(at: GridPoint, character: char, key: StyleKey, ascii: bool) -> Self {
         Self {
             at,
             text: String::from(character),
             cells: 1,
             key,
+            ascii,
         }
     }
 
     /// 这个格子能不能接在这一段后面：字形一致，而且位置正好是下一格。
-    fn accepts(&self, at: GridPoint, key: &StyleKey) -> bool {
-        self.at.line == at.line && self.at.column + self.cells == at.column && &self.key == key
+    ///
+    /// 只有 ASCII 能并段，别的字符（中文、emoji、带组合符的字母）一个一段。
+    /// Windows 上一段文字的行高与基线取的是 DirectWrite 整行的行度量，段里只要
+    /// 混进一个靠回退字体（雅黑之类）画的字，整段的基线就跟着回退字体走 —— 同一
+    /// 行英文的上下位置于是取决于它和中文分没分在一段。而分段又随光标闪烁、
+    /// 随删字在变，结果就是一闪一跳。宽字符还有一层：`force_width` 按"一个字形
+    /// 一格"排，汉字占两格，和英文并在一段里位置就算错了。
+    fn accepts(&self, at: GridPoint, key: &StyleKey, ascii: bool) -> bool {
+        self.ascii
+            && ascii
+            && self.at.line == at.line
+            && self.at.column + self.cells == at.column
+            && &self.key == key
     }
 
     fn push(&mut self, character: char, counts_cell: bool) {
@@ -220,8 +251,16 @@ pub struct GridLayout {
     bounds: TerminalBounds,
     regions: Vec<Region>,
     natives: Vec<Native>,
-    lines: Vec<(GridPoint, ShapedLine)>,
+    /// 每段文字和它的落笔位置（已经按主字体的基线对齐过）。
+    lines: Vec<(Point<Pixels>, ShapedLine)>,
     cursor: Option<Cursor>,
+    /// 光标所在的那一格（不管光标此刻亮不亮、是什么形状）。组字串画在这儿，
+    /// 输入法候选窗也贴着它弹。光标滚出屏幕时为 `None`。
+    caret: Option<Bounds<Pixels>>,
+    /// 排好的组字串与它对齐基线要往下挪的量，没在组字时为 `None`。
+    preedit: Option<(Pixels, ShapedLine)>,
+    /// 组字串垫底的颜色：盖住它压着的那几格原有的字。
+    preedit_background: Hsla,
     /// 指针样式挂靠的那块区域。
     hitbox: Hitbox,
     /// 对端此刻自己收鼠标。是的话就不设 I 形指针，让它落回平台默认的箭头
@@ -244,7 +283,14 @@ pub struct TerminalGridElement {
     /// 光标这一帧画不画。闪烁的 off 阶段此值为 `false`，光标整个不画
     /// —— 和 `focused = false`（空心框）不是一回事。
     cursor_visible: bool,
+    /// 输入法正在组的那串字（候选还没选定时的 `ni'hao`），空串表示没在组字。
+    preedit: SharedString,
+    /// paint 末尾调一次，参数是光标那一格：外面在里面登记输入处理器。
+    on_input: Option<InputRegistration>,
 }
+
+/// 见 [`TerminalGridElement::on_input`]。
+type InputRegistration = Box<dyn FnOnce(Option<Bounds<Pixels>>, &mut Window, &mut App)>;
 
 impl TerminalGridElement {
     pub fn new(emulator: Entity<Emulator>, focused: bool, cursor_visible: bool) -> Self {
@@ -252,7 +298,29 @@ impl TerminalGridElement {
             emulator,
             focused,
             cursor_visible,
+            preedit: SharedString::default(),
+            on_input: None,
         }
+    }
+
+    /// 把输入法的组字串画在光标那一格上。
+    pub fn preedit(mut self, text: SharedString) -> Self {
+        self.preedit = text;
+        self
+    }
+
+    /// 在 paint 里登记输入处理器。
+    ///
+    /// 没有输入处理器，Windows 会把这扇窗的输入法上下文整个摘掉（gpui 的
+    /// `update_ime_enabled`）—— 用户切到中文输入法也打不出中文，按键根本
+    /// 到不了输入法那里。回调拿到的是光标那一格的矩形（窗口坐标），
+    /// 候选窗靠它定位。
+    pub fn on_input(
+        mut self,
+        register: impl FnOnce(Option<Bounds<Pixels>>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_input = Some(Box::new(register));
+        self
     }
 
     /// 把快照里的格子切成"底色块"、"自绘格"与"文字段"三串。
@@ -299,11 +367,7 @@ impl TerminalGridElement {
             // background before glyphs and redraw the glyph in a contrasting
             // colour so the cursor never hides the character underneath it.
             let is_block_cursor = block_cursor.is_some_and(|cursor| {
-                cell.point == cursor
-                    || (cell.is_wide_char_spacer()
-                        && cursor.column > 0
-                        && cell.point.line == cursor.line
-                        && cell.point.column + 1 == cursor.column)
+                under_block_cursor(cell.point, cell.is_wide_char_spacer(), cursor)
             });
             if is_block_cursor {
                 foreground = cursor_ink(palette.cursor(), palette.background(), foreground);
@@ -360,11 +424,13 @@ impl TerminalGridElement {
             }
 
             let key = cell_style(cell, foreground);
+            // 带零宽字符的格子也自成一段：组合符多半要回退字体来画。
+            let ascii = character.is_ascii() && zero_width.is_none();
             match &mut open {
-                Some(run) if run.accepts(at, &key) => run.push(character, true),
+                Some(run) if run.accepts(at, &key, ascii) => run.push(character, true),
                 _ => {
                     runs.extend(open.take());
-                    open = Some(Run::new(at, character, key));
+                    open = Some(Run::new(at, character, key, ascii));
                 }
             }
 
@@ -518,6 +584,44 @@ impl Element for TerminalGridElement {
             &matches,
             block_cursor,
         );
+        let caret = caret_cell(content, &grid_bounds);
+        // 组字串不按格子对齐（不传 `force_width`）：拼音是半角、汉字是全角，
+        // 按单格宽硬排的话汉字会叠在一起。它只是临时浮在光标上的一层，
+        // 不需要和下面的格子对得上。
+        let preedit = (!self.preedit.is_empty() && caret.is_some()).then(|| {
+            let key = StyleKey {
+                underline: true,
+                ..cell_key(palette.foreground())
+            };
+            let mut style = build_text_run(&key, &font);
+            style.len = self.preedit.len();
+            window.text_system().shape_line(
+                self.preedit.clone(),
+                font_size,
+                std::slice::from_ref(&style),
+                None,
+            )
+        });
+        // 主字体的行度量。靠回退字体画的那些段（中文、emoji）行度量不一样，
+        // gpui 按各段自己的度量摆基线，不对齐的话中文会比旁边的英文低一截。
+        // 全是 ASCII 时用不着，不量。
+        let main_metrics = (preedit.is_some() || runs.iter().any(|run| !run.ascii)).then(|| {
+            let mut style = build_text_run(&cell_key(palette.foreground()), &font);
+            style.len = 1;
+            let line = window.text_system().shape_line(
+                SharedString::new_static("m"),
+                font_size,
+                std::slice::from_ref(&style),
+                None,
+            );
+            (line.ascent, line.descent)
+        });
+        let shift = |line: &ShapedLine| {
+            main_metrics.map_or(px(0.), |main| {
+                baseline_shift(line_height, main, (line.ascent, line.descent))
+            })
+        };
+        let preedit = preedit.map(|line| (shift(&line), line));
         let lines = runs
             .into_iter()
             .map(|run| {
@@ -533,7 +637,11 @@ impl Element for TerminalGridElement {
                     // 通常什么都不用挪 —— 它兜住的是字体里那些宽度不老实的字符。
                     Some(cell_width),
                 );
-                (run.at, line)
+                let mut origin = cell_origin(run.at, &grid_bounds);
+                if !run.ascii {
+                    origin.y += shift(&line);
+                }
+                (origin, line)
             })
             .collect();
 
@@ -543,6 +651,9 @@ impl Element for TerminalGridElement {
             natives,
             lines,
             cursor,
+            caret,
+            preedit,
+            preedit_background: palette.background(),
             hitbox,
             mouse_reporting,
         }
@@ -600,10 +711,10 @@ impl Element for TerminalGridElement {
             ));
         }
 
-        for (at, line) in &layout.lines {
+        for (origin, line) in &layout.lines {
             // 排版失败（字体缺字形）就跳过这一段，别把整帧连坐。
             let _ = line.paint(
-                cell_origin(*at, bounds),
+                *origin,
                 bounds.line_height,
                 TextAlign::Left,
                 None,
@@ -617,6 +728,28 @@ impl Element for TerminalGridElement {
             && cursor.shape != CursorShape::Block
         {
             window.paint_quad(fill(cursor.bounds, cursor.color));
+        }
+
+        // 组字串最后画，连光标一起盖住：组字的时候光标该在组字串里，
+        // 而不是在它底下露出半截。
+        if let (Some((shift, line)), Some(caret)) = (&layout.preedit, layout.caret) {
+            let extent = size(line.width.ceil().max(bounds.cell_width), bounds.line_height);
+            window.paint_quad(fill(
+                Bounds::new(caret.origin, extent),
+                layout.preedit_background,
+            ));
+            let _ = line.paint(
+                point(caret.origin.x, caret.origin.y + *shift),
+                bounds.line_height,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+
+        if let Some(register) = self.on_input.take() {
+            register(layout.caret, window, cx);
         }
 
         // 指针样式：能划词的时候是 I 形，对端自己收鼠标的时候**什么都不设**。
@@ -815,27 +948,17 @@ fn cursor(
     focused: bool,
 ) -> Option<Cursor> {
     let cursor = content.cursor?;
-    // 快照里的光标行号是相对可见区域的，滚动之后要跟着挪；挪出屏幕就不画。
-    let line = cursor.point.line + content.display_offset as i32;
-    if line < 0 || line >= content.screen_lines as i32 {
-        return None;
-    }
+    let cell = caret_cell(content, bounds)?;
+    let origin = cell.origin;
 
     let shape = match focused {
         true => cursor.shape,
         false => CursorShape::HollowBlock,
     };
-    let origin = cell_origin(
-        GridPoint {
-            line,
-            column: cursor.point.column,
-        },
-        bounds,
-    );
     let extent = match shape {
         CursorShape::Beam => size(BAR_WIDTH, bounds.line_height),
-        CursorShape::Underline => size(bounds.cell_width, UNDERLINE_THICKNESS * 2.),
-        _ => size(bounds.cell_width, bounds.line_height),
+        CursorShape::Underline => size(cell.size.width, UNDERLINE_THICKNESS * 2.),
+        _ => cell.size,
     };
     // 下划线光标贴着格子底边，其余几种从左上角起。
     let origin = match shape {
@@ -848,6 +971,53 @@ fn cursor(
         color: palette.cursor(),
         shape,
     })
+}
+
+/// 一段文字要往下挪多少，基线才和主字体那一段落在同一条线上。
+///
+/// gpui 画一段文字时把它的行度量（`ascent + descent`）在行高里上下居中，
+/// 基线落在 `(行高 - ascent - descent) / 2 + ascent`。回退字体（雅黑之类）的
+/// 度量比等宽字体高得多，单独成段时基线就和旁边的英文差出一截，这里补回来。
+fn baseline_shift(line_height: Pixels, main: (Pixels, Pixels), run: (Pixels, Pixels)) -> Pixels {
+    let baseline =
+        |(ascent, descent): (Pixels, Pixels)| (line_height - ascent - descent) / 2. + ascent;
+    baseline(main) - baseline(run)
+}
+
+/// 光标所在那一格的矩形，不看光标的形状与闪烁。
+///
+/// 快照里的光标行号是相对可见区域的，滚动之后要跟着挪；挪出屏幕就是 `None`。
+/// 光标压在宽字符（CJK、emoji）上时是两格宽 —— alacritty 已经把落在后半格
+/// 占位符上的光标挪回了前半格，这里只需要把它撑到整个字。
+fn caret_cell(content: &Content, bounds: &TerminalBounds) -> Option<Bounds<Pixels>> {
+    let cursor = content.cursor?;
+    let line = cursor.point.line + content.display_offset as i32;
+    if line < 0 || line >= content.screen_lines as i32 {
+        return None;
+    }
+    let at = GridPoint {
+        line,
+        column: cursor.point.column,
+    };
+    // 快照的格子按屏幕行逐行排满，屏幕坐标直接换成下标。
+    let wide = content
+        .cells
+        .get(line as usize * content.columns + at.column)
+        .is_some_and(GridCell::is_wide_char);
+    let cells = if wide { 2. } else { 1. };
+    Some(Bounds::new(
+        cell_origin(at, bounds),
+        size(bounds.cell_width * cells, bounds.line_height),
+    ))
+}
+
+/// 这一格是否落在实心块光标底下：光标那一格本身，或者光标压着的宽字符的
+/// 后半格占位符（就在光标右边一格）。
+///
+/// `point` 与 `cursor` 都是缓冲坐标。
+fn under_block_cursor(point: GridPoint, wide_char_spacer: bool, cursor: GridPoint) -> bool {
+    point == cursor
+        || (wide_char_spacer && point.line == cursor.line && point.column == cursor.column + 1)
 }
 
 /// 指针位置落在屏幕的第几行第几列，(列, 行)，都是 0 起。

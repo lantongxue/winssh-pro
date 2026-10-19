@@ -35,8 +35,8 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    App, AppContext as _, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, ScrollDelta,
     ScrollWheelEvent, SharedString, Styled as _, Subscription, Window, actions, div, px,
 };
@@ -61,6 +61,8 @@ use crate::{
     },
 };
 use rust_i18n::t;
+
+use super::ime::TerminalInputHandler;
 
 actions!(
     session,
@@ -186,6 +188,10 @@ pub struct TerminalPane {
     /// 光标这一帧画不画。闪烁开着时由计时器 530ms 翻一次，每次按键重置为
     /// `true`（用户看到的行为是"打字时光标常亮，停下来才闪"）。
     cursor_visible: bool,
+    /// 输入法正在组、还没上屏的那串字（见 [`super::ime`]）。空串表示没在组字。
+    preedit: SharedString,
+    /// 上一次报给输入法的光标格。变了才让平台挪候选窗，不必每帧都挪。
+    ime_anchor: Option<Bounds<Pixels>>,
     focus_handle: FocusHandle,
 }
 
@@ -207,6 +213,8 @@ impl TerminalPane {
                 last_query: SearchQuery::default(),
                 context_menu_allowed: true,
                 cursor_visible: true,
+                preedit: SharedString::default(),
+                ime_anchor: None,
                 focus_handle,
             };
             match origin {
@@ -1034,6 +1042,48 @@ impl TerminalPane {
         }
     }
 
+    // ─── 输入法 ─────────────────────────────────────────────────────────────
+
+    /// 输入法正在组的那串字。
+    pub(super) fn preedit(&self) -> &str {
+        &self.preedit
+    }
+
+    /// 输入法改了组字串（空串就是组字结束、或被撤掉）。
+    pub(super) fn set_preedit(&mut self, text: &str, cx: &mut Context<Self>) {
+        if self.preedit.as_ref() != text {
+            self.preedit = SharedString::from(text.to_owned());
+            cx.notify();
+        }
+    }
+
+    /// 输入法选定了字：组字串收起，选定的字作为字节写给对端。
+    ///
+    /// 不走 [`Emulator::key_down`]：那条路按"一下按键"翻译，而上屏的是一整段
+    /// 文本（一次可能是一个词组）。终端里中文就是 UTF-8 字节，原样送就对了。
+    pub(super) fn commit_ime_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.set_preedit("", cx);
+        if text.is_empty() {
+            return;
+        }
+        let Some(emulator) = self.emulator.clone() else {
+            return;
+        };
+        let bytes = text.as_bytes().to_vec();
+        emulator.update(cx, |emulator, cx| emulator.input(bytes, cx));
+        self.cursor_visible = true;
+        cx.notify();
+    }
+
+    /// 记下这一帧的光标格，返回要不要让平台重新定位候选窗。
+    fn ime_anchor_moved(&mut self, anchor: Option<Bounds<Pixels>>) -> bool {
+        if self.ime_anchor == anchor {
+            return false;
+        }
+        self.ime_anchor = anchor;
+        anchor.is_some()
+    }
+
     /// 远端文件拖进终端时盖在网格上的那层提示遮罩。
     ///
     /// 与 SFTP 栏里下载/上传的遮罩同一套做法（见 `sftp.rs` 的 `local-drop-overlay`）：
@@ -1814,6 +1864,12 @@ impl Render for TerminalPane {
         // —— 差一帧对这两个用处都没有影响。
         self.grid = emulator.read(cx).bounds();
         let focused = self.terminal_is_focused(window);
+        // 焦点一走，输入处理器就不再登记，输入法收尾时上屏的字也送不回来了
+        // —— 留着的组字串只会永远浮在那儿。锚点一并忘掉，下次聚焦时再推一次。
+        if !focused {
+            self.preedit = SharedString::default();
+            self.ime_anchor = None;
+        }
 
         // 字体在这里定，元素照着量格子（[`TerminalGridElement::prepaint`] 读的
         // 是从这块 `div` 继承下去的 `text_style`）。取的是终端自己那一份设置
@@ -1866,11 +1922,26 @@ impl Render for TerminalPane {
             .on_mouse_up_out(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Middle, cx.listener(Self::on_mouse_up))
             .on_drop(cx.listener(Self::on_drop_remote_entries))
-            .child(TerminalGridElement::new(
-                emulator,
-                focused,
-                self.cursor_visible,
-            ))
+            .child(
+                TerminalGridElement::new(emulator, focused, self.cursor_visible)
+                    .preedit(self.preedit.clone())
+                    .on_input({
+                        let pane = cx.entity();
+                        let focus_handle = self.focus_handle.clone();
+                        move |caret, window, cx| {
+                            let anchor = caret.filter(|_| focus_handle.is_focused(window));
+                            if pane.update(cx, |pane, _| pane.ime_anchor_moved(anchor)) {
+                                window.invalidate_character_coordinates();
+                            }
+                            // 只在聚焦时真的登记（`handle_input` 自己会判断）。
+                            window.handle_input(
+                                &focus_handle,
+                                TerminalInputHandler::new(pane, caret),
+                                cx,
+                            );
+                        }
+                    }),
+            )
             // 搜索栏与 ZMODEM 进度条浮在网格上（`absolute`），所以放在网格
             // 之后当兄弟画，而不是把网格顶下去 —— 顶下去会让终端重排，
             // 开关一次抖一屏。一个贴右上、一个贴左上，不打架。

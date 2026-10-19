@@ -136,6 +136,11 @@ impl AnsiPalette {
         self.cursor
     }
 
+    /// 终端的默认前景色。输入法的组字串用它画。
+    pub fn foreground(&self) -> Hsla {
+        self.foreground
+    }
+
     /// 终端的默认底色。半透明的搜索高亮要合成到它上面。
     pub fn background(&self) -> Hsla {
         self.background

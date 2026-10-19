@@ -204,6 +204,11 @@ impl GridCell {
         self.cell.flags.contains(Flags::INVERSE)
     }
 
+    /// 宽字符（CJK、emoji）本身，落在它占的两格里的前一格。
+    pub fn is_wide_char(&self) -> bool {
+        self.cell.flags.contains(Flags::WIDE_CHAR)
+    }
+
     /// 宽字符（CJK、emoji）占两格，后一格是这样的占位符，不画。
     pub fn is_wide_char_spacer(&self) -> bool {
         self.cell.flags.contains(Flags::WIDE_CHAR_SPACER)

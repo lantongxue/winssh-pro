@@ -200,3 +200,91 @@
             (79, 23)
         );
     }
+
+    fn with_cursor(column: usize, line: i32, display_offset: usize) -> Content {
+        Content {
+            columns: 80,
+            screen_lines: 24,
+            display_offset,
+            cursor: Some(crate::terminal::Cursor {
+                point: at(column, line),
+                shape: CursorShape::Block,
+            }),
+            ..Content::default()
+        }
+    }
+
+    /// 输入法的组字串与候选窗都贴着这一格。Windows 上终端以前不登记输入处理器，
+    /// 输入法上下文被整个摘掉，切到中文输入法也打不出中文 —— 现在登记了，
+    /// 这一格算错的话候选窗就会飘到别处去。
+    #[test]
+    fn the_caret_is_the_cursor_cell_in_window_coordinates() {
+        let g = grid(9., 18., 8.);
+        let caret = caret_cell(&with_cursor(3, 5, 0), &g).unwrap();
+        assert_eq!(caret.origin, point(px(8. + 9. * 3.), px(18. * 5.)));
+        assert_eq!(caret.size, size(px(9.), px(18.)));
+    }
+
+    #[test]
+    fn the_caret_follows_the_scroll_offset() {
+        let g = grid(9., 18., 8.);
+        let caret = caret_cell(&with_cursor(0, 5, 2), &g).unwrap();
+        assert_eq!(caret.origin.y, px(18. * 7.));
+    }
+
+    /// 光标压在宽字符上时，后半格占位符（光标右边一格）也要垫上光标色。
+    /// 以前判断写反成"光标左边一格"：光标停在「吗」上时字的右半边被反色画在
+    /// 普通底色上、看不见；光标停在「吗」后面时，又把「吗」的右半边涂成了光标色
+    /// —— 截图里就是中文被光标切掉半个字。
+    #[test]
+    fn a_block_cursor_on_a_wide_char_covers_its_spacer() {
+        let cursor = at(4, 2);
+        assert!(under_block_cursor(at(4, 2), false, cursor));
+        assert!(under_block_cursor(at(5, 2), true, cursor));
+        // 左边那个宽字符的占位符不归光标管。
+        assert!(!under_block_cursor(at(3, 2), true, cursor));
+        // 右边一格不是占位符（光标下是窄字符）时也不归光标管。
+        assert!(!under_block_cursor(at(5, 2), false, cursor));
+        assert!(!under_block_cursor(at(5, 3), true, cursor));
+    }
+
+    /// 只有 ASCII 能并段，中文自成一段。以前 `-s=你` 并成一段：Windows 上这一段
+    /// 的基线跟着雅黑走，英文被压低；光标一亮又把 `=` 拆出去，英文弹回原位
+    /// —— 命令里中英混排时，光标一闪整行文字就跟着一跳。
+    #[test]
+    fn only_ascii_cells_join_a_run() {
+        let key = || cell_key(gpui_kit::black());
+        let run = Run::new(at(0, 0), '=', key(), true);
+        assert!(run.accepts(at(1, 0), &key(), true));
+        assert!(!run.accepts(at(1, 0), &key(), false));
+
+        let wide = Run::new(at(1, 0), '你', key(), false);
+        assert!(!wide.accepts(at(2, 0), &key(), true));
+        assert!(!wide.accepts(at(3, 0), &key(), false));
+    }
+
+    #[test]
+    fn same_metrics_need_no_baseline_shift() {
+        let main = (px(12.), px(3.));
+        assert_eq!(baseline_shift(px(18.), main, main), px(0.));
+    }
+
+    /// 回退字体的度量更高：单独成段时它的基线落得更低（居中之后 ascent 更大），
+    /// 得往上提回到主字体的基线上。
+    #[test]
+    fn a_taller_fallback_font_is_lifted_onto_the_main_baseline() {
+        let line_height = px(18.);
+        let main = (px(12.), px(3.));
+        let fallback = (px(14.), px(4.));
+        let shift = baseline_shift(line_height, main, fallback);
+        // 主字体基线 = (18-15)/2+12 = 13.5；回退字体 = (18-18)/2+14 = 14。
+        assert_eq!(shift, px(-0.5));
+    }
+
+    /// 光标滚出屏幕时没有锚点，候选窗落回系统默认位置，而不是钉在屏幕外。
+    #[test]
+    fn a_cursor_scrolled_off_screen_has_no_caret() {
+        let g = grid(9., 18., 8.);
+        assert!(caret_cell(&with_cursor(0, 5, 30), &g).is_none());
+        assert!(caret_cell(&Content::default(), &g).is_none());
+    }
