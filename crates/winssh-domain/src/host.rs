@@ -359,6 +359,13 @@ pub struct Host {
     /// [`Self::password`]、根目录在 `webdav.root`）；别的协议主机这一份原样
     /// 存着但没人读。
     pub webdav: crate::settings::webdav::WebdavSettings,
+    /// SFTP 通道怎么开（标准子系统 / sudo 提权 / 自定义命令）。见
+    /// [`crate::settings::sftp::SftpSettings`]。
+    ///
+    /// 同样进 [`HostDraft`]：它只在走 SSH 的主机（[`HostKind::Ssh`] /
+    /// [`HostKind::Sftp`]）上有意义；SFTP 面板、终端底部的 SFTP 栏与智能助手的
+    /// 传输都按它开通道。
+    pub sftp: crate::settings::sftp::SftpSettings,
     /// 每次连上这台机器，要不要往对端 shell 里装一份 OSC 133 标记。
     ///
     /// 不进 [`HostDraft`]：和采集节奏、转发规则一样，它是连上之后在命令历史
@@ -464,6 +471,8 @@ pub struct HostDraft {
     pub ftp: crate::settings::ftp::FtpSettings,
     /// WebDAV 连接设置，见 [`Host::webdav`]。
     pub webdav: crate::settings::webdav::WebdavSettings,
+    /// SFTP 开法，见 [`Host::sftp`]。
+    pub sftp: crate::settings::sftp::SftpSettings,
 }
 
 /// 一台主机的运行时状态。

@@ -66,7 +66,8 @@ const SCHEMA: [&str; 13] = [
         ftp_settings TEXT NOT NULL DEFAULT '',
         webdav_settings TEXT NOT NULL DEFAULT '',
         shell_integration INTEGER NOT NULL DEFAULT 0,
-        favorites    TEXT    NOT NULL DEFAULT ''
+        favorites    TEXT    NOT NULL DEFAULT '',
+        sftp_settings TEXT   NOT NULL DEFAULT ''
     )",
     // 保险箱。和 hosts 之间没有外键：主机存的是凭据的内容本身，不是一个指向
     // 这里的 id（见 `crate::credential` 的模块文档），删一条凭据不牵动任何主机。
@@ -215,7 +216,7 @@ const SCHEMA: [&str; 13] = [
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 30] = [
+const MIGRATIONS: [&str; 31] = [
     // 连接类型（见 [`crate::host::HostKind`]）。老库补出来的是 `ssh` ——
     // 这一列出现之前存的每一台主机都是 SSH，出厂值不改变任何人的行为。
     "ALTER TABLE hosts ADD COLUMN kind TEXT NOT NULL DEFAULT 'ssh'",
@@ -297,6 +298,10 @@ const MIGRATIONS: [&str; 30] = [
     // ── SFTP 面板收藏夹 ──
     // 老库补出来是空串：那一列出现之前没有任何主机有夹子里有东西，与出厂态一致。
     "ALTER TABLE hosts ADD COLUMN favorites TEXT NOT NULL DEFAULT ''",
+    // ── SFTP 提权（sudo / 自定义服务端命令） ──
+    // 空串就是出厂档"标准子系统"—— 这一列出现之前每台主机开 SFTP 走的都是它，
+    // 老库补出来不改变任何人的连法，更不会在升级之后悄悄开始 sudo。
+    "ALTER TABLE hosts ADD COLUMN sftp_settings TEXT NOT NULL DEFAULT ''",
 ];
 
 /// 数据层专用的 tokio runtime，进程生命周期内只建一次。

@@ -237,8 +237,11 @@ impl DockedSftpPanel {
         let Some(session) = self.ssh.clone() else {
             return;
         };
+        // 主机设了 sudo 提权的话这一步就以 sudo 开（可能弹密码框）；面板上
+        // 按过提权按钮的，重连也照那一档来。
+        let launch = self.sftp_panel.read(cx).launch();
         cx.spawn_in(window, async move |this, cx| {
-            let outcome = SftpService::connect(session.handle).await;
+            let outcome = SftpService::connect(session.handle, launch).await;
             _ = this.update_in(cx, |this, window, cx| match outcome {
                 Ok(service) => {
                     this.connecting = false;
@@ -298,6 +301,20 @@ impl DockedSftpPanel {
                     this.connecting = false;
                     this.dial_ssh(window, cx);
                 }
+                // 提权 / 退回普通权限：连接还在就在它上面另开一条，不重新拨号。
+                SftpPanelEvent::Elevate(mode) => match this.ssh.clone() {
+                    Some(session) => {
+                        SftpPanel::reopen(&this.sftp_panel, session.handle, *mode, window, cx)
+                    }
+                    None => this.sftp_panel.update(cx, |panel, cx| {
+                        panel.finish_elevate(
+                            *mode,
+                            Err(t!("sftp.elevate_not_connected").into()),
+                            window,
+                            cx,
+                        )
+                    }),
+                },
                 SftpPanelEvent::OpenEditor(editor) => {
                     if let Some(area) = this.dock_area.upgrade() {
                         let editor = editor.clone();

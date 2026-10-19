@@ -3433,6 +3433,30 @@ sftp_form.ok_new_folder:
 sftp_form.ok_rename:
   en: Save
   zh-CN: 保存
+sudo_password.title:
+  en: sudo password
+  zh-CN: sudo 密码
+sudo_password.header_note:
+  en: SFTP is being opened with elevated privileges
+  zh-CN: 正在以提升后的权限打开 SFTP
+sudo_password.label:
+  en: "Password of %{user} on %{host}, for sudo"
+  zh-CN: "%{host} 上 %{user} 的密码（供 sudo 使用）"
+sudo_password.placeholder:
+  en: sudo password
+  zh-CN: sudo 密码
+sudo_password.retry:
+  en: That password was rejected by sudo. Try again.
+  zh-CN: sudo 拒绝了这个密码，请重新输入。
+sudo_password.hint:
+  en: Kept in memory only until the app quits; the SFTP panel and the assistant share it for this host.
+  zh-CN: 只保存在内存里，应用退出即清除；同一台主机的 SFTP 面板与智能助手共用。
+sudo_password.ok:
+  en: Elevate
+  zh-CN: 提权
+sudo_password.cancel:
+  en: Cancel
+  zh-CN: 取消
 sftp_form.cancel:
   en: Cancel
   zh-CN: 取消
@@ -4172,6 +4196,15 @@ sftp.remote_only:
 sftp.side_by_side:
   en: Side by side
   zh-CN: 两栏并排
+sftp.elevate_with:
+  en: "Reopen with elevated privileges (%{identity})"
+  zh-CN: "以提升的权限重新打开（%{identity}）"
+sftp.elevated_as:
+  en: "Opened as %{identity}. Click to go back to normal privileges"
+  zh-CN: "已以 %{identity} 身份打开，点击恢复普通权限"
+sftp.elevate_not_connected:
+  en: The SSH connection is not up yet, so SFTP cannot be reopened
+  zh-CN: SSH 连接尚未建立，无法重新打开 SFTP
 sftp.hide_dotfiles:
   en: Hide entries starting with a dot
   zh-CN: 隐藏点开头的条目
@@ -4767,6 +4800,30 @@ ssh_sftp.closed_early:
 ssh_sftp.disconnected:
   en: The connection dropped while waiting for the SFTP subsystem to answer
   zh-CN: 等待 SFTP 子系统响应时连接断开
+ssh_sftp.exec_failed:
+  en: Starting the SFTP server command on the remote failed
+  zh-CN: 远端启动 SFTP 服务命令失败
+ssh_sftp.exec_refused:
+  en: The remote refused to run a command on this connection
+  zh-CN: 远端拒绝在这条连接上执行命令
+ssh_sftp.sudo_timeout:
+  en: sudo did not answer within %{seconds} s
+  zh-CN: sudo 超过 %{seconds} 秒未响应
+ssh_sftp.sudo_canceled:
+  en: The sudo password was not entered; SFTP was not elevated
+  zh-CN: 未输入 sudo 密码，SFTP 未提权
+ssh_sftp.sudo_send_failed:
+  en: Sending the sudo password failed
+  zh-CN: 发送 sudo 密码失败
+ssh_sftp.sudo_no_server:
+  en: "No sftp-server executable was found on the remote (sshd may only use internal-sftp); set a custom SFTP server command in the host form"
+  zh-CN: "远端找不到 sftp-server 可执行文件（sshd 可能只用 internal-sftp），可在主机表单里填写自定义 SFTP 服务命令"
+ssh_sftp.sudo_failed:
+  en: "Starting SFTP with sudo failed: %{reason}"
+  zh-CN: "以 sudo 启动 SFTP 失败：%{reason}"
+ssh_sftp.sudo_exit:
+  en: Starting SFTP with sudo failed, exit status %{status}
+  zh-CN: 以 sudo 启动 SFTP 失败，退出码 %{status}
 
 # ── 远端命令执行 ─────────────────────────────────────────────────────────
 ssh_exec.exit_status:
@@ -4878,6 +4935,9 @@ assistant.transfer_running:
 assistant.transfer_summary:
   en: "%{files} file(s) · %{size}"
   zh-CN: "%{files} 个文件 · %{size}"
+assistant.transfer_session_as:
+  en: "%{session} (as %{identity})"
+  zh-CN: "%{session}（以 %{identity} 身份）"
 assistant.transfer_approval_upload:
   en: 'Upload to %{session}?'
   zh-CN: 上传到 %{session}？
@@ -5549,6 +5609,48 @@ host_form.ftp_security_implicit:
 host_form.ftp_hint:
   en: Explicit FTPS upgrades the connection to TLS before logging in and fails rather than falling back to plain text. Certificates the system trusts are accepted silently; for others (self-signed, expired…) you are asked once, and the fingerprint is remembered under Trusted Hosts.
   zh-CN: 显式 FTPS 在登录前把连接升级为 TLS，服务器不支持时直接报错，不会退回明文。系统信任的证书直接连接；不信任的（自签名、过期……）会弹框询问一次，指纹记在「受信任主机」里。
+host_form.page_sftp:
+  en: SFTP
+  zh-CN: SFTP
+host_form.field_sftp_mode:
+  en: How SFTP is opened
+  zh-CN: SFTP 打开方式
+host_form.sftp_mode_subsystem:
+  en: Standard subsystem (login account's permissions)
+  zh-CN: 标准子系统（登录账号的权限）
+host_form.sftp_mode_sudo:
+  en: Elevate with sudo
+  zh-CN: sudo 提权
+host_form.sftp_mode_custom:
+  en: Custom server command
+  zh-CN: 自定义服务命令
+host_form.field_sftp_run_as:
+  en: Run as user (sudo -u)
+  zh-CN: 切换为用户（sudo -u）
+host_form.sftp_run_as_placeholder:
+  en: Leave empty for root
+  zh-CN: 留空即 root
+host_form.field_sftp_command:
+  en: SFTP server command
+  zh-CN: SFTP 服务命令
+host_form.sftp_command_placeholder:
+  en: sudo /usr/lib/openssh/sftp-server
+  zh-CN: sudo /usr/lib/openssh/sftp-server
+host_form.sftp_hint_subsystem:
+  en: sshd starts sftp-server with the login account's permissions. Places that need root (/etc, other users' directories) stay read-only or hidden.
+  zh-CN: 由 sshd 以登录账号的权限启动 sftp-server，需要 root 的地方（/etc、别人的目录）只读或不可见。
+host_form.sftp_hint_sudo:
+  en: "sftp-server is started through sudo. When sudo asks for a password, the login password is tried first, then you are asked; it is kept in memory only. Files you create belong to the user above. Hosts with requiretty in sudoers cannot be elevated this way."
+  zh-CN: "通过 sudo 启动 sftp-server。sudo 要密码时先试登录密码，不行再弹框询问，只保存在内存里。新建的文件属主为上面那个用户。sudoers 开了 requiretty 的机器无法用这种方式提权。"
+host_form.sftp_hint_custom:
+  en: "The command is run as-is instead of the subsystem (like WinSCP's SFTP server field). No password is fed in, so sudo needs NOPASSWD for it — for sudoers that only allow sftp-server itself."
+  zh-CN: "原样执行这条命令代替子系统（同 WinSCP 的「SFTP 服务器」一栏）。不会喂密码，sudo 需对它配 NOPASSWD —— 用于 sudoers 只放行 sftp-server 本身的机器。"
+host_form.sftp_run_as_invalid:
+  en: "The sudo target user may only contain letters, digits, '.', '_' and '-' (or #uid)"
+  zh-CN: "sudo 切换的用户名只能包含字母、数字、「.」「_」「-」（或 #uid）"
+host_form.sftp_command_required:
+  en: Enter the SFTP server command, or choose another way of opening SFTP
+  zh-CN: 请填写 SFTP 服务命令，或改用其他打开方式
 host_form.field_s3_preset:
   en: Provider Preset
   zh-CN: 服务商预设

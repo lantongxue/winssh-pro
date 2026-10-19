@@ -33,7 +33,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     sftp::{FileEntry, FileKind, TransferChild, TransferDirection, path},
-    ssh::{SshHandler, open_sftp_session},
+    ssh::{SftpLaunch, SshHandler, open_sftp_session},
 };
 use rust_i18n::t;
 
@@ -62,12 +62,14 @@ pub(crate) const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(80);
 /// 把 200 MB 的日志读进一个输入框是给自己找麻烦。
 pub const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 
-/// 一条会话的 SFTP 入口。廉价克隆（两个 `Arc`），可以直接搬进后台任务。
+/// 一条会话的 SFTP 入口。廉价克隆（几个 `Arc`），可以直接搬进后台任务。
 #[derive(Clone)]
 pub struct SftpService {
     session: Arc<SftpSession>,
     /// 远端家目录，第一次要的时候问一次就存下来（`realpath .`）。
     home: Arc<Mutex<Option<String>>>,
+    /// 换了谁的身份开的，见 [`Self::identity`]。
+    identity: Option<Arc<str>>,
 }
 
 /// 面板发起一次传输时要给的东西。
@@ -198,18 +200,28 @@ impl PauseState {
 }
 
 impl SftpService {
-    /// 在已认证的连接上开一条 SFTP 会话。
+    /// 在已认证的连接上开一条 SFTP 会话，按 `launch` 定的开法（标准子系统 /
+    /// sudo / 自定义命令，见 [`crate::ssh::sftp`]）。
     ///
-    /// 这一步是真要等网络的：对端没配 `Subsystem sftp` 时会失败，
-    /// 错误里带着原因（见 [`crate::ssh::sftp`]），界面原样通知即可。
-    pub async fn connect(handle: Arc<Handle<SshHandler>>) -> Result<Self> {
-        let session = crate::db::run(async move { open_sftp_session(&handle).await })
+    /// 这一步是真要等网络的：对端没配 `Subsystem sftp`、sudo 不放行时会失败，
+    /// 错误里带着原因，界面原样通知即可。sudo 要密码时会经 `launch` 里的钩子
+    /// 去问（见 [`crate::sudo_auth`]），这一趟可能等人很久。
+    pub async fn connect(handle: Arc<Handle<SshHandler>>, launch: SftpLaunch) -> Result<Self> {
+        let identity = launch.identity().map(Arc::from);
+        let session = crate::db::run(async move { open_sftp_session(&handle, &launch).await })
             .await
             .with_context(|| t!("sftp_err.action_open_session").to_string())?;
         Ok(Self {
             session,
             home: Arc::new(Mutex::new(None)),
+            identity,
         })
+    }
+
+    /// 这条通道换了谁的身份开的（`sudo`、`sudo -u www-data` 或那条自定义命令）。
+    /// 标准子系统是 `None`。面板的提权按钮与它的提示看这个。
+    pub fn identity(&self) -> Option<&str> {
+        self.identity.as_deref()
     }
 
     /// 远端家目录。SFTP 子系统的当前工作目录就是登录用户的家目录，

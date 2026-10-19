@@ -61,6 +61,7 @@
             s3: Default::default(),
             ftp: Default::default(),
             webdav: Default::default(),
+            sftp: Default::default(),
             easytier: EasyTierSettings {
                 ipv4: ipv4.into(),
                 node_name: id.into(),

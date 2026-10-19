@@ -14,5 +14,6 @@ pub mod ftp;
 pub mod rdp;
 pub mod s3;
 pub mod serial;
+pub mod sftp;
 pub mod vnc;
 pub mod webdav;

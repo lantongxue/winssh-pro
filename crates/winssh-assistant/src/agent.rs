@@ -107,7 +107,7 @@ use crate::transfer::{
 };
 use crate::local::{self, LocalReview};
 use crate::{AssistantConfig, ChatImage, ChatRole, CommandStatus, ProviderProtocol};
-use winssh_ssh::{SshHandler, exec_script};
+use winssh_ssh::{SftpLaunch, SshHandler, exec_script};
 use rust_i18n::t;
 
 /// 一场运行最多打给模型多少次。够跑完一串"查看 → 判断 → 处理"的循环，
@@ -259,6 +259,26 @@ pub struct SessionTarget {
     /// 操作系统标识，模型选命令的写法要看它。
     pub platform: SharedString,
     pub handle: Arc<Handle<SshHandler>>,
+    /// 传文件时 SFTP 通道怎么开：跟着主机设置走，和 SFTP 面板是同一份
+    /// （提权的主机上传输也是以 sudo 身份搬的，卡片上会写明，见
+    /// [`Self::transfer_label`]）。
+    pub sftp: SftpLaunch,
+}
+
+impl SessionTarget {
+    /// 传输卡片上"在哪台机器上"那一格：提权的主机后面跟上身份，用户批准
+    /// 之前一眼看得到这一趟是以 root（或别的用户）写进去的。
+    pub fn transfer_label(&self) -> SharedString {
+        match self.sftp.identity() {
+            Some(identity) => t!(
+                "assistant.transfer_session_as",
+                session => self.name,
+                identity => identity
+            )
+            .into(),
+            None => self.name.clone(),
+        }
+    }
 }
 
 /// 助手能操作的那台机器：一格随标签页换内容的共享槽。
@@ -755,7 +775,7 @@ impl Gate {
             Err(reason) => return ToolCallAction::skip(reason),
         };
         self.ask(
-            target.name.clone(),
+            target.transfer_label(),
             Some(target.id),
             Proposal::Transfer(request),
             TRANSFER_DENIED,
@@ -1233,7 +1253,7 @@ impl Transfer {
             return serde_json::json!({ "error": NO_SESSION_TRANSFER });
         };
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let planned = TransferCard::planned(target.name.clone(), &request, CommandStatus::Ok);
+        let planned = TransferCard::planned(target.transfer_label(), &request, CommandStatus::Ok);
         _ = self
             .events
             .unbounded_send(AgentEvent::Transfer(TransferUpdate::Started {
@@ -1253,6 +1273,7 @@ impl Transfer {
             .transfer
             .transfer(
                 target.handle.clone(),
+                target.sftp.clone(),
                 request,
                 progress,
                 self.cancel.clone(),

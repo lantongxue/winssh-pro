@@ -10,6 +10,7 @@
             s3: Default::default(),
             ftp: Default::default(),
             webdav: Default::default(),
+            sftp: Default::default(),
             kind: HostKind::Telnet,
             id: "test-telnet-unreachable".into(),
             name: "telnet-unreachable".into(),

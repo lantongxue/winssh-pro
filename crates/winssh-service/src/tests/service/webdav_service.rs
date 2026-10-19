@@ -124,6 +124,7 @@
                 root: root.to_string(),
                 allow_invalid_certs: false,
             },
+            sftp: Default::default(),
             shell_integration: false,
             favorites: Vec::new(),
         }

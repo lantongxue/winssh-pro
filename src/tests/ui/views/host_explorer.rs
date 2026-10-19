@@ -10,6 +10,7 @@
             s3: Default::default(),
             ftp: Default::default(),
             webdav: Default::default(),
+            sftp: Default::default(),
             id: name.into(),
             name: name.into(),
             kind: HostKind::Ssh,

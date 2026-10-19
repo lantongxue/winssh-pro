@@ -11,6 +11,7 @@
                 login: "root@10.0.0.1".into(),
                 platform: "Ubuntu".into(),
                 handle,
+                sftp: SftpLaunch::Subsystem,
             },
             seen,
         )
@@ -550,6 +551,7 @@
         fn transfer(
             &self,
             _: Arc<Handle<SshHandler>>,
+            _: SftpLaunch,
             request: TransferRequest,
             progress: ProgressFn,
             _: Arc<AtomicBool>,
@@ -872,3 +874,19 @@
         assert!(description.contains("NOT touch the server"));
     }
 
+
+    /// 提权的主机上，审核卡片写的"在哪台机器上"要带上身份 —— 用户批准之前
+    /// 得看得见这一趟是以 root 写进去的。没提权的照旧只写名字。
+    #[test]
+    fn transfer_label_names_the_elevated_identity() {
+        winssh_db::runtime().block_on(async {
+            let (mut target, _) = target("web-01").await;
+            assert_eq!(target.transfer_label(), "web-01");
+            target.sftp = SftpLaunch::Custom {
+                command: "sudo /usr/lib/openssh/sftp-server".into(),
+            };
+            let label = target.transfer_label();
+            assert!(label.contains("web-01"), "{label}");
+            assert!(label.contains("sudo /usr/lib/openssh/sftp-server"), "{label}");
+        });
+    }

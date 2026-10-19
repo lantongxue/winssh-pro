@@ -33,6 +33,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     rc::Rc,
+    sync::Arc,
 };
 
 use gpui_kit::component::{
@@ -54,11 +55,13 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px,
 };
+use russh::client::Handle;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use winssh_domain::settings::sftp::SftpLaunchMode;
 
 use super::sftp_editor::{SavedHandler as SftpSavedHandler, SftpEditorPanel};
 use crate::ui::{
-    dialogs::{ChmodHandler, SftpChmodDialog, SftpFormDialog},
+    dialogs::{ChmodHandler, SftpChmodDialog, SftpFormDialog, SudoPasswordDialog},
     drawers::{TransferQueueDrawer, TransferQueueEvent},
     menus::{LocalEntryAction, LocalEntryActionHandler, LocalEntryMenu},
     menus::{SftpEntryAction, SftpEntryActionHandler, SftpEntryMenu},
@@ -67,13 +70,14 @@ use crate::ui::{
 use crate::{
     host::Host,
     service::{
-        FileService, HostService, LocalFileService, TransferEvent, TransferHandle, TransferJob,
-        unique_local_path,
+        FileService, HostService, LocalFileService, SftpService, SudoAsk, TransferEvent,
+        TransferHandle, TransferJob, sftp_launch, unique_local_path,
     },
     sftp::{
         FileEntry, FileKind, TransferDirection, TransferItem, TransferStatus, breadcrumbs,
         human_size, is_hidden, join, normalize, parent, sort_entries,
     },
+    ssh::{SftpLaunch, SshHandler},
     ui::{
         dialogs::{SftpFormKind, SftpNameHandler},
         theme::palette,
@@ -136,6 +140,10 @@ pub enum SftpPanelEvent {
     /// 空状态里那下"重试"：请宿主重新开一次 SFTP 通道。
     #[allow(dead_code)]
     Reconnect,
+    /// 工具条上的提权按钮：请宿主在同一条连接上按这一档重开 SFTP 通道
+    /// （`Sudo` 是提权，`Subsystem` 是退回普通权限）。宿主握着连接，开好了
+    /// 交回 [`SftpPanel::finish_elevate`]；面板只管按钮与换通道。
+    Elevate(SftpLaunchMode),
     /// 编辑一个远端文件：请宿主把这个编辑器面板挂进中心区，开成一个新标签页。
     ///
     /// 面板自己够不到 `DockArea`（它嵌在终端标签页里），而中心区的标签页由宿主管，
@@ -1115,6 +1123,16 @@ pub struct SftpPanel {
     copied: Option<SharedString>,
     copied_task: Task<()>,
 
+    /// 工具条上那颗提权按钮临时改过的开法。`None` 是照主机设置走；只管这一个
+    /// 面板，不落库，智能助手也不看它（见 [`crate::service::sftp_launch`]）。
+    /// 宿主重连时经 [`Self::launch`] 带上它，断线重连回来还是提过权的。
+    sftp_mode: Option<SftpLaunchMode>,
+    /// 正在按提权按钮的意思重开通道。按钮转圈、不许连点。
+    elevating: bool,
+    /// sudo 要密码而手上没有时问人的钩子，问话弹在这扇窗口上。宿主开通道、
+    /// 终端交给助手的那份开法都从这里拿，同一台主机输一次密码大家共用。
+    sudo_ask: SudoAsk,
+
     focus_handle: FocusHandle,
     _drain: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -1414,6 +1432,9 @@ impl SftpPanel {
                 progress,
                 copied: None,
                 copied_task: Task::ready(()),
+                sftp_mode: None,
+                elevating: false,
+                sudo_ask: SudoPasswordDialog::asker(window, cx),
                 focus_handle: cx.focus_handle(),
                 _drain: Task::ready(()),
                 _subscriptions: subscriptions,
@@ -1455,6 +1476,7 @@ impl SftpPanel {
     ) {
         self.service = service;
         self.connect_error = error;
+        self.elevating = false;
         // 换了通道就是换了文件系统：旧的条目与"停在哪一格"都不该留着。
         self.remote = Pane::default();
         self.remote_path.clear();
@@ -1474,6 +1496,93 @@ impl SftpPanel {
     pub fn note_error(&mut self, error: SharedString, cx: &mut Context<Self>) {
         self.connect_error = Some(error);
         cx.notify();
+    }
+
+    /// 通道已经开起来了，或者开过而失败了（原因挂在空状态里，等用户点重试）。
+    /// 两样都没有就是还没开过 —— 宿主据此决定展开时要不要补开一次。
+    pub fn has_channel(&self) -> bool {
+        self.service.is_some() || self.connect_error.is_some()
+    }
+
+    /// 这一栏眼下该怎么开 SFTP：主机设置，叠上提权按钮的临时覆盖。宿主第一次
+    /// 开通道、"重试"、断线重连都拿它。
+    pub fn launch(&self) -> SftpLaunch {
+        sftp_launch(&self.host, self.sftp_mode, Some(self.sudo_ask.clone()))
+    }
+
+    /// 只照主机设置、不看提权按钮的那一份 —— 交给智能助手传文件用。
+    /// 问密码的钩子还是这一栏的：同一台主机输过一次，两边共用。
+    pub fn host_launch(&self) -> SftpLaunch {
+        sftp_launch(&self.host, None, Some(self.sudo_ask.clone()))
+    }
+
+    /// 按某一档开法重开时要的那一份（提权按钮）。
+    pub fn launch_as(&self, mode: SftpLaunchMode) -> SftpLaunch {
+        sftp_launch(&self.host, Some(mode), Some(self.sudo_ask.clone()))
+    }
+
+    /// 宿主按 [`SftpPanelEvent::Elevate`] 重开完了。
+    ///
+    /// 成了就换通道、**停在原目录**重列 —— 提权多半是因为在这个目录里碰了
+    /// `Permission denied`，跳回家目录等于让人再走一遍。没成（密码框点了取消、
+    /// sudo 不放行）弹一条通知，旧通道照用：提权失败不该把能用的那条也弄丢。
+    /// 在跑的传输握着旧通道的克隆，各自搬完。
+    pub fn finish_elevate(
+        &mut self,
+        mode: SftpLaunchMode,
+        outcome: Result<FileService, SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.elevating = false;
+        match outcome {
+            Ok(service) => {
+                self.sftp_mode = Some(mode);
+                self.service = Some(service);
+                self.connect_error = None;
+                let dir = self.remote_path.clone();
+                match dir.is_empty() {
+                    true => self.enter_remote_home(window, cx),
+                    false => self.load_remote(&dir, window, cx),
+                }
+            }
+            Err(error) => window.push_notification(error, cx),
+        }
+        cx.notify();
+    }
+
+    /// 宿主收到 [`SftpPanelEvent::Elevate`] 时调：在 `handle` 这条连接上按 `mode`
+    /// 重开一条 SFTP 通道，开完交回 [`Self::finish_elevate`]。不用重新拨号 ——
+    /// SSH 是多路复用的，同一条连接上另开一条就是。终端底栏与独立 SFTP 标签页共用。
+    pub fn reopen(
+        panel: &Entity<Self>,
+        handle: Arc<Handle<SshHandler>>,
+        mode: SftpLaunchMode,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let launch = panel.read(cx).launch_as(mode);
+        let panel = panel.downgrade();
+        window
+            .spawn(cx, async move |cx| {
+                let outcome = SftpService::connect(handle, launch)
+                    .await
+                    .map(FileService::Sftp)
+                    .map_err(|error| SharedString::from(format!("{error:#}")));
+                _ = panel.update_in(cx, |this, window, cx| {
+                    this.finish_elevate(mode, outcome, window, cx)
+                });
+            })
+            .detach();
+    }
+
+    /// 眼下这条 SFTP 通道是以谁的身份开的（`sudo` 之类）。不是 SFTP、或者是
+    /// 标准子系统时为 `None`。
+    fn sftp_identity(&self) -> Option<&str> {
+        match &self.service {
+            Some(FileService::Sftp(service)) => service.identity(),
+            _ => None,
+        }
     }
 
     /// 宿主展开或收起这一栏。展开的那一次如果还没列过目录，立刻去列 ——
@@ -3173,11 +3282,23 @@ impl Drop for SftpPanel {
 
 /// 导航条上那类小方按钮：一个图标、一圈细边、悬停换底色。
 fn nav_button(id: &'static str, icon: Icon, tooltip: SharedString, cx: &App) -> Button {
+    tinted_nav_button(id, icon, palette::idle(cx), tooltip, cx)
+}
+
+/// 同 [`nav_button`]，图标颜色由调用方定（提权按钮提过权后是绿的）。
+/// `nav_button` 会把图标统一刷成灰色，在调用方那边给 `Icon` 设的颜色会被盖掉。
+fn tinted_nav_button(
+    id: &'static str,
+    icon: Icon,
+    tone: Hsla,
+    tooltip: SharedString,
+    cx: &App,
+) -> Button {
     Button::new(id)
         .ghost()
         .xsmall()
         .flex_shrink_0()
-        .icon(icon.text_color(palette::idle(cx)))
+        .icon(icon.text_color(tone))
         .tooltip(tooltip)
         .border_1()
         .border_color(cx.theme().border)
@@ -3545,16 +3666,18 @@ impl SftpPanel {
                     this.new_entry(SftpFormKind::NewFolder, window, cx)
                 })),
             )
+            .when_some(self.render_elevate_button(cx), |this, button| {
+                this.child(button)
+            })
             .child(
-                nav_button(
+                tinted_nav_button(
                     "sftp-panel-dual",
-                    Icon::new(AppIcon::Columns2)
-                        .with_size(px(12.))
-                        .text_color(if self.dual {
-                            palette::teal()
-                        } else {
-                            palette::idle(cx)
-                        }),
+                    Icon::new(AppIcon::Columns2).with_size(px(12.)),
+                    if self.dual {
+                        palette::teal()
+                    } else {
+                        palette::idle(cx)
+                    },
                     match self.dual {
                         true => t!("sftp.remote_only").into(),
                         false => t!("sftp.side_by_side").into(),
@@ -3619,6 +3742,53 @@ impl SftpPanel {
                 )
                 .on_click(cx.listener(|_, _, _, cx| cx.emit(SftpPanelEvent::Close))),
             )
+    }
+
+    /// 提权按钮：只有 SFTP 通道才有（FTP / S3 / WebDAV 没有 sudo 一说）。
+    ///
+    /// 提过权的时候是绿色，提示写明眼下是谁、点一下退回普通权限；没提权时
+    /// 是灰的，提示写明点了会以谁的身份重开（主机表单里填了 `sudo -u` 就是那个人）。
+    fn render_elevate_button(&self, cx: &mut Context<Self>) -> Option<Button> {
+        if !matches!(self.service, Some(FileService::Sftp(_))) {
+            return None;
+        }
+        let current = self.sftp_identity().map(str::to_owned);
+        let (tooltip, target) = match &current {
+            Some(identity) => (
+                t!("sftp.elevated_as", identity => identity),
+                SftpLaunchMode::Subsystem,
+            ),
+            None => {
+                let identity = self
+                    .launch_as(SftpLaunchMode::Sudo)
+                    .identity()
+                    .unwrap_or_else(|| "sudo".to_owned());
+                (
+                    t!("sftp.elevate_with", identity => identity),
+                    SftpLaunchMode::Sudo,
+                )
+            }
+        };
+        let tone = match current {
+            Some(_) => palette::green(),
+            None => palette::idle(cx),
+        };
+        Some(
+            tinted_nav_button(
+                "sftp-panel-elevate",
+                Icon::new(AppIcon::ShieldCheck).with_size(px(12.)),
+                tone,
+                tooltip.into(),
+                cx,
+            )
+            .loading(self.elevating)
+            .disabled(self.elevating)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.elevating = true;
+                cx.emit(SftpPanelEvent::Elevate(target));
+                cx.notify();
+            })),
+        )
     }
 
     /// 主按钮（前往）：一个实心的强调色块。

@@ -66,6 +66,7 @@ use crate::{
     },
 };
 use rust_i18n::t;
+use winssh_domain::settings::sftp::{SftpLaunchMode, SftpSettings};
 
 /// 连接类型在下拉里的七档，顺序即 [`crate::host::HostKind`] 的编号顺序：
 /// 0 SSH、1 SFTP、2 VNC、3 RDP、4 Telnet、5 Serial、6 EasyTier。和认证方式一样按**下标**
@@ -202,6 +203,17 @@ fn ftp_security_choices() -> Vec<SharedString> {
             FtpSecurity::Plain => t!("host_form.ftp_security_plain").into(),
             FtpSecurity::Explicit => t!("host_form.ftp_security_explicit").into(),
             FtpSecurity::Implicit => t!("host_form.ftp_security_implicit").into(),
+        })
+        .to_vec()
+}
+
+/// SFTP 开法的下拉行，顺序即 [`SftpLaunchMode::ALL`]。
+fn sftp_mode_choices() -> Vec<SharedString> {
+    SftpLaunchMode::ALL
+        .map(|mode| match mode {
+            SftpLaunchMode::Subsystem => t!("host_form.sftp_mode_subsystem").into(),
+            SftpLaunchMode::Sudo => t!("host_form.sftp_mode_sudo").into(),
+            SftpLaunchMode::Custom => t!("host_form.sftp_mode_custom").into(),
         })
         .to_vec()
 }
@@ -448,6 +460,12 @@ pub struct HostForm {
     webdav_auth: Entity<SelectState<Vec<SharedString>>>,
     webdav_root: Entity<InputState>,
     webdav_insecure: Entity<SelectState<Vec<SharedString>>>,
+    /// SFTP 那一页（SSH / SFTP 主机才有）：开法一个下拉，顺序即
+    /// [`SftpLaunchMode::ALL`]；sudo 档多一格"切换成谁"，自定义档多一格命令。
+    /// 两格都常驻，换档只是换哪一格露出来，填过的不蒸发。
+    sftp_mode: Entity<SelectState<Vec<SharedString>>>,
+    sftp_run_as: Entity<InputState>,
+    sftp_command: Entity<InputState>,
     proxy_jump: Entity<SelectState<Vec<SharedString>>>,
     /// 走不走 SOCKS5 代理：不使用 / 跟随全局 / 配置代理，见 [`proxy_modes`]。
     ///
@@ -1016,6 +1034,36 @@ impl HostForm {
             )
         });
 
+        let initial_sftp = match editing {
+            Some((host, _)) => host.sftp.clone(),
+            None => SftpSettings::default(),
+        };
+        let sftp_mode = cx.new(|cx| {
+            SelectState::new(
+                sftp_mode_choices(),
+                Some(IndexPath::new(initial_sftp.mode.index())),
+                window,
+                cx,
+            )
+        });
+        // 换档要换露出来的那一格（sudo 的"切换成谁" / 自定义的命令），重画一下。
+        cx.subscribe_in(
+            &sftp_mode,
+            window,
+            |_, _, _: &SelectEvent<Vec<SharedString>>, _, cx| cx.notify(),
+        )
+        .detach();
+        let sftp_run_as = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("host_form.sftp_run_as_placeholder"))
+                .default_value(initial_sftp.run_as.clone())
+        });
+        let sftp_command = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("host_form.sftp_command_placeholder"))
+                .default_value(initial_sftp.command.clone())
+        });
+
         let kind = cx.new(|cx| {
             SelectState::new(
                 host_kinds(),
@@ -1169,6 +1217,9 @@ impl HostForm {
             webdav_auth,
             webdav_root,
             webdav_insecure,
+            sftp_mode,
+            sftp_run_as,
+            sftp_command,
             proxy_jump,
             proxy_mode,
             proxy_host,
@@ -1439,6 +1490,22 @@ impl HostForm {
         }
     }
 
+    /// SFTP 那一页现在的样子折回一份 [`SftpSettings`]。开法按下标折回；两格
+    /// 输入不管露没露出来都照读 —— 换档不清空，存下来的就是它们现在的样子。
+    fn selected_sftp(&self, cx: &App) -> SftpSettings {
+        let row = self
+            .sftp_mode
+            .read(cx)
+            .selected_index(cx)
+            .map(|index| index.row)
+            .unwrap_or_default();
+        SftpSettings {
+            mode: SftpLaunchMode::from_index(row),
+            run_as: self.sftp_run_as.read(cx).value().trim().to_string(),
+            command: self.sftp_command.read(cx).value().trim().to_string(),
+        }
+    }
+
     /// WebDAV 那一页现在的样子折回一份 [`WebdavSettings`]。认证方式与"跳过
     /// 证书校验"都按下标折回，不比文案。
     fn selected_webdav(&self, cx: &App) -> WebdavSettings {
@@ -1690,6 +1757,13 @@ impl HostForm {
             easytier.check()?;
         }
 
+        // SFTP 那一页同理，只有走 SSH 的主机才挂。`sudo -u` 的用户名要原样拼进
+        // 远端命令行，字符集不对的在这儿就挡住，不留到开通道时才报。
+        let sftp = self.selected_sftp(cx);
+        if matches!(kind, HostKind::Ssh | HostKind::Sftp) {
+            sftp.validate().map_err(|key| SharedString::from(t!(key)))?;
+        }
+
         Ok((
             group.into(),
             HostDraft {
@@ -1713,6 +1787,7 @@ impl HostForm {
                 s3: self.selected_s3(cx),
                 ftp: self.selected_ftp(cx),
                 webdav: self.selected_webdav(cx),
+                sftp,
             },
         ))
     }
@@ -2321,6 +2396,50 @@ impl HostForm {
                     .text_xs()
                     .text_color(palette::idle(cx))
                     .child(SharedString::from(t!("host_form.ftp_hint"))),
+            )
+    }
+
+    /// SFTP 那一段：开法一个下拉，sudo 档露出"切换成谁"，自定义档露出命令，
+    /// 下面一行说明跟着档位换。只在 SSH / SFTP 主机上画（由宿主 `sftp_page`
+    /// 挂不挂整页决定）。
+    fn render_sftp_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mode = self.selected_sftp(cx).mode;
+        let hint = match mode {
+            SftpLaunchMode::Subsystem => t!("host_form.sftp_hint_subsystem"),
+            SftpLaunchMode::Sudo => t!("host_form.sftp_hint_sudo"),
+            SftpLaunchMode::Custom => t!("host_form.sftp_hint_custom"),
+        };
+        v_flex()
+            .gap_3()
+            .w_full()
+            .child(field(
+                t!("host_form.field_sftp_mode").into(),
+                Select::new(&self.sftp_mode).w_full(),
+                cx,
+            ))
+            .when(mode == SftpLaunchMode::Sudo, |this| {
+                this.child(field(
+                    t!("host_form.field_sftp_run_as").into(),
+                    Input::new(&self.sftp_run_as)
+                        .font_family("monospace")
+                        .w_full(),
+                    cx,
+                ))
+            })
+            .when(mode == SftpLaunchMode::Custom, |this| {
+                this.child(field(
+                    t!("host_form.field_sftp_command").into(),
+                    Input::new(&self.sftp_command)
+                        .font_family("monospace")
+                        .w_full(),
+                    cx,
+                ))
+            })
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(palette::idle(cx))
+                    .child(SharedString::from(hint)),
             )
     }
 
@@ -3048,10 +3167,12 @@ impl HostFormWindow {
             HostKind::S3 => settings.page(self.s3_page()),
             HostKind::Ftp => settings.page(self.ftp_page()),
             HostKind::Webdav => settings.page(self.webdav_page()),
-            // Ssh / Sftp / Telnet 没有独立的"协议参数"页 —— SFTP 的全部 UI 就是
-            // 会话开出来那个文件面板，表单上没有它自己的那一页；Telnet 的协商在
-            // [`crate::telnet`] 内部固定（ECHO / SGA / NAWS / TTYPE），不给用户调。
-            HostKind::Ssh | HostKind::Sftp | HostKind::Telnet => settings,
+            // Ssh / Sftp 共一页「SFTP」：文件通道怎么开（标准子系统 / sudo 提权 /
+            // 自定义命令）。SSH 主机也挂 —— 终端底部那一栏和智能助手传文件走的
+            // 都是它。Telnet 的协商在 [`crate::telnet`] 内部固定（ECHO / SGA /
+            // NAWS / TTYPE），不给用户调，没有这一页。
+            HostKind::Ssh | HostKind::Sftp => settings.page(self.sftp_page()),
+            HostKind::Telnet => settings,
         };
         settings.page(self.tags_page())
     }
@@ -3207,6 +3328,19 @@ impl HostFormWindow {
             .group(
                 SettingGroup::new()
                     .item(self.row(|this, cx| this.render_ftp_section(cx).into_any_element())),
+            )
+    }
+
+    /// SFTP 配置页：同 [`Self::ftp_page`]，一级类目、单组无头衔。
+    /// SSH 与 SFTP 两种主机都挂（见 [`Self::render_settings`]）。
+    fn sftp_page(&self) -> SettingPage {
+        SettingPage::new(t!("host_form.page_sftp"))
+            .icon(AppIcon::ShieldCheck)
+            .default_open(true)
+            .resettable(false)
+            .group(
+                SettingGroup::new()
+                    .item(self.row(|this, cx| this.render_sftp_section(cx).into_any_element())),
             )
     }
 

@@ -25,14 +25,15 @@ use crate::assistant::transfer::{
     upload_target,
 };
 use crate::sftp::{CANCELED, TransferStatus};
-use crate::ssh::SshHandler;
+use crate::ssh::{SftpLaunch, SshHandler};
 use crate::{SftpService, TransferEvent, TransferJob};
 
 /// 多久看一眼"停止"按钮。传输本身在块与块之间响应取消，这里只是把按钮
 /// 那一位转成一次 [`crate::TransferHandle::cancel`]。
 const CANCEL_POLL: Duration = Duration::from_millis(100);
 
-/// 助手的 SFTP 搬运工。无状态：每次传输在那条连接上现开一条 SFTP 子系统
+/// 助手的 SFTP 搬运工。无状态：每次传输在那条连接上按主机的开法（标准子系统
+/// 或 sudo 提权，见 [`crate::sudo_auth`]）现开一条 SFTP
 /// 通道，搬完就关 —— 和 SFTP 面板、终端互不干扰。
 pub struct AssistantTransfer;
 
@@ -40,11 +41,12 @@ impl FileTransfer for AssistantTransfer {
     fn transfer(
         &self,
         handle: Arc<Handle<SshHandler>>,
+        launch: SftpLaunch,
         request: TransferRequest,
         progress: ProgressFn,
         cancel: Arc<AtomicBool>,
     ) -> BoxFuture<'static, Result<TransferOutcome>> {
-        Box::pin(transfer(handle, request, progress, cancel))
+        Box::pin(transfer(handle, launch, request, progress, cancel))
     }
 }
 
@@ -57,11 +59,12 @@ struct Plan {
 
 async fn transfer(
     handle: Arc<Handle<SshHandler>>,
+    launch: SftpLaunch,
     request: TransferRequest,
     progress: ProgressFn,
     cancel: Arc<AtomicBool>,
 ) -> Result<TransferOutcome> {
-    let sftp = SftpService::connect(handle).await?;
+    let sftp = SftpService::connect(handle, launch).await?;
     // `~` 要靠家目录展开，而 `resolve` 只认缓存里的那一份 —— 先问一次。
     sftp.home().await?;
     let Plan {

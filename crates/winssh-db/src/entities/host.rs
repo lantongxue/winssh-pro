@@ -104,6 +104,11 @@ pub struct Model {
     /// 空串就是"这台主机什么都没收藏"。见 [`crate::host::Host::favorites`]。
     #[sea_orm(default_value = "")]
     pub favorites: String,
+    /// SFTP 通道怎么开，JSON 编码的一份 `winssh_domain::settings::sftp::SftpSettings`。
+    /// 空串是出厂档（标准子系统），见 `winssh_domain::settings::sftp::decode`。
+    /// 只有走 SSH 的主机读它。
+    #[sea_orm(default_value = "")]
+    pub sftp_settings: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

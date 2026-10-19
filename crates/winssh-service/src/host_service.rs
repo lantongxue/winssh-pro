@@ -120,6 +120,7 @@ impl HostService {
                         s3_settings: Set(crate::s3::encode(&draft.s3)),
                         ftp_settings: Set(crate::ftp::encode(&draft.ftp)),
                         webdav_settings: Set(crate::webdav::encode(&draft.webdav)),
+                        sftp_settings: Set(winssh_domain::settings::sftp::encode(&draft.sftp)),
                         // shell 集成同理不在表单里，新主机一律不装 ——
                         // 往对端打字这件事只能由用户自己在命令历史那扇窗里开
                         // （[`Self::update_shell_integration`]）。
@@ -156,6 +157,7 @@ impl HostService {
                 s3: draft.s3,
                 ftp: draft.ftp,
                 webdav: draft.webdav,
+                sftp: draft.sftp,
                 shell_integration: false,
                 favorites: Vec::new(),
             })
@@ -208,6 +210,7 @@ impl HostService {
                         s3_settings: Set(crate::s3::encode(&draft.s3)),
                         ftp_settings: Set(crate::ftp::encode(&draft.ftp)),
                         webdav_settings: Set(crate::webdav::encode(&draft.webdav)),
+                        sftp_settings: Set(winssh_domain::settings::sftp::encode(&draft.sftp)),
                     },
                 )
                 .await;
@@ -311,6 +314,7 @@ impl HostService {
                         s3_settings: Set(source.s3_settings.clone()),
                         ftp_settings: Set(source.ftp_settings.clone()),
                         webdav_settings: Set(source.webdav_settings.clone()),
+                        sftp_settings: Set(source.sftp_settings.clone()),
                         shell_integration: Set(source.shell_integration),
                         favorites: Set(source.favorites.clone()),
                     },
@@ -346,6 +350,7 @@ impl HostService {
                 s3: crate::s3::decode(&source.s3_settings),
                 ftp: crate::ftp::decode(&source.ftp_settings),
                 webdav: crate::webdav::decode(&source.webdav_settings),
+                sftp: winssh_domain::settings::sftp::decode(&source.sftp_settings),
                 shell_integration: source.shell_integration,
                 favorites: crate::host::decode_favorites(&source.favorites),
             })
@@ -536,6 +541,7 @@ fn stitch(groups_with_hosts: Vec<(host_group::Model, Vec<host::Model>)>) -> Vec<
                     s3: crate::s3::decode(&host.s3_settings),
                     ftp: crate::ftp::decode(&host.ftp_settings),
                     webdav: crate::webdav::decode(&host.webdav_settings),
+                    sftp: winssh_domain::settings::sftp::decode(&host.sftp_settings),
                     shell_integration: host.shell_integration,
                     favorites: crate::host::decode_favorites(&host.favorites),
                 })

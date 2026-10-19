@@ -24,7 +24,7 @@ use anyhow::Result;
 use futures::future::BoxFuture;
 use gpui_kit::SharedString;
 use russh::client::Handle;
-use winssh_ssh::SshHandler;
+use winssh_ssh::{SftpLaunch, SshHandler};
 
 pub use winssh_sftp::TransferDirection;
 
@@ -79,13 +79,15 @@ pub type ProgressFn = Arc<dyn Fn(u64, u64) + Send + Sync>;
 
 /// 真正搬字节的那一位。实现在服务层（见模块文档）。
 pub trait FileTransfer: Send + Sync {
-    /// 在 `handle` 这条连接上跑完一次传输。
+    /// 在 `handle` 这条连接上跑完一次传输，SFTP 通道按 `launch` 开（主机设了
+    /// sudo 提权就以那个身份搬，和 SFTP 面板同一份设置）。
     ///
     /// `cancel` 是界面的"停止"按钮：置位之后要尽快收手（块与块之间），
     /// 半截的东西照服务层的规矩留在 `.part` 里，不冒充完整文件。
     fn transfer(
         &self,
         handle: Arc<Handle<SshHandler>>,
+        launch: SftpLaunch,
         request: TransferRequest,
         progress: ProgressFn,
         cancel: Arc<AtomicBool>,

@@ -99,6 +99,7 @@
             s3: Default::default(),
             ftp: Default::default(),
             webdav: Default::default(),
+            sftp: Default::default(),
             shell_integration: false,
             favorites: Vec::new(),
         }

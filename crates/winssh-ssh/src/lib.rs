@@ -43,4 +43,4 @@ pub use forward::{ForwardMeter, LocalMode, RemoteTarget};
 pub use keygen::{
     GeneratedKey, KeyFacts, generate as generate_key, inspect as inspect_private_key,
 };
-pub use sftp::open_session as open_sftp_session;
+pub use sftp::{SftpLaunch, SudoAuth, open_session as open_sftp_session};

@@ -185,7 +185,9 @@ impl DockedS3Panel {
                 // 同 `ftp_host.rs`：独立面板不持 `Host` 快照，忽略。
                 SftpPanelEvent::SendCommand(_)
                 | SftpPanelEvent::SetHeight(_)
-                | SftpPanelEvent::HostChanged(_) => {}
+                | SftpPanelEvent::HostChanged(_)
+                // 提权按钮只在 SFTP 通道上出现，这里收不到。
+                | SftpPanelEvent::Elevate(_) => {}
             },
         )
         .detach();

@@ -196,6 +196,7 @@ fn display_host(id: String, name: SharedString, platform: SharedString) -> Host 
         s3: Default::default(),
         ftp: Default::default(),
         webdav: Default::default(),
+        sftp: Default::default(),
         shell_integration: false,
         favorites: Vec::new(),
     }
@@ -229,6 +230,9 @@ pub struct TerminalPanel {
     sftp_panel: Entity<SftpPanel>,
     sftp_resizable_state: Entity<ResizableState>,
     sftp_resizable_id: SharedString,
+    /// 底部那一栏的 SFTP 通道正在开（可能卡在 sudo 密码框上）。展开时补开那一下
+    /// 看它，免得一个框还没答完又弹出第二个。
+    sftp_opening: bool,
     /// 这条会话的 SSH 连接。SFTP 与监控走的是同一条连接上另开的子系统通道，
     /// 分屏出来的第二个 shell、端口转发的每一条隧道也是，"重试"还要拿它再来
     /// 一次，所以留一份。
@@ -344,6 +348,7 @@ impl TerminalPanel {
             s3: Default::default(),
             ftp: Default::default(),
             webdav: Default::default(),
+            sftp: Default::default(),
             shell_integration: false,
             favorites: Vec::new(),
         };
@@ -388,6 +393,7 @@ impl TerminalPanel {
                 sftp_panel: sftp_panel.clone(),
                 sftp_resizable_state: cx.new(|_| ResizableState::default()),
                 sftp_resizable_id: SharedString::from(format!("terminal-sftp-{}", host.id)),
+                sftp_opening: false,
                 ssh: None,
                 history: hosts.as_ref().map(|_| CommandHistoryService::open()),
                 hosts,
@@ -451,7 +457,12 @@ impl TerminalPanel {
                 });
                 // SFTP 通道与终端不同一条：连上就开，用户什么时候展开这一栏都用得着，
                 // 而它失败的原因（对端没配 sftp-server）也该早点拿到。
-                self.open_sftp(session.handle.clone(), window, cx);
+                //
+                // 主机设了 sudo 提权的例外：那一趟可能要弹 sudo 密码框，一连上终端
+                // 就冒个框出来不像话。等用户真的展开这一栏再开（[`Self::set_sftp_open`]）。
+                if self.sftp_open || !self.sftp_panel.read(cx).launch().is_elevated() {
+                    self.open_sftp(session.handle.clone(), window, cx);
+                }
                 self.start_saved_forwards(session.clone(), window, cx);
                 cx.notify();
             }
@@ -696,6 +707,9 @@ impl TerminalPanel {
             login: format!("{}@{}", self.host.user, self.host.hostname).into(),
             platform: self.host.platform.clone(),
             handle: ssh.handle.clone(),
+            // 跟着主机设置走、不看 SFTP 栏上的临时提权按钮；问 sudo 密码的钩子
+            // 借那一栏的，同一台主机输一次大家共用。
+            sftp: self.sftp_panel.read(cx).host_launch(),
         })
     }
 
@@ -754,6 +768,20 @@ impl TerminalPanel {
                         this.open_sftp(session.handle, window, cx);
                     }
                 }
+                // 提权 / 退回普通权限：在同一条连接上另开一条通道换进去。
+                SftpPanelEvent::Elevate(mode) => match this.ssh.clone() {
+                    Some(session) => {
+                        SftpPanel::reopen(&this.sftp_panel, session.handle, *mode, window, cx)
+                    }
+                    None => this.sftp_panel.update(cx, |panel, cx| {
+                        panel.finish_elevate(
+                            *mode,
+                            Err(t!("sftp.elevate_not_connected").into()),
+                            window,
+                            cx,
+                        )
+                    }),
+                },
                 SftpPanelEvent::OpenEditor(editor) => {
                     // 把 SFTP 面板建好的编辑器面板挂进中心区，开成新标签页（`add_panel_view`
                     // 会把它选到最前）。从这个订阅回调里调它是安全的：它引起的
@@ -798,8 +826,13 @@ impl TerminalPanel {
         cx: &mut Context<Self>,
     ) {
         let panel = self.sftp_panel.clone();
-        cx.spawn_in(window, async move |_, cx| {
-            let outcome = crate::service::SftpService::connect(handle).await;
+        // 主机设了 sudo 提权就以 sudo 开（可能弹密码框）；面板上按过提权按钮的，
+        // 重试也照那一档来。
+        let launch = panel.read(cx).launch();
+        self.sftp_opening = true;
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = crate::service::SftpService::connect(handle, launch).await;
+            _ = this.update(cx, |this, _| this.sftp_opening = false);
             let _ = panel.update_in(cx, |this, window, cx| match outcome {
                 Ok(service) => this.attach(
                     Some(crate::service::FileService::Sftp(service)),
@@ -826,6 +859,15 @@ impl TerminalPanel {
         self.sftp_open = open;
         self.sftp_panel
             .update(cx, |panel, cx| panel.set_open(open, window, cx));
+        // 连上时没开的那条（提权的主机，见 `TerminalPaneEvent::Connected` 那一段）
+        // 第一次展开时补开。
+        if open
+            && !self.sftp_opening
+            && !self.sftp_panel.read(cx).has_channel()
+            && let Some(session) = self.ssh.clone()
+        {
+            self.open_sftp(session.handle, window, cx);
+        }
         cx.notify();
     }
 

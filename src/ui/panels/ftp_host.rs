@@ -264,7 +264,9 @@ impl DockedFtpPanel {
                 // 收藏夹写在库里的那一份才是真相，下一次开面板时重读就有了。
                 SftpPanelEvent::SendCommand(_)
                 | SftpPanelEvent::SetHeight(_)
-                | SftpPanelEvent::HostChanged(_) => {}
+                | SftpPanelEvent::HostChanged(_)
+                // 提权按钮只在 SFTP 通道上出现，这里收不到。
+                | SftpPanelEvent::Elevate(_) => {}
             },
         )
         .detach();
