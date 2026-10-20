@@ -5070,12 +5070,18 @@ assistant.local_replaces:
 assistant.local_sensitive:
   en: This location holds keys or credentials
   zh-CN: 这里存放着密钥或凭据
+assistant.local_shell_approval:
+  en: 'Run this command on your computer with %{shell}?'
+  zh-CN: 在本机用 %{shell} 运行这条命令？
+assistant.local_shell_spawn_failed:
+  en: Could not start the local shell process
+  zh-CN: 无法启动本机 shell 进程
 assistant.empty_title:
   en: WinSSH Pro AI Assistant
   zh-CN: WinSSH Pro 智能助手
 assistant.empty_hint:
-  en: I can run commands on the session you currently have open to diagnose and fix issues — switch tabs and I follow you there — read, write and search files on this computer, and upload or download files between the two. By default commands and file reads ask for your approval first (switch modes at the bottom left); file writes, transfers and anything touching keys or credentials always do.
-  zh-CN: 我可以在当前打开的会话上执行命令，帮你排查和处理问题（切换标签页即跟随到对应机器）；也能读写、搜索本机上的文件，并在本机与服务器之间上传、下载。默认命令与读取本机文件前均需你确认（左下角可切换模式）；写入本机文件、传输文件，以及涉及密钥或凭据的操作一律需要确认。
+  en: I can run commands on the session you currently have open to diagnose and fix issues — switch tabs and I follow you there — read, write and search files on this computer, run commands in this computer's own shell (PowerShell on Windows, bash on Linux and macOS), and upload or download files between the two. By default commands (local or remote) and file reads ask for your approval first (switch modes at the bottom left); file writes, transfers and anything touching keys or credentials always do.
+  zh-CN: 我可以在当前打开的会话上执行命令，帮你排查和处理问题（切换标签页即跟随到对应机器）；也能读写、搜索本机上的文件，在本机自己的 shell（Windows 用 PowerShell，Linux/macOS 用 bash）里执行命令，并在本机与服务器之间上传、下载。默认命令（无论本机还是远端）与读取本机文件前均需你确认（左下角可切换模式）；写入本机文件、传输文件，以及涉及密钥或凭据的操作一律需要确认。
 assistant.current_session:
   en: 'Current session:'
   zh-CN: 当前会话：

@@ -5,8 +5,9 @@
 //! 强度的档位与它们落进各协议请求体的写法；[`image`] 把剪贴板里贴进来的
 //! 图规整成模型吃得下的样子；[`transfer`] 是文件上传/下载的契约与本机路径
 //! 规则（搬字节的实现在服务层）；[`local`] 是操作本机（不是服务器）文件的
-//! 四样工具的实现与审核规则；[`agent`] 是 rig 那一侧 —— 装配 Agent、工具与
-//! 审核门，把一次提问跑成一场多轮运行。
+//! 四样工具的实现与审核规则；[`shell`] 是在本机（不是服务器）跑一条命令 ——
+//! Windows 用 PowerShell、Linux 与 macOS 用 bash；[`agent`] 是 rig 那一侧 ——
+//! 装配 Agent、工具与审核门，把一次提问跑成一场多轮运行。
 //!
 //! 界面（[`crate::ui::panels`] 的助手面板）只认这里的类型和
 //! [`crate::service::AssistantService`]，不直接碰 rig。
@@ -23,6 +24,7 @@ pub mod agent;
 pub mod config;
 pub mod image;
 pub mod local;
+pub mod shell;
 pub mod thinking;
 pub mod transfer;
 
@@ -38,6 +40,7 @@ pub use config::{
 pub use thinking::{ThinkingEffort, ThinkingSwitch};
 pub use image::ChatImage;
 pub use local::{LocalAction, LocalReview};
+pub use shell::{LocalCommand, ShellKind};
 pub use transfer::{
     FileTransfer, ProgressFn, TransferCard, TransferDirection, TransferOutcome, TransferRequest,
 };

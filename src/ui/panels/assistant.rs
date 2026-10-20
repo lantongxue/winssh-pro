@@ -137,9 +137,9 @@ use gpui_kit::{
 
 use crate::assistant::{
     self, AgentEvent, ChatImage, ChatMessage, ChatRole, CommandStatus, Conversation,
-    CurrentSession, LocalAction, LocalReview, MessageBody, Proposal, RunInput, ThinkingEffort,
-    TransferCard, TransferDirection, TransferUpdate, Turn, TurnOutput, config as assistant_config,
-    image::looks_like_image,
+    CurrentSession, LocalAction, LocalCommand, LocalReview, MessageBody, Proposal, RunInput,
+    ThinkingEffort, TransferCard, TransferDirection, TransferUpdate, Turn, TurnOutput,
+    config as assistant_config, image::looks_like_image,
 };
 use crate::service::{AssistantService, AssistantTransfer};
 use crate::sftp::human_size;
@@ -1450,6 +1450,13 @@ impl AssistantPanel {
                     output: SharedString::default(),
                     status: CommandStatus::Denied,
                 },
+                // 本机命令被拒绝同样落一张卡片，命令原文就是那一行。
+                Proposal::LocalShell(command) => MessageBody::Command {
+                    command: command.describe().into(),
+                    session: pending.session,
+                    output: SharedString::default(),
+                    status: CommandStatus::Denied,
+                },
             };
             if let Some(id) = self.active.clone() {
                 let service = self.service.clone();
@@ -1735,6 +1742,11 @@ impl AssistantPanel {
                 }
                 .into(),
                 render_local_proposal(review, cx).into_any_element(),
+            ),
+            // 本机命令：标题里点名用的是哪家 shell，正文是逐字的命令。
+            Proposal::LocalShell(command) => (
+                t!("assistant.local_shell_approval", shell => command.shell.name()).into(),
+                render_local_shell_proposal(command, cx).into_any_element(),
             ),
         };
 
@@ -2659,6 +2671,21 @@ fn render_local_proposal(review: &LocalReview, cx: &App) -> impl IntoElement {
                     .child(t!("assistant.local_sensitive")),
             )
         })
+}
+
+/// 本机命令的审核正文：逐字的命令（等宽、可折行）。
+///
+/// 不像文件卡片那样只摆个开头 —— 一条命令要紧的正是它逐字的样子，
+/// 用户批准前看到的就该是它真正会跑的那一段。
+fn render_local_shell_proposal(command: &LocalCommand, cx: &App) -> impl IntoElement {
+    div()
+        .w_full()
+        .p_2()
+        .rounded_md()
+        .bg(palette::recessed(cx))
+        .font_family(cx.theme().mono_font_family.clone())
+        .text_xs()
+        .child(command.command.clone())
 }
 
 /// 一行路径：左边一个小标签（从 / 到），右边是等宽的路径，长了就折行 ——

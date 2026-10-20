@@ -845,6 +845,87 @@
         });
     }
 
+    /// 本机命令的审核门跟着执行模式走（和远端一个待遇）：自动执行档直接放行、
+    /// 不送审；手动确认档送审，批准放行、拒绝换成 Skip；命令是空的不惊动用户。
+    #[test]
+    fn local_commands_follow_the_execution_mode_like_the_remote() {
+        let _exclusive = crate::config::exclusive_for_test();
+        winssh_db::runtime().block_on(async {
+            let args = serde_json::json!({ "command": "Get-Process" }).to_string();
+
+            // 自动执行：不送审，直接放行。
+            set_auto(true);
+            let (tx, mut rx) = mpsc::unbounded();
+            let gate = new_gate(tx, CurrentSession::default(), false);
+            assert!(matches!(gate.review_shell(&args).await, ToolCallAction::Run));
+            assert!(rx.try_recv().is_err(), "自动执行不该发审核事件");
+
+            // 手动确认：批准 → Run，拒绝 → Skip。审核事件里是本机命令、来处写"本机"。
+            set_auto(false);
+            for (approve, want_run) in [(true, true), (false, false)] {
+                let (tx, mut rx) = mpsc::unbounded();
+                let gate = new_gate(tx, CurrentSession::default(), false);
+                let decide = async {
+                    let Some(AgentEvent::Approval(request)) = rx.next().await else {
+                        panic!("手动确认该送审");
+                    };
+                    assert!(matches!(request.proposal, Proposal::LocalShell(_)));
+                    assert_eq!(request.session, local::local_label(), "卡片上写的是本机");
+                    _ = request.respond.send(approve);
+                };
+                let (action, ()) = futures::join!(gate.review_shell(&args), decide);
+                match action {
+                    ToolCallAction::Run => assert!(want_run, "拒绝之后不该放行"),
+                    ToolCallAction::Skip(_) => assert!(!want_run, "批准之后不该跳过"),
+                    other => panic!("不该是 {other:?}"),
+                }
+            }
+
+            // 空命令：不惊动用户，原因直接回给模型。
+            let (tx, mut rx) = mpsc::unbounded();
+            let gate = new_gate(tx, CurrentSession::default(), false);
+            let empty = serde_json::json!({ "command": "  " }).to_string();
+            assert!(matches!(gate.review_shell(&empty).await, ToolCallAction::Skip(_)));
+            assert!(rx.try_recv().is_err(), "空命令不该送审");
+        });
+    }
+
+    /// 本机命令跑完往对话里落一张卡片，来处写"本机"而不是会话名 ——
+    /// 用户一眼分得清这是在自己电脑上跑的，不是在服务器上。
+    #[test]
+    fn a_local_command_leaves_a_card_marked_as_this_computer() {
+        let text = if cfg!(windows) {
+            "Write-Output winssh"
+        } else {
+            "echo winssh"
+        };
+        winssh_db::runtime().block_on(async {
+            let (tx, mut rx) = mpsc::unbounded();
+            let tool = RunLocalCommand {
+                events: tx,
+                cancel: Arc::new(AtomicBool::new(false)),
+            };
+            let payload = tool
+                .call(
+                    &mut ToolContext::new(),
+                    serde_json::json!({ "command": text }),
+                )
+                .await
+                .unwrap();
+            assert_eq!(payload["exit_status"], 0);
+
+            let Some(AgentEvent::Command {
+                session, output, ok, ..
+            }) = rx.next().await
+            else {
+                panic!("该有一张卡片");
+            };
+            assert_eq!(session, local::local_label());
+            assert!(output.contains("winssh"), "卡片上带着输出：{output}");
+            assert!(ok);
+        });
+    }
+
     /// 本机工具做完往对话里落一张卡片，来处写"本机"而不是会话名 —— 用户一眼
     /// 分得清这是在自己电脑上做的，不是在服务器上。
     #[test]
