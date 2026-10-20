@@ -12,8 +12,8 @@
 //!
 //! 消息流用组件库的 [`MessageScroller`]（虚拟列表 + 跟尾 + 回到最新），
 //! 消息本体四种画法：用户的话靠右的实底气泡、助手的话靠左的 Markdown（脚注
-//! 里复制键旁边写着这条回复的 tokens/s）、模型的思考一段灰字、命令执行卡片
-//! 一块带命令与输出的边框盒。
+//! 里复制键旁边写着模型与 tokens/s，等那一场跑完才落）、模型的思考一段灰字、
+//! 命令执行卡片一块带命令与输出的边框盒。
 //!
 //! 输入行是一块卡片：多行输入框（[`Textarea`]，跟着内容长）在上，发送/停止
 //! 那颗圆键在它右下角，边框、底色与聚焦光环归卡片。回车发送、Shift+回车
@@ -50,6 +50,11 @@
 //! 一场带工具的运行在屏上一定是"思考 → 工具卡片 → 思考 → 回答"。栽过：
 //! 收尾原先只在正文非空白时才来，模型叫工具之前吐的那个 `"\n\n"` 开了一条
 //! 却永远没关，第二轮的回答接到了它尾巴上，跑到了工具卡片前面。
+//!
+//! **脚注等一场跑完、落在它最后一条上。** 复制键、模型名与速度是"这条回复
+//! 说完了"的记号：一场带工具的运行在屏上是好几段，中间那些片段下面不画，
+//! 运行期间整场都不画，收口之后才落在最后一条上（见 [`reply_footers`]）。
+//! 用户的话一发出就是完整的，复制键一直有。
 //!
 //! **思考是灰字，想完就收起来。** 推理模型开口之前那段思考自成一条消息，
 //! 摊开着、标题上一道流光写着"思考中"。开口说话的那一刻（或者这一轮收尾、
@@ -1389,6 +1394,10 @@ impl AssistantPanel {
             };
             _ = this.update_in(cx, |this, window, cx| {
                 this.running = false;
+                // 收口之后脚注才落到这一场的最后一条上（见 [`reply_footers`]），
+                // 那一行的高度跟着变了 —— 不重新量，新长出来的脚注会被切在旧
+                // 高度里。
+                this.remeasure(this.messages.len().saturating_sub(1), cx);
                 this.pending = None;
                 this.abandon_transfers(cx);
                 if let Some(reason) = failure {
@@ -1604,6 +1613,9 @@ impl AssistantPanel {
             .as_ref()
             .filter(|_| self.streaming.is_none())
             .map(|reasoning| reasoning.index);
+        // 脚注（复制键、模型名、速度）画在哪几行：跑完那一场的最后一条回复
+        // （见 [`reply_footers`]）。
+        let footer = Rc::new(reply_footers(&self.messages, self.running));
         let this = cx.entity().downgrade();
         MessageScroller::new(
             "assistant-transcript",
@@ -1626,6 +1638,7 @@ impl AssistantPanel {
                     message,
                     disclosure,
                     thinking == Some(index),
+                    footer.contains(&index),
                     live.get(&index),
                     cx,
                 )
@@ -2094,6 +2107,37 @@ struct Disclosure {
     toggle: Rc<dyn Fn(&mut App)>,
 }
 
+/// 该画脚注的那几条消息：助手每一场的最后一条回复，且那一场已经跑完。
+///
+/// 一场带工具的运行在屏上是"思考 → 卡片 → 思考 → 回答"好几段，中间那些
+/// 片段不是答案 —— 复制键与模型名挂在半句话下面，看着就像这一场已经说完
+/// 了。所以脚注只落在这一场的最后一条上；最后一条是卡片（跑到一半被停、
+/// 出错）的那一场就没有脚注。哪一段算"最后一条"从排布认：助手的一串消息
+/// 以用户的话分界，下一句提问前面那条就是 —— 读回来的旧对话因此和当时屏上
+/// 的样子一致，不必另存一个"这是最后一条"的记号。
+///
+/// 正在跑的那一场整段不画：最后一条是谁，得等运行收口才知道。它从最后一句
+/// 提问之后算起 —— 运行期间不许发第二条，所以这个起点是稳的。
+fn reply_footers(messages: &[ChatMessage], running: bool) -> HashSet<usize> {
+    let run_start = messages
+        .iter()
+        .rposition(|message| message.role == ChatRole::User)
+        .map_or(0, |index| index + 1);
+    messages
+        .iter()
+        .enumerate()
+        .filter(|(index, message)| {
+            message.role == ChatRole::Assistant
+                && matches!(&message.body, MessageBody::Text { .. })
+                && messages
+                    .get(*index + 1)
+                    .is_none_or(|next| next.role != ChatRole::Assistant)
+                && !(running && *index >= run_start)
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
 /// 一条消息画成一行。独立函数：MessageScroller 的行渲染器拿不到 `Context<Self>`。
 ///
 /// 两边的话都走同一个 [`Message`]，差的只是对齐和气泡档位：用户的话靠右、
@@ -2101,9 +2145,12 @@ struct Disclosure {
 /// 助手的话靠左、Ghost 档 —— 没有面、没有内边距、铺满整宽，长 Markdown 在
 /// 380px 的面板里不该再被一圈内边距挤掉两个字。
 ///
-/// 脚注里那颗复制键两边都有。Ghost 那档 [`MessageFooter`] 会自己去掉横向
-/// 内边距（`MessageContent::bubble` 把"这是个没有面的气泡"往外传），所以
-/// 按钮和正文左边缘对得齐，实底气泡那边则跟着气泡的内边距缩进。
+/// 脚注里那颗复制键两边都有，但时机不一样：用户的话一发出就是完整的，复制键
+/// 一直在；助手的话要等它那一场跑完，而且只落在这一场的最后一条上（哪一条算
+/// 最后一条见 [`reply_footers`]）—— 一场多轮的运行，中间那些片段下面不画
+/// 复制键与模型名，不然看着就像这一场已经说完了。Ghost 那档 [`MessageFooter`]
+/// 会自己去掉横向内边距（`MessageContent::bubble` 把"这是个没有面的气泡"往外
+/// 传），所以按钮和正文左边缘对得齐，实底气泡那边则跟着气泡的内边距缩进。
 ///
 /// 贴着图的提问，图排在气泡上方（[`render_message_images`]）；只贴了图、没写
 /// 字的那条不画气泡，也就没有复制键 —— 没有字可复制。
@@ -2111,11 +2158,13 @@ struct Disclosure {
 /// 模型的回复在复制键旁边写着它的输出速度（[`render_speed`]）。
 ///
 /// `thinking`：这一条是不是正在流的那段思考，只有思考那种画法用得上；
+/// `footer`：这一条该不该画脚注（见 [`reply_footers`]），只有文字消息用得上；
 /// `live`：这一条是不是正在搬的传输，只有传输卡片用得上。
 fn render_message(
     message: &ChatMessage,
     disclosure: Disclosure,
     thinking: bool,
+    footer: bool,
     live: Option<&LiveTransfer>,
     cx: &App,
 ) -> AnyElement {
@@ -2128,6 +2177,8 @@ fn render_message(
         } => {
             let from_user = message.role == ChatRole::User;
             let has_text = !text.is_empty();
+            // 用户的话一发出就是完整的；助手的话等那一场跑完、落在最后一条。
+            let with_footer = has_text && (from_user || footer);
             Message::new()
                 .alignment(match from_user {
                     true => MessageAlignment::End,
@@ -2153,7 +2204,7 @@ fn render_message(
                             })
                         }),
                 )
-                .when(has_text, |this| {
+                .when(with_footer, |this| {
                     this.footer(
                         MessageFooter::new()
                             .child(render_copy_button(&message.id, text))
