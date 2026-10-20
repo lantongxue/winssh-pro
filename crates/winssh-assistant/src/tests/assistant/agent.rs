@@ -1,5 +1,26 @@
     use super::*;
-    use crate::TransferOutcome;
+    use crate::{ThinkingEffort, ThinkingSwitch, TransferOutcome};
+
+    /// 审核门的三种裁决。rig 0.43 起"跳过"和"停止"都是 `DispatchAction::Deny`，
+    /// 只靠报告的 kind 分：`Cancelled` 是停止（整场收口），别的都是跳过（原因
+    /// 当工具结果回给模型）。审核门从不改参数，见到 `Patch` 就是写错了。
+    #[derive(Debug, PartialEq)]
+    enum Verdict {
+        Run,
+        Skip,
+        Stop,
+    }
+
+    fn verdict(action: DispatchAction) -> Verdict {
+        match action {
+            DispatchAction::Proceed => Verdict::Run,
+            DispatchAction::Deny(report) if report.kind == rig_core::ErrorKind::Cancelled => {
+                Verdict::Stop
+            }
+            DispatchAction::Deny(_) => Verdict::Skip,
+            other => panic!("审核门不该改参数：{other:?}"),
+        }
+    }
 
     /// 一条挂在假 sshd 上的会话，名字随便起。
     async fn target(name: &str) -> (SessionTarget, winssh_ssh::exec::fake::Seen) {
@@ -211,14 +232,14 @@
             set_auto(false);
             let (tx, mut rx) = mpsc::unbounded();
             let gate = new_gate(tx, CurrentSession::default(), false);
-            assert!(matches!(gate.review(ARGS).await, ToolCallAction::Skip(_)));
+            assert_eq!(verdict(gate.review(ARGS).await), Verdict::Skip);
             assert!(rx.try_recv().is_err(), "没有会话时不该惊动用户");
 
             // 自动执行：不送审，直接放行。
             set_auto(true);
             let (tx, mut rx) = mpsc::unbounded();
             let gate = new_gate(tx, current(), false);
-            assert!(matches!(gate.review(ARGS).await, ToolCallAction::Run));
+            assert_eq!(verdict(gate.review(ARGS).await), Verdict::Run);
             assert!(rx.try_recv().is_err(), "自动执行不该发审核事件");
 
             // 手动确认：批准 → Run，拒绝 → Skip。审核事件里带着命令原文，
@@ -236,9 +257,9 @@
                     _ = request.respond.send(approve);
                 };
                 let (action, ()) = futures::join!(gate.review(ARGS), decide);
-                match action {
-                    ToolCallAction::Run => assert!(want_run, "拒绝之后不该放行"),
-                    ToolCallAction::Skip(_) => assert!(!want_run, "批准之后不该跳过"),
+                match verdict(action) {
+                    Verdict::Run => assert!(want_run, "拒绝之后不该放行"),
+                    Verdict::Skip => assert!(!want_run, "批准之后不该跳过"),
                     other => panic!("不该是 {other:?}"),
                 }
             }
@@ -257,8 +278,9 @@
                 _ = request.respond.send(true);
             };
             let (action, ()) = futures::join!(gate.review(ARGS), decide);
-            assert!(
-                matches!(action, ToolCallAction::Skip(_)),
+            assert_eq!(
+                verdict(action),
+                Verdict::Skip,
                 "换了机器之后那次批准不该还算数"
             );
 
@@ -266,7 +288,7 @@
             set_auto(true);
             let (tx, _rx) = mpsc::unbounded();
             let gate = new_gate(tx, current(), true);
-            assert!(matches!(gate.review(ARGS).await, ToolCallAction::Stop(_)));
+            assert_eq!(verdict(gate.review(ARGS).await), Verdict::Stop);
         });
     }
 
@@ -294,12 +316,385 @@
                 _ = request.respond.send(true);
             };
             let (action, ()) = futures::join!(gate.review(ARGS), decide);
-            assert!(matches!(action, ToolCallAction::Run));
+            assert_eq!(verdict(action), Verdict::Run);
 
             // 同一道门、同一场运行，用户拨了模式键。
             set_auto(true);
-            assert!(matches!(gate.review(ARGS).await, ToolCallAction::Run));
+            assert_eq!(verdict(gate.review(ARGS).await), Verdict::Run);
             assert!(rx.try_recv().is_err(), "拨到自动执行之后不该再送审");
+        });
+    }
+
+    /// 审核门真的挂在 rig 的派发边界上：整场跑一遍（照脚本说话的模型、进程内
+    /// 的假 sshd），模型要跑的命令先变成一张审核卡片；用户拒绝之后远端一个字
+    /// 都没收到，模型下一轮读到的是"没执行"，每一轮都照常收尾。
+    ///
+    /// 守的是升级 rig 0.45 时最容易悄悄坏掉的那一处：审核从 `on_tool_call`
+    /// 搬到了 `on_dispatch`，它受 `AgentHook::observes` 门控 —— 钩子没接上的话，
+    /// 上面那几条直接测 `review` 的用例照样全绿，命令却会不经审核直接跑。
+    #[test]
+    fn a_whole_run_asks_before_running_and_honors_a_denial() {
+        use futures::future::Either;
+        use rig_agent::test_utils::{MockCompletionModel, MockStreamEvent};
+
+        let _exclusive = crate::config::exclusive_for_test();
+        set_auto(false);
+        winssh_db::runtime().block_on(async {
+            let (web, seen) = target("web-01").await;
+            let session = CurrentSession::default();
+            session.set(Some(web));
+            let model = MockCompletionModel::from_stream_turns([
+                vec![
+                    MockStreamEvent::tool_call(
+                        "call-1",
+                        RunRemoteCommand::NAME,
+                        serde_json::json!({ "command": "rm -rf /tmp/x" }),
+                    ),
+                    MockStreamEvent::final_response_with_default_usage(),
+                ],
+                vec![
+                    MockStreamEvent::text("好的，不删了。"),
+                    MockStreamEvent::final_response_with_default_usage(),
+                ],
+            ]);
+            let (tx, mut rx) = mpsc::unbounded();
+            let input = RunInput {
+                target: ModelTarget::default(),
+                session,
+                history: Vec::new(),
+                prompt: "把 /tmp/x 删掉".into(),
+                images: Vec::new(),
+                events: tx,
+                cancel: Arc::new(AtomicBool::new(false)),
+                transfer: Arc::new(FakeTransfer {
+                    result: Err("这一场不该搬文件".into()),
+                    seen: Default::default(),
+                }),
+            };
+
+            // 界面那头：每张审核卡片都按"拒绝"，别的事件攒着。跑完就收，不等
+            // 通道关 —— 万一审核门没接上，这里一张卡片也等不到，不能挂死。
+            let mut asked = Vec::new();
+            let mut events = Vec::new();
+            let result = {
+                let run = drive(model.clone().into(), input);
+                let answer = async {
+                    while let Some(event) = rx.next().await {
+                        match event {
+                            AgentEvent::Approval(request) => {
+                                asked.push(request.proposal.clone());
+                                _ = request.respond.send(false);
+                            }
+                            other => events.push(other),
+                        }
+                    }
+                };
+                futures::pin_mut!(run, answer);
+                match futures::future::select(run, answer).await {
+                    Either::Left((result, _)) => result,
+                    Either::Right(_) => panic!("运行还没收尾，事件通道不该先断"),
+                }
+            };
+            while let Ok(event) = rx.try_recv() {
+                events.push(event);
+            }
+
+            result.unwrap();
+            assert_eq!(
+                asked,
+                [Proposal::Command("rm -rf /tmp/x".into())],
+                "命令该先送审"
+            );
+            assert_eq!(seen.script(), "", "拒绝了，远端就不该收到这条命令");
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, AgentEvent::Command { .. })),
+                "拒绝了就不该有执行卡片"
+            );
+            let turns: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    AgentEvent::TurnEnd(output) => Some(output.text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(turns, ["", "好的，不删了。"], "叫工具那一轮也要收尾");
+
+            let requests = model.requests();
+            assert_eq!(requests.len(), 2);
+            let replayed = serde_json::to_string(&requests[1].chat_history).unwrap();
+            assert!(
+                replayed.contains(DENIED_FEEDBACK),
+                "模型下一轮该读到这条没执行：{replayed}"
+            );
+        });
+    }
+
+    // ─── 走真的协议编解码 ──────────────────────────────────────────────────
+    //
+    // 下面几条把模型接到 rig 自己的 OpenAI / Anthropic 编解码上，只把 HTTP 那一层
+    // 换成照脚本回话、记下请求的假传输（`SequencedHttpClient`）。守的是升级 rig
+    // 时最容易悄悄变的两样：发出去的请求体长什么样（思考参数、输出上限、系统
+    // 提示词落在哪儿），以及兼容端点那些不规矩的回法会不会让一整场失败。
+
+    /// 一个照着 `target` 连、只是 HTTP 换成 `http` 的模型。配置走的是和正式
+    /// 运行同一条路（[`openai_config`] / [`anthropic_config`]），只有传输不同。
+    fn scripted_model(
+        target: &ModelTarget,
+        http: &rig_agent::test_utils::SequencedHttpClient,
+    ) -> DynModel<Completion> {
+        let model = target.model.as_str();
+        match target.protocol {
+            ProviderProtocol::OpenAi => openai_config(target)
+                .connect(http.clone())
+                .chat(model)
+                .into(),
+            ProviderProtocol::OpenAiResponses => openai_config(target)
+                .connect(http.clone())
+                .responses(model)
+                .into(),
+            ProviderProtocol::Anthropic => anthropic_config(target)
+                .connect(http.clone())
+                .completion(model)
+                .into(),
+        }
+    }
+
+    /// 拿 `target` 整场跑一遍，服务商回的是 `reply`（一段 SSE）。交回运行结果、
+    /// 界面收到的每一轮收尾，以及发出去的第一个请求（体已经解成 JSON）。
+    async fn run_scripted(
+        target: ModelTarget,
+        reply: String,
+    ) -> (Result<()>, Vec<TurnOutput>, String, serde_json::Value) {
+        use rig_agent::test_utils::{MockHttpResponse, SequencedHttpClient};
+
+        let http =
+            SequencedHttpClient::new([MockHttpResponse::success_typed(reply, "text/event-stream")]);
+        let (tx, mut rx) = mpsc::unbounded();
+        let input = RunInput {
+            target: target.clone(),
+            session: CurrentSession::default(),
+            history: Vec::new(),
+            prompt: "磁盘还剩多少？".into(),
+            images: Vec::new(),
+            events: tx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            transfer: Arc::new(FakeTransfer {
+                result: Err("这一场不该搬文件".into()),
+                seen: Default::default(),
+            }),
+        };
+        let result = drive(scripted_model(&target, &http), input).await;
+
+        let mut turns = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::TurnEnd(output) = event {
+                turns.push(output);
+            }
+        }
+        let request = http.requests().into_iter().next().expect("该发出一个请求");
+        let body = serde_json::from_slice(&request.body).expect("请求体该是 JSON");
+        (result, turns, request.uri, body)
+    }
+
+    /// 一个兼容端点（Chat Completions）上的模型：思考开在 `high`，输出上限 2048。
+    fn gateway_target() -> ModelTarget {
+        ModelTarget {
+            protocol: ProviderProtocol::OpenAi,
+            base_url: "https://gateway.example/v1".into(),
+            api_key: "sk-test".into(),
+            thinking_switch: ThinkingSwitch::ThinkingType,
+            model: "glm-4.5".into(),
+            vision: false,
+            effort: Some(ThinkingEffort::High),
+            max_tokens: Some(2048),
+        }
+    }
+
+    /// 兼容端点回的一段 SSE：先一段思考（`reasoning_content`），再一段正文，
+    /// 最后那一块的 `finish_reason` 是 `finish`（`None` = 压根不带），然后 `[DONE]`。
+    fn chat_reply(finish: Option<&str>) -> String {
+        let chunk = |delta: serde_json::Value, finish: Option<&str>| {
+            let chunk = serde_json::json!({
+                "id": "chatcmpl-1",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "glm-4.5",
+                "choices": [{ "index": 0, "delta": delta, "finish_reason": finish }],
+            });
+            format!("data: {chunk}\n\n")
+        };
+        [
+            chunk(
+                serde_json::json!({ "role": "assistant", "reasoning_content": "先看看磁盘。" }),
+                None,
+            ),
+            chunk(serde_json::json!({ "content": "根分区还剩 20%。" }), None),
+            chunk(serde_json::json!({}), finish),
+            "data: [DONE]\n\n".to_owned(),
+        ]
+        .concat()
+    }
+
+    /// 那段 SSE 该收成的一轮：思考与正文各一段。太快了量不出速度。
+    fn chat_turn() -> TurnOutput {
+        TurnOutput {
+            reasoning: "先看看磁盘。".into(),
+            text: "根分区还剩 20%。".into(),
+            tokens_per_sec: None,
+        }
+    }
+
+    /// Chat Completions 的请求体：思考开关与强度按服务商那一格的写法平铺在顶层，
+    /// 输出上限是 `max_tokens`，系统提示词是第一条 `system` 消息，九个工具都在；
+    /// 流式要带上 `stream_options.include_usage`（测速靠它）。回来的思考与正文
+    /// 收成一轮。
+    #[test]
+    fn a_chat_request_carries_thinking_cap_preamble_and_tools() {
+        winssh_db::runtime().block_on(async {
+            let (result, turns, uri, body) =
+                run_scripted(gateway_target(), chat_reply(Some("stop"))).await;
+
+            result.unwrap();
+            assert_eq!(turns, [chat_turn()]);
+            assert_eq!(uri, "https://gateway.example/v1/chat/completions");
+            assert_eq!(body["model"], "glm-4.5");
+            assert_eq!(body["thinking"], serde_json::json!({ "type": "enabled" }));
+            assert_eq!(body["reasoning_effort"], "high");
+            assert_eq!(body["max_tokens"], 2048);
+            assert_eq!(body["stream"], true);
+            assert_eq!(body["stream_options"]["include_usage"], true);
+            assert_eq!(body["messages"][0]["role"], "system");
+            assert!(
+                body["messages"][0]["content"]
+                    .to_string()
+                    .contains("WinSSH Pro"),
+                "系统提示词该是第一条：{}",
+                body["messages"][0]
+            );
+            let tools: Vec<_> = body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str())
+                .collect();
+            assert_eq!(tools.len(), 9, "{tools:?}");
+            assert!(tools.contains(&RunRemoteCommand::NAME));
+        });
+    }
+
+    /// 流以 `[DONE]` 收尾却一个 `finish_reason` 都没带：按没说完算，整场失败，
+    /// 流出来的那点正文不收进对话 —— 没说完的话不是完整答复，不能落库。
+    ///
+    /// 这是 rig 0.43 起的从严默认（0.42 里照常收尾），用户拍板保持。故意守着
+    /// 它，是防止日后谁顺手把它"修"宽：放宽等于把真被掐断的流当完整答复。
+    #[test]
+    fn a_stream_without_a_finish_reason_fails_the_run() {
+        winssh_db::runtime().block_on(async {
+            let (result, turns, _, _) = run_scripted(gateway_target(), chat_reply(None)).await;
+            assert!(
+                result
+                    .as_ref()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("the reply ended before the provider ended it"),
+                "该按没说完报错：{result:?}"
+            );
+            assert!(turns.is_empty(), "截断的轮次不该收尾，流出来的正文是暂定的");
+        });
+    }
+
+    /// 没见过的 `finish_reason`（智谱的 `sensitive`）：整场报错，错误里带着
+    /// 那个词；轮次本身照常收尾 —— 话是说完的，只是结束的词没人认得。
+    ///
+    /// 这是 rig 0.44 起的从严默认（0.42 里未知词原样保留、不报错），用户拍板
+    /// 保持。兼容端点里确有这种词，线上会表现为"答复照常上屏，底下多一条
+    /// 运行失败"—— 那是让用户看见，而不是静默收一条说不清的答复。真被内容
+    /// 过滤（`content_filter`）拦下的轮次同样失败，且不收尾。
+    #[test]
+    fn an_unknown_finish_reason_fails_the_turn() {
+        winssh_db::runtime().block_on(async {
+            let (result, turns, _, _) =
+                run_scripted(gateway_target(), chat_reply(Some("sensitive"))).await;
+            assert!(
+                result
+                    .as_ref()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("sensitive"),
+                "错误里该带着那个词，用户才知道是哪儿不让过：{result:?}"
+            );
+            // 话说完了、只是那个词没人认得：轮次照常收尾（答复完整，进对话），
+            // 随后整场报错。和上一条截断的分开：那里连收尾都没有。
+            assert_eq!(turns, [chat_turn()]);
+        });
+    }
+
+    /// Responses 的请求体：强度在 `reasoning.effort`，带 `summary: auto` 思考才
+    /// 流得出来；rig 见到 `reasoning` 会自己补上取回加密思考的 `include`；系统
+    /// 提示词走顶层的 `instructions`。只看请求，回的是一段空流。
+    #[test]
+    fn a_responses_request_carries_reasoning_and_instructions() {
+        winssh_db::runtime().block_on(async {
+            let target = ModelTarget {
+                protocol: ProviderProtocol::OpenAiResponses,
+                base_url: String::new(),
+                model: "gpt-5".into(),
+                max_tokens: None,
+                ..gateway_target()
+            };
+            let (_, _, uri, body) = run_scripted(target, String::new()).await;
+
+            assert_eq!(
+                uri, "https://api.openai.com/v1/responses",
+                "没填 Base URL 走官方地址"
+            );
+            assert_eq!(
+                body["reasoning"],
+                serde_json::json!({ "effort": "high", "summary": "auto" })
+            );
+            assert_eq!(
+                body["include"],
+                serde_json::json!(["reasoning.encrypted_content"])
+            );
+            assert!(
+                body["instructions"]
+                    .as_str()
+                    .is_some_and(|preamble| preamble.contains("WinSSH Pro")),
+                "系统提示词该在 instructions：{body}"
+            );
+            assert!(body.get("max_output_tokens").is_none(), "没填上限就不带");
+        });
+    }
+
+    /// Anthropic 的请求体：没填上限也带 `max_tokens`（接口必填，按默认值），
+    /// 思考是自适应加 `output_config.effort`；Base URL 末尾多粘的 `/v1` 不会
+    /// 叠成 `/v1/v1/messages`。只看请求，回的是一段空流。
+    #[test]
+    fn an_anthropic_request_carries_max_tokens_and_adaptive_thinking() {
+        winssh_db::runtime().block_on(async {
+            let target = ModelTarget {
+                protocol: ProviderProtocol::Anthropic,
+                base_url: "https://api.anthropic.com/v1".into(),
+                model: "claude-sonnet-4-5".into(),
+                max_tokens: None,
+                ..gateway_target()
+            };
+            let (_, _, uri, body) = run_scripted(target, String::new()).await;
+
+            assert_eq!(uri, "https://api.anthropic.com/v1/messages");
+            assert_eq!(body["max_tokens"], crate::config::DEFAULT_MAX_TOKENS);
+            assert_eq!(body["thinking"], serde_json::json!({ "type": "adaptive" }));
+            assert_eq!(
+                body["output_config"],
+                serde_json::json!({ "effort": "high" })
+            );
+            assert!(
+                body["system"].to_string().contains("WinSSH Pro"),
+                "系统提示词该在 system：{}",
+                body["system"]
+            );
         });
     }
 
@@ -396,14 +791,22 @@
     /// 测速：输出 token 数除以吐字的时长；量不准的（没报用量、一口气到的）不报。
     #[test]
     fn speed_is_tokens_over_streaming_time() {
-        assert_eq!(tokens_per_second(50, Duration::from_secs(2)), Some(25.0));
         assert_eq!(
-            tokens_per_second(0, Duration::from_secs(2)),
-            None,
-            "供应商没报用量时不该显示 0 tokens/s"
+            tokens_per_second(Some(50), Duration::from_secs(2)),
+            Some(25.0)
         );
         assert_eq!(
-            tokens_per_second(3, Duration::from_millis(5)),
+            tokens_per_second(None, Duration::from_secs(2)),
+            None,
+            "供应商没报用量时不该显示 tokens/s"
+        );
+        assert_eq!(
+            tokens_per_second(Some(0), Duration::from_secs(2)),
+            None,
+            "报了 0 也不该显示 0 tokens/s"
+        );
+        assert_eq!(
+            tokens_per_second(Some(3), Duration::from_millis(5)),
             None,
             "一口气到的回复除出来是几百 tokens/s 的假数"
         );
@@ -538,7 +941,7 @@
                 AssistantContent::text("\n\n"),
                 AssistantContent::tool_call(
                     "call-1",
-                    "read_terminal",
+                    ReadTerminal::NAME.try_into().unwrap(),
                     serde_json::json!({ "lines": 30 }),
                 ),
             ],
@@ -632,8 +1035,8 @@
                 };
                 let args = r#"{"local_path":"~/dist","remote_dir":"/opt/app"}"#;
                 let (action, ()) = futures::join!(gate.review_transfer(Upload::NAME, args), decide);
-                match (approve, action) {
-                    (true, ToolCallAction::Run) | (false, ToolCallAction::Skip(_)) => {}
+                match (approve, verdict(action)) {
+                    (true, Verdict::Run) | (false, Verdict::Skip) => {}
                     (_, other) => panic!("批准={approve} 时不该是 {other:?}"),
                 }
             }
@@ -654,7 +1057,7 @@
             let action = gate
                 .review_transfer(Upload::NAME, r#"{"local_path":"dist"}"#)
                 .await;
-            assert!(matches!(action, ToolCallAction::Skip(_)));
+            assert_eq!(verdict(action), Verdict::Skip);
             assert!(rx.try_recv().is_err(), "相对路径不该送审");
 
             let (tx, mut rx) = mpsc::unbounded();
@@ -662,7 +1065,7 @@
             let action = gate
                 .review_transfer(Download::NAME, r#"{"remote_path":"/etc/hosts"}"#)
                 .await;
-            assert!(matches!(action, ToolCallAction::Skip(_)));
+            assert_eq!(verdict(action), Verdict::Skip);
             assert!(rx.try_recv().is_err(), "没有会话不该送审");
         });
     }
@@ -797,7 +1200,7 @@
             let (tx, mut rx) = mpsc::unbounded();
             let gate = new_gate(tx, CurrentSession::default(), false);
             let action = gate.review_local(local::READ_FILE, &read_args).await;
-            assert!(matches!(action, ToolCallAction::Run));
+            assert_eq!(verdict(action), Verdict::Run);
             assert!(rx.try_recv().is_err(), "自动执行档读普通文件不该送审");
 
             // 读私钥：自动执行档也送审，卡片上标着敏感。
@@ -816,7 +1219,7 @@
                 _ = request.respond.send(false);
             };
             let (action, ()) = futures::join!(gate.review_local(local::READ_FILE, &secret), decide);
-            assert!(matches!(action, ToolCallAction::Skip(_)), "拒绝之后不该放行");
+            assert_eq!(verdict(action), Verdict::Skip, "拒绝之后不该放行");
 
             // 写：自动执行档也送审；批准了就放行，换没换标签页都不相干。
             let target = temp.path().join("out.txt");
@@ -832,7 +1235,7 @@
             };
             let (action, ()) =
                 futures::join!(gate.review_local(local::WRITE_FILE, &write_args), decide);
-            assert!(matches!(action, ToolCallAction::Run));
+            assert_eq!(verdict(action), Verdict::Run);
 
             // 相对路径：不惊动用户，原因直接回给模型。
             set_auto(false);
@@ -840,7 +1243,7 @@
             let gate = new_gate(tx, CurrentSession::default(), false);
             let relative = serde_json::json!({ "path": "notes.txt" }).to_string();
             let action = gate.review_local(local::READ_FILE, &relative).await;
-            assert!(matches!(action, ToolCallAction::Skip(_)));
+            assert_eq!(verdict(action), Verdict::Skip);
             assert!(rx.try_recv().is_err(), "相对路径不该送审");
         });
     }
@@ -857,7 +1260,7 @@
             set_auto(true);
             let (tx, mut rx) = mpsc::unbounded();
             let gate = new_gate(tx, CurrentSession::default(), false);
-            assert!(matches!(gate.review_shell(&args).await, ToolCallAction::Run));
+            assert_eq!(verdict(gate.review_shell(&args).await), Verdict::Run);
             assert!(rx.try_recv().is_err(), "自动执行不该发审核事件");
 
             // 手动确认：批准 → Run，拒绝 → Skip。审核事件里是本机命令、来处写"本机"。
@@ -874,9 +1277,9 @@
                     _ = request.respond.send(approve);
                 };
                 let (action, ()) = futures::join!(gate.review_shell(&args), decide);
-                match action {
-                    ToolCallAction::Run => assert!(want_run, "拒绝之后不该放行"),
-                    ToolCallAction::Skip(_) => assert!(!want_run, "批准之后不该跳过"),
+                match verdict(action) {
+                    Verdict::Run => assert!(want_run, "拒绝之后不该放行"),
+                    Verdict::Skip => assert!(!want_run, "批准之后不该跳过"),
                     other => panic!("不该是 {other:?}"),
                 }
             }
@@ -885,7 +1288,7 @@
             let (tx, mut rx) = mpsc::unbounded();
             let gate = new_gate(tx, CurrentSession::default(), false);
             let empty = serde_json::json!({ "command": "  " }).to_string();
-            assert!(matches!(gate.review_shell(&empty).await, ToolCallAction::Skip(_)));
+            assert_eq!(verdict(gate.review_shell(&empty).await), Verdict::Skip);
             assert!(rx.try_recv().is_err(), "空命令不该送审");
         });
     }

@@ -42,4 +42,7 @@ rust-i18n = { workspace = true }
 [dev-dependencies]
 # 工具测试要一个假 sshd（`winssh_ssh::exec::fake`），门在 `test-support` 后面。
 winssh-ssh = { workspace = true, features = ["test-support"] }
+# 整场跑一遍要一个照脚本说话的模型（`rig_agent::test_utils::MockCompletionModel`），
+# 不碰网络。只在测试构建里点亮，正式构建里没有它。
+rig-agent = { workspace = true, features = ["test-utils"] }
 tempfile = { workspace = true }
