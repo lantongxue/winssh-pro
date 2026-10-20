@@ -442,9 +442,27 @@ settings.assistant_custom:
 settings.assistant_no_provider:
   en: No provider yet. Add one, then add the models you want to chat with.
   zh-CN: 还没有服务商。添加一个，再添加要用的模型。
+settings.assistant_provider_list_hint:
+  en: Each provider is one connection. Its models live under it.
+  zh-CN: 每个服务商是一份连接配置，模型挂在它下面。
+settings.assistant_models_count:
+  en: '%{count} models'
+  zh-CN: '%{count} 个模型'
+settings.assistant_default_model:
+  en: default %{name}
+  zh-CN: 默认 %{name}
+settings.assistant_back:
+  en: Providers
+  zh-CN: 服务商
+settings.assistant_connection:
+  en: Connection
+  zh-CN: 连接设置
+settings.assistant_collapse_model:
+  en: Collapse
+  zh-CN: 收起
 settings.assistant_add_provider:
-  en: Add
-  zh-CN: 添加
+  en: Add provider
+  zh-CN: 添加服务商
 settings.assistant_delete_provider:
   en: Delete provider
   zh-CN: 删除服务商

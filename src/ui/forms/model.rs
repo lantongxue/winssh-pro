@@ -1,9 +1,12 @@
-//! 添加 / 编辑一个模型的对话框：设置页"模型"那一组里点出来。
+//! 可嵌入的模型表单：模型名、能不能看图、认哪几档思考强度、最多输出多少 token。
 //!
-//! 一个模型只有四样要填：发给服务商的模型名、能不能看图、认哪几档思考强度、
-//! 一次最多输出多少 token。
-//! 连接信息（地址、密钥、协议）归它所属的服务商，不在这张表上 —— 同一家
-//! 下面的 A、B、C 三个模型共用那一份。
+//! 设置页的服务商详情里点"编辑"后，这张表单在那一行下面展开
+//! （见 [`crate::ui::windows::SettingsWindow`]）。它自己不落库：存的时候把
+//! 这一条交给宿主（[`ModelSavedHandler`]），由宿主塞进那一家服务商、写回
+//! 配置；取消也交回宿主，由它把这一块收起来。
+//!
+//! 一个模型只有四样要填。连接信息（地址、密钥、协议）归它所属的服务商，
+//! 不在这张表上 —— 同一家下面的 A、B、C 三个模型共用那一份。
 //!
 //! 思考强度是六个勾（[`ThinkingEffort::ALL`]），原样写英文：同一个词在不同
 //! 模型上的支持参差不齐（`none` 有的关不掉、`xhigh` / `max` 只有新一代才认），
@@ -14,14 +17,12 @@
 //! 也能自己填。空着时 Anthropic 协议按 [`DEFAULT_MAX_TOKENS`] 发（它的接口
 //! 必填），别的协议不发、用服务商自己的默认。
 //!
-//! 表单不落库：存的时候把这一条交给宿主（[`ModelSavedHandler`]），由宿主塞进
-//! 那一家服务商、写回配置。模型名在这一家里撞了就不收，当场说一声。
+//! 模型名在这一家里撞了就不收，当场说一声。
 
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Colorize as _, Icon, Selectable as _, Sizable as _, StyledExt as _,
-    WindowExt as _,
+    ActiveTheme as _, Colorize as _, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     checkbox::Checkbox,
     h_flex,
@@ -31,18 +32,21 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Window, div, px,
+    Styled as _, Window, div,
 };
 
 use crate::assistant::{
     ModelConfig, ThinkingEffort,
     config::{DEFAULT_MAX_TOKENS, new_id},
 };
-use crate::ui::theme::{AppIcon, palette};
+use crate::ui::theme::palette;
 use rust_i18n::t;
 
 /// 存好的那一条交回宿主。
 pub type ModelSavedHandler = Rc<dyn Fn(ModelConfig, &mut Window, &mut App)>;
+
+/// 取消这一下交回宿主：宿主把展开的那一块收起来。
+pub type ModelCancelHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
 /// 最大输出 tokens 的快捷值。64k / 128k 取的是 Claude 官方的上限原数
 /// （64000 / 128000），不是 2 的幂 —— 填 65536 会超出 Sonnet 4.5 的上限直接 400。
@@ -52,8 +56,8 @@ const MAX_TOKENS_PRESETS: [(&str, u64); 3] = [
     ("128k", 128_000),
 ];
 
-/// 模型表单的正文。外壳（标题、底部按钮）由 [`Self::open`] 现搭。
-pub struct ModelFormDialog {
+/// 模型表单的正文。宿主负责把它放进版式里（详情页那一行的下面）。
+pub struct ModelForm {
     /// 编辑的是哪一条；新建时是现生成的 id。
     id: String,
     name: Entity<InputState>,
@@ -64,69 +68,17 @@ pub struct ModelFormDialog {
     /// 这一家里别的模型已经占了的名字，撞了不收。
     taken: Vec<String>,
     on_saved: ModelSavedHandler,
+    on_cancel: ModelCancelHandler,
 }
 
-impl ModelFormDialog {
-    /// 弹出来。`model` 是要编辑的那一条，`None` 是新建；`taken` 是同一家里
-    /// 别的模型的名字。
-    pub fn open(
+impl ModelForm {
+    /// 建一张表单。`model` 是要编辑的那一条，`None` 是新建；`taken` 是同一家
+    /// 里别的模型的名字。
+    pub(crate) fn new(
         model: Option<ModelConfig>,
         taken: Vec<String>,
         on_saved: ModelSavedHandler,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let editing = model.is_some();
-        let form = cx.new(|cx| Self::new(model, taken, on_saved, window, cx));
-        form.update(cx, |form, cx| {
-            form.name.update(cx, |input, cx| input.focus(window, cx))
-        });
-
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let tone = palette::blue();
-            let variant = ButtonCustomVariant::new(cx)
-                .color(tone)
-                .foreground(palette::on_accent())
-                .hover(tone.lighten(0.08))
-                .active(tone.darken(0.08));
-            let submit = form.clone();
-
-            dialog
-                .w(px(460.))
-                .title(render_header(editing, cx))
-                .child(form.clone())
-                .footer(
-                    h_flex()
-                        .w_full()
-                        .justify_end()
-                        .gap_2()
-                        .pt_3()
-                        .border_t_1()
-                        .border_color(cx.theme().border)
-                        .child(
-                            Button::new("model-form-cancel")
-                                .ghost()
-                                .label(t!("model_form.cancel"))
-                                .on_click(|_, window, cx| window.close_dialog(cx)),
-                        )
-                        .child(
-                            Button::new("model-form-save")
-                                .custom(variant)
-                                .bg(tone)
-                                .rounded(cx.theme().radius)
-                                .label(t!("model_form.save"))
-                                .on_click(move |_, window, cx| {
-                                    submit.update(cx, |this, cx| this.submit(window, cx));
-                                }),
-                        ),
-                )
-        });
-    }
-
-    fn new(
-        model: Option<ModelConfig>,
-        taken: Vec<String>,
-        on_saved: ModelSavedHandler,
+        on_cancel: ModelCancelHandler,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -174,7 +126,19 @@ impl ModelFormDialog {
             max_tokens,
             taken,
             on_saved,
+            on_cancel,
         }
+    }
+
+    /// 展开时把焦点放进模型名那一格。
+    pub(crate) fn focus_first(&self, window: &mut Window, cx: &mut App) {
+        self.name.update(cx, |input, cx| input.focus(window, cx))
+    }
+
+    /// 这一张表在编辑（或将要新建）的那个模型的 id。宿主按它认"展开的是哪
+    /// 一行"，删掉那个模型时也好把这一块一起收起来。
+    pub(crate) fn model_id(&self) -> &str {
+        &self.id
     }
 
     /// 最大输出那一格现在的值：空着是 `Ok(None)`，不是正整数是 `Err`。
@@ -206,8 +170,8 @@ impl ModelFormDialog {
         cx.notify();
     }
 
-    /// 校验、交给宿主、收壳。
-    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// 校验、交给宿主。收起那一块由宿主的 `on_saved` 自己做。
+    pub(crate) fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.name.read(cx).value().trim().to_string();
         if name.is_empty() {
             window.push_notification(t!("model_form.name_required"), cx);
@@ -229,16 +193,30 @@ impl ModelFormDialog {
             max_tokens,
         };
         (self.on_saved)(model, window, cx);
-        window.close_dialog(cx);
+    }
+
+    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        (self.on_cancel)(window, cx);
     }
 }
 
-impl Render for ModelFormDialog {
+impl Render for ModelForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        let tone = palette::blue();
+        let variant = ButtonCustomVariant::new(cx)
+            .color(tone)
+            .foreground(palette::on_accent())
+            .hover(tone.lighten(0.08))
+            .active(tone.darken(0.08));
+
         v_flex()
+            .w_full()
             .gap_4()
-            .pb_1()
+            .p_3()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(cx.theme().border)
             .child(
                 v_flex()
                     .gap_1()
@@ -306,10 +284,37 @@ impl Render for ModelFormDialog {
                     ),
             )
             .child(self.render_max_tokens(cx))
+            .child(
+                h_flex()
+                    .w_full()
+                    .justify_end()
+                    .gap_2()
+                    .pt_3()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        Button::new("model-form-cancel")
+                            .ghost()
+                            .label(t!("model_form.cancel"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.cancel(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("model-form-save")
+                            .custom(variant)
+                            .bg(tone)
+                            .rounded(cx.theme().radius)
+                            .label(t!("model_form.save"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.submit(window, cx);
+                            })),
+                    ),
+            )
     }
 }
 
-impl ModelFormDialog {
+impl ModelForm {
     /// 最大输出 tokens：一格输入，右边三个快捷值，和那一格的值对上的那颗亮着。
     fn render_max_tokens(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.parsed_max_tokens(cx).ok().flatten();
@@ -355,47 +360,6 @@ fn field_label(label: SharedString, cx: &App) -> impl IntoElement {
         .child(label)
 }
 
-/// 标题行：图标 + 名称 + 副标题，和别的表单对话框同一套排法。
-fn render_header(editing: bool, cx: &App) -> impl IntoElement {
-    let tone = palette::teal();
-    let title = match editing {
-        true => t!("model_form.title_edit"),
-        false => t!("model_form.title_new"),
-    };
-    h_flex()
-        .items_center()
-        .gap(px(10.))
-        .child(
-            div()
-                .size(px(32.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(cx.theme().radius)
-                .bg(tone.opacity(0.1))
-                .border_1()
-                .border_color(tone.opacity(0.3))
-                .text_color(tone)
-                .child(Icon::new(AppIcon::Sparkles).with_size(px(16.))),
-        )
-        .child(
-            v_flex()
-                .gap(px(2.))
-                .child(
-                    div()
-                        .text_sm()
-                        .font_semibold()
-                        .child(SharedString::from(title)),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(SharedString::from(t!("model_form.subtitle"))),
-                ),
-        )
-}
-
 #[cfg(test)]
-#[path = "../../tests/ui/dialogs/model_form.rs"]
+#[path = "../../tests/ui/forms/model.rs"]
 mod tests;
