@@ -39,6 +39,9 @@ pub struct Model {
     /// 模型这条回复每秒吐了多少 token。只有 `text` 档、助手说的话才有；
     /// 供应商没报用量、或者这一行早于这一列时是空的。
     pub tokens_per_sec: Option<f64>,
+    /// 哪个模型说的（模型名）。只有助手说的 `text` 档才有；早于这一列的是空串。
+    #[sea_orm(default_value = "")]
+    pub model: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

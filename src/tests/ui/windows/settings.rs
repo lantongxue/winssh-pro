@@ -215,3 +215,112 @@
             cx.update(|window, cx| window.draw(cx).clear(cx));
         }
     }
+
+    /// 配了两家服务商的助手页也要画得通：服务商下拉、Completions 协议才有的
+    /// "思考开关参数"、模型列表那几行，只有真配了东西才走得到。三格输入框照
+    /// 选中的那一家预填，换一家就照那一家重填。
+    ///
+    /// 只动进程里那份缓存，不碰服务层。
+    #[gpui_kit::test]
+    fn the_assistant_page_draws_providers_and_models(cx: &mut gpui_kit::TestAppContext) {
+        use crate::assistant::{ModelConfig, ThinkingEffort};
+
+        let _guard = assistant_config::exclusive_for_test();
+        assistant_config::set_global(AssistantConfig {
+            providers: vec![
+                Provider {
+                    id: "relay".into(),
+                    name: "Relay".into(),
+                    protocol: ProviderProtocol::OpenAi,
+                    base_url: "https://relay.example.com/v1".into(),
+                    api_key: "sk-relay".into(),
+                    thinking_switch: ThinkingSwitch::EnableThinking,
+                    models: vec![
+                        ModelConfig {
+                            id: "a".into(),
+                            name: "model-a".into(),
+                            vision: true,
+                            efforts: vec![ThinkingEffort::Low, ThinkingEffort::High],
+                            max_tokens: Some(64_000),
+                        },
+                        ModelConfig {
+                            id: "b".into(),
+                            name: "model-b".into(),
+                            ..Default::default()
+                        },
+                    ],
+                },
+                Provider {
+                    id: "claude".into(),
+                    protocol: ProviderProtocol::Anthropic,
+                    api_key: "sk-ant".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+
+        cx.update(gpui_kit::init);
+        let (shell, cx) = cx.add_window_view(SettingsWindow::new);
+        shell.update(cx, |shell, cx| shell.set_tab(SettingsTab::Assistant, cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        shell.read_with(cx, |shell, cx| {
+            assert_eq!(shell.assistant.name.read(cx).value(), "Relay");
+            assert_eq!(shell.assistant.api_key.read(cx).value(), "sk-relay");
+        });
+
+        // 换到第二家（没有模型、不是 Completions 协议）：三格重填，页面照画。
+        cx.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.select_assistant_provider(Some("claude".into()), window, cx)
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        shell.read_with(cx, |shell, cx| {
+            assert_eq!(shell.assistant.name.read(cx).value(), "");
+            assert_eq!(shell.assistant.api_key.read(cx).value(), "sk-ant");
+        });
+    }
+
+    /// 改名只写选中的那一家：换家时重填不发 Change，不会把上一家的值写过来。
+    #[gpui_kit::test]
+    fn typing_writes_only_the_selected_provider(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = assistant_config::exclusive_for_test();
+        let provider = |id: &str| Provider {
+            id: id.into(),
+            name: id.into(),
+            base_url: format!("https://{id}.example.com"),
+            ..Default::default()
+        };
+        assistant_config::set_global(AssistantConfig {
+            providers: vec![provider("one"), provider("two")],
+            ..Default::default()
+        });
+
+        cx.update(gpui_kit::init);
+        let (shell, cx) = cx.add_window_view(SettingsWindow::new);
+        cx.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.select_assistant_provider(Some("two".into()), window, cx);
+                shell.assistant.name.update(cx, |input, cx| {
+                    input.set_value("Two!", window, cx);
+                    cx.emit(InputEvent::Change);
+                });
+            });
+        });
+        let config = assistant_config::global();
+        assert_eq!(config.providers[0].name, "one");
+        assert_eq!(config.providers[0].base_url, "https://one.example.com");
+        assert_eq!(config.providers[1].name, "Two!");
+        assert_eq!(config.providers[1].base_url, "https://two.example.com");
+    }
+
+    /// 模型列表那一行小字里的最大输出写成短的：三个快捷值都正好是整 k。
+    #[test]
+    fn max_tokens_read_short_in_the_model_list() {
+        assert_eq!(short_tokens(8_192), "8k");
+        assert_eq!(short_tokens(64_000), "64k");
+        assert_eq!(short_tokens(128_000), "128k");
+        assert_eq!(short_tokens(12_345), "12345");
+    }

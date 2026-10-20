@@ -11,7 +11,7 @@
             assert!(service.conversations_for_host("host-a").await.unwrap().is_empty());
 
             let chat = service
-                .create_conversation("帮我看看 web-01 上 nginx 为什么起不来，然后修好它", "host-a")
+                .create_conversation("帮我看看 web-01 上 nginx 为什么起不来，然后修好它", "host-a", "", None)
                 .await
                 .unwrap();
             assert!(chat.title.starts_with("帮我看看 web-01"));
@@ -65,7 +65,7 @@
     fn transfer_cards_round_trip() {
         db::runtime().block_on(async {
             let service = AssistantService::in_memory().await.unwrap();
-            let chat = service.create_conversation("传一下日志", "host-a").await.unwrap();
+            let chat = service.create_conversation("传一下日志", "host-a", "", None).await.unwrap();
             let card = TransferCard {
                 direction: TransferDirection::Download,
                 session: "web-01".into(),
@@ -107,7 +107,7 @@
         db::runtime().block_on(async {
             let service = AssistantService::in_memory().await.unwrap();
             let chat = service
-                .create_conversation("这个报错是什么意思", "host-a")
+                .create_conversation("这个报错是什么意思", "host-a", "", None)
                 .await
                 .unwrap();
             let shots = vec![png(40, 30), png(8, 8)];
@@ -119,6 +119,7 @@
                         text: "这个报错是什么意思".into(),
                         images: shots.clone(),
                         tokens_per_sec: None,
+                        model: None,
                     },
                 )
                 .await
@@ -161,7 +162,7 @@
     fn reasoning_and_reply_speed_round_trip() {
         db::runtime().block_on(async {
             let service = AssistantService::in_memory().await.unwrap();
-            let chat = service.create_conversation("磁盘满了吗", "host-a").await.unwrap();
+            let chat = service.create_conversation("磁盘满了吗", "host-a", "", None).await.unwrap();
             for (role, body) in [
                 (ChatRole::User, MessageBody::text("磁盘满了吗")),
                 (
@@ -214,7 +215,7 @@
         db::runtime().block_on(async {
             let service = AssistantService::in_memory().await.unwrap();
             let chat = service
-                .create_conversation("看看这台怎么样", "host-42")
+                .create_conversation("看看这台怎么样", "host-42", "", None)
                 .await
                 .unwrap();
             assert_eq!(chat.host_id.as_ref(), "host-42");
@@ -231,11 +232,11 @@
         db::runtime().block_on(async {
             let service = AssistantService::in_memory().await.unwrap();
             service
-                .create_conversation("A 上的事", "host-a")
+                .create_conversation("A 上的事", "host-a", "", None)
                 .await
                 .unwrap();
             service
-                .create_conversation("B 上的事", "host-b")
+                .create_conversation("B 上的事", "host-b", "", None)
                 .await
                 .unwrap();
             // 直接塞一行空 host_id，模拟升级前没有归属的旧对话。
@@ -248,6 +249,8 @@
                         id: Set("chat-legacy".into()),
                         title: Set("旧对话".into()),
                         host_id: Set(String::new()),
+                        model_id: Set(String::new()),
+                        thinking_effort: Set(String::new()),
                         created_at: Set("2020-01-01 00:00:00".into()),
                         updated_at: Set("2020-01-01 00:00:00".into()),
                     },
@@ -261,5 +264,71 @@
             let b = service.conversations_for_host("host-b").await.unwrap();
             assert_eq!(b.len(), 1, "B 同样只该看到自己那一段");
             assert_eq!(b[0].title.as_ref(), "B 上的事");
+        });
+    }
+    /// 对话记着自己的模型与思考强度：建档时带上的读得回来，换过之后读回来
+    /// 是新的；"最近动过"不跟着换模型跳。
+    #[test]
+    fn conversations_remember_their_model_and_effort() {
+        db::runtime().block_on(async {
+            let service = AssistantService::in_memory().await.unwrap();
+            let chat = service
+                .create_conversation("看看负载", "host-a", "model-a", Some(ThinkingEffort::High))
+                .await
+                .unwrap();
+            assert_eq!(chat.model_id.as_ref(), "model-a");
+            assert_eq!(chat.effort, Some(ThinkingEffort::High));
+
+            service
+                .set_conversation_model(&chat.id, "model-b", Some(ThinkingEffort::None))
+                .await
+                .unwrap();
+            let listed = service.conversations_for_host("host-a").await.unwrap();
+            assert_eq!(listed[0].model_id.as_ref(), "model-b");
+            assert_eq!(listed[0].effort, Some(ThinkingEffort::None));
+
+            service
+                .set_conversation_model(&chat.id, "model-c", None)
+                .await
+                .unwrap();
+            let listed = service.conversations_for_host("host-a").await.unwrap();
+            assert_eq!(listed[0].effort, None, "清掉的强度读回来是没挑过");
+
+            assert!(
+                service
+                    .set_conversation_model("chat-gone", "model-a", None)
+                    .await
+                    .is_err(),
+                "对话已经删了要说一声"
+            );
+        });
+    }
+
+    /// 回复记着是哪个模型说的，读回来还在；没记的读回来是 `None`。
+    #[test]
+    fn reply_model_round_trips() {
+        db::runtime().block_on(async {
+            let service = AssistantService::in_memory().await.unwrap();
+            let chat = service
+                .create_conversation("磁盘", "host-a", "", None)
+                .await
+                .unwrap();
+            let reply = MessageBody::reply("还有 28G。", Some(30.0)).with_model("glm-4.5");
+            service
+                .append_message(&chat.id, ChatRole::Assistant, reply.clone())
+                .await
+                .unwrap();
+            service
+                .append_message(&chat.id, ChatRole::User, MessageBody::text("好"))
+                .await
+                .unwrap();
+            let bodies: Vec<_> = service
+                .messages(&chat.id)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|message| message.body)
+                .collect();
+            assert_eq!(bodies, [reply, MessageBody::text("好")]);
         });
     }

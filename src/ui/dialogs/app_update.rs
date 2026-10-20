@@ -112,13 +112,16 @@ impl Render for UpdateBody {
                 Phase::Idle => vec![],
             })
             .child(
-                // 日志可能很长：固定一个高度，里面自己滚。给高度等于给排版
-                // 一个确定的上界，弹窗不会被一份长日志顶到窗口外面。
+                // 日志可能很长：固定一个高度，交给 TextView 自己的 scrollable
+                // 模式滚动（它要求父容器高度确定，里面有滚动条与虚拟化）。
                 div()
                     .h(px(260.))
                     .w_full()
                     .overflow_hidden()
-                    .child(TextView::markdown("app-update-notes", update.notes.clone())),
+                    .child(
+                        TextView::markdown("app-update-notes", update.notes.clone())
+                            .scrollable(true),
+                    ),
             )
             .children(if update.asset.is_none() {
                 // 没有适用于本平台的产物：只能打开发布页手动下载。

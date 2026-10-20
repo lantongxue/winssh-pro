@@ -108,6 +108,8 @@ const SCHEMA: [&str; 13] = [
         id           TEXT    PRIMARY KEY,
         title        TEXT    NOT NULL,
         host_id      TEXT    NOT NULL DEFAULT '',
+        model_id     TEXT    NOT NULL DEFAULT '',
+        thinking_effort TEXT NOT NULL DEFAULT '',
         created_at   TEXT    NOT NULL DEFAULT '',
         updated_at   TEXT    NOT NULL DEFAULT ''
     )",
@@ -127,7 +129,8 @@ const SCHEMA: [&str; 13] = [
         session         TEXT    NOT NULL DEFAULT '',
         status          TEXT    NOT NULL DEFAULT '',
         created_at      TEXT    NOT NULL DEFAULT '',
-        tokens_per_sec  REAL
+        tokens_per_sec  REAL,
+        model           TEXT    NOT NULL DEFAULT ''
     )",
     // 消息上贴着的图（用户发的截图）。挂在消息上而不是对话上：一张图属于那一次
     // 提问。删对话 → 删消息 → 删图，两层级联，不留孤儿。字节是规整过的 PNG /
@@ -217,7 +220,7 @@ const SCHEMA: [&str; 13] = [
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 32] = [
+const MIGRATIONS: [&str; 35] = [
     // 连接类型（见 [`crate::host::HostKind`]）。老库补出来的是 `ssh` ——
     // 这一列出现之前存的每一台主机都是 SSH，出厂值不改变任何人的行为。
     "ALTER TABLE hosts ADD COLUMN kind TEXT NOT NULL DEFAULT 'ssh'",
@@ -308,6 +311,13 @@ const MIGRATIONS: [&str; 32] = [
     // 切换主机标签时助手只加载这台主机的对话。老库补出来是空串 = 旧对话没有归属，
     // 不会在任何主机的对话列表里冒出来，不改变既有行为。
     "ALTER TABLE ai_conversations ADD COLUMN host_id TEXT NOT NULL DEFAULT ''",
+    // ── 智能助手：多模型 ──
+    // 每段对话记下自己用的模型（配置里的模型 id）与思考强度，按对话各记各的。
+    // 老库补出来是空串 = 没挑过，用新对话的默认模型，和升级前的行为一致。
+    "ALTER TABLE ai_conversations ADD COLUMN model_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE ai_conversations ADD COLUMN thinking_effort TEXT NOT NULL DEFAULT ''",
+    // 每条回复是哪个模型说的（模型名），写在回复脚注里。老回复是空串，不写。
+    "ALTER TABLE ai_messages ADD COLUMN model TEXT NOT NULL DEFAULT ''",
 ];
 
 /// 数据层专用的 tokio runtime，进程生命周期内只建一次。

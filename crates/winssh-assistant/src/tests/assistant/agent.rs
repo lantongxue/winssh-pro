@@ -168,7 +168,7 @@
 
     /// 把进程里那份配置拨到某个执行模式。
     fn set_auto(auto: bool) {
-        crate::config::set_global(AssistantConfig {
+        crate::config::set_global(crate::AssistantConfig {
             auto_execute: auto,
             ..Default::default()
         });

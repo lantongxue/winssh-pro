@@ -54,6 +54,27 @@ impl AssistantRepository {
         Ok(())
     }
 
+    /// 换掉一段对话记着的模型与思考强度。不动"最近动过" —— 换个模型不是
+    /// 说了一句话，对话列表的先后不该跟着跳。返回是否真的改了一行。
+    pub async fn update_conversation_model(
+        &self,
+        conn: &impl ConnectionTrait,
+        id: &str,
+        model_id: &str,
+        thinking_effort: &str,
+    ) -> Result<bool, DbErr> {
+        let result = ai_conversation::Entity::update_many()
+            .col_expr(ai_conversation::Column::ModelId, Expr::value(model_id))
+            .col_expr(
+                ai_conversation::Column::ThinkingEffort,
+                Expr::value(thinking_effort),
+            )
+            .filter(ai_conversation::Column::Id.eq(id))
+            .exec(conn)
+            .await?;
+        Ok(result.rows_affected == 1)
+    }
+
     /// 删除一段对话，消息由外键连带删掉。返回是否真的删了一行。
     pub async fn delete_conversation(
         &self,

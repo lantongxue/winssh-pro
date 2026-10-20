@@ -137,16 +137,18 @@ use gpui_kit::{
 
 use crate::assistant::{
     self, AgentEvent, ChatImage, ChatMessage, ChatRole, CommandStatus, Conversation,
-    CurrentSession, LocalAction, LocalReview, MessageBody, Proposal, RunInput, TransferCard,
-    TransferDirection,
-    TransferUpdate, Turn, TurnOutput, config as assistant_config, image::looks_like_image,
+    CurrentSession, LocalAction, LocalReview, MessageBody, Proposal, RunInput, ThinkingEffort,
+    TransferCard, TransferDirection, TransferUpdate, Turn, TurnOutput, config as assistant_config,
+    image::looks_like_image,
 };
 use crate::service::{AssistantService, AssistantTransfer};
 use crate::sftp::human_size;
-use crate::ui::menus::{ExecutionMode, ExecutionModeMenu};
+use crate::ui::menus::{
+    ExecutionMode, ExecutionModeMenu, ModelGroup, ModelMenu, ThinkingEffortMenu,
+};
 use crate::ui::panels::{SessionEvent, TerminalPanel};
 use crate::ui::theme::{AppIcon, palette};
-use crate::ui::windows::persist_assistant_config;
+use crate::ui::windows::{SettingsTab, SettingsWindow, persist_assistant_config};
 use rust_i18n::t;
 
 /// 右侧 dock 的初始宽度。之后由用户拖，Dock 自己记着。
@@ -185,6 +187,9 @@ const REASONING_BODY_SELECTOR: &str = "assistant-reasoning-body";
 
 /// 回复脚注里那行 tokens/s 在调试边界表里的名字。
 const SPEED_SELECTOR: &str = "assistant-speed";
+
+/// 回复脚注里那个模型名在调试边界表里的名字。
+const MODEL_SELECTOR: &str = "assistant-model-name";
 
 /// 输入框空着的时候占几行。一行的框看起来像个搜索栏，而这里等的是一个问题
 /// —— 两行既摆得下一句话，也不至于在一块 380px 宽的面板里喧宾夺主。
@@ -291,6 +296,16 @@ pub struct AssistantPanel {
     host_of: Option<SharedString>,
     /// 当前对话。`None` = 空白的新对话，发第一条时才建档。
     active: Option<SharedString>,
+    /// 这段对话用的模型（[`crate::assistant::ModelConfig::id`]）与思考强度，
+    /// 输入行上那两颗键画的就是它们。按对话各记各的（见
+    /// [`Conversation::model_id`]）；空白新对话从配置里的默认起步
+    /// （[`Self::adopt_defaults`]）。记着的模型删了也不改这一格 —— 画和发都按
+    /// [`crate::assistant::AssistantConfig::resolve_model`] 现退。
+    model_id: SharedString,
+    effort: Option<ThinkingEffort>,
+    /// 正在跑的那一场用的模型名。每一轮收尾时记到回复上（脚注里那一格）——
+    /// 跑到一半换了模型，这一场的回复仍是发起时那个模型说的。
+    run_model: SharedString,
     messages: Vec<ChatMessage>,
     /// 摊开着的那几张命令卡片（按消息 id）。默认一张都不开。
     expanded: HashSet<SharedString>,
@@ -394,6 +409,7 @@ impl AssistantPanel {
             })
         });
 
+        let config = assistant_config::global();
         Self {
             service,
             dock_area,
@@ -404,6 +420,9 @@ impl AssistantPanel {
             conversations: Vec::new(),
             host_of: None,
             active: None,
+            model_id: config.default_model.into(),
+            effort: config.default_effort,
+            run_model: SharedString::default(),
             messages: Vec::new(),
             expanded: HashSet::new(),
             scroller,
@@ -428,11 +447,13 @@ impl AssistantPanel {
         let Some(host_id) = self.host_of.clone() else {
             self.conversations.clear();
             self.active = None;
+            self.adopt_defaults();
             self.set_messages(Vec::new(), cx);
             return;
         };
         // 先清掉上一台主机残下的快照，等库的这一拍里不会串到别的主机上。
         self.active = None;
+        self.adopt_defaults();
         self.set_messages(Vec::new(), cx);
         let service = self.service.clone();
         cx.spawn(async move |this, cx| {
@@ -452,6 +473,9 @@ impl AssistantPanel {
                 // 等库的这一拍里用户又切到别的主机就别覆盖。
                 if this.host_of.as_ref() == Some(&host_id) {
                     this.conversations = conversations;
+                    if let Some(id) = &latest {
+                        this.adopt_conversation(id);
+                    }
                     this.active = latest;
                     this.set_messages(messages, cx);
                 }
@@ -708,7 +732,12 @@ impl AssistantPanel {
                 .as_ref()
                 .filter(|slot| !slot.text.trim().is_empty())
                 .map(|slot| MessageBody::text(slot.text.clone())),
-        };
+        }
+        // 脚注里写着是哪个模型答的。名字是空的（测试里没走过发送的那种）就不记。
+        .map(|body| match self.run_model.is_empty() {
+            true => body,
+            false => body.with_model(self.run_model.clone()),
+        });
         match (slot, body) {
             (Some(slot), Some(body)) => {
                 if let Some(message) = self.messages.get_mut(slot.index) {
@@ -835,14 +864,16 @@ impl AssistantPanel {
             return;
         }
         self.active = None;
+        self.adopt_defaults();
         self.set_messages(Vec::new(), cx);
     }
 
-    /// 切到另一段对话，消息从库里现读。
+    /// 切到另一段对话，消息从库里现读；输入行上那两颗键换成它记着的模型与强度。
     fn open_conversation(&mut self, id: SharedString, cx: &mut Context<Self>) {
         if self.running || self.active.as_ref() == Some(&id) {
             return;
         }
+        self.adopt_conversation(&id);
         self.active = Some(id.clone());
         let service = self.service.clone();
         cx.spawn(async move |this, cx| {
@@ -867,6 +898,7 @@ impl AssistantPanel {
             return;
         };
         self.conversations.retain(|chat| chat.id != id);
+        self.adopt_defaults();
         self.set_messages(Vec::new(), cx);
         let service = self.service.clone();
         cx.spawn(async move |_, _| {
@@ -875,6 +907,76 @@ impl AssistantPanel {
             }
         })
         .detach();
+    }
+
+    // ─── 模型与思考强度 ─────────────────────────────────────────────────────
+
+    /// 空白新对话的起点：配置里记着的默认（输入框里最近一次挑的那个）。
+    fn adopt_defaults(&mut self) {
+        let config = assistant_config::global();
+        self.model_id = config.default_model.into();
+        self.effort = config.default_effort;
+    }
+
+    /// 照一段对话记着的模型与强度摆好输入行上那两颗键；没记过（升级前的旧
+    /// 对话）就用默认。
+    fn adopt_conversation(&mut self, id: &SharedString) {
+        match self.conversations.iter().find(|chat| &chat.id == id) {
+            Some(chat) if !chat.model_id.is_empty() => {
+                self.model_id = chat.model_id.clone();
+                self.effort = chat.effort;
+            }
+            _ => self.adopt_defaults(),
+        }
+    }
+
+    /// 输入行上换了模型：思考强度按新模型认的档位退一档（见
+    /// [`crate::assistant::thinking::fallback`]），然后照 [`Self::choose`] 记下。
+    fn choose_model(&mut self, model_id: SharedString, cx: &mut Context<Self>) {
+        let config = assistant_config::global();
+        let effort = match config.find_model(&model_id) {
+            Some((_, model)) => model.effort(self.effort).or(self.effort),
+            None => self.effort,
+        };
+        self.choose(model_id, effort, cx);
+    }
+
+    /// 输入行上换了模型或思考强度：记到这段对话上（还没建档的空白对话等第一
+    /// 条提问建档时一起记），并写回配置当新对话的起点 —— 下一段新对话接着用
+    /// 用户最近挑的那个。
+    ///
+    /// 运行中也能换：这一场的模型在发起时已经定格，换的是下一条。
+    fn choose(
+        &mut self,
+        model_id: SharedString,
+        effort: Option<ThinkingEffort>,
+        cx: &mut Context<Self>,
+    ) {
+        self.model_id = model_id.clone();
+        self.effort = effort;
+
+        let mut config = assistant_config::global();
+        if config.default_model != model_id.as_ref() || config.default_effort != effort {
+            config.default_model = model_id.to_string();
+            config.default_effort = effort;
+            persist_assistant_config(config, cx);
+        }
+
+        if let Some(id) = self.active.clone() {
+            if let Some(chat) = self.conversations.iter_mut().find(|chat| chat.id == id) {
+                chat.model_id = model_id.clone();
+                chat.effort = effort;
+            }
+            // 只管写、不等结果回界面：直接扔到数据层 runtime 上，不占一个界面
+            // 任务 —— 界面上那一格已经换好了，库里那一行晚一拍落下也无妨。
+            let service = self.service.clone();
+            crate::db::runtime().spawn(async move {
+                if let Err(error) = service.set_conversation_model(&id, &model_id, effort).await {
+                    log::warn!("对话的模型存不下去：{error:#}");
+                }
+            });
+        }
+        cx.notify();
     }
 
     // ─── 贴图 ───────────────────────────────────────────────────────────────
@@ -888,7 +990,10 @@ impl AssistantPanel {
         if incoming.is_empty() {
             return;
         }
-        if !assistant_config::global().vision {
+        let vision = assistant_config::global()
+            .target(&self.model_id, self.effort)
+            .is_some_and(|target| target.vision);
+        if !vision {
             window.push_notification(t!("assistant.vision_off"), cx);
             return;
         }
@@ -1014,15 +1119,24 @@ impl AssistantPanel {
         if prompt.is_empty() && self.drafts.is_empty() {
             return;
         }
+        // 这一场连哪个模型在这一刻定格：记着的那个删了就按规矩退（见
+        // [`crate::assistant::AssistantConfig::resolve_model`]），对话记下的是
+        // 实际用上的那一个。
         let config = assistant_config::global();
-        if !config.ready() {
+        let Some(((_, model), target)) = config
+            .resolve_model(&self.model_id)
+            .zip(config.target(&self.model_id, self.effort))
+            .filter(|(_, target)| target.ready())
+        else {
             window.push_notification(t!("assistant.not_configured"), cx);
             return;
-        }
+        };
+        let model_id = SharedString::from(model.id.clone());
+        let effort = target.effort;
         if !self.drafts.is_empty() {
-            // 图贴上之后又去设置里关了看图：不替用户做主把图扔掉 —— 是移除这几张图，
-            // 还是回设置里打开，由用户自己挑。
-            if !config.vision {
+            // 图贴上之后又换了不看图的模型（或者去设置里关了看图）：不替用户做主
+            // 把图扔掉 —— 是移除这几张图，还是换个能看图的模型，由用户自己挑。
+            if !target.vision {
                 window.push_notification(t!("assistant.vision_off"), cx);
                 return;
             }
@@ -1076,6 +1190,7 @@ impl AssistantPanel {
             text: prompt.clone().into(),
             images: images.clone(),
             tokens_per_sec: None,
+            model: None,
         };
         self.push_message(
             ChatMessage {
@@ -1087,6 +1202,7 @@ impl AssistantPanel {
         );
 
         self.running = true;
+        self.run_model = target.model.clone().into();
         self.cancel = Arc::new(AtomicBool::new(false));
         let cancel = self.cancel.clone();
         let session = self.session.clone();
@@ -1100,7 +1216,10 @@ impl AssistantPanel {
             // 第一条提问才建档。建不出来（库坏了）就只跑不存，界面照常。
             let conversation = match active {
                 Some(id) => Some(id),
-                None => match service.create_conversation(&prompt, &host_id).await {
+                None => match service
+                    .create_conversation(&prompt, &host_id, &model_id, effort)
+                    .await
+                {
                     Ok(chat) => {
                         let id = chat.id.clone();
                         _ = this.update(cx, |this, cx| {
@@ -1127,7 +1246,7 @@ impl AssistantPanel {
             // 命令卡片仍是先落库再上屏；模型的话不能这么办 —— 流式输出的
             // 意思就是先上屏，等这一轮说完了（`TurnEnd`）再把规范全文落库。
             let run = crate::db::runtime().spawn(assistant::run(RunInput {
-                config,
+                target,
                 session,
                 history,
                 prompt,
@@ -1708,13 +1827,69 @@ impl AssistantPanel {
                 )
                 .child(
                     h_flex()
+                        .min_w_0()
                         .child(
                             ExecutionModeMenu::new("assistant-execution-mode", mode)
                                 .on_change(Self::set_execution_mode),
                         )
-                        .child(self.render_send_button(cx).ml_auto()),
+                        .children(self.render_model_controls(cx))
+                        .child(self.render_send_button(cx).ml_auto().flex_shrink_0()),
                 ),
         )
+    }
+
+    /// 输入行上模型键与思考强度键。模型键一直在（一个都没配时写着"未配置
+    /// 模型"，点开能直接去设置）；强度键只在当前模型认得思考强度时才摆。
+    ///
+    /// 画的是 [`Self::model_id`] 现退出来的那个模型（记着的删了就退到默认），
+    /// 和按下发送时真正用上的永远是同一个。
+    fn render_model_controls(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let config = assistant_config::global();
+        let resolved = config.resolve_model(&self.model_id);
+        let groups = config
+            .providers
+            .iter()
+            .filter(|provider| !provider.models.is_empty())
+            .map(|provider| ModelGroup {
+                provider: provider.display_name(),
+                models: provider
+                    .models
+                    .iter()
+                    .map(|model| (model.id.clone().into(), model.name.clone().into()))
+                    .collect(),
+            })
+            .collect();
+        let this = cx.entity().downgrade();
+
+        let mut controls = vec![
+            ModelMenu::new(
+                "assistant-model",
+                groups,
+                resolved.map(|(_, model)| model.id.clone().into()),
+            )
+            .on_select({
+                let this = this.clone();
+                move |model_id, _, cx| {
+                    _ = this.update(cx, |this, cx| this.choose_model(model_id, cx));
+                }
+            })
+            .on_manage(|_, cx| SettingsWindow::open_at(SettingsTab::Assistant, cx))
+            .into_any_element(),
+        ];
+        if let Some((_, model)) = resolved
+            && let Some(current) = model.effort(self.effort)
+        {
+            let model_id = SharedString::from(model.id.clone());
+            controls.push(
+                ThinkingEffortMenu::new("assistant-thinking", model.efforts.clone(), current)
+                    .on_change(move |effort, _, cx| {
+                        let model_id = model_id.clone();
+                        _ = this.update(cx, |this, cx| this.choose(model_id, Some(effort), cx));
+                    })
+                    .into_any_element(),
+            );
+        }
+        controls
     }
 
     /// 发送键，运行中换成停止键。
@@ -1937,6 +2112,7 @@ fn render_message(
             text,
             images,
             tokens_per_sec,
+            model,
         } => {
             let from_user = message.role == ChatRole::User;
             let has_text = !text.is_empty();
@@ -1969,6 +2145,9 @@ fn render_message(
                     this.footer(
                         MessageFooter::new()
                             .child(render_copy_button(&message.id, text))
+                            .when_some(model.clone(), |this, model| {
+                                this.child(render_model_name(model))
+                            })
                             .when_some(*tokens_per_sec, |this, speed| {
                                 this.child(render_speed(speed))
                             }),
@@ -2087,6 +2266,15 @@ fn render_copy_button(id: &SharedString, text: &SharedString) -> Button {
             cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
             window.push_notification(t!("assistant.copied"), cx);
         })
+}
+
+/// 一条回复是哪个模型说的，写在复制键旁边、速度前面：`glm-4.5`。
+///
+/// 和速度一样只是一行字，跟着脚注那一排的小号灰字走。
+fn render_model_name(model: SharedString) -> impl IntoElement {
+    div()
+        .debug_selector(|| MODEL_SELECTOR.to_string())
+        .child(model)
 }
 
 /// 一条回复的输出速度，写在复制键旁边：`42.5 tokens/s`。

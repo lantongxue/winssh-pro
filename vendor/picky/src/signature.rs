@@ -295,7 +295,7 @@ impl SignatureAlgorithm {
 
                         let signature = ed25519_dalek::hazmat::raw_sign::<sha2::Sha512>(&esk, msg, &verifying_key);
 
-                        Ok(signature.to_vec())
+                        Ok(signature.to_bytes().to_vec())
                     }
                     NamedEdAlgorithm::Known(EdAlgorithm::X25519) => Err(SignatureError::Ed {
                         context: "X25519 algorithm is not designed for signing".to_string(),

@@ -37,7 +37,7 @@ picky 编译通过（`cargo check -p picky` 干净）。三处 pin 的稳定版�
 | 文件 | 改了什么 |
 | --- | --- |
 | `Cargo.toml` | 16 条 `version = "=x.y.z-rc.N"` 改为稳定版（能放的）或去掉 `=`（没有稳定版的三个 RustCrypto 基础 crate）；注释说明见文件内。`Cargo.toml.orig` 是上游原文，保持不动。 |
-| `src/signature.rs` | 删掉第 8 行 `SignatureEncoding as _` —— 顶层这个导入没有被用到（各函数在内部各自 `use`），稳定版 rsa 下会报 `unused_imports`；删掉不影响任何调用。 |
+| `src/signature.rs` | 删掉顶层第 8 行的 `SignatureEncoding as _`；Ed25519 签名分支里的 `raw_sign(...).to_vec()` 改为 `.to_bytes().to_vec()`。`Signature::to_vec()` 是 `ed25519/alloc` 特性下的固有方法 —— 全 workspace 构建时 `ssh-key` 把这个特性打开，顶层 trait 导入会报 `unused_imports`；而单独构建某个窄 crate 时该特性没开，`to_vec()` 又得靠 `SignatureEncoding` 这个 trait 才编得过。改用无条件的固有 `to_bytes()` 后两种构建都不再依赖特性组合。 |
 
 其余文件（`src/` 其它、LICENSE、CHANGELOG、README、测试数据）与 crates.io 上
 的 7.0.0-rc.25 逐字节相同。

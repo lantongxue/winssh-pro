@@ -31,6 +31,7 @@
                     text: "看看 web-01 磁盘还剩多少，报错截图在这".into(),
                     images: vec![sample_image(), sample_image()],
                     tokens_per_sec: None,
+                    model: None,
                 },
             },
             // 只贴了图、没写字的提问：不画气泡，也没有复制键。
@@ -41,6 +42,7 @@
                     text: "".into(),
                     images: vec![sample_image()],
                     tokens_per_sec: None,
+                    model: None,
                 },
             },
             ChatMessage {
@@ -74,7 +76,7 @@
             ChatMessage {
                 id: "m4".into(),
                 role: ChatRole::Assistant,
-                body: MessageBody::reply("根分区还有 **28G** 可用。", Some(42.5)),
+                body: MessageBody::reply("根分区还有 **28G** 可用。", Some(42.5)).with_model("glm-4.5"),
             },
         ]
     }
@@ -89,11 +91,12 @@
     #[gpui_kit::test]
     fn the_panel_draws_every_message_shape(cx: &mut gpui_kit::TestAppContext) {
         let _exclusive = assistant_config::exclusive_for_test();
-        assistant_config::set_global(assistant_config::AssistantConfig {
-            vision: true,
-            auto_execute: true,
-            ..Default::default()
-        });
+        let mut config = assistant_config::single_model_for_test("test-model", true);
+        config.auto_execute = true;
+        // 认思考强度的模型：输入行上那颗强度键也画出来。
+        config.providers[0].models[0].efforts =
+            vec![ThinkingEffort::None, ThinkingEffort::High];
+        assistant_config::set_global(config);
 
         let (harness, cx) = dock_harness(cx, sample_messages());
         harness.update(cx, |harness, cx| {
@@ -458,11 +461,7 @@
     #[gpui_kit::test]
     fn shift_enter_breaks_the_line_instead_of_sending(cx: &mut gpui_kit::TestAppContext) {
         let _exclusive = assistant_config::exclusive_for_test();
-        assistant_config::set_global(assistant_config::AssistantConfig {
-            api_key: "test-key".into(),
-            model: "test-model".into(),
-            ..Default::default()
-        });
+        assistant_config::set_global(assistant_config::single_model_for_test("test-model", false));
 
         let (_root, panel, cx) = root_harness(cx, Vec::new());
         cx.update(|window, cx| {
@@ -507,10 +506,7 @@
     #[gpui_kit::test]
     fn pasting_an_image_attaches_it_instead_of_typing(cx: &mut gpui_kit::TestAppContext) {
         let _exclusive = assistant_config::exclusive_for_test();
-        assistant_config::set_global(assistant_config::AssistantConfig {
-            vision: true,
-            ..Default::default()
-        });
+        assistant_config::set_global(assistant_config::single_model_for_test("test-model", true));
 
         let (_root, panel, cx) = root_harness(cx, Vec::new());
         paste_image(cx, &panel, png_bytes(3136, 100));
@@ -560,12 +556,7 @@
     #[gpui_kit::test]
     fn sending_takes_the_images_along(cx: &mut gpui_kit::TestAppContext) {
         let _exclusive = assistant_config::exclusive_for_test();
-        assistant_config::set_global(assistant_config::AssistantConfig {
-            api_key: "test-key".into(),
-            model: "test-model".into(),
-            vision: true,
-            ..Default::default()
-        });
+        assistant_config::set_global(assistant_config::single_model_for_test("test-model", true));
 
         let (_root, panel, cx) = root_harness(cx, Vec::new());
         let press_enter = |cx: &mut gpui_kit::VisualTestContext| {
@@ -817,6 +808,173 @@
         );
         assert!(cx.debug_bounds(COPY_SELECTOR).is_some());
         assert!(cx.debug_bounds(SPEED_SELECTOR).is_none());
+    }
+
+    /// 回复脚注里写着是哪个模型答的；没记模型的（老回复）那一格不画。
+    #[gpui_kit::test]
+    fn a_reply_names_the_model_that_wrote_it(cx: &mut gpui_kit::TestAppContext) {
+        let (_root, _panel, cx) = root_harness(
+            cx,
+            vec![ChatMessage {
+                id: "m1".into(),
+                role: ChatRole::Assistant,
+                body: MessageBody::reply("根分区还有 28G。", None).with_model("glm-4.5"),
+            }],
+        );
+        assert!(
+            cx.debug_bounds(MODEL_SELECTOR).is_some(),
+            "复制键旁边该写着模型名"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn an_old_reply_draws_no_model_name(cx: &mut gpui_kit::TestAppContext) {
+        let (_root, _panel, cx) = root_harness(
+            cx,
+            vec![ChatMessage {
+                id: "m1".into(),
+                role: ChatRole::Assistant,
+                body: MessageBody::text("根分区还有 28G。"),
+            }],
+        );
+        assert!(cx.debug_bounds(MODEL_SELECTOR).is_none());
+    }
+
+    /// 一轮收尾时，回复记上这一场发起时用的模型 —— 跑到一半在输入行上换了
+    /// 模型，这一场的回复也仍是原来那个模型说的。
+    #[gpui_kit::test]
+    fn a_finished_turn_is_tagged_with_the_run_model(cx: &mut gpui_kit::TestAppContext) {
+        let (_root, panel, cx) = root_harness(cx, Vec::new());
+        let finished = panel.update(cx, |panel, cx| {
+            panel.run_model = "model-a".into();
+            panel.model_id = "model-b".into();
+            panel.stream_delta("根分区还有 28G。", cx);
+            panel.end_turn(Some(reply("根分区还有 28G。")), cx)
+        });
+        assert_eq!(
+            finished,
+            [MessageBody::text("根分区还有 28G。").with_model("model-a")]
+        );
+    }
+
+    /// 两家服务商、三个模型的配置：A 认两档思考，B 一档不认，C 只认开/关。
+    fn three_models() -> assistant_config::AssistantConfig {
+        use crate::assistant::{ModelConfig, Provider};
+        let model = |id: &str, efforts: Vec<ThinkingEffort>| ModelConfig {
+            id: id.into(),
+            name: format!("name-{id}"),
+            vision: false,
+            efforts,
+            max_tokens: None,
+        };
+        assistant_config::AssistantConfig {
+            providers: vec![
+                Provider {
+                    id: "p1".into(),
+                    api_key: "sk-1".into(),
+                    models: vec![
+                        model("a", vec![ThinkingEffort::Low, ThinkingEffort::High]),
+                        model("b", Vec::new()),
+                    ],
+                    ..Default::default()
+                },
+                Provider {
+                    id: "p2".into(),
+                    api_key: "sk-2".into(),
+                    models: vec![model("c", vec![ThinkingEffort::None, ThinkingEffort::High])],
+                    ..Default::default()
+                },
+            ],
+            default_model: "a".into(),
+            default_effort: Some(ThinkingEffort::Low),
+            auto_execute: false,
+        }
+    }
+
+    /// 模型与思考强度按对话各记各的：在一段对话里换了的，换去别的对话再回来
+    /// 还是它；新开的空白对话从"最近挑的那个"起步。
+    #[gpui_kit::test]
+    fn each_conversation_keeps_its_own_model(cx: &mut gpui_kit::TestAppContext) {
+        let _exclusive = assistant_config::exclusive_for_test();
+        assistant_config::set_global(three_models());
+        let (_root, panel, cx) = root_harness(cx, Vec::new());
+
+        let chat = |id: &str, model_id: &str, effort| Conversation {
+            id: SharedString::from(id.to_owned()),
+            title: "t".into(),
+            host_id: "host".into(),
+            model_id: SharedString::from(model_id.to_owned()),
+            effort,
+        };
+        // 照 `open_conversation` 换对话，只是不去库里读消息：那一步在 tokio
+        // 线程上唤醒界面任务，测试调度器会判它不确定（并行跑满时必炸）。
+        let switch_to = |panel: &mut AssistantPanel, id: &str| {
+            let id = SharedString::from(id.to_owned());
+            panel.adopt_conversation(&id);
+            panel.active = Some(id);
+        };
+        panel.update(cx, |panel, cx| {
+            panel.conversations = vec![
+                chat("chat-1", "a", Some(ThinkingEffort::High)),
+                chat("chat-2", "c", Some(ThinkingEffort::None)),
+                // 升级前的旧对话：没记过模型，用默认。
+                chat("chat-3", "", None),
+            ];
+            switch_to(panel, "chat-1");
+            assert_eq!(
+                (panel.model_id.as_ref(), panel.effort),
+                ("a", Some(ThinkingEffort::High))
+            );
+            switch_to(panel, "chat-2");
+            assert_eq!(
+                (panel.model_id.as_ref(), panel.effort),
+                ("c", Some(ThinkingEffort::None))
+            );
+            switch_to(panel, "chat-3");
+            assert_eq!(
+                (panel.model_id.as_ref(), panel.effort),
+                ("a", Some(ThinkingEffort::Low)),
+                "没记过的旧对话用默认"
+            );
+
+            // 在 chat-2 里换成 B：记到 chat-2 上，也成了新对话的起点。
+            switch_to(panel, "chat-2");
+            panel.choose_model("b".into(), cx);
+            let chat2 = panel
+                .conversations
+                .iter()
+                .find(|chat| chat.id.as_ref() == "chat-2")
+                .unwrap();
+            assert_eq!(chat2.model_id.as_ref(), "b");
+            assert_eq!(assistant_config::global().default_model, "b");
+
+            switch_to(panel, "chat-1");
+            assert_eq!(panel.model_id.as_ref(), "a", "chat-1 不受 chat-2 的影响");
+
+            panel.new_conversation(cx);
+            assert_eq!(panel.model_id.as_ref(), "b", "新对话从最近挑的那个起步");
+        });
+    }
+
+    /// 换模型时思考强度按新模型认的档位退：A 上的 low 到了只认开/关的 C
+    /// 上退成最强的 high；换到一档不认的 B 不丢原来那一档，换回来还在。
+    #[gpui_kit::test]
+    fn switching_models_settles_the_effort(cx: &mut gpui_kit::TestAppContext) {
+        let _exclusive = assistant_config::exclusive_for_test();
+        assistant_config::set_global(three_models());
+        let (_root, panel, cx) = root_harness(cx, Vec::new());
+        panel.update(cx, |panel, cx| {
+            panel.choose("a".into(), Some(ThinkingEffort::Low), cx);
+            panel.choose_model("c".into(), cx);
+            assert_eq!(panel.effort, Some(ThinkingEffort::High));
+            panel.choose("c".into(), Some(ThinkingEffort::None), cx);
+            panel.choose_model("b".into(), cx);
+            assert_eq!(panel.effort, Some(ThinkingEffort::None), "B 不认任何档，原样留着");
+            panel.choose_model("c".into(), cx);
+            assert_eq!(panel.effort, Some(ThinkingEffort::None));
+        });
+        // 输入行上两颗键都画得出来（C 认思考强度）。
+        cx.update(|window, cx| window.draw(cx).clear(cx));
     }
 
     /// 读终端只读当前会话：中心区停着的是一个不连任何东西的空壳（本机 Shell

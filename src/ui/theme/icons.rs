@@ -20,6 +20,8 @@ pub enum AppIcon {
     /// 所以自带一份 —— 收藏**列表**用的是它，收藏**状态**用的是
     /// `IconName::Star` / `StarFill`，两枚形状不同才分得开。
     Bookmark,
+    /// 大脑：智能助手输入行上的思考强度。组件库默认图标集没带这一枚。
+    Brain,
     /// 一头插头、一头裸线的线缆：串口协议的专属配置页，也是串口这一类。
     /// 组件库默认图标集没带这一枚（`Cable` 只在全量目录里，默认不内嵌，
     /// 取不到字节），所以自带一份。
@@ -95,6 +97,7 @@ impl IconNamed for AppIcon {
             Self::Activity => "icons/activity.svg",
             Self::Archive => "icons/archive.svg",
             Self::Bookmark => "icons/bookmark.svg",
+            Self::Brain => "icons/brain.svg",
             Self::Cable => "icons/cable.svg",
             Self::Columns2 => "icons/columns-2.svg",
             Self::Rows2 => "icons/rows-2.svg",

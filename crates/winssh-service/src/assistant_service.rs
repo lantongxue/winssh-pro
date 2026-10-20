@@ -19,7 +19,8 @@ use sea_orm::{ActiveValue::Set, DatabaseConnection, TransactionTrait as _};
 
 use crate::{
     assistant::{
-        ChatImage, ChatMessage, ChatRole, CommandStatus, Conversation, MessageBody, TransferCard,
+        ChatImage, ChatMessage, ChatRole, CommandStatus, Conversation, MessageBody, ThinkingEffort,
+        TransferCard,
         transfer::{direction_from_str, direction_str},
     },
     db::{
@@ -100,21 +101,27 @@ impl AssistantService {
                     id: row.id.into(),
                     title: row.title.into(),
                     host_id: row.host_id.into(),
+                    model_id: row.model_id.into(),
+                    effort: ThinkingEffort::parse(&row.thinking_effort),
                 })
                 .collect())
         })
         .await
     }
 
-    /// 新开一段对话并绑定到 `host_id`，标题取自第一条提问的开头。返回带 id 的记录。
+    /// 新开一段对话并绑定到 `host_id`，标题取自第一条提问的开头；发起时输入框
+    /// 上挑着的模型与思考强度一并记下。返回带 id 的记录。
     pub async fn create_conversation(
         &self,
         first_prompt: &str,
         host_id: &str,
+        model_id: &str,
+        effort: Option<ThinkingEffort>,
     ) -> Result<Conversation> {
         let this = self.clone();
         let title = conversation_title(first_prompt);
         let host_id = host_id.to_owned();
+        let model_id = model_id.to_owned();
         db::run(async move {
             let id: SharedString = format!("chat-{}", nanos()).into();
             let now = timestamp();
@@ -125,6 +132,8 @@ impl AssistantService {
                         id: Set(id.to_string()),
                         title: Set(title.to_string()),
                         host_id: Set(host_id.clone()),
+                        model_id: Set(model_id.clone()),
+                        thinking_effort: Set(effort_str(effort).to_owned()),
                         created_at: Set(now.clone()),
                         updated_at: Set(now),
                     },
@@ -134,7 +143,32 @@ impl AssistantService {
                 id,
                 title,
                 host_id: host_id.into(),
+                model_id: model_id.into(),
+                effort,
             })
+        })
+        .await
+    }
+
+    /// 换掉一段对话用的模型与思考强度（输入框上那两颗键）。
+    pub async fn set_conversation_model(
+        &self,
+        id: &str,
+        model_id: &str,
+        effort: Option<ThinkingEffort>,
+    ) -> Result<()> {
+        let this = self.clone();
+        let id = id.to_owned();
+        let model_id = model_id.to_owned();
+        db::run(async move {
+            if !this
+                .repo
+                .update_conversation_model(&this.db, &id, &model_id, effort_str(effort))
+                .await?
+            {
+                return Err(anyhow!("{}", t!("assistant.missing_conversation")));
+            }
+            Ok(())
         })
         .await
     }
@@ -210,15 +244,18 @@ impl AssistantService {
                 status: Set(String::new()),
                 created_at: Set(now.clone()),
                 tokens_per_sec: Set(None),
+                model: Set(String::new()),
             };
             match &body {
                 MessageBody::Text {
                     text,
                     images: attached,
                     tokens_per_sec,
+                    model: speaker,
                 } => {
                     model.content = Set(text.to_string());
                     model.tokens_per_sec = Set(tokens_per_sec.map(f64::from));
+                    model.model = Set(speaker.as_deref().unwrap_or_default().to_owned());
                     images = attached
                         .iter()
                         .enumerate()
@@ -306,6 +343,7 @@ fn hydrate(row: ai_message::Model, images: Vec<ChatImage>) -> ChatMessage {
             text: row.content.into(),
             images,
             tokens_per_sec: row.tokens_per_sec.map(|speed| speed as f32),
+            model: (!row.model.is_empty()).then(|| row.model.into()),
         },
     };
     ChatMessage {
@@ -313,6 +351,11 @@ fn hydrate(row: ai_message::Model, images: Vec<ChatImage>) -> ChatMessage {
         role: ChatRole::from_str_or_default(&row.role),
         body,
     }
+}
+
+/// 思考强度在 `thinking_effort` 列里的写法；没挑过是空串。
+fn effort_str(effort: Option<ThinkingEffort>) -> &'static str {
+    effort.map(|effort| effort.as_str()).unwrap_or_default()
 }
 
 /// 第一条提问的开头当标题；空白提问给个兜底名。

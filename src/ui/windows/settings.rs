@@ -14,27 +14,33 @@
 //! 单例由这一扇窗自己管（见 [`SettingsWindow::open`]），多次点击设置入口
 //! 只会把已开着的窗口激活置顶，不会重复开窗。
 
+use std::rc::Rc;
+
 use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Icon, IconName, Root, Sizable as _, StyledExt as _, ThemeMode,
     TitleBar, WindowExt as _,
-    button::{Button, ButtonCustomVariant, ButtonVariants as _},
+    button::{Button, ButtonCustomVariant, ButtonVariant, ButtonVariants as _},
+    dialog::DialogButtonProps,
     group_box::GroupBoxVariant,
     h_flex,
     input::{Input, InputContentType, InputEvent, InputState, NumberInput},
+    menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
     setting::{
         RenderOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
     },
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, Global, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _, Subscription, Window,
-    WindowBounds, WindowHandle, WindowKind, WindowOptions, div, img, prelude::FluentBuilder as _,
-    px, size,
+    Anchor, App, AppContext as _, Bounds, ClickEvent, Context, Entity, FocusHandle, Focusable,
+    Global, IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _,
+    Subscription, Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, div, img,
+    prelude::FluentBuilder as _, px, size,
 };
 
 use crate::assistant::{
-    self, AssistantConfig, PRESETS, ProviderProtocol, config as assistant_config,
+    AssistantConfig, ModelConfig, PRESETS, Provider, ProviderPreset, ProviderProtocol,
+    ThinkingSwitch,
+    config::{self as assistant_config, new_id},
 };
 use crate::backup::{self, BackupConfig, BackupProtocol, S3Config, S3Preset, WebdavConfig};
 use crate::i18n;
@@ -43,7 +49,7 @@ use crate::service::{BackupService, SettingService, UpdateService, update as upd
 use crate::terminal::cursor;
 use crate::terminal::font::{self, TerminalFont};
 use crate::terminal::scheme;
-use crate::ui::dialogs::{BackupRestoreDialog, UpdateDialog};
+use crate::ui::dialogs::{BackupRestoreDialog, ModelFormDialog, UpdateDialog};
 use crate::ui::theme::{AppIcon, appearance, palette};
 use crate::zmodem::config as zmodem_config;
 use rust_i18n::t;
@@ -52,9 +58,6 @@ use rust_i18n::t;
 /// 那行字会跟着语言变。
 const PROXY_OFF: &str = "off";
 const PROXY_ON: &str = "on";
-
-/// 供应商预设下拉里"自定义"那一档的值。内置预设的值是各自的 preset id。
-const ASSISTANT_CUSTOM: &str = "custom";
 
 /// 帧率浮层开着没有。
 ///
@@ -130,6 +133,11 @@ pub fn persist_assistant_config(config: AssistantConfig, cx: &mut App) {
     assistant_config::set_global(config.clone());
     for handle in cx.windows() {
         _ = handle.update(cx, |_, window, _| window.refresh());
+    }
+    // 测试只验缓存与界面：`SettingService::open` 开的是用户磁盘上那一座库，
+    // 助手面板的测试拨模型时不能把一份测试配置写进去。
+    if cfg!(test) {
+        return;
     }
     cx.background_spawn(async move {
         if let Err(error) = SettingService::open().save_assistant_config(config).await {
@@ -280,7 +288,10 @@ pub struct SettingsWindow {
     /// 全局代理那四格，见 [`ProxyInputs`]。
     proxy: ProxyInputs,
     _proxy_inputs: Vec<Subscription>,
-    /// 智能助手那三格，见 [`AssistantInputs`]。
+    /// 智能助手页上选中的那一家服务商（[`Provider::id`]）。`None` 或者那一家
+    /// 已经删了，就是排在最前面的那一家（[`Self::assistant_provider`]）。
+    assistant_selected: Option<String>,
+    /// 选中那一家的三格输入框，见 [`AssistantInputs`]。
     assistant: AssistantInputs,
     _assistant_inputs: Vec<Subscription>,
     /// 数据备份同步那几格，见 [`BackupInputs`]。
@@ -360,60 +371,134 @@ impl ProxyInputs {
     }
 }
 
-/// 智能助手那三格输入框：Base URL、API Key（打码）、模型名。
+/// 智能助手页那三格输入框：选中那一家服务商的名称、Base URL、API Key（打码）。
 ///
 /// 用自己的 [`InputState`] 而不是 [`SettingField::input`]，理由同
-/// [`ProxyInputs`]：API Key 那一格要打码，值也归这扇窗自己管 ——
-/// 供应商预设下拉选中一家时还要往这几格里回填。
+/// [`ProxyInputs`]：API Key 那一格要打码，值也归这扇窗自己管 —— 换到另一家
+/// 服务商时三格要照那一家重填（[`Self::fill`]）。
 ///
-/// 每敲一个字就写回一次，和这一页别的项一样改完即生效。
+/// 每敲一个字就写回一次，和这一页别的项一样改完即生效。**每一格只写自己那
+/// 一个字段**（见 [`SettingsWindow::new`] 里那三条订阅）：整份三格一起读回去
+/// 的话，换服务商重填到一半的那一拍会把上一家的地址写进这一家。
 #[derive(Clone)]
 struct AssistantInputs {
+    name: Entity<InputState>,
     base_url: Entity<InputState>,
     api_key: Entity<InputState>,
-    model: Entity<InputState>,
 }
 
 impl AssistantInputs {
-    /// 照着现在的助手配置预填三格。
-    fn new(config: &AssistantConfig, window: &mut Window, cx: &mut App) -> Self {
+    /// 照着选中的那一家预填三格；一家都没有就空着。
+    fn new(provider: Option<&Provider>, window: &mut Window, cx: &mut App) -> Self {
+        let value = |read: fn(&Provider) -> &String| {
+            provider
+                .map(|provider| read(provider).clone())
+                .unwrap_or_default()
+        };
         Self {
+            name: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(t!("settings.assistant_name_placeholder"))
+                    .default_value(value(|provider| &provider.name))
+            }),
             base_url: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(t!("settings.assistant_base_url_placeholder"))
-                    .default_value(config.base_url.clone())
+                    .default_value(value(|provider| &provider.base_url))
             }),
             api_key: cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder(t!("settings.assistant_api_key_placeholder"))
                     .masked(true)
-                    .default_value(config.api_key.clone())
-            }),
-            model: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(t!("settings.assistant_model_placeholder"))
-                    .default_value(config.model.clone())
+                    .default_value(value(|provider| &provider.api_key))
             }),
         }
     }
 
-    fn all(&self) -> [&Entity<InputState>; 3] {
-        [&self.base_url, &self.api_key, &self.model]
+    /// 换到另一家：三格照它重填。[`InputState::set_value`] 不发
+    /// [`InputEvent::Change`]，所以重填不会回写到配置里。
+    fn fill(&self, provider: Option<&Provider>, window: &mut Window, cx: &mut App) {
+        let (name, base_url, api_key) = provider
+            .map(|provider| {
+                (
+                    provider.name.clone(),
+                    provider.base_url.clone(),
+                    provider.api_key.clone(),
+                )
+            })
+            .unwrap_or_default();
+        self.name
+            .update(cx, |state, cx| state.set_value(name, window, cx));
+        self.base_url
+            .update(cx, |state, cx| state.set_value(base_url, window, cx));
+        self.api_key
+            .update(cx, |state, cx| state.set_value(api_key, window, cx));
     }
+}
 
-    /// 三格现在的样子，协议、看图与自动那两位跟着缓存走 —— 它们归各自的
-    /// 下拉/开关管。
-    fn read(&self, cx: &App) -> AssistantConfig {
-        let cached = assistant_config::global();
-        AssistantConfig {
-            protocol: cached.protocol,
-            base_url: self.base_url.read(cx).value().trim().to_string(),
-            // API Key 不 trim 中间，只去首尾：粘贴时最常见的赃物是换行。
-            api_key: self.api_key.read(cx).value().trim().to_string(),
-            model: self.model.read(cx).value().trim().to_string(),
-            vision: cached.vision,
-            auto_execute: cached.auto_execute,
-        }
+/// 改一家服务商：现读缓存、改那一家、写回。找不到那一家（刚被删了）就
+/// 什么都不做。
+fn update_assistant_provider(id: &str, cx: &mut App, f: impl FnOnce(&mut Provider)) {
+    let mut config = assistant_config::global();
+    let Some(provider) = config
+        .providers
+        .iter_mut()
+        .find(|provider| provider.id == id)
+    else {
+        return;
+    };
+    f(provider);
+    persist_assistant_config(config, cx);
+}
+
+/// "思考开关参数"下拉里的一档。两种写法就是字段名本身（原样写，照着服务商
+/// 文档对得上），只有"不发"那一档是一句话。
+fn thinking_switch_label(switch: ThinkingSwitch) -> SharedString {
+    match switch {
+        ThinkingSwitch::ThinkingType => "thinking.type".into(),
+        ThinkingSwitch::EnableThinking => "enable_thinking".into(),
+        ThinkingSwitch::Off => t!("settings.assistant_thinking_switch_off").into(),
+    }
+}
+
+/// 一个模型在列表里的那一行小字：看不看得了图、认哪几档思考强度。
+fn model_capabilities(model: &ModelConfig) -> SharedString {
+    let mut parts = Vec::new();
+    if model.vision {
+        parts.push(t!("settings.assistant_model_vision").to_string());
+    }
+    match model.efforts.is_empty() {
+        true => parts.push(t!("settings.assistant_model_no_thinking").to_string()),
+        false => parts.push(
+            model
+                .efforts
+                .iter()
+                .map(|effort| effort.as_str())
+                .collect::<Vec<_>>()
+                .join(" / "),
+        ),
+    }
+    if let Some(max_tokens) = model.max_tokens {
+        parts.push(
+            t!(
+                "settings.assistant_model_max_tokens",
+                value => short_tokens(max_tokens)
+            )
+            .to_string(),
+        );
+    }
+    parts.join(" · ").into()
+}
+
+/// token 数的短写：8192 → `8k`、64000 → `64k`，凑不成整 k 的原样写。
+///
+/// 先按 1000 认、再按 1024 认：128000 恰好也是 1024 的整倍数（125 × 1024），
+/// 反过来认会把 128k 写成 `125k`。
+fn short_tokens(value: u64) -> String {
+    match value {
+        value if value >= 1000 && value % 1000 == 0 => format!("{}k", value / 1000),
+        value if value >= 1024 && value % 1024 == 0 => format!("{}k", value / 1024),
+        value => value.to_string(),
     }
 }
 
@@ -680,6 +765,20 @@ impl SettingsWindow {
         cx.set_global(ActiveSettingsWindow(handle));
     }
 
+    /// 打开设置窗口并翻到某一页（已经开着就激活它再翻过去）。助手输入行上
+    /// 的"管理模型…"走这一条。
+    pub fn open_at(tab: SettingsTab, cx: &mut App) {
+        Self::open(cx);
+        let Some(handle) = cx.try_global::<ActiveSettingsWindow>().map(|open| open.0) else {
+            return;
+        };
+        _ = handle.update(cx, |root, _, cx| {
+            if let Ok(shell) = root.view().clone().downcast::<Self>() {
+                shell.update(cx, |shell, cx| shell.set_tab(tab, cx));
+            }
+        });
+    }
+
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let _appearance = appearance::observe(window, cx);
 
@@ -706,19 +805,41 @@ impl SettingsWindow {
             .into_iter()
             .collect();
 
-        // 同代理那四格：读进程缓存，不再查一次库。
-        let assistant = AssistantInputs::new(&assistant_config::global(), window, cx);
-        let _assistant_inputs = assistant
-            .all()
-            .map(|input| {
-                cx.subscribe(input, |this, _, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        persist_assistant_config(this.assistant.read(cx), cx);
-                    }
-                })
-            })
-            .into_iter()
-            .collect();
+        // 同代理那四格：读进程缓存，不再查一次库。每一格只写自己那个字段，
+        // 理由见 [`AssistantInputs`]。
+        let assistant =
+            AssistantInputs::new(assistant_config::global().providers.first(), window, cx);
+        let field_writer = |write: fn(&mut Provider, String)| {
+            move |this: &mut Self,
+                  input: Entity<InputState>,
+                  event: &InputEvent,
+                  cx: &mut Context<Self>| {
+                if !matches!(event, InputEvent::Change) {
+                    return;
+                }
+                let Some(id) = this.assistant_provider().map(|provider| provider.id) else {
+                    return;
+                };
+                // 名称与地址去首尾空白；API Key 也只去首尾 —— 粘贴时最常见的
+                // 赃物是换行。
+                let value = input.read(cx).value().trim().to_string();
+                update_assistant_provider(&id, cx, |provider| write(provider, value));
+            }
+        };
+        let _assistant_inputs = vec![
+            cx.subscribe(
+                &assistant.name,
+                field_writer(|provider, value| provider.name = value),
+            ),
+            cx.subscribe(
+                &assistant.base_url,
+                field_writer(|provider, value| provider.base_url = value),
+            ),
+            cx.subscribe(
+                &assistant.api_key,
+                field_writer(|provider, value| provider.api_key = value),
+            ),
+        ];
 
         let self_entity = cx.entity().clone();
         let backup = BackupInputs::new(&backup::global(), window, cx);
@@ -742,6 +863,7 @@ impl SettingsWindow {
             _appearance,
             proxy,
             _proxy_inputs,
+            assistant_selected: None,
             assistant,
             _assistant_inputs,
             backup,
@@ -1221,140 +1343,471 @@ impl SettingsWindow {
         })
     }
 
-    /// 智能助手页：模型供应商（预设一键填表 + 协议 + 三格）与执行模式。
-    ///
-    /// 预设下拉只是填表的捷径：选中一家就把协议、Base URL、默认模型与那个
-    /// 模型看不看得了图写进配置并回填输入框，API Key 永远要用户自己给。三格
-    /// 手改之后对不上任何一家，下拉就停在"自定义"。
-    ///
-    /// "支持图片输入"紧挨着模型名摆：它说的是**这个模型**的能力，换了模型名
-    /// 就该回头看它一眼。
-    fn assistant_page(&self) -> SettingPage {
-        let inputs = self.assistant.clone();
+    // ─── 智能助手 ───────────────────────────────────────────────────────────
 
-        let mut provider_options: Vec<(SharedString, SharedString)> = PRESETS
-            .iter()
-            .map(|preset| {
-                (
-                    SharedString::from(preset.id),
-                    SharedString::from(preset.name),
+    /// 智能助手页上眼下选中的那一家：记着的那一家，没记或者已经删了就是
+    /// 排在最前面的那一家。一家都没配就是 `None`。
+    fn assistant_provider(&self) -> Option<Provider> {
+        let config = assistant_config::global();
+        self.assistant_selected
+            .as_ref()
+            .and_then(|id| config.providers.iter().find(|provider| &provider.id == id))
+            .or_else(|| config.providers.first())
+            .cloned()
+    }
+
+    /// 换到另一家：记下来，三格照它重填。
+    fn select_assistant_provider(
+        &mut self,
+        id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.assistant_selected = id;
+        let provider = self.assistant_provider();
+        self.assistant.fill(provider.as_ref(), window, cx);
+        cx.notify();
+    }
+
+    /// 添加一家：照预填填好（`None` 是"自定义"，全空着），排到最后并选中它。
+    fn add_assistant_provider(
+        &mut self,
+        preset: Option<&'static ProviderPreset>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let provider = match preset {
+            Some(preset) => preset.provider(),
+            None => Provider {
+                id: new_id("provider"),
+                ..Default::default()
+            },
+        };
+        let id = provider.id.clone();
+        let mut config = assistant_config::global();
+        config.providers.push(provider);
+        persist_assistant_config(config, cx);
+        self.select_assistant_provider(Some(id), window, cx);
+    }
+
+    /// 删掉选中的那一家，连同它的模型与 API Key。先问一声：密钥删了就找不
+    /// 回来，记着这一家模型的对话也会换回默认模型。
+    fn confirm_delete_assistant_provider(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(provider) = self.assistant_provider() else {
+            return;
+        };
+        let this = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            // 外壳闭包是 `Fn`，弹一次搭一次：捕获的那两份在这里各复制一份。
+            let this = this.clone();
+            let id = provider.id.clone();
+            alert
+                .title(t!("settings.assistant_delete_provider_title"))
+                .description(SharedString::from(t!(
+                    "settings.assistant_delete_provider_body",
+                    name => provider.display_name(),
+                )))
+                .confirm()
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(t!("settings.assistant_delete"))
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text(t!("settings.assistant_cancel"))
+                        .show_cancel(true),
                 )
-            })
-            .collect();
-        provider_options.push((
-            ASSISTANT_CUSTOM.into(),
-            t!("settings.assistant_custom").into(),
-        ));
+                .on_ok(move |_, window, cx| {
+                    _ = this.update(cx, |this, cx| {
+                        let mut config = assistant_config::global();
+                        config.providers.retain(|provider| provider.id != id);
+                        persist_assistant_config(config, cx);
+                        this.select_assistant_provider(None, window, cx);
+                    });
+                    true
+                })
+        });
+    }
 
-        let provider_group = SettingGroup::new()
+    /// 弹出模型表单。`model` 为 `None` 是给这一家添加一个；存的时候按 id
+    /// 换掉原来那一条，没有就追加到最后。
+    fn open_model_form(
+        provider_id: String,
+        model: Option<ModelConfig>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let config = assistant_config::global();
+        let Some(provider) = config
+            .providers
+            .iter()
+            .find(|provider| provider.id == provider_id)
+        else {
+            return;
+        };
+        let editing = model.as_ref().map(|model| model.id.clone());
+        let taken = provider
+            .models
+            .iter()
+            .filter(|known| Some(&known.id) != editing.as_ref())
+            .map(|known| known.name.clone())
+            .collect();
+        ModelFormDialog::open(
+            model,
+            taken,
+            Rc::new(move |model, window, cx| {
+                update_assistant_provider(&provider_id, cx, |provider| {
+                    match provider
+                        .models
+                        .iter_mut()
+                        .find(|known| known.id == model.id)
+                    {
+                        Some(known) => *known = model,
+                        None => provider.models.push(model),
+                    }
+                });
+                // 那个函数重画不了发起调用的这扇窗，这里补上。
+                window.refresh();
+            }),
+            window,
+            cx,
+        );
+    }
+
+    /// 选哪一家那一行：下拉换一家，旁边是添加（内置几家 + 自定义）与删除。
+    fn render_provider_picker(&self, selected: Option<&Provider>) -> SettingField<SharedString> {
+        let this = self.self_entity.downgrade();
+        let selected_id = selected.map(|provider| provider.id.clone());
+        let selected_name = selected.map(|provider| provider.display_name());
+        SettingField::render(move |_options: &RenderOptions, _window, _cx| {
+            let providers = assistant_config::global().providers;
+            let pick = {
+                let this = this.clone();
+                let selected_id = selected_id.clone();
+                move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+                    let mut menu = menu.min_w(px(200.));
+                    for provider in &providers {
+                        let id = provider.id.clone();
+                        let this = this.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(provider.display_name())
+                                .checked(selected_id.as_ref() == Some(&provider.id))
+                                .on_click(move |_, window, cx| {
+                                    let id = id.clone();
+                                    _ = this.update(cx, |this, cx| {
+                                        this.select_assistant_provider(Some(id), window, cx)
+                                    });
+                                }),
+                        );
+                    }
+                    menu
+                }
+            };
+            let add = {
+                let this = this.clone();
+                move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+                    let mut menu = menu.min_w(px(160.));
+                    for preset in &PRESETS {
+                        let this = this.clone();
+                        menu = menu.item(PopupMenuItem::new(preset.name).on_click(
+                            move |_, window, cx| {
+                                _ = this.update(cx, |this, cx| {
+                                    this.add_assistant_provider(Some(preset), window, cx)
+                                });
+                            },
+                        ));
+                    }
+                    let this = this.clone();
+                    menu.separator().item(
+                        PopupMenuItem::new(t!("settings.assistant_custom")).on_click(
+                            move |_, window, cx| {
+                                _ = this.update(cx, |this, cx| {
+                                    this.add_assistant_provider(None, window, cx)
+                                });
+                            },
+                        ),
+                    )
+                }
+            };
+            h_flex()
+                .gap_1()
+                .items_center()
+                .when_some(selected_name.clone(), |row, name| {
+                    row.child(
+                        Button::new("assistant-provider-picker")
+                            .outline()
+                            .small()
+                            .w(px(200.))
+                            .label(name)
+                            .dropdown_caret(true)
+                            .dropdown_menu(pick),
+                    )
+                })
+                .child(
+                    Button::new("assistant-provider-add")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Plus)
+                        .label(t!("settings.assistant_add_provider"))
+                        .dropdown_menu_with_anchor(Anchor::TopRight, add),
+                )
+                .when(selected_name.is_some(), |row| {
+                    let this = this.clone();
+                    row.child(
+                        Button::new("assistant-provider-delete")
+                            .ghost()
+                            .small()
+                            .icon(Icon::new(AppIcon::Trash))
+                            .tooltip(t!("settings.assistant_delete_provider"))
+                            .on_click(move |_, window, cx| {
+                                _ = this.update(cx, |this, cx| {
+                                    this.confirm_delete_assistant_provider(window, cx)
+                                });
+                            }),
+                    )
+                })
+        })
+    }
+
+    /// 模型列表里的一行：模型名（等宽）与它的能力，右边编辑、删除两颗键。
+    fn render_model_row(provider_id: String, model: ModelConfig) -> SettingItem {
+        let keyword = model.name.clone();
+        SettingItem::render(move |_options: &RenderOptions, _window, cx| {
+            let edit = {
+                let (provider_id, model) = (provider_id.clone(), model.clone());
+                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    Self::open_model_form(provider_id.clone(), Some(model.clone()), window, cx)
+                }
+            };
+            let delete = {
+                let (provider_id, model_id) = (provider_id.clone(), model.id.clone());
+                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    update_assistant_provider(&provider_id, cx, |provider| {
+                        provider.models.retain(|known| known.id != model_id)
+                    });
+                    window.refresh();
+                }
+            };
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .text_sm()
+                                .truncate()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(SharedString::from(model.name.clone())),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(model_capabilities(&model)),
+                        ),
+                )
+                .child(
+                    Button::new(SharedString::from(format!(
+                        "assistant-model-edit-{}",
+                        model.id
+                    )))
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(AppIcon::Pencil))
+                    .tooltip(t!("settings.assistant_edit_model"))
+                    .on_click(edit),
+                )
+                .child(
+                    Button::new(SharedString::from(format!(
+                        "assistant-model-delete-{}",
+                        model.id
+                    )))
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(AppIcon::Trash))
+                    .tooltip(t!("settings.assistant_delete_model"))
+                    .on_click(delete),
+                )
+        })
+        .keywords([keyword])
+    }
+
+    /// 智能助手页：服务商、它下面的模型、执行模式。
+    ///
+    /// 两级：上面一组是选中的那一家（下拉换一家，旁边添加、删除）与它的连接
+    /// 信息，下面一组是这一家挂着的模型。添加服务商是一个菜单：内置的几家一键
+    /// 填好名称、协议、地址、开关写法与常用模型，"自定义"全空着；API Key
+    /// 永远要用户自己给。模型的增改走一张小表（[`ModelFormDialog`]），列表里
+    /// 每一行写着模型名与它的能力（看不看得了图、认哪几档思考强度）。
+    ///
+    /// "思考开关参数"只在 Chat Completions 协议下出现：另外两种协议的写法是
+    /// 定死的（见 [`crate::assistant::thinking`]）。
+    fn assistant_page(&self) -> SettingPage {
+        let selected = self.assistant_provider();
+
+        let mut provider_group = SettingGroup::new()
             .title(t!("settings.assistant_provider"))
             .item(SettingItem::new(
                 t!("settings.assistant_preset"),
-                SettingField::dropdown(
-                    provider_options,
-                    |_cx: &App| {
-                        assistant::matching_preset(&assistant_config::global())
-                            .map(|preset| SharedString::from(preset.id))
-                            .unwrap_or_else(|| ASSISTANT_CUSTOM.into())
-                    },
-                    {
-                        let inputs = inputs.clone();
-                        move |id: SharedString, cx: &mut App| {
-                            // 挑了"自定义"就什么都不动：那一档只是"三格自己填"。
-                            let Some(preset) = assistant::preset(&id) else {
-                                return;
-                            };
-                            let cached = assistant_config::global();
-                            persist_assistant_config(
-                                AssistantConfig {
-                                    protocol: preset.protocol,
-                                    base_url: preset.base_url.to_owned(),
-                                    model: preset.model.to_owned(),
-                                    api_key: inputs.api_key.read(cx).value().trim().to_string(),
-                                    vision: preset.vision,
-                                    auto_execute: cached.auto_execute,
-                                },
-                                cx,
-                            );
-                            // 往输入框里回填要一个 `Window`，从这扇窗的单例句柄借。
-                            let (base_url, model) = (preset.base_url, preset.model);
-                            let inputs = inputs.clone();
-                            defer_with_settings_window(cx, move |window, cx| {
-                                inputs
-                                    .base_url
-                                    .update(cx, |state, cx| state.set_value(base_url, window, cx));
-                                inputs
-                                    .model
-                                    .update(cx, |state, cx| state.set_value(model, window, cx));
-                            });
-                        }
-                    },
-                ),
-            ))
-            .item(SettingItem::new(
-                t!("settings.assistant_protocol"),
-                SettingField::dropdown(
-                    ProviderProtocol::ALL
-                        .into_iter()
-                        .map(|protocol| {
-                            (
-                                SharedString::from(protocol.as_str()),
-                                SharedString::from(protocol.label()),
-                            )
-                        })
-                        .collect(),
-                    |_cx: &App| SharedString::from(assistant_config::global().protocol.as_str()),
-                    {
-                        let inputs = inputs.clone();
-                        move |value: SharedString, cx: &mut App| {
-                            let mut config = inputs.read(cx);
-                            config.protocol = ProviderProtocol::from_str_or_default(&value);
-                            persist_assistant_config(config, cx);
-                        }
-                    },
-                ),
-            ))
-            .item(SettingItem::new(
-                t!("settings.assistant_base_url"),
-                self.text_input(&self.assistant.base_url, false),
-            ))
-            .item(SettingItem::new(
-                t!("settings.assistant_api_key"),
-                self.text_input(&self.assistant.api_key, true),
-            ))
-            .item(SettingItem::new(
-                t!("settings.assistant_model"),
-                self.text_input(&self.assistant.model, false),
-            ))
-            .item(
-                SettingItem::new(
-                    t!("settings.assistant_vision"),
-                    SettingField::switch(|_cx: &App| assistant_config::global().vision, {
-                        let inputs = inputs.clone();
-                        move |checked: bool, cx: &mut App| {
-                            let mut config = inputs.read(cx);
-                            config.vision = checked;
-                            persist_assistant_config(config, cx);
-                        }
-                    }),
-                )
-                .description(SharedString::from(t!("settings.assistant_vision_hint"))),
-            );
+                self.render_provider_picker(selected.as_ref()),
+            ));
+        let mut model_group = None;
 
-        // 执行模式单独一组：它管的不是"用哪家模型"，是"命令要不要送审"。
+        match &selected {
+            None => {
+                provider_group = provider_group.description(t!("settings.assistant_no_provider"));
+            }
+            Some(provider) => {
+                let id = provider.id.clone();
+                provider_group = provider_group
+                    .item(SettingItem::new(
+                        t!("settings.assistant_name"),
+                        self.text_input(&self.assistant.name, false),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.assistant_protocol"),
+                        SettingField::dropdown(
+                            ProviderProtocol::ALL
+                                .into_iter()
+                                .map(|protocol| {
+                                    (
+                                        SharedString::from(protocol.as_str()),
+                                        SharedString::from(protocol.label()),
+                                    )
+                                })
+                                .collect(),
+                            {
+                                let protocol = provider.protocol;
+                                move |_cx: &App| SharedString::from(protocol.as_str())
+                            },
+                            {
+                                let id = id.clone();
+                                move |value: SharedString, cx: &mut App| {
+                                    update_assistant_provider(&id, cx, |provider| {
+                                        provider.protocol =
+                                            ProviderProtocol::from_str_or_default(&value)
+                                    });
+                                    // 开关写法那一项要不要露出来跟着协议走，重画这一页。
+                                    defer_with_settings_window(cx, |window, _| window.refresh());
+                                }
+                            },
+                        ),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.assistant_base_url"),
+                        self.text_input(&self.assistant.base_url, false),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.assistant_api_key"),
+                        self.text_input(&self.assistant.api_key, true),
+                    ));
+                if provider.protocol == ProviderProtocol::OpenAi {
+                    provider_group = provider_group.item(
+                        SettingItem::new(
+                            t!("settings.assistant_thinking_switch"),
+                            SettingField::dropdown(
+                                ThinkingSwitch::ALL
+                                    .into_iter()
+                                    .map(|switch| {
+                                        (
+                                            SharedString::from(switch.as_str()),
+                                            thinking_switch_label(switch),
+                                        )
+                                    })
+                                    .collect(),
+                                {
+                                    let switch = provider.thinking_switch;
+                                    move |_cx: &App| SharedString::from(switch.as_str())
+                                },
+                                {
+                                    let id = id.clone();
+                                    move |value: SharedString, cx: &mut App| {
+                                        update_assistant_provider(&id, cx, |provider| {
+                                            provider.thinking_switch =
+                                                ThinkingSwitch::from_str_or_default(&value)
+                                        });
+                                        defer_with_settings_window(cx, |window, _| {
+                                            window.refresh()
+                                        });
+                                    }
+                                },
+                            ),
+                        )
+                        .description(SharedString::from(t!(
+                            "settings.assistant_thinking_switch_hint"
+                        ))),
+                    );
+                }
+
+                let add_model = {
+                    let id = id.clone();
+                    SettingItem::render(move |_options: &RenderOptions, _window, cx| {
+                        let id = id.clone();
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .items_center()
+                            .when(
+                                assistant_config::global()
+                                    .providers
+                                    .iter()
+                                    .find(|provider| provider.id == id)
+                                    .is_some_and(|provider| provider.models.is_empty()),
+                                |row| {
+                                    row.child(
+                                        div()
+                                            .flex_1()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(SharedString::from(t!(
+                                                "settings.assistant_no_models"
+                                            ))),
+                                    )
+                                },
+                            )
+                            .child(
+                                Button::new("assistant-model-add")
+                                    .outline()
+                                    .small()
+                                    .ml_auto()
+                                    .icon(IconName::Plus)
+                                    .label(t!("settings.assistant_add_model"))
+                                    .on_click(move |_, window, cx| {
+                                        Self::open_model_form(id.clone(), None, window, cx)
+                                    }),
+                            )
+                    })
+                };
+                model_group = Some(
+                    SettingGroup::new()
+                        .title(t!("settings.assistant_models"))
+                        .items(
+                            provider
+                                .models
+                                .iter()
+                                .map(|model| Self::render_model_row(id.clone(), model.clone())),
+                        )
+                        .item(add_model),
+                );
+            }
+        }
+
+        // 执行模式单独一组：它管的不是"用哪个模型"，是"命令要不要送审"。
         let execution_group = SettingGroup::new()
             .title(t!("settings.assistant_execution"))
             .item(
                 SettingItem::new(
                     t!("settings.assistant_auto"),
-                    SettingField::switch(|_cx: &App| assistant_config::global().auto_execute, {
-                        let inputs = inputs.clone();
-                        move |checked: bool, cx: &mut App| {
-                            let mut config = inputs.read(cx);
+                    SettingField::switch(
+                        |_cx: &App| assistant_config::global().auto_execute,
+                        |checked: bool, cx: &mut App| {
+                            let mut config = assistant_config::global();
                             config.auto_execute = checked;
                             persist_assistant_config(config, cx);
-                        }
-                    }),
+                        },
+                    ),
                 )
                 .description(SharedString::from(t!("settings.assistant_auto_hint"))),
             );
@@ -1364,6 +1817,7 @@ impl SettingsWindow {
             .default_open(true)
             .resettable(false)
             .group(provider_group)
+            .groups(model_group)
             .group(execution_group)
     }
 

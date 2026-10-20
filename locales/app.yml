@@ -431,14 +431,74 @@ settings.tab_assistant:
   en: AI Assistant
   zh-CN: AI 助手
 settings.assistant_provider:
-  en: Model Provider
-  zh-CN: 模型供应商
+  en: Provider
+  zh-CN: 服务商
 settings.assistant_preset:
   en: Provider
-  zh-CN: 供应商
+  zh-CN: 服务商
 settings.assistant_custom:
   en: Custom
   zh-CN: 自定义
+settings.assistant_no_provider:
+  en: No provider yet. Add one, then add the models you want to chat with.
+  zh-CN: 还没有服务商。添加一个，再添加要用的模型。
+settings.assistant_add_provider:
+  en: Add
+  zh-CN: 添加
+settings.assistant_delete_provider:
+  en: Delete provider
+  zh-CN: 删除服务商
+settings.assistant_delete_provider_title:
+  en: Delete this provider?
+  zh-CN: 删除此服务商？
+settings.assistant_delete_provider_body:
+  en: '%{name}, its models and its API Key will be removed. Chats that used these models switch to your default model.'
+  zh-CN: 将移除「%{name}」及其下的模型和 API Key。使用这些模型的对话会改用默认模型。
+settings.assistant_delete:
+  en: Delete
+  zh-CN: 删除
+settings.assistant_cancel:
+  en: Cancel
+  zh-CN: 取消
+settings.assistant_name:
+  en: Name
+  zh-CN: 名称
+settings.assistant_name_placeholder:
+  en: e.g. Company relay
+  zh-CN: 例如：公司中转站
+settings.assistant_thinking_switch:
+  en: Thinking switch
+  zh-CN: 思考开关参数
+settings.assistant_thinking_switch_hint:
+  en: How this provider turns thinking on and off. Qwen uses enable_thinking; most others (Zhipu, DeepSeek, Doubao, relays) use thinking.type. Choose Don’t send for OpenAI.
+  zh-CN: 此服务商开关思考的参数。千问用 enable_thinking；智谱、DeepSeek、豆包及多数中转站用 thinking.type；OpenAI 官方选「不发送」。
+settings.assistant_thinking_switch_off:
+  en: Don’t send
+  zh-CN: 不发送
+settings.assistant_models:
+  en: Models
+  zh-CN: 模型
+settings.assistant_no_models:
+  en: No models yet
+  zh-CN: 还没有模型
+settings.assistant_add_model:
+  en: Add model
+  zh-CN: 添加模型
+settings.assistant_edit_model:
+  en: Edit model
+  zh-CN: 编辑模型
+settings.assistant_delete_model:
+  en: Delete model
+  zh-CN: 删除模型
+settings.assistant_model_vision:
+  en: Images
+  zh-CN: 支持图片
+settings.assistant_model_no_thinking:
+  en: No thinking effort
+  zh-CN: 不调思考强度
+settings.assistant_model_max_tokens:
+  en: 'Max output %{value}'
+  zh-CN: 最大输出 %{value}
 settings.assistant_protocol:
   en: API protocol
   zh-CN: 接口协议
@@ -454,18 +514,12 @@ settings.assistant_api_key:
 settings.assistant_api_key_placeholder:
   en: sk-...
   zh-CN: sk-...
-settings.assistant_model:
-  en: Model
-  zh-CN: 模型
 settings.assistant_model_placeholder:
   en: gpt-4o
   zh-CN: gpt-4o
 settings.assistant_vision:
   en: Image input
   zh-CN: 支持图片输入
-settings.assistant_vision_hint:
-  en: Turn on if this model can read images. You can then paste an image into the assistant and send it with your question. Text-only models reject requests that contain images.
-  zh-CN: 此模型支持图片时开启。开启后可向助手粘贴图片，随提问一起发送。纯文本模型收到图片会报错。
 settings.assistant_execution:
   en: Command Execution
   zh-CN: 命令执行
@@ -5017,8 +5071,8 @@ assistant.chat_needs_session:
   en: Open a session first, then start a chat bound to that host.
   zh-CN: 先打开一个会话，再开始绑定到该主机的对话。
 assistant.not_configured:
-  en: Configure a model provider in Settings → AI Assistant first.
-  zh-CN: 请先在 设置 → AI 助手 里配置模型供应商。
+  en: Add a provider and a model in Settings → AI Assistant first, and fill in the API Key.
+  zh-CN: 请先在「设置 → AI 助手」中添加服务商和模型，并填写 API Key。
 assistant.approval_title:
   en: 'Run on %{session}?'
   zh-CN: 在 %{session} 上执行这条命令？
@@ -5054,8 +5108,8 @@ assistant.remove_image:
   en: Remove image
   zh-CN: 移除图片
 assistant.vision_off:
-  en: This model isn’t set up for images. Turn on Image input in Settings → AI Assistant.
-  zh-CN: 此模型未开启图片支持，可在「设置 → AI 助手」中开启「支持图片输入」。
+  en: The current model isn’t set up for images. Switch to one that is, or turn on Image input for it in Settings → AI Assistant.
+  zh-CN: 当前模型未开启图片支持。可换一个支持图片的模型，或在「设置 → AI 助手」中为它开启「支持图片输入」。
 assistant.too_many_images:
   en: A message can carry at most %{count} images.
   zh-CN: 一条提问最多带 %{count} 张图片。
@@ -5093,6 +5147,69 @@ execution_mode.auto_hint:
 execution_mode.tooltip:
   en: Command execution mode
   zh-CN: 命令执行模式
+# 模型与思考强度：助手输入行上那两颗键（src/ui/menus/model_menu.rs、
+# thinking_effort_menu.rs）。思考强度的档位名原样写英文，不在这里。
+model_menu.none:
+  en: No model
+  zh-CN: 未配置模型
+model_menu.tooltip:
+  en: Model for this chat
+  zh-CN: 本对话使用的模型
+model_menu.manage:
+  en: Manage models…
+  zh-CN: 管理模型…
+thinking_menu.tooltip:
+  en: Thinking effort
+  zh-CN: 思考强度
+# 添加 / 编辑模型（src/ui/dialogs/model_form.rs）
+model_form.title_new:
+  en: Add Model
+  zh-CN: 添加模型
+model_form.title_edit:
+  en: Edit Model
+  zh-CN: 编辑模型
+model_form.subtitle:
+  en: Model name, image input and thinking effort
+  zh-CN: 模型名、图片支持与思考强度
+model_form.name:
+  en: Model name
+  zh-CN: 模型名
+model_form.name_hint:
+  en: The model ID sent to the provider, exactly as in its docs.
+  zh-CN: 发给服务商的模型 ID，与服务商文档一致。
+model_form.vision_hint:
+  en: Turn on if this model can read images. Text-only models reject requests that contain images.
+  zh-CN: 此模型支持图片时开启。纯文本模型收到图片会报错。
+model_form.efforts:
+  en: Thinking effort
+  zh-CN: 思考强度
+model_form.efforts_hint:
+  en: Tick the levels this model supports; the chat box switches between them. Leave all unticked to send no thinking parameters.
+  zh-CN: 勾选此模型支持的档位，对话输入框里按这几档切换。都不勾则不发送思考参数。
+model_form.max_tokens:
+  en: Max output tokens
+  zh-CN: 最大输出 tokens
+model_form.max_tokens_placeholder:
+  en: 'Default %{value}'
+  zh-CN: 默认 %{value}
+model_form.max_tokens_hint:
+  en: 'Optional. Left empty, the Anthropic protocol sends %{value} (it requires a value); other protocols send nothing and use the provider’s default.'
+  zh-CN: 可选。留空时 Anthropic 协议按 %{value} 发送（它要求必填），其他协议不发送，用服务商的默认值。
+model_form.max_tokens_invalid:
+  en: Max output tokens must be a positive whole number.
+  zh-CN: 最大输出 tokens 需要是正整数。
+model_form.name_required:
+  en: Enter a model name.
+  zh-CN: 请填写模型名。
+model_form.name_taken:
+  en: '%{name} is already added to this provider.'
+  zh-CN: 此服务商下已有「%{name}」。
+model_form.save:
+  en: Save
+  zh-CN: 保存
+model_form.cancel:
+  en: Cancel
+  zh-CN: 取消
 
 # ── 主机信任确认弹窗 ──────────────────────────────────────────────────────────
 host_trust.title:

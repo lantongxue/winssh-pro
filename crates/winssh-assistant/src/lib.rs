@@ -1,7 +1,8 @@
 //! 智能助手的领域层：模型供应商配置、对话模型与 Agent 运行。
 //!
-//! 分五块：[`config`] 是"用哪家模型、看不看得了图、命令要不要先问"这份配置
-//! 连同对话的领域模型（消息、会话、命令卡片）；[`image`] 把剪贴板里贴进来的
+//! 分六块：[`config`] 是"配了哪几家服务商、各挂哪几个模型、命令要不要先问"
+//! 这份配置连同对话的领域模型（消息、会话、命令卡片）；[`thinking`] 是思考
+//! 强度的档位与它们落进各协议请求体的写法；[`image`] 把剪贴板里贴进来的
 //! 图规整成模型吃得下的样子；[`transfer`] 是文件上传/下载的契约与本机路径
 //! 规则（搬字节的实现在服务层）；[`local`] 是操作本机（不是服务器）文件的
 //! 四样工具的实现与审核规则；[`agent`] 是 rig 那一侧 —— 装配 Agent、工具与
@@ -22,6 +23,7 @@ pub mod agent;
 pub mod config;
 pub mod image;
 pub mod local;
+pub mod thinking;
 pub mod transfer;
 
 pub use agent::{
@@ -29,9 +31,11 @@ pub use agent::{
     TerminalRequest, TransferUpdate, Turn, TurnOutput, run,
 };
 pub use config::{
-    AssistantConfig, ChatMessage, ChatRole, CommandStatus, Conversation, MessageBody, PRESETS,
-    ProviderProtocol, matching_preset, preset,
+    AssistantConfig, ChatMessage, ChatRole, CommandStatus, Conversation, MessageBody,
+    ModelConfig, ModelTarget, PRESETS, Provider, ProviderPreset, ProviderProtocol,
+    matching_preset, preset,
 };
+pub use thinking::{ThinkingEffort, ThinkingSwitch};
 pub use image::ChatImage;
 pub use local::{LocalAction, LocalReview};
 pub use transfer::{

@@ -11,7 +11,9 @@
 //! "要不要提权、怎么提"全在这一层；下载与校验在 [`super::download`] 里，
 //! 永远以用户身份跑。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};

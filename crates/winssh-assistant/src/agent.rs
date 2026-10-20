@@ -69,7 +69,7 @@
 //!
 //! **图片跟着提问走，不是工具。** 用户贴的截图在界面那头已经规整好
 //! （[`ChatImage`]），这里只是把它们作为 base64 内联进那一条用户消息
-//! （[`to_messages`]）。模型没开看图（[`AssistantConfig::vision`]）时一张都不发，
+//! （[`to_messages`]）。模型没开看图（[`ModelTarget::vision`]）时一张都不发，
 //! 换成一句"这里原本有 N 张图"—— 历史里那些图是用户换模型之前贴的，悄悄丢掉
 //! 的话模型会对着一句"看看这张截图"莫名其妙。历史里的图也有个上限
 //! （[`HISTORY_IMAGE_LIMIT`]），更早的同样换成一句说明：每一轮都要把整段历史
@@ -107,7 +107,7 @@ use crate::transfer::{
     self, FileTransfer, ProgressFn, TransferCard, TransferDirection, TransferRequest,
 };
 use crate::local::{self, LocalReview};
-use crate::{AssistantConfig, ChatImage, ChatRole, CommandStatus, ProviderProtocol};
+use crate::{ChatImage, ChatRole, CommandStatus, ModelTarget, ProviderProtocol, thinking};
 use winssh_ssh::{SftpLaunch, SshHandler, exec_script};
 use rust_i18n::t;
 
@@ -439,7 +439,9 @@ pub struct Turn {
 
 /// 一次运行要的全部东西。
 pub struct RunInput {
-    pub config: AssistantConfig,
+    /// 这一场连哪个模型、用哪一档思考强度。发起时定格：跑到一半去设置里改
+    /// 密钥或者换模型，影响的是下一场。
+    pub target: ModelTarget,
     /// 当前这条会话。**不是快照**：界面握着同一格，切标签页就地生效。
     pub session: CurrentSession,
     /// 这段对话此前的问答（只有说的话和贴的图，命令卡片不进历史 ——
@@ -447,7 +449,7 @@ pub struct RunInput {
     pub history: Vec<Turn>,
     /// 这一次的提问。文字可以是空的（只贴了图）。
     pub prompt: String,
-    /// 随这一次提问发的图。只在 [`AssistantConfig::vision`] 开着时才会有 ——
+    /// 随这一次提问发的图。只在 [`ModelTarget::vision`] 开着时才会有 ——
     /// 界面在发送前把着这道关。
     pub images: Vec<ChatImage>,
     pub events: mpsc::UnboundedSender<AgentEvent>,
@@ -463,42 +465,42 @@ pub struct RunInput {
 /// 模型的话与命令结果都从 `events` 出去，这里返回的 `Ok(())` 只说明
 /// 运行正常收尾；被"停止"按钮收口的运行也算正常收尾，不当错误报。
 pub async fn run(input: RunInput) -> Result<()> {
-    let config = input.config.clone();
-    match config.protocol {
+    let target = input.target.clone();
+    match target.protocol {
         ProviderProtocol::OpenAi => {
             // Chat Completions 那一档，不是 Responses API：DeepSeek、Zhipu、
             // 千问的兼容端点都只讲前者。
-            let mut builder = openai::CompletionsClient::builder().api_key(config.api_key.as_str());
-            if !config.base_url.trim().is_empty() {
-                builder = builder.base_url(config.base_url.trim());
+            let mut builder = openai::CompletionsClient::builder().api_key(target.api_key.as_str());
+            if !target.base_url.trim().is_empty() {
+                builder = builder.base_url(target.base_url.trim());
             }
             let client = builder
                 .build()
                 .with_context(|| t!("assistant.client_failed").to_string())?;
-            drive(client.completion_model(config.model.trim()), input).await
+            drive(client.completion_model(target.model.trim()), input).await
         }
         ProviderProtocol::OpenAiResponses => {
             // rig 的 `openai::Client` 缺省就是 Responses API（`/responses`）；
             // 系统提示词走顶层的 `instructions`，每轮 `RequestPatch` 换掉的
             // preamble 也落在那儿。
-            let mut builder = openai::Client::builder().api_key(config.api_key.as_str());
-            if !config.base_url.trim().is_empty() {
-                builder = builder.base_url(config.base_url.trim());
+            let mut builder = openai::Client::builder().api_key(target.api_key.as_str());
+            if !target.base_url.trim().is_empty() {
+                builder = builder.base_url(target.base_url.trim());
             }
             let client = builder
                 .build()
                 .with_context(|| t!("assistant.client_failed").to_string())?;
-            drive(client.completion_model(config.model.trim()), input).await
+            drive(client.completion_model(target.model.trim()), input).await
         }
         ProviderProtocol::Anthropic => {
-            let mut builder = anthropic::Client::builder().api_key(config.api_key.as_str());
-            if !config.base_url.trim().is_empty() {
-                builder = builder.base_url(config.base_url.trim());
+            let mut builder = anthropic::Client::builder().api_key(target.api_key.as_str());
+            if !target.base_url.trim().is_empty() {
+                builder = builder.base_url(target.base_url.trim());
             }
             let client = builder
                 .build()
                 .with_context(|| t!("assistant.client_failed").to_string())?;
-            drive(client.completion_model(config.model.trim()), input).await
+            drive(client.completion_model(target.model.trim()), input).await
         }
     }
 }
@@ -509,7 +511,7 @@ where
     M: CompletionModel + 'static,
 {
     let RunInput {
-        config,
+        target,
         session,
         history,
         prompt,
@@ -521,9 +523,23 @@ where
 
     // 这里装配时写进去的那份只是底稿：每一轮打模型之前，[`Gate`] 都会用当时
     // 的当前会话重写一次（见 `on_completion_call`）。
-    let agent = model
+    let mut builder = model
         .into_agent_builder()
-        .preamble(&preamble(session.get().as_ref()))
+        .preamble(&preamble(session.get().as_ref()));
+    // 思考强度经 `additional_params` 平铺进每一次请求体（写法见 [`thinking`]）。
+    // 模型一档都不认时什么都不塞，请求和这一位出现之前一模一样。
+    if let Some(params) =
+        thinking::request_params(target.protocol, target.thinking_switch, target.effort)
+    {
+        builder = builder.additional_params(params);
+    }
+    // 最大输出 tokens：模型表单里填的，没填时 Anthropic 协议补默认值（它的接口
+    // 必填，见 [`crate::config::DEFAULT_MAX_TOKENS`]）。请求里带上它，rig 自己
+    // 按模型名猜的那一份就不再起作用。
+    if let Some(max_tokens) = target.request_max_tokens() {
+        builder = builder.max_tokens(max_tokens);
+    }
+    let agent = builder
         .tool(RunCommand {
             session: session.clone(),
             events: events.clone(),
@@ -565,7 +581,7 @@ where
             text: prompt,
             images,
         },
-        config.vision,
+        target.vision,
     );
 
     // `stream()` 而不是 `run()`：同一套 builder、同一个引擎、同一批钩子，
