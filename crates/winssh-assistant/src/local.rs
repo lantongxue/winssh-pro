@@ -1,7 +1,7 @@
 //! 本机文件工具：`read_file` / `write_file` / `list_directory` / `search_files`。
 //!
 //! **它们操作的是用户自己这台电脑（跑着 WinSSH Pro 的那台），和远端服务器无关。**
-//! 远端那一侧是 `run_command` / `read_terminal`；两边之间搬东西是 `upload` /
+//! 远端那一侧是 `run_remote_command` / `read_terminal`；两边之间搬东西是 `upload` /
 //! `download`（见 [`crate::transfer`]）。工具名沿用通行的叫法，"本机"写在三处：
 //! 每个工具描述的第一句、系统提示词里分好的 LOCAL / REMOTE 两组、以及对话里
 //! 每一张卡片的来处（[`local_label`]，"本机"）—— 模型和用户都不该把这几样

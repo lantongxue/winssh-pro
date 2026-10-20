@@ -1,7 +1,7 @@
 //! 本机命令执行工具：`run_local_command`。
 //!
 //! **它跑的是用户自己这台电脑（跑着 WinSSH Pro 的那台）上的命令，和远端服务器
-//! 无关。** 服务器那一侧是 [`crate::agent::RunCommand`]（`run_command`，走 SSH 的
+//! 无关。** 服务器那一侧是 [`crate::agent::RunRemoteCommand`]（`run_remote_command`，走 SSH 的
 //! exec 通道）；本机和文件之间搬东西是 `upload` / `download`（见
 //! [`crate::transfer`]）。工具名里带 `local`、每个描述的第一句、系统提示词里
 //! 分好的 LOCAL / REMOTE 两组、对话里那张卡片的来处（"本机"）四处都写着 ——
@@ -9,7 +9,7 @@
 //!
 //! **按本机系统选 shell**：Windows 用 PowerShell，Linux 与 macOS 用 bash（见
 //! [`shell_kind`]）。这是本模块存在的全部理由 —— 同一句 `Get-Process` 在 bash
-//! 里是天书，`ls -la` 在 PowerShell 里也只是靠兼容别名勉强不报错。`run_command`
+//! 里是天书，`ls -la` 在 PowerShell 里也只是靠兼容别名勉强不报错。`run_remote_command`
 //! 那头永远是把脚本喂给远端的 `/bin/sh`，与本机的 shell 无关，两行提示词分开
 //! 说清楚。
 //!
@@ -176,7 +176,7 @@ pub async fn execute(command: LocalCommand, cancel: Arc<AtomicBool>) -> Result<S
 
 /// 真正的执行。同步 `std::process`，跑在 blocking 线程上。
 ///
-/// 起得来但退出码非零是正常结果，原样报给模型（同 `run_command`：模型读到
+/// 起得来但退出码非零是正常结果，原样报给模型（同 `run_remote_command`：模型读到
 /// 细节才知道该换条命令还是该罢手）；压根起不来（没装 shell）把原因放进
 /// 正常输出的 `error` 字段，不作为 `Err` 抛。
 fn run_blocking(command: LocalCommand, cancel: Arc<AtomicBool>) -> Result<ShellOutcome> {

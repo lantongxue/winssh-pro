@@ -21,13 +21,13 @@
     /// 退出码收回来，同时给界面报一条 `Command` 事件。用的是进程内那台
     /// 假 sshd（[`winssh_ssh::exec::fake`]），不碰网络。
     #[test]
-    fn run_command_reaches_the_remote_shell_and_reports_back() {
+    fn run_remote_command_reaches_the_remote_shell_and_reports_back() {
         winssh_db::runtime().block_on(async {
             let (target, seen) = target("web-01").await;
             let (tx, mut rx) = mpsc::unbounded();
             let session = CurrentSession::default();
             session.set(Some(target));
-            let tool = RunCommand {
+            let tool = RunRemoteCommand {
                 session,
                 events: tx,
             };
@@ -35,7 +35,7 @@
             let payload = tool
                 .call(
                     &mut ToolContext::new(),
-                    RunCommandArgs {
+                    RunRemoteCommandArgs {
                         command: "ls -la /tmp".into(),
                         timeout_secs: None,
                     },
@@ -74,7 +74,7 @@
     fn no_open_session_reports_why_instead_of_failing() {
         winssh_db::runtime().block_on(async {
             let (tx, _rx) = mpsc::unbounded();
-            let tool = RunCommand {
+            let tool = RunRemoteCommand {
                 session: CurrentSession::default(),
                 events: tx,
             };
@@ -82,7 +82,7 @@
             let payload = tool
                 .call(
                     &mut ToolContext::new(),
-                    RunCommandArgs {
+                    RunRemoteCommandArgs {
                         command: "uptime".into(),
                         timeout_secs: None,
                     },
@@ -106,7 +106,7 @@
             let (tx, mut rx) = mpsc::unbounded();
             let session = CurrentSession::default();
             session.set(Some(web));
-            let tool = RunCommand {
+            let tool = RunRemoteCommand {
                 session: session.clone(),
                 events: tx,
             };
@@ -114,7 +114,7 @@
             let mut run = async |command: &str| {
                 tool.call(
                     &mut ToolContext::new(),
-                    RunCommandArgs {
+                    RunRemoteCommandArgs {
                         command: command.to_owned(),
                         timeout_secs: None,
                     },
