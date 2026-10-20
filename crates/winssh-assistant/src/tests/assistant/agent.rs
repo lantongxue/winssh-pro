@@ -152,6 +152,24 @@
         });
     }
 
+    /// 系统提示词带上本机系统与此刻的本机时间：模型答“今天”“一小时前”这类
+    /// 话、读本机文件时间戳时要有个真锚点，也得知晓本机是哪一家系统。
+    #[test]
+    fn the_preamble_carries_the_local_clock_and_os() {
+        let text = preamble(None);
+        assert!(text.contains(local_os()), "提示词里该写着本机系统：{text}");
+        assert!(
+            !text.contains("{local_os}") && !text.contains("{local_time}"),
+            "占位符没替掉：{text}"
+        );
+        // 时间是现算的，只能认它的形状：`2026-10-20 14:32:05 +08:00 (Tuesday)`。
+        let clock = regex::Regex::new(
+            r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{2}:\d{2} \(\w+\)",
+        )
+        .unwrap();
+        assert!(clock.is_match(&text), "提示词里该写着本机时间：{text}");
+    }
+
     /// 一道新的审核门。执行模式不在这里给 —— 它现读进程里那份配置。
     fn new_gate(
         events: mpsc::UnboundedSender<AgentEvent>,

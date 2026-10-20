@@ -147,7 +147,8 @@ longer included, so ask if you need to see them again.]";
 const IMAGES_UNSUPPORTED: &str = "[The user attached {count} image(s) here, but the current \
 model is configured without image input, so they were not sent.]";
 
-/// 系统提示词模板。`{session}` 替换成当前这条会话。
+/// 系统提示词模板。`{session}` 替换成当前这条会话，`{local_os}` /
+/// `{local_time}` 替换成跑着本应用这台电脑的系统与此刻的时间。
 ///
 /// 是常量不是 i18n 条目：这是说给模型听的，不该跟着界面语言变 ——
 /// 里面已经写明"用用户提问的语言回答"。
@@ -167,6 +168,11 @@ use `run_command` to inspect local files.
 Current session (name | login | platform):
 {session}
 
+Local computer (the one running WinSSH Pro — the machine the local file tools
+work on):
+- OS: {local_os}
+- Local time: {local_time}
+
 Rules:
 - The user may switch tabs at any moment, which switches the machine under \
 you. The block above is rewritten before every reply, so it always names the \
@@ -176,6 +182,10 @@ the two, and re-check anything that still matters.
 - Commands are executed by a non-interactive POSIX /bin/sh without a TTY. Never \
 run interactive or long-lived programs (top, vim, tail -f, watch); use one-shot \
 alternatives (ps, df, tail -n 100).
+- \"Now\" is the local time above: the user's own clock. Dates the user says \
+(\"today\", \"yesterday\", \"an hour ago\") and local file timestamps are \
+relative to it. The server keeps its own clock and time zone — run `date` \
+there before assuming the two agree.
 - Local paths must be absolute or start with ~ (the local home directory); \
 find them with `list_directory` / `search_files` instead of guessing. Remote \
 paths may be relative to the remote home directory or start with ~.
@@ -692,13 +702,40 @@ fn to_message(turn: Turn, keep: usize, vision: bool) -> Message {
 }
 
 /// 系统提示词。当前会话直接写在这儿而不是做成一个查询工具：它每一轮都
-/// 重写，多一轮工具往返只是白等。
+/// 重写，多一轮工具往返只是白等。本机时间同理，也是每轮现算 —— 模型答
+/// “今天”“一小时前”时要有个真锚点，而不是它训练数据里的那个日期。
 fn preamble(session: Option<&SessionTarget>) -> String {
     let current = match session {
         Some(target) => format!("- {} | {} | {}", target.name, target.login, target.platform),
         None => NO_SESSION.to_owned(),
     };
-    PREAMBLE.replace("{session}", &current)
+    PREAMBLE
+        .replace("{session}", &current)
+        .replace("{local_os}", local_os())
+        .replace("{local_time}", &local_time())
+}
+
+/// 跑着本应用这台电脑的系统，模型选本机路径写法、跟用户说“你本机”时看它。
+///
+/// 不是远端会话的 `platform`（那是用户填在主机里的自由文本），这一行来自
+/// 编译目标本身。
+fn local_os() -> &'static str {
+    match std::env::consts::OS {
+        "windows" => "Windows",
+        "macos" => "macOS",
+        "linux" => "Linux",
+        other => other,
+    }
+}
+
+/// 本机此刻的时间，带 UTC 偏移与星期。
+///
+/// 偏移也写上：模型算“三小时前”或者对照一个带时区的日志时间时，不必再猜
+/// 用户在哪一区。
+fn local_time() -> String {
+    chrono::Local::now()
+        .format("%Y-%m-%d %H:%M:%S %:z (%A)")
+        .to_string()
 }
 
 // ─── 审核门 ─────────────────────────────────────────────────────────────────

@@ -23,6 +23,8 @@ futures = { workspace = true }
 anyhow = { workspace = true }
 # 发给模型的图片是 base64。
 base64 = { workspace = true }
+# 系统提示词里给模型一个"此刻"：本机时间要连 UTC 偏移一起告诉它。
+chrono = { workspace = true }
 # 剪贴板截图的解码/缩放/再编码。
 image = { workspace = true }
 gpui-kit = { workspace = true }
