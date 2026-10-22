@@ -150,19 +150,13 @@ pub fn persist_assistant_config(config: AssistantConfig, cx: &mut App) {
     .detach();
 }
 
-/// 换掉终端配色的进程缓存，并重画所有窗口。**不落库** —— 选择器里换选走的
-/// 是这一步（终端当场跟着变），点"确定"才落到库里。
-fn apply_terminal_scheme(id: SharedString, cx: &mut App) {
+/// 换掉终端配色方案并落库。缓存立刻生效、重画所有窗口、落库派到后台，
+/// 三步都同 [`persist_terminal_font`]。
+fn persist_terminal_scheme(id: SharedString, cx: &mut App) {
     scheme::set_global(&id);
     for handle in cx.windows() {
         _ = handle.update(cx, |_, window, _| window.refresh());
     }
-}
-
-/// 换掉终端配色方案并落库。缓存立刻生效、重画所有窗口、落库派到后台，
-/// 三步都同 [`persist_terminal_font`]。
-fn persist_terminal_scheme(id: SharedString, cx: &mut App) {
-    apply_terminal_scheme(id.clone(), cx);
     cx.background_spawn(async move {
         if let Err(error) = SettingService::open().save_terminal_scheme(id).await {
             log::error!("终端配色存不下去：{error:#}");
