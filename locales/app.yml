@@ -5118,9 +5118,6 @@ assistant.status_denied:
 assistant.run_failed:
   en: 'This run failed: %{error}'
   zh-CN: 运行失败：%{error}
-assistant.client_failed:
-  en: Could not build the model provider client
-  zh-CN: 模型供应商客户端构建失败
 assistant.missing_conversation:
   en: This conversation no longer exists.
   zh-CN: 此对话已不存在。

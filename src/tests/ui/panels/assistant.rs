@@ -840,6 +840,86 @@
         assert!(cx.debug_bounds(MODEL_SELECTOR).is_none());
     }
 
+    /// 脚注只落在跑完那一场的最后一条回复上：中间那些“我去查一下”的片段
+    /// 不画 —— 复制键、模型名与速度挂在半句话下面，看着就像这场已经说完了；
+    /// 正在跑的那一场整段都先不画。
+    #[test]
+    fn reply_footers_wait_for_the_last_reply_of_a_finished_run() {
+        let message = |id: &str, role: ChatRole, body: MessageBody| ChatMessage {
+            id: id.into(),
+            role,
+            body,
+        };
+        let card = || MessageBody::Command {
+            command: "df -h /".into(),
+            session: "web-01".into(),
+            output: "/dev/vda1  40G  12G  28G  30% /".into(),
+            status: CommandStatus::Ok,
+        };
+        // 第一场：问 → 说一句（叫工具前的话）→ 卡片 → 回答；然后第二场又问。
+        let messages = vec![
+            message("u1", ChatRole::User, MessageBody::text("看看磁盘")),
+            message(
+                "a1",
+                ChatRole::Assistant,
+                MessageBody::reply("我来查一下。", Some(40.0)),
+            ),
+            message("a2", ChatRole::Assistant, card()),
+            message(
+                "a3",
+                ChatRole::Assistant,
+                MessageBody::reply("还剩 28G。", Some(30.0)),
+            ),
+            message("u2", ChatRole::User, MessageBody::text("那内存呢")),
+            message(
+                "a4",
+                ChatRole::Assistant,
+                MessageBody::reply("也够。", Some(50.0)),
+            ),
+        ];
+        assert_eq!(reply_footers(&messages, false), HashSet::from([3, 5]));
+
+        // 第二场还在跑：只有它那一段不画，第一场的脚注照旧。
+        assert_eq!(reply_footers(&messages[..5], true), HashSet::from([3]));
+        // 停在工具卡片上的那一场：最后一条不是回复，就没有脚注。
+        assert!(reply_footers(&messages[..3], false).is_empty());
+    }
+
+    /// 一场还没跑完的运行里，屏上的回复下面先不摆脚注 —— 复制键、模型名、
+    /// 速度都是“这条回复说完了”的记号，要等这一场收口才落。
+    #[gpui_kit::test]
+    fn a_running_reply_draws_no_footer_yet(cx: &mut gpui_kit::TestAppContext) {
+        let (_root, panel, cx) = root_harness(
+            cx,
+            vec![
+                ChatMessage {
+                    id: "m1".into(),
+                    role: ChatRole::User,
+                    body: MessageBody::text("看看磁盘还剩多少"),
+                },
+                ChatMessage {
+                    id: "m2".into(),
+                    role: ChatRole::Assistant,
+                    body: MessageBody::reply("我来看看。", Some(42.5)).with_model("glm-4.5"),
+                },
+            ],
+        );
+        panel.update(cx, |panel, cx| {
+            panel.running = true;
+            cx.notify();
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds(SPEED_SELECTOR).is_none(),
+            "这一场还没跑完，不该先摆出速度"
+        );
+        assert!(
+            cx.debug_bounds(MODEL_SELECTOR).is_none(),
+            "这一场还没跑完，不该先摆出模型名"
+        );
+    }
+
     /// 一轮收尾时，回复记上这一场发起时用的模型 —— 跑到一半在输入行上换了
     /// 模型，这一场的回复也仍是原来那个模型说的。
     #[gpui_kit::test]

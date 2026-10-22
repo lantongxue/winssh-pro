@@ -19,15 +19,15 @@
 //!
 //! 界面与运行之间只有一条事件通道（[`AgentEvent`]）：模型说的话、命令的
 //! 执行结果、待审核的命令都从这里出去。审核是一问一答 —— 事件里带一个
-//! `oneshot`，界面按下"批准/拒绝"把答案送回来，钩子在 [`Gate::on_tool_call`]
+//! `oneshot`，界面按下"批准/拒绝"把答案送回来，钩子在 [`Gate::on_dispatch`]
 //! 里等着它。"自动执行"模式跳过这一问 —— 这一位每条命令现读（[`Gate::auto`]）。
 //!
 //! **流式输出走的是 rig 的 `stream()` 那一侧。** 同一套 builder、同一个引擎、
 //! 同一批钩子，只是模型那头改走 SSE，并且多给几类观察事件：
 //! [`Gate::on_text_delta`]（模型每吐一小段字就报一次，[`AgentEvent::TextDelta`]）、
 //! [`Gate::on_reasoning_delta`]（推理模型开口之前那段思考，DeepSeek-R1、Qwen3
-//! 这类的 `reasoning_content`，[`AgentEvent::ReasoningDelta`]）。非流式那边的
-//! `on_completion_response` 在这条路上根本不会来，别在那儿挂东西。
+//! 这类的 `reasoning_content`，[`AgentEvent::ReasoningDelta`]）。`run()` 那一侧
+//! 没有这些增量。
 //!
 //! **一轮怎么收尾：[`Gate::on_model_turn_finished`]，每一轮都来。** 它带着这一轮
 //! 规范化之后的思考与正文（[`AgentEvent::TurnEnd`]），界面拿它把这一轮流出来的
@@ -40,7 +40,8 @@
 //! 界面为它开了一条，却永远等不到收尾 —— 下一轮的回答于是接到了这条的尾巴上，
 //! 排在工具卡片**前面**，第二轮的思考反倒落在了最后。所以现在每一轮都报，
 //! 正文是空白的就报空串，界面照样关掉这一轮。（`on_stream_response_finish`
-//! 只叫工具不说话的那一轮也不来，本来就当不了收尾点。）唯一不来的是被
+//! 只叫工具不说话的那一轮也不来，本来就当不了收尾点；rig 0.43 起它连同
+//! `on_completion_response` 一起删掉了。）唯一不来的是被
 //! `on_invalid_tool_call` 修复过的轮次，而 [`Gate`] 不修复，无效调用直接让
 //! 这一场失败收尾。
 //!
@@ -85,23 +86,23 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use futures::StreamExt as _;
 use futures::channel::{mpsc, oneshot};
 use gpui_kit::SharedString;
 use rig_agent::agent::{
-    CompletionCallAction, CompletionCallEvent, ModelTurnAction, ModelTurnFinished,
-    ObservationAction, ReasoningDelta, RequestPatch, TextDelta, ToolCall as ToolCallEvent,
-    ToolCallAction, ToolCallDelta,
+    CompletionCallAction, CompletionCallEvent, DispatchAction, DispatchEvent, ModelTurnAction,
+    ModelTurnFinished, ObservationAction, ReasoningDelta, RequestPatch, TextDelta, ToolCallDelta,
 };
-use rig_agent::client::AgentModelExt as _;
 use rig_agent::completion::Message;
 use rig_agent::tool::{Tool, ToolContext};
-use rig_agent::{AgentHook, HookContext};
-use rig_core::client::completion::CompletionClient as _;
+use rig_agent::{AgentBuilder, AgentHook, HookContext};
+use rig_core::DynModel;
+use rig_core::completion::AssistantContent;
 use rig_core::completion::message::{ImageMediaType, UserContent};
-use rig_core::completion::{AssistantContent, CompletionModel};
-use rig_core::providers::{anthropic, openai};
+use rig_core::operation::Completion;
+use rig_core::providers::anthropic::AnthropicConfig;
+use rig_core::providers::openai::OpenAIConfig;
 use russh::client::Handle;
 use serde::Deserialize;
 
@@ -425,7 +426,7 @@ fn turn_output(content: &[AssistantContent], tokens_per_sec: Option<f32>) -> Tur
             content
                 .iter()
                 .filter_map(|part| match part {
-                    AssistantContent::Reasoning(reasoning) => Some(reasoning.display_text()),
+                    AssistantContent::Reasoning(reasoning) => Some(reasoning.text.clone()),
                     _ => None,
                 })
                 .collect(),
@@ -488,51 +489,50 @@ pub struct RunInput {
 /// 模型的话与命令结果都从 `events` 出去，这里返回的 `Ok(())` 只说明
 /// 运行正常收尾；被"停止"按钮收口的运行也算正常收尾，不当错误报。
 pub async fn run(input: RunInput) -> Result<()> {
-    let target = input.target.clone();
+    let model = completion_model(&input.target);
+    drive(model, input).await
+}
+
+/// 按协议把这一场要连的模型造出来。rig 0.43 起客户端就是"一份配置放在一条
+/// 传输上"，造的时候不会失败（地址、密钥的毛病都在第一次请求时才报），传输
+/// 是整个进程共用的那个 reqwest 客户端。
+fn completion_model(target: &ModelTarget) -> DynModel<Completion> {
+    let model = target.model.trim();
     match target.protocol {
-        ProviderProtocol::OpenAi => {
-            // Chat Completions 那一档，不是 Responses API：DeepSeek、Zhipu、
-            // 千问的兼容端点都只讲前者。
-            let mut builder = openai::CompletionsClient::builder().api_key(target.api_key.as_str());
-            if !target.base_url.trim().is_empty() {
-                builder = builder.base_url(target.base_url.trim());
-            }
-            let client = builder
-                .build()
-                .with_context(|| t!("assistant.client_failed").to_string())?;
-            drive(client.completion_model(target.model.trim()), input).await
-        }
-        ProviderProtocol::OpenAiResponses => {
-            // rig 的 `openai::Client` 缺省就是 Responses API（`/responses`）；
-            // 系统提示词走顶层的 `instructions`，每轮 `RequestPatch` 换掉的
-            // preamble 也落在那儿。
-            let mut builder = openai::Client::builder().api_key(target.api_key.as_str());
-            if !target.base_url.trim().is_empty() {
-                builder = builder.base_url(target.base_url.trim());
-            }
-            let client = builder
-                .build()
-                .with_context(|| t!("assistant.client_failed").to_string())?;
-            drive(client.completion_model(target.model.trim()), input).await
-        }
-        ProviderProtocol::Anthropic => {
-            let mut builder = anthropic::Client::builder().api_key(target.api_key.as_str());
-            if !target.base_url.trim().is_empty() {
-                builder = builder.base_url(target.base_url.trim());
-            }
-            let client = builder
-                .build()
-                .with_context(|| t!("assistant.client_failed").to_string())?;
-            drive(client.completion_model(target.model.trim()), input).await
-        }
+        // Chat Completions 那一档，不是 Responses API：DeepSeek、Zhipu、千问的
+        // 兼容端点都只讲前者。DeepSeek 自家的地址 rig 认得出来，思考模型每一轮
+        // 要带回去的 `reasoning_content` 它会自己补上。
+        ProviderProtocol::OpenAi => openai_config(target).client().chat(model).into(),
+        // `/responses`。系统提示词走顶层的 `instructions`，每轮 `RequestPatch`
+        // 换掉的 preamble 也落在那儿。
+        ProviderProtocol::OpenAiResponses => openai_config(target).client().responses(model).into(),
+        ProviderProtocol::Anthropic => anthropic_config(target).client().completion(model).into(),
+    }
+}
+
+/// OpenAI 两档协议共用的那份配置：官方 OpenAI 的方言（它的 `max_tokens` 写法
+/// 按模型分 —— o 系列、gpt-5 这些推理模型发 `max_completion_tokens`，别的
+/// 模型名发 `max_tokens`），Base URL 没填就是官方地址。
+fn openai_config(target: &ModelTarget) -> OpenAIConfig {
+    let config = OpenAIConfig::new(target.api_key.as_str());
+    match target.base_url.trim() {
+        "" => config,
+        base_url => config.with_base_url(base_url),
+    }
+}
+
+/// Anthropic 协议的配置。Base URL 末尾多粘的 `/v1`、`/v1/messages` rig 会自己
+/// 剥掉。
+fn anthropic_config(target: &ModelTarget) -> AnthropicConfig {
+    let config = AnthropicConfig::new(target.api_key.as_str());
+    match target.base_url.trim() {
+        "" => config,
+        base_url => config.with_base_url(base_url),
     }
 }
 
 /// 协议无关的那一半：装配 Agent 并跑完。
-async fn drive<M>(model: M, input: RunInput) -> Result<()>
-where
-    M: CompletionModel + 'static,
-{
+async fn drive(model: DynModel<Completion>, input: RunInput) -> Result<()> {
     let RunInput {
         target,
         session,
@@ -546,9 +546,12 @@ where
 
     // 这里装配时写进去的那份只是底稿：每一轮打模型之前，[`Gate`] 都会用当时
     // 的当前会话重写一次（见 `on_completion_call`）。
-    let mut builder = model
-        .into_agent_builder()
-        .preamble(&preamble(session.get().as_ref()));
+    //
+    // `finish_reason` 两个从严的地方保持 rig 0.45 的默认，不放宽回 0.42：
+    // 不带 finish_reason 就 `[DONE]` 的流按截断算，没见过的词（智谱的
+    // `sensitive`、`network_error`……）让这一轮失败 —— 宁可让用户看到
+    // "运行失败"，也不把一条没说完的话当完整答复收进对话与历史。
+    let mut builder = AgentBuilder::new(model).preamble(preamble(session.get().as_ref()));
     // 思考强度经 `additional_params` 平铺进每一次请求体（写法见 [`thinking`]）。
     // 模型一档都不认时什么都不塞，请求和这一位出现之前一模一样。
     if let Some(params) =
@@ -616,7 +619,7 @@ where
     // 工具参数增量）。`run()` 是把这条流折叠成一个最终答复，界面要的是
     // 一个字一个字往外冒，所以自己抽这条流。
     let mut stream = agent
-        .runner(prompt)
+        .prompt(prompt)
         .history(history)
         .add_hook(Gate {
             events,
@@ -625,8 +628,7 @@ where
             first_delta: Mutex::new(None),
         })
         .max_turns(MAX_TURNS)
-        .stream()
-        .await;
+        .stream();
 
     // 流是惰性的：不抽干就什么都不会发生。抽出来的每一项这里都不看 ——
     // 该上屏的（模型的话、命令、待审核）都在钩子与工具里报过了，这儿只
@@ -801,17 +803,17 @@ impl Gate {
 
     /// 一条 `run_remote_command` 调用怎么放行。独立成方法是为了可测：
     /// [`HookContext`] 没有公开构造器，钩子方法本身在单测里搭不起来。
-    async fn review(&self, args: &str) -> ToolCallAction {
+    async fn review(&self, args: &str) -> DispatchAction {
         if self.cancelled() {
-            return ToolCallAction::stop(STOPPED);
+            return DispatchAction::stop(STOPPED);
         }
         // 没有机器可操作就不必惊动用户：让模型直接知道这条没跑，比给一张
         // "在（空）上执行？"的卡片清楚。
         let Some(target) = self.session.get() else {
-            return ToolCallAction::skip(NO_SESSION_FEEDBACK);
+            return DispatchAction::skip(NO_SESSION_FEEDBACK);
         };
         if self.auto() {
-            return ToolCallAction::Run;
+            return DispatchAction::Proceed;
         }
 
         // 送审要的是命令原文；目标写的是当前会话的名字，不是模型说的 ——
@@ -834,16 +836,16 @@ impl Gate {
     /// 一次 `upload` / `download` 怎么放行：**每一次都问**，不看执行模式
     /// （见模块文档）。参数长歪了、本机路径不合规矩的，不必惊动用户 ——
     /// 直接把原因回给模型。
-    async fn review_transfer(&self, tool: &str, args: &str) -> ToolCallAction {
+    async fn review_transfer(&self, tool: &str, args: &str) -> DispatchAction {
         if self.cancelled() {
-            return ToolCallAction::stop(STOPPED);
+            return DispatchAction::stop(STOPPED);
         }
         let Some(target) = self.session.get() else {
-            return ToolCallAction::skip(NO_SESSION_TRANSFER);
+            return DispatchAction::skip(NO_SESSION_TRANSFER);
         };
         let request = match transfer_request(tool, args) {
             Ok(request) => request,
-            Err(reason) => return ToolCallAction::skip(reason),
+            Err(reason) => return DispatchAction::skip(reason),
         };
         self.ask(
             target.transfer_label(),
@@ -860,16 +862,16 @@ impl Gate {
     /// （写到已存在的文件又没说覆盖）不惊动用户，原因直接回给模型。
     ///
     /// 和会话无关：没有会话开着也能用，换标签页也不作废这次批准。
-    async fn review_local(&self, tool: &str, args: &str) -> ToolCallAction {
+    async fn review_local(&self, tool: &str, args: &str) -> DispatchAction {
         if self.cancelled() {
-            return ToolCallAction::stop(STOPPED);
+            return DispatchAction::stop(STOPPED);
         }
         let review = match local::review(tool, args) {
             Ok(review) => review,
-            Err(reason) => return ToolCallAction::skip(reason),
+            Err(reason) => return DispatchAction::skip(reason),
         };
         if !review.needs_approval(self.auto()) {
-            return ToolCallAction::Run;
+            return DispatchAction::Proceed;
         }
         self.ask(
             local::local_label(),
@@ -886,16 +888,16 @@ impl Gate {
     /// 命令是空的这种注定失败的不惊动用户，原因直接回给模型。
     ///
     /// 和会话无关：没有会话开着也能用，换标签页也不作废这次批准。
-    async fn review_shell(&self, args: &str) -> ToolCallAction {
+    async fn review_shell(&self, args: &str) -> DispatchAction {
         if self.cancelled() {
-            return ToolCallAction::stop(STOPPED);
+            return DispatchAction::stop(STOPPED);
         }
         let command = match shell::parse(args) {
             Ok(command) => command,
-            Err(reason) => return ToolCallAction::skip(reason),
+            Err(reason) => return DispatchAction::skip(reason),
         };
         if self.auto() {
-            return ToolCallAction::Run;
+            return DispatchAction::Proceed;
         }
         self.ask(
             local::local_label(),
@@ -917,7 +919,7 @@ impl Gate {
         proposal: Proposal,
         denied: &str,
         switched: &str,
-    ) -> ToolCallAction {
+    ) -> DispatchAction {
         let (respond, decision) = oneshot::channel();
         if self
             .events
@@ -929,7 +931,7 @@ impl Gate {
             .is_err()
         {
             // 界面那头已经不在了，没人能批准 —— 收口。
-            return ToolCallAction::stop(STOPPED);
+            return DispatchAction::stop(STOPPED);
         }
 
         match decision.await {
@@ -938,11 +940,11 @@ impl Gate {
             Ok(true)
                 if session.is_none_or(|id| self.session.get().is_some_and(|now| now.id == id)) =>
             {
-                ToolCallAction::Run
+                DispatchAction::Proceed
             }
-            Ok(true) => ToolCallAction::skip(switched),
-            Ok(false) => ToolCallAction::skip(denied),
-            Err(_) => ToolCallAction::stop(STOPPED),
+            Ok(true) => DispatchAction::skip(switched),
+            Ok(false) => DispatchAction::skip(denied),
+            Err(_) => DispatchAction::stop(STOPPED),
         }
     }
 }
@@ -1023,9 +1025,9 @@ impl AgentHook for Gate {
     /// 这一轮的速度也在这时候算出来。
     ///
     /// **每一轮都报**，哪怕两段都是空的 —— 界面靠它关掉这一轮，下一轮的字才
-    /// 不会接到这一轮那条的尾巴上（栽过，见模块文档）。用这条而不是
-    /// `on_stream_response_finish`：后者在只叫工具的轮次不来。工具调用不在这儿
-    /// 报 —— 它们要么进审核卡片，要么在执行完由工具自己报结果。
+    /// 不会接到这一轮那条的尾巴上（栽过，见模块文档）。原先的
+    /// `on_stream_response_finish` 在只叫工具的轮次不来，当不了收尾点。工具调用
+    /// 不在这儿报 —— 它们要么进审核卡片，要么在执行完由工具自己报结果。
     async fn on_model_turn_finished(
         &self,
         _: &HookContext,
@@ -1044,19 +1046,28 @@ impl AgentHook for Gate {
     /// 审核门。命令："手动确认"档每一条都要用户点头，"自动执行"档直接放行；
     /// 传输：每一次都问；本机文件：见 [`Self::review_local`]。读终端不送审
     /// （只读，而且是用户自己要的），但"停止"一样拦得住它。
-    async fn on_tool_call(&self, _: &HookContext, event: ToolCallEvent<'_>) -> ToolCallAction {
-        match event.tool_name {
-            RunRemoteCommand::NAME => self.review(event.args).await,
-            Upload::NAME | Download::NAME => {
-                self.review_transfer(event.tool_name, event.args).await
-            }
+    ///
+    /// rig 0.43 起审核落在派发边界上：每一次打模型、每一次调工具都从这里过。
+    /// 只拦工具调用，打模型那一次原样放行 —— 停止按钮在 `on_completion_call`
+    /// 里收口，这里再拒一次模型调用只会让这一轮以失败告终。
+    ///
+    /// **别为了少收几个增量去覆写 [`AgentHook::observes`]。** 这一条受它门控：
+    /// 对 `StepEventKind::ToolDispatch` 答了 `false`，rig 就不再问这里，审核门
+    /// 一声不吭地失效、所有命令直接跑。
+    async fn on_dispatch(&self, _: &HookContext, event: DispatchEvent<'_>) -> DispatchAction {
+        let (Some(tool), Some(args)) = (event.tool_name(), event.tool_args()) else {
+            return DispatchAction::Proceed;
+        };
+        match tool {
+            RunRemoteCommand::NAME => self.review(args).await,
+            Upload::NAME | Download::NAME => self.review_transfer(tool, args).await,
             local::READ_FILE | local::WRITE_FILE | local::LIST_DIRECTORY | local::SEARCH_FILES => {
-                self.review_local(event.tool_name, event.args).await
+                self.review_local(tool, args).await
             }
-            shell::RUN_LOCAL_COMMAND => self.review_shell(event.args).await,
+            shell::RUN_LOCAL_COMMAND => self.review_shell(args).await,
             _ => match self.cancelled() {
-                true => ToolCallAction::stop(STOPPED),
-                false => ToolCallAction::Run,
+                true => DispatchAction::stop(STOPPED),
+                false => DispatchAction::Proceed,
             },
         }
     }
@@ -1863,11 +1874,12 @@ fn clip_tail(text: &str) -> String {
 
 /// 一轮的输出速度：供应商报的输出 token 数除以从第一个增量到说完的时长。
 ///
-/// 量不准就不报：供应商没给用量（`tokens == 0`，有的兼容网关在流里不带
-/// `usage`），或者整段几乎一口气到的（短于 [`MIN_SPEED_WINDOW`]）。宁可那条
+/// 量不准就不报：供应商没给用量（`None`，有的兼容网关在流里不带 `usage`）
+/// 或者报了 0，或者整段几乎一口气到的（短于 [`MIN_SPEED_WINDOW`]）。宁可那条
 /// 回复底下空着，也不摆一个离谱的数。
-fn tokens_per_second(tokens: u64, elapsed: Duration) -> Option<f32> {
-    if tokens == 0 || elapsed < MIN_SPEED_WINDOW {
+fn tokens_per_second(tokens: Option<u64>, elapsed: Duration) -> Option<f32> {
+    let tokens = tokens.filter(|&tokens| tokens > 0)?;
+    if elapsed < MIN_SPEED_WINDOW {
         return None;
     }
     Some(tokens as f32 / elapsed.as_secs_f32())

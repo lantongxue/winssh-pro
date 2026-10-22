@@ -240,18 +240,19 @@ tempfile = "3"
 # `ssh-key` 要的 `rand_core` 0.10 走，不然 `PrivateKey::random` 收不下它。
 rand = "0.10"
 
-# 智能助手的 Agent 运行时。rig 0.42 拆成两层：`rig-core` 是供应商无关的
+# 智能助手的 Agent 运行时。rig 自 0.42 起拆成两层：`rig-core` 是供应商无关的
 # 模型/消息/工具契约（openai 与 anthropic 两种协议的客户端都在它的
 # `providers` 下），`rig-agent` 是经典的 builder + 运行循环 + 类型化钩子。
-# 人工审核就落在钩子上：`AgentHook::on_tool_call` 返回 Run / Skip / Stop，
-# 不必自己手写多轮循环。
+# 人工审核就落在钩子上：0.43 起是派发边界上的 `AgentHook::on_dispatch`，
+# 返回 Proceed / skip / stop，不必自己手写多轮循环。
 #
 # `rig-agent` 对 `rig-core` 是 default-features = false 的依赖，HTTP 后端
-# （reqwest + rustls）得由我们这份直接依赖把特性点亮 —— 少了它，构建期
-# 就没有任何一个能发请求的 `HttpClientExt` 实现。`derive` 特性不开：
-# 工具就一个，手写 `Tool` impl 比再拖一份宏展开的依赖便宜。
-rig-agent = { version = "0.42", default-features = false }
-rig-core = { version = "0.42", default-features = false, features = ["reqwest", "rustls"] }
+# 得由我们这份直接依赖把特性点亮：`reqwest` 拉进 `rig-reqwest`（0.43 起
+# reqwest 传输拆成了单独的 crate），客户端的 `client()` 构造器门在它后面；
+# `rustls` 给它开 TLS，少了它 https 地址一个都连不上。`derive` 特性
+# 不开：工具都是手写的 `Tool` impl，用不着再拖一份宏展开的依赖。
+rig-agent = { version = "0.45", default-features = false }
+rig-core = { version = "0.45", default-features = false, features = ["reqwest", "rustls"] }
 
 # 界面文案的多语言查表。选 rust-i18n 是因为组件库自己就在用它（见
 # `refs/gpui-kit/crates/component/src/lib.rs` 的 `i18n!`）：同一个库意味着

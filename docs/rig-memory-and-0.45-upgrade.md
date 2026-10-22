@@ -2,7 +2,10 @@
 
 本文由一次源码与发布记录的核查写成，目的是回答两个问题：**rig 有没有记忆系统**，
 以及**我们从钉住的 0.42 升到 0.45 要动哪些地方**。所有结论都标了出处，
-最后一节列出尚未核实与需要人工判断的条目。文中代码位置以本仓库路径与行号给出；本次核查只新增本文件，未改动任何生产代码。
+第五节列出当时尚未核实与需要人工判断的条目。文中代码位置以本仓库路径与行号给出；本次核查只新增本文件，未改动任何生产代码。
+
+> 2026-10-21 已按第四节第 1 步实际迁移、编译并跑通测试，`finish_reason` 两处从严（用户拍板，
+> 见 6.2），结果与对本文的更正见**第六节**。
 
 ## 摘要
 
@@ -248,3 +251,64 @@ rig 的 approval / plan-mode / 并行调度按它走 —— 有机会把 `local:
    `cargo update -p rig-core --precise 0.45.0` 之类的试编译，把错误清单拿回来核对本文覆盖率。
 6. 0.45 的 `rig-ecs`（Bevy 0.20 新内核）与 `rig-harness` / `rig-tools` / `rig-basics` / `rig-tui`
    那套编码 agent 插件只做了存在性确认，与本项目无关，未评估。
+
+## 六、实施结果（2026-10-21）
+
+第四节第 1 步（编译迁移）已做完，在分支 `rig-0.45-upgrade` 上。实际改动比第四节的估计小：
+`crates/winssh-assistant/src/agent.rs` +130 / −99 行（新增的多半是注释），外加测试。
+
+### 6.1 实际改了什么
+
+| 处 | 改法 |
+| --- | --- |
+| 版本 | `rig-agent` / `rig-core` 钉到 `0.45`；`rig-core` 仍开 `["reqwest", "rustls"]`（`client()` 门在 `reqwest` 后面） |
+| 客户端 | `OpenAIConfig::with_key(&dialect, key).with_base_url(url).client().chat(model)` / `.responses(model)`；`AnthropicConfig::new(key).with_base_url(url).client().completion(model)`。构造不再失败，`assistant.client_failed` 文案随之删掉 |
+| 装配 | `AgentBuilder::new(DynModel<Completion>)`，`drive` 去泛型；`agent.prompt(p)…stream()`（`stream()` 不再 `async`） |
+| 审核门 | `on_tool_call` → `on_dispatch`，只认 `tool_name()` / `tool_args()` 都有的派发，打模型那一次原样 `Proceed`；`Run` → `DispatchAction::Proceed`，`skip` / `stop` 同名。被跳过的那次模型照旧读到我们的原因原文（`ToolResult::skipped(report.message)`），`stop` 照旧整场收口 |
+| 测速 | `usage.output_tokens` 是 `Option<u64>`，`tokens_per_second` 跟着收 `Option` |
+| 思考正文 | `Reasoning` 是个平的结构体，读 `reasoning.text` |
+
+### 6.2 两处从严：保持 0.45 的默认，不放宽回 0.42
+
+迁移时曾先放宽过这两处（自定义方言 + `accept_unknown_finish_reasons(true)`），2026-10-21 用户
+拍板改回 0.45 的严格默认，测试随之改成断言严格行为：
+
+1. **不带 `finish_reason` 就 `[DONE]` 的流**：判作没说完（`the reply ended before the provider
+   ended it`），整场失败，流出来的正文不收尾、不落库。OpenAI 两档协议直接用官方 `OPENAI` 方言
+   （它的 `max_tokens` 写法按模型分：推理家族发 `max_completion_tokens`）。
+2. **没见过的 `finish_reason`**（智谱 `sensitive` 等）：整场失败，错误里带那个词。轮次本身
+   照常收尾 —— 话是说完了的，答复进对话，底下多一条"运行失败"。
+
+0.42 的源码里确认过：缺失的 `finish_reason` 读成 `Absent`，未知的原样保留，两样都不报错。
+所以这两处对兼容网关是**实打实的行为变化**，实机回归（6.5）时重点看：个别不带
+`finish_reason` 的中转站、以及智谱上会触发 `sensitive` 的提问，从"照常出答案"变成了"报错"。
+
+### 6.3 对本文的更正
+
+- 3.5 说 `tests/assistant/agent.rs` 里那句 `DocumentSourceKind::Base64(..)` 断言要重写 —— **不用**：
+  图片的 `Image::data` 仍是 `DocumentSourceKind`，变的只是 `Document`。
+- 3.1 说 serde_json 的 `preserve_order` 会因 rig 而在全二进制统一 —— 它**早就开着**（`gpui-pre`
+  带进来的）；真正新增的只有 `float_roundtrip`。全工作区测试（29 个测试二进制）全绿。
+- 第五节第 2 条：`ModelTurnFinished::content` 是 `&Vec<AssistantContent>`，思考正文读 `Reasoning::text`。
+- 第五节第 4 条：`rig_agent::tool::{Tool, ToolContext}` 仍然有效（再导出 `rig_core::tool`）。
+- Chat Completions 的 `system` 消息内容是内容块数组而不是字符串 —— 0.42 也是这样
+  （`Vec<SystemContent>`，没有自定义序列化），不是这次升级带来的变化。
+- 第五节第 3 条（各家 `Dialect`）没有采用：我们的配置里只有协议 + Base URL，认不出是哪家，
+  所以两档 OpenAI 协议共用一份方言。DeepSeek 官方地址 rig 会按 `deepseek.com` 自己认出来，
+  回放 `reasoning_content`。
+
+### 6.4 新加的测试
+
+- 整场跑一遍（rig-agent `test-utils` 的 `MockCompletionModel` + 假 sshd）：命令先送审、拒绝后远端
+  一个字没收到、模型下一轮读到"没执行"、每一轮都有 `TurnEnd`。守的是 `on_dispatch` 受
+  `observes` 门控那个坑 —— 变异验证过：让 `Gate` 不观察 `ToolDispatch`，这条立刻红。
+- 走真的协议编解码（`SequencedHttpClient` 换掉 HTTP、记下请求）：Chat / Responses / Anthropic 三档的
+  请求体（思考参数、输出上限、系统提示词落点、九个工具、`stream_options`），以及 6.2 那两处从严
+  的线上表现（截断的轮次不收尾；未知词的轮次收尾后报错）。
+
+### 6.5 仍需人工
+
+第四节第 2 步（各家兼容网关实机回归）照旧要人工做：DeepSeek / 智谱 / 千问 / 豆包，以及常用的
+中转站，各跑「带工具 / 带思考 / 中途停止 / 长回答被截断」四类对话。自动测试覆盖的是我们发出去
+的请求与 rig 的解码，覆盖不了真网关的回法。
+
