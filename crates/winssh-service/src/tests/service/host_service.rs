@@ -29,6 +29,7 @@
             ftp: Default::default(),
             webdav: Default::default(),
             sftp: Default::default(),
+            terminal_scheme: String::new(),
         }
     }
 
@@ -65,6 +66,7 @@
             ftp: Default::default(),
             webdav: Default::default(),
             sftp: Default::default(),
+            terminal_scheme: String::new(),
         }
     }
 
@@ -90,6 +92,49 @@
             assert_eq!(groups.len(), 1);
             assert_eq!(groups[0].name, "生产环境");
             assert_eq!(names(&groups[0]), vec!["web-01".to_string()]);
+        });
+    }
+
+    /// 终端主题那一列：落库、整行重写、读回（`stitch` 那条路）与副本都要
+    /// 原样带过去。空串（跟随全局）与具体 id 两种都走一遍 —— 空串是出厂档，
+    /// 走丢的话升级完每台主机都会变回跟随全局。
+    #[test]
+    fn terminal_scheme_survives_insert_update_readback_and_duplicate() {
+        db::runtime().block_on(async {
+            let service = service().await;
+
+            // 局部叫 `web` 不叫 `draft`：这条测试要连写三份草稿，变量名一
+            // 跟辅助函数重名，第二份起右边那个 `draft(...)` 解析到的就是
+            // 上一份局部变量了。
+            let mut web = draft("web-01");
+            web.terminal_scheme = "gruvbox_dark".into();
+            let host = service.insert_host("生产环境", web).await.unwrap();
+            assert_eq!(host.terminal_scheme, "gruvbox_dark");
+
+            // insert 的返回值不算数：读回走 stitch，那一处漏带的话这里先红。
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].terminal_scheme, "gruvbox_dark");
+
+            // 表单整行重写：换成具体方案、再换回"跟随全局"都要落得住。
+            let mut web = draft("web-01");
+            web.terminal_scheme = "nord".into();
+            service
+                .update_host(&host.id, "生产环境", web)
+                .await
+                .unwrap();
+
+            let mut web = draft("web-01");
+            web.terminal_scheme = String::new();
+            service
+                .update_host(&host.id, "生产环境", web)
+                .await
+                .unwrap();
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].terminal_scheme, "");
+
+            // 副本照抄（duplicate_host 那条独立的 ActiveModel 路径）。
+            let copy = service.duplicate_host(&host.id).await.unwrap();
+            assert_eq!(copy.terminal_scheme, "");
         });
     }
 

@@ -62,6 +62,7 @@
             ftp: Default::default(),
             webdav: Default::default(),
             sftp: Default::default(),
+            terminal_scheme: "".into(),
             easytier: EasyTierSettings {
                 ipv4: ipv4.into(),
                 node_name: id.into(),

@@ -391,6 +391,15 @@ settings.terminal_scheme:
 settings.terminal_scheme_follow:
   en: Follow app theme
   zh-CN: 跟随界面主题
+settings.terminal_scheme_dark:
+  en: Dark
+  zh-CN: 深色
+settings.terminal_scheme_light:
+  en: Light
+  zh-CN: 浅色
+settings.terminal_scheme_search:
+  en: Search themes…
+  zh-CN: 搜索主题…
 settings.terminal_font:
   en: Font
   zh-CN: 字体
@@ -2417,6 +2426,15 @@ host_form.group_jump:
 host_form.group_proxy:
   en: Proxy
   zh-CN: 代理
+host_form.group_terminal:
+  en: Terminal
+  zh-CN: 终端
+host_form.terminal_scheme:
+  en: Terminal theme
+  zh-CN: 终端主题
+host_form.terminal_scheme_follow:
+  en: Follow global
+  zh-CN: 跟随全局
 host_form.group_tags:
   en: Tags
   zh-CN: 标签

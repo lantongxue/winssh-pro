@@ -39,6 +39,7 @@
             ftp: crate::ftp::FtpSettings { security },
             webdav: Default::default(),
             sftp: Default::default(),
+            terminal_scheme: "".into(),
             shell_integration: false,
             favorites: Vec::new(),
         }

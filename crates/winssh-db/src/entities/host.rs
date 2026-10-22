@@ -109,6 +109,11 @@ pub struct Model {
     /// 只有走 SSH 的主机读它。
     #[sea_orm(default_value = "")]
     pub sftp_settings: String,
+    /// 终端配色方案 id（`dracula` 那样的一个词，不套 JSON —— 只有一个值）。
+    /// 空串是出厂档"跟随全局"，见 `crate::host::Host::terminal_scheme`。
+    /// 认不出的 id 渲染时也按跟随全局处置，不在这里清洗。
+    #[sea_orm(default_value = "")]
+    pub terminal_scheme: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

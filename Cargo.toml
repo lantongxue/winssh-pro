@@ -208,6 +208,10 @@ chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# 终端主题那份 alacritty TOML（crates/winssh-terminal/themes/）由该 crate 的
+# build.rs 在构建期转成静态色表，toml 只进 build-dependencies，不进正式构建。
+toml = "0.9"
+
 # 订阅正文是 YAML（Clash 配置），见 `src/clash/config.rs`：要读懂里面的节点、
 # 策略组与分流规则给界面看，还要把端口那几项盖进去再交给 mihomo。这份解读
 # 用 serde 那套 `Value` 来做，所以挑的是 serde_yaml 那一族的维护分支 ——

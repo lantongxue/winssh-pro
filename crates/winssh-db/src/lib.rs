@@ -67,7 +67,8 @@ const SCHEMA: [&str; 13] = [
         webdav_settings TEXT NOT NULL DEFAULT '',
         shell_integration INTEGER NOT NULL DEFAULT 0,
         favorites    TEXT    NOT NULL DEFAULT '',
-        sftp_settings TEXT   NOT NULL DEFAULT ''
+        sftp_settings TEXT   NOT NULL DEFAULT '',
+        terminal_scheme TEXT NOT NULL DEFAULT ''
     )",
     // 保险箱。和 hosts 之间没有外键：主机存的是凭据的内容本身，不是一个指向
     // 这里的 id（见 `crate::credential` 的模块文档），删一条凭据不牵动任何主机。
@@ -220,7 +221,7 @@ const SCHEMA: [&str; 13] = [
 
 /// 针对已存在的库文件的增量迁移。每条都是 `ADD COLUMN`，已存在时 SQLite
 /// 会报 `duplicate column name`，那是幂等的成功，不算错误。
-const MIGRATIONS: [&str; 35] = [
+const MIGRATIONS: [&str; 36] = [
     // 连接类型（见 [`crate::host::HostKind`]）。老库补出来的是 `ssh` ——
     // 这一列出现之前存的每一台主机都是 SSH，出厂值不改变任何人的行为。
     "ALTER TABLE hosts ADD COLUMN kind TEXT NOT NULL DEFAULT 'ssh'",
@@ -318,6 +319,10 @@ const MIGRATIONS: [&str; 35] = [
     "ALTER TABLE ai_conversations ADD COLUMN thinking_effort TEXT NOT NULL DEFAULT ''",
     // 每条回复是哪个模型说的（模型名），写在回复脚注里。老回复是空串，不写。
     "ALTER TABLE ai_messages ADD COLUMN model TEXT NOT NULL DEFAULT ''",
+    // ── 每主机终端配色 ──
+    // 方案 id 一个词，空串是出厂档"跟随全局"（设置里挑的那一套）—— 这一列
+    // 出现之前每台主机的终端都跟着全局走，老库补出来不改变任何人的观感。
+    "ALTER TABLE hosts ADD COLUMN terminal_scheme TEXT NOT NULL DEFAULT ''",
 ];
 
 /// 数据层专用的 tokio runtime，进程生命周期内只建一次。

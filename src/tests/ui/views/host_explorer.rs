@@ -11,6 +11,7 @@
             ftp: Default::default(),
             webdav: Default::default(),
             sftp: Default::default(),
+            terminal_scheme: "".into(),
             id: name.into(),
             name: name.into(),
             kind: HostKind::Ssh,

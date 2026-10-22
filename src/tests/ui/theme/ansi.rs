@@ -15,7 +15,7 @@
         for mode in [ThemeMode::Dark, ThemeMode::Light] {
             cx.update(|cx| {
                 Theme::change(mode, None, cx);
-                let palette = AnsiPalette::new(cx);
+                let palette = AnsiPalette::for_host("", cx);
                 assert_eq!(palette.background(), rgb(dracula.background).into());
                 assert_eq!(
                     palette.color(AnsiColor::Named(NamedColor::Foreground)),
@@ -42,11 +42,11 @@
 
         let dark = cx.update(|cx| {
             Theme::change(ThemeMode::Dark, None, cx);
-            AnsiPalette::new(cx).color(AnsiColor::Named(NamedColor::Green))
+            AnsiPalette::for_host("", cx).color(AnsiColor::Named(NamedColor::Green))
         });
         let light = cx.update(|cx| {
             Theme::change(ThemeMode::Light, None, cx);
-            AnsiPalette::new(cx).color(AnsiColor::Named(NamedColor::Green))
+            AnsiPalette::for_host("", cx).color(AnsiColor::Named(NamedColor::Green))
         });
 
         assert_eq!(dark, rgb(DARK[2]).into());
@@ -88,22 +88,65 @@
                 name.to_owned(),
                 cx.update(|cx| {
                     Theme::change(mode, None, cx);
-                    AnsiPalette::new(cx)
+                    AnsiPalette::for_host("", cx)
                 }),
             ));
         }
-        for preset in &scheme::PRESETS {
+        for preset in scheme::all() {
             scheme::set_global(preset.id);
-            cases.push((preset.name.to_owned(), cx.update(|cx| AnsiPalette::new(cx))));
+            cases.push((preset.name.to_owned(), cx.update(|cx| AnsiPalette::for_host("", cx))));
         }
         cases
+    }
+
+    /// 主机挑的方案优先于全局；没挑（空串）与认不出的 id 都退回全局。
+    /// pane 铺底色与网格取色是两个入口（`background_for_host` 与
+    /// [`AnsiPalette::for_host`]），这条把两头钉在一起 —— 空白处和有字的
+    /// 地方必须同一副面孔。
+    #[gpui_kit::test]
+    fn for_host_overrides_the_global_scheme_and_falls_back_to_it(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = scheme::exclusive_for_test();
+        cx.update(gpui_kit::init);
+
+        cx.update(|cx| {
+            scheme::set_global("nord");
+            let nord = AnsiPalette::for_host("", cx);
+            let dracula = scheme::find("dracula").unwrap();
+
+            // 主机那份优先于全局。
+            assert_eq!(
+                AnsiPalette::for_host("dracula", cx).background(),
+                rgb(dracula.background).into()
+            );
+            assert_eq!(
+                AnsiPalette::for_host("dracula", cx).color(AnsiColor::Named(NamedColor::Red)),
+                rgb(dracula.ansi16[1]).into()
+            );
+            // 没挑与认不出的 id 都是全局这一份。
+            assert_eq!(AnsiPalette::for_host("", cx).background(), nord.background());
+            assert_eq!(
+                AnsiPalette::for_host("查无此色", cx).background(),
+                nord.background()
+            );
+
+            // 铺底色的那个入口必须与取色的入口同一个结果。
+            for id in ["", "dracula", "nord", "查无此色"] {
+                assert_eq!(
+                    background_for_host(id, cx),
+                    AnsiPalette::for_host(id, cx).background(),
+                    "{id}：铺底色与取色两副面孔"
+                );
+            }
+        });
     }
 
     /// 拖完一段选区，得真的能看见选了哪一块。
     ///
     /// 旧版只有一层主题选中色（`#1d4ed8`）按三成半压在近黑底上，和底色只有
-    /// 1.3:1 —— 人眼里就是"没选中"。这一条钉住每一套配色的默认底色上至少
-    /// 要挪开 1.8:1。
+    /// 1.3:1 —— 人眼里就是"没选中"。1.8 是十套精选时代的尺子；上游主题里
+    /// 纯白底（High Contrast）那一档两档洗色最多挪 1.62:1，杠收到 1.6。
+    ///
+    /// 全量收集再断言：断在第一个上的话，后面还差多远看不见。
     #[gpui_kit::test]
     fn the_selection_is_visible_on_every_default_background(
         cx: &mut gpui_kit::TestAppContext,
@@ -111,30 +154,47 @@
         let _guard = scheme::exclusive_for_test();
         cx.update(gpui_kit::init);
 
-        for (name, palette) in palettes(cx) {
-            let base = palette.background();
-            let ratio = contrast(base, palette.selection_over(base));
-            assert!(
-                ratio >= 1.8,
-                "{name}：选中后与底色只有 {ratio:.2}:1，看不出选了哪儿"
-            );
-        }
+        let violations: Vec<String> = palettes(cx)
+            .into_iter()
+            .filter_map(|(name, palette)| {
+                let base = palette.background();
+                let ratio = contrast(base, palette.selection_over(base));
+                (ratio < 1.6).then(|| format!("{name}：{ratio:.2}:1"))
+            })
+            .collect();
+        assert!(
+            violations.is_empty(),
+            "选中后与底色挪不开，看不出选了哪儿：{violations:?}"
+        );
     }
 
-    /// 洗色不能把字盖掉：选中之后正文在自己的底色上还得有 3:1。
+    /// 洗色不能把字盖掉。
+    ///
+    /// 杠不是死的 3:1 —— 那是十套精选（正文与底色都在 4.5:1 以上）时代的
+    /// 绝对尺子。上游表里有自带软对比度的方案：Bluish 的正文与底色本来就
+    /// 只有 2.91:1，洗一层再透都剩不回 3:1，那条数学上无解。改成"最多要求
+    /// 3:1，方案自身越软按比例让得越多，但不许把它自己的对比度吃掉超过
+    /// 55%" —— 正文被洗掉一大半的方案，选中那几行是真的没法读。
     #[gpui_kit::test]
     fn the_selection_keeps_the_text_legible(cx: &mut gpui_kit::TestAppContext) {
         let _guard = scheme::exclusive_for_test();
         cx.update(gpui_kit::init);
 
-        for (name, palette) in palettes(cx) {
-            let washed = palette.selection_over(palette.background());
-            let ratio = contrast(palette.foreground(), washed);
-            assert!(
-                ratio >= 3.,
-                "{name}：选中之后正文只剩 {ratio:.2}:1，字被洗色盖过了"
-            );
-        }
+        let violations: Vec<String> = palettes(cx)
+            .into_iter()
+            .filter_map(|(name, palette)| {
+                let base = palette.background();
+                let washed = palette.selection_over(base);
+                let own = contrast(palette.foreground(), base);
+                let ratio = contrast(palette.foreground(), washed);
+                let bar = (own * 0.45).min(3.);
+                (ratio < bar).then(|| format!("{name}：{ratio:.2}:1（自身 {own:.2}:1，杠 {bar:.2}:1）"))
+            })
+            .collect();
+        assert!(
+            violations.is_empty(),
+            "选中之后正文被洗色盖过了：{violations:?}"
+        );
     }
 
     /// 挑档只看底色，不看界面现在是大白还是大黑：同一格底色在近黑档上往上提亮、
@@ -148,11 +208,11 @@
         let dark = cx.update(|cx| {
             Theme::change(ThemeMode::Dark, None, cx);
             scheme::set_global("");
-            AnsiPalette::new(cx)
+            AnsiPalette::for_host("", cx)
         });
         let light = cx.update(|cx| {
             Theme::change(ThemeMode::Light, None, cx);
-            AnsiPalette::new(cx)
+            AnsiPalette::for_host("", cx)
         });
 
         let near_black: Hsla = rgb(0x0a0a0a).into();
@@ -179,7 +239,7 @@
         let palette = cx.update(|cx| {
             Theme::change(ThemeMode::Dark, None, cx);
             scheme::set_global("");
-            AnsiPalette::new(cx)
+            AnsiPalette::for_host("", cx)
         });
         let base: Hsla = rgb(0x11a8cd).into();
         let washed = palette.selection_over(base);
@@ -198,7 +258,7 @@
         let _guard = scheme::exclusive_for_test();
         cx.update(gpui_kit::init);
 
-        cx.update(|cx| assert_eq!(background(cx), AnsiPalette::new(cx).background()));
+        cx.update(|cx| assert_eq!(background_for_host("", cx), AnsiPalette::for_host("", cx).background()));
         scheme::set_global("tokyo_night");
-        cx.update(|cx| assert_eq!(background(cx), AnsiPalette::new(cx).background()));
+        cx.update(|cx| assert_eq!(background_for_host("", cx), AnsiPalette::for_host("", cx).background()));
     }

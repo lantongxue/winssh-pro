@@ -476,6 +476,7 @@
             ftp: Default::default(),
             webdav: Default::default(),
             sftp: Default::default(),
+            terminal_scheme: "".into(),
             id: "desk".into(),
             name: "desk".into(),
             kind: HostKind::Vnc,

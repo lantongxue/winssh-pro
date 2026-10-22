@@ -32,6 +32,7 @@
             ftp: Default::default(),
             webdav: Default::default(),
             sftp: Default::default(),
+            terminal_scheme: "".into(),
             kind: crate::host::HostKind::Ssh,
             id: "settings-test".into(),
             name: "web-01".into(),

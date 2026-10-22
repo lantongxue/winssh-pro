@@ -283,6 +283,9 @@ pub struct TerminalGridElement {
     /// 光标这一帧画不画。闪烁的 off 阶段此值为 `false`，光标整个不画
     /// —— 和 `focused = false`（空心框）不是一回事。
     cursor_visible: bool,
+    /// 这一格终端归属的主机挑的配色方案 id（空串 = 跟全局）。每帧从窗格
+    /// 传进来，取色见 [`AnsiPalette::for_host`]。
+    host_scheme: SharedString,
     /// 输入法正在组的那串字（候选还没选定时的 `ni'hao`），空串表示没在组字。
     preedit: SharedString,
     /// paint 末尾调一次，参数是光标那一格：外面在里面登记输入处理器。
@@ -298,9 +301,16 @@ impl TerminalGridElement {
             emulator,
             focused,
             cursor_visible,
+            host_scheme: SharedString::default(),
             preedit: SharedString::default(),
             on_input: None,
         }
+    }
+
+    /// 这格终端归属的主机挑的配色方案 id（空串 = 跟全局）。
+    pub fn host_scheme(mut self, scheme: SharedString) -> Self {
+        self.host_scheme = scheme;
+        self
     }
 
     /// 把输入法的组字串画在光标那一格上。
@@ -545,7 +555,7 @@ impl Element for TerminalGridElement {
             emulator.snapshot();
         });
 
-        let palette = AnsiPalette::new(cx);
+        let palette = AnsiPalette::for_host(&self.host_scheme, cx);
         let scale = window.scale_factor();
         // 指针样式挂在这块地方上。用元素的整块 `bounds` 而不是 `grid_bounds`：
         // 左右那 8px 内边距也是终端的一部分，光标划过去不该跳一下。

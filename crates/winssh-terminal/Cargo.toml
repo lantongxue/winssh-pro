@@ -10,6 +10,17 @@ license = "Apache-2.0"
 # 供根包的 ui 测试（zmodem 传输那几幅）验离线协议方向。正式构建不带。
 test-support = []
 
+[build-dependencies]
+# build.rs 拿它把 themes/ 下的 alacritty TOML 解成静态 Scheme 表。
+toml = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+# 本 crate 的测试里那些 `#[gpui_kit::test]` 用例要它（`run_test` / 测试版
+# `AppContext` 都门在这个特性后面）。根包是靠自己的 dev-dependencies 点亮的，
+# 单跑 `cargo test -p winssh-terminal` 时根包不在图里，得自己带一份。
+gpui-kit = { workspace = true, features = ["test-support"] }
+
 [dependencies]
 # 领域数据：命令历史类型（`CommandRun`）等。
 winssh-domain = { workspace = true }

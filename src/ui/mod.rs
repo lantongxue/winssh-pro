@@ -12,6 +12,7 @@
 //! | [`forms`] | `*Form` | 嵌在页面/详情里的一组输入，不盖窗口、不自己收起 |
 //! | [`cards`] | `*Card` | 列表或网格里代表一条数据的那一块 |
 //! | [`menus`] | `*Menu` | 点开之后浮在内容之上的一列动作 |
+//! | [`pickers`] | `*Picker` | 从一大堆候选项里挑一个的浮层选择控件（可搜索、带预览） |
 //! | [`elements`] | `*Element` | 自己实现 [`gpui_kit::Element`]，下到布局与绘制里的那一层 |
 //! | [`windows`] | `*Window` | 自己开一扇原生窗口的外壳，有自己的标题栏与 `Root` |
 //!
@@ -31,6 +32,7 @@ mod elements;
 mod forms;
 mod menus;
 mod panels;
+mod pickers;
 mod theme;
 mod views;
 mod windows;

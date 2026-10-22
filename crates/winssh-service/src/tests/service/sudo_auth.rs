@@ -18,6 +18,7 @@
             ftp: Default::default(),
             webdav: Default::default(),
             sftp,
+            terminal_scheme: "".into(),
             kind: HostKind::Ssh,
             id: id.into(),
             name: "prod".into(),

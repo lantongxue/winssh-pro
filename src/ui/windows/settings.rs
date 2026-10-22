@@ -25,6 +25,7 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputContentType, InputEvent, InputState, NumberInput},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
+    combobox::{Combobox, ComboboxState},
     setting::{
         RenderOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
     },
@@ -52,6 +53,7 @@ use crate::terminal::scheme;
 use crate::ui::cards::ProviderCard;
 use crate::ui::dialogs::{BackupRestoreDialog, UpdateDialog};
 use crate::ui::forms::{ModelCancelHandler, ModelForm, ModelSavedHandler};
+use crate::ui::pickers::scheme_picker::{SchemePickerDelegate, scheme_picker};
 use crate::ui::theme::{AppIcon, appearance, palette};
 use crate::zmodem::config as zmodem_config;
 use rust_i18n::t;
@@ -290,6 +292,10 @@ pub struct SettingsWindow {
     /// 全局代理那四格，见 [`ProxyInputs`]。
     proxy: ProxyInputs,
     _proxy_inputs: Vec<Subscription>,
+    /// 终端配色那一格的选择器（组件库 Combobox 那一档）。两百来套方案要
+    /// 搜索、要看色块预览，是终端页里状态最重的一个控件 —— 归这扇窗持有，
+    /// 切走再回来还是同一份，跟代理那四格一个道理。
+    terminal_scheme: Entity<ComboboxState<SchemePickerDelegate>>,
     /// 智能助手页上打开的是哪一家服务商（[`Provider::id`]）的详情。
     /// `None` 是服务商列表页；`Some` 但 id 已经找不到（刚被删了）时也回退列表。
     assistant_detail: Option<String>,
@@ -820,6 +826,16 @@ impl SettingsWindow {
             .into_iter()
             .collect();
 
+        // 配色那一格同代理那四格：起笔读进程缓存（启动时 prime 灌过），
+        // 换选即存（订阅在工厂里装好了）。
+        let terminal_scheme = scheme_picker(
+            t!("settings.terminal_scheme_follow"),
+            &scheme::global(),
+            |id, cx| persist_terminal_scheme(id, cx),
+            window,
+            cx,
+        );
+
         // 同代理那四格：读进程缓存，不再查一次库。每一格只写自己那个字段，
         // 理由见 [`AssistantInputs`]。进详情页时再照那一家重填。
         let assistant = AssistantInputs::new(None, window, cx);
@@ -877,6 +893,7 @@ impl SettingsWindow {
             _appearance,
             proxy,
             _proxy_inputs,
+            terminal_scheme,
             assistant_detail: None,
             assistant,
             _assistant_inputs,
@@ -951,7 +968,7 @@ impl SettingsWindow {
             .sidebar_width(px(210.))
             .default_selected_index(default_index)
             .page(self.general_page(cx))
-            .page(Self::terminal_page(cx))
+            .page(self.terminal_page(cx))
             .page(self.proxy_page())
             .page(self.assistant_page())
             .page(self.backup_page(cx))
@@ -1046,26 +1063,10 @@ impl SettingsWindow {
             )
     }
 
-    /// 配色下拉那一列：出厂档"跟随界面主题"打头，之后是内置方案
-    /// （深色在前，见 [`scheme::PRESETS`]）。方案名是专有名词，不进 i18n。
-    fn scheme_options() -> Vec<(SharedString, SharedString)> {
-        std::iter::once((
-            SharedString::default(),
-            SharedString::from(t!("settings.terminal_scheme_follow")),
-        ))
-        .chain(scheme::PRESETS.iter().map(|preset| {
-            (
-                SharedString::from(preset.id),
-                SharedString::from(preset.name),
-            )
-        }))
-        .collect()
-    }
-
     /// 终端页。眼下只有配色、字体与字号这三项 —— 它们是真接到渲染上的
     /// （[`crate::ui::panels::terminal`] 每帧读 [`font::global`] 与
     /// [`scheme::active`]），别的先不摆。
-    fn terminal_page(cx: &App) -> SettingPage {
+    fn terminal_page(&self, cx: &App) -> SettingPage {
         // 下拉里除了本机装着的等宽字体，还要有"现在用的这个"：没挑过时用的是
         // 主题给的那个族名，它未必在筛出来的清单里（那个名字恰好过不了筛子
         // 就会漏掉）。漏掉的话按钮上还是写着它，但展开的那列里没有它这一项，
@@ -1102,11 +1103,18 @@ impl SettingsWindow {
                     .title(t!("settings.terminal_appearance"))
                     .item(SettingItem::new(
                         t!("settings.terminal_scheme"),
-                        SettingField::scrollable_dropdown(
-                            Self::scheme_options(),
-                            |_cx: &App| scheme::global(),
-                            |id: SharedString, cx: &mut App| persist_terminal_scheme(id, cx),
-                        ),
+                        // 两百来套内置方案，纯下拉翻不动：走可搜索的 Combobox，
+                        // 每行带 16 色预览（见 [`scheme_picker`]）。
+                        SettingField::render({
+                            let picker = self.terminal_scheme.clone();
+                            move |_, _, _| {
+                                Combobox::new(&picker)
+                                    .w_full()
+                                    .menu_width(px(420.))
+                                    .menu_max_h(px(320.))
+                                    .search_placeholder(t!("settings.terminal_scheme_search"))
+                            }
+                        }),
                     ))
                     .item(SettingItem::new(
                         t!("settings.terminal_font"),

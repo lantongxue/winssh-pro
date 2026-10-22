@@ -366,6 +366,14 @@ pub struct Host {
     /// [`HostKind::Sftp`]）上有意义；SFTP 面板、终端底部的 SFTP 栏与智能助手的
     /// 传输都按它开通道。
     pub sftp: crate::settings::sftp::SftpSettings,
+    /// 终端配色方案 id：`dracula` 那样的一个词，空串是出厂档"跟随全局"
+    /// （设置里挑的那一套）。认不出的 id 也按跟随全局处置。方案表在
+    /// `winssh-terminal` 的 `scheme` 模块，id 是那边的稳定键。
+    ///
+    /// 进 [`HostDraft`]：长什么样是用户按主机挑的 —— 一台生产机一台日志机
+    /// 各配一套配色，开满一排终端一眼分得清哪个窗口在哪儿。凡进终端面板的
+    /// 协议（SSH / Telnet / 串口）都用得上；别的协议主机原样存着但没人读。
+    pub terminal_scheme: SharedString,
     /// 每次连上这台机器，要不要往对端 shell 里装一份 OSC 133 标记。
     ///
     /// 不进 [`HostDraft`]：和采集节奏、转发规则一样，它是连上之后在命令历史
@@ -473,6 +481,8 @@ pub struct HostDraft {
     pub webdav: crate::settings::webdav::WebdavSettings,
     /// SFTP 开法，见 [`Host::sftp`]。
     pub sftp: crate::settings::sftp::SftpSettings,
+    /// 终端配色方案 id，空串是"跟随全局"。见 [`Host::terminal_scheme`]。
+    pub terminal_scheme: String,
 }
 
 /// 一台主机的运行时状态。

@@ -12,6 +12,7 @@
             ftp: Default::default(),
             webdav: Default::default(),
             sftp: Default::default(),
+            terminal_scheme: "".into(),
             kind: crate::host::HostKind::Ssh,
             id: "prod-k8s".into(),
             name: "Prod-K8s-Master-01".into(),

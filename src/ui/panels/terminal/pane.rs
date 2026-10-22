@@ -1201,7 +1201,7 @@ impl TerminalPane {
             .items_center()
             .justify_center()
             .gap_2()
-            .bg(ansi::background(cx).opacity(0.92))
+            .bg(ansi::background_for_host(&self.host.terminal_scheme, cx).opacity(0.92))
             .border_2()
             .border_dashed()
             .border_color(palette::sky())
@@ -2098,8 +2098,10 @@ impl Render for TerminalPane {
             .size_full()
             .overflow_hidden()
             // 铺的是配色方案的底色，不是主题底色 —— 网格只画程序自己设了
-            // 底色的那些格子，剩下满屏的空白都是这一层透出来的。
-            .bg(ansi::background(cx))
+            // 底色的那些格子，剩下满屏的空白都是这一层透出来的。跟着
+            // `terminal_scheme` 走（主机那份优先），取色必须和网格元素同一个
+            // 入口，不然空白处和有字的地方两副面孔。
+            .bg(ansi::background_for_host(&self.host.terminal_scheme, cx))
             .font_family(font_family)
             .text_size(font_size)
             .line_height(font_size * LINE_HEIGHT)
@@ -2134,6 +2136,7 @@ impl Render for TerminalPane {
             .on_drop(cx.listener(Self::on_drop_remote_entries))
             .child(
                 TerminalGridElement::new(emulator, focused, self.cursor_visible)
+                    .host_scheme(self.host.terminal_scheme.clone())
                     .preedit(self.preedit.clone())
                     .on_input({
                         let pane = cx.entity();

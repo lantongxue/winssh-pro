@@ -18,6 +18,7 @@
                     ftp: Default::default(),
                     webdav: Default::default(),
                     sftp: Default::default(),
+                    terminal_scheme: String::new(),
                     kind: crate::host::HostKind::Ssh,
                     name: "测试机".into(),
                     user: "root".into(),

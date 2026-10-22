@@ -197,6 +197,7 @@ fn display_host(id: String, name: SharedString, platform: SharedString) -> Host 
         ftp: Default::default(),
         webdav: Default::default(),
         sftp: Default::default(),
+        terminal_scheme: "".into(),
         shell_integration: false,
         favorites: Vec::new(),
     }
@@ -349,6 +350,7 @@ impl TerminalPanel {
             ftp: Default::default(),
             webdav: Default::default(),
             sftp: Default::default(),
+            terminal_scheme: "".into(),
             shell_integration: false,
             favorites: Vec::new(),
         };

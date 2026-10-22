@@ -74,10 +74,10 @@ fn the_terminal_page_draws_with_a_font_picked(cx: &mut gpui_kit::TestAppContext)
     assert_eq!(font::global().size, 18.);
 }
 
-/// 配色下拉画得通，而且那一列里每一套内置方案都在。少一套的话它就永远
-/// 挑不上 —— 那种缺失从"页面画出来了"上是看不出来的。
+/// 配色选择器画得通，而且画一遍不会动当前选中的方案。方案列表齐全性
+/// （每一套都挑得上）由选择器自己的测试盯着（`src/tests/ui/pickers/`）。
 #[gpui_kit::test]
-fn the_scheme_dropdown_lists_every_preset(cx: &mut gpui_kit::TestAppContext) {
+fn the_scheme_picker_renders_without_touching_the_global_scheme(cx: &mut gpui_kit::TestAppContext) {
     let _guard = scheme::exclusive_for_test();
     scheme::set_global("gruvbox_dark");
 
@@ -88,20 +88,6 @@ fn the_scheme_dropdown_lists_every_preset(cx: &mut gpui_kit::TestAppContext) {
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
     assert_eq!(scheme::global(), "gruvbox_dark", "画一遍不该改掉它");
-
-    // 下拉那一列是在这儿拼的，组件那边只拿得到拼好的结果，所以照着
-    // 同一段逻辑核对一遍。
-    let options = SettingsWindow::scheme_options();
-    assert_eq!(options[0].0, "", "第一项是跟随界面主题");
-    for preset in &scheme::PRESETS {
-        assert!(
-            options
-                .iter()
-                .any(|(id, name)| id == preset.id && name == preset.name),
-            "{} 不在下拉里",
-            preset.id
-        );
-    }
 }
 
 /// 挑中一家预设厂商之后，那家的地址要真的落进 endpoint 那一格。

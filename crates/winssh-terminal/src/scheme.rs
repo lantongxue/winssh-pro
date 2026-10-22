@@ -1,25 +1,34 @@
 //! 终端配色方案：一套 ANSI 16 色，加上前景、底色与光标。
 //!
-//! 和 [`crate::font`] 一样，这是一份"每帧都要读"的偏好：库是正本，
-//! 进程里留一份缓存，启动时由 [`crate::service::SettingService::prime`] 灌一次。
-//! 落库存的是方案 id 那一个词，不是整张色表 —— 色表在代码里，换了版本跟着
-//! 代码走；存整张表的话，改一个色值还得去迁移用户那一行。
+//! 表来自 alacritty 的主题仓库（`themes/` 下的 TOML，上游
+//! alacritty/alacritty-theme，Apache-2.0 —— 许可证随那份目录带着），构建期由
+//! build.rs 转成静态表 `IMPORTED`。和 [`crate::font`] 一样，这是一份"每帧都要
+//! 读"的偏好：库是正本，进程里留一份缓存，启动时由
+//! [`crate::service::SettingService::prime`] 灌一次。落库存的是方案 id 那
+//! 一个词，不是整张色表 —— 色表在代码里，换了版本跟着代码走；存整张表的
+//! 话，改一个色值还得去迁移用户那一行。
 //!
 //! **出厂档是"跟随界面主题"**（id 为空串），也就是现在这套 VS Code Dark+ /
 //! Light+：界面切深浅，终端跟着切。挑了具体方案之后终端就自己说了算 ——
 //! Dracula 在浅色界面下仍旧是 Dracula，各家终端都是这个做法。
 //!
-//! 色值取自 tty7（`refs/tty7/src/ui/presets.rs`，Apache-2.0）里那份已经按
-//! 对比度校过的表，它们各自的上游是 Dracula、One Dark、Nord、Gruvbox、
-//! Tokyo Night、Catppuccin、Rosé Pine 这几个项目。
+//! 上一代的十套内置来自 tty7（`refs/tty7/src/ui/presets.rs`）按对比度校过的
+//! 表；换成上游表之后那十个 id 全部有同名或别名对应，落库的老选择不作废。
 //!
-//! **不做 tty7 那一层"高亮色补偿"。** 它把对比度不够的高亮 8 色朝前景拉到
-//! 4.5:1，为的是 PSReadLine 那类拿高亮色画参数的程序。代价是 Dracula 的
-//! 注释灰（bright black `#555555`，1.12:1）会被拉成一个接近正文的亮灰 ——
-//! 那个低对比度正是它的用意。挑了 Dracula 的人要的是 Dracula，所以这里
-//! 照着作者写的画，改由 [`tests::bright_black_is_never_the_background`]
-//! 挡住真正会出事的那一种：高亮黑和底色一模一样，`\x1b[90m` 整段隐形
-//! （Solarized 就是这样，所以它不在这张表里）。
+//! 上游表原样照收，只有三处例外，都在 build.rs 里执行、构建日志里留名：
+//!
+//! - **高亮黑与底色相同的整题剔除**（falcon、solarized_dark）：`\x1b[90m`
+//!   整段隐形，那是坏掉的配色而不是一种风格，Solarized 当年就是因为这个
+//!   不进 tty7 那张表；
+//! - **选中洗色与底色分不开的整题剔除**（msx）：底色落在选区洗色的蓝族
+//!   色相里，兑到全不透明也分不开，选区在那套底色上是隐形的；
+//! - **`one_dark_pro` 留一条别名指上游的 `one_dark`**：那是自起主题表时代
+//!   我们起的 id，上游同款叫 `one_dark`。
+//!
+//! **不做"高亮色补偿"。** 不把对比度不够的颜色朝前景拉 —— 挑了 nord_light
+//! 的人要的就是它那个柔和的样子，这里照着作者写的画，改由 [`tests`] 挡住
+//! 真正会出事的两种：前景和底色糊在一起（抄错色值）、高亮黑和底色一模一样
+//! （整段隐形）。
 
 use std::sync::{LazyLock, RwLock};
 
@@ -46,125 +55,36 @@ impl Scheme {
     }
 }
 
-/// 内置的几套配色。深色在前、浅色在后，下拉里就照这个顺序摆。
-pub static PRESETS: [Scheme; 10] = [
-    Scheme {
-        id: "dracula",
-        name: "Dracula",
-        background: 0x282a36,
-        foreground: 0xf8f8f2,
-        caret: None,
-        ansi16: [
-            0x000000, 0xff5555, 0x50fa7b, 0xf1fa8c, 0xbd93f9, 0xff79c6, 0x8be9fd, 0xbbbbbb,
-            0x555555, 0xff5555, 0x50fa7b, 0xf1fa8c, 0xcaa9fa, 0xff79c6, 0x8be9fd, 0xffffff,
-        ],
-    },
-    Scheme {
-        id: "one_dark_pro",
-        name: "One Dark Pro",
-        background: 0x282c34,
-        foreground: 0xabb2bf,
-        caret: None,
-        ansi16: [
-            0x3f4451, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xabb2bf,
-            0x5c6370, 0xff616e, 0xa5e075, 0xf0a45d, 0x4dc4ff, 0xde73ff, 0x4cd1e0, 0xe6e6e6,
-        ],
-    },
-    Scheme {
-        id: "nord",
-        name: "Nord",
-        background: 0x2e3440,
-        foreground: 0xd8dee9,
-        caret: None,
-        ansi16: [
-            0x3b4252, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x88c0d0, 0xe5e9f0,
-            0x4c566a, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x8fbcbb, 0xeceff4,
-        ],
-    },
-    Scheme {
-        id: "gruvbox_dark",
-        name: "Gruvbox Dark",
-        background: 0x282828,
-        foreground: 0xebdbb2,
-        caret: None,
-        ansi16: [
-            0x282828, 0xcc241d, 0x98971a, 0xd79921, 0x458588, 0xb16286, 0x689d6a, 0xa89984,
-            0x928374, 0xfb4934, 0xb8bb26, 0xfabd2f, 0x83a598, 0xd3869b, 0x8ec07c, 0xebdbb2,
-        ],
-    },
-    Scheme {
-        id: "tokyo_night",
-        name: "Tokyo Night",
-        background: 0x1a1b26,
-        foreground: 0xc0caf5,
-        caret: None,
-        ansi16: [
-            0x15161e, 0xf7768e, 0x9ece6a, 0xe0af68, 0x7aa2f7, 0xbb9af7, 0x7dcfff, 0xa9b1d6,
-            0x414868, 0xf7768e, 0x9ece6a, 0xe0af68, 0x7aa2f7, 0xbb9af7, 0x7dcfff, 0xc0caf5,
-        ],
-    },
-    Scheme {
-        id: "catppuccin_mocha",
-        name: "Catppuccin Mocha",
-        background: 0x1e1e2e,
-        foreground: 0xcdd6f4,
-        // Rosewater。Catppuccin 自己的终端规格就是拿它当光标色的，
-        // 退回前景会画成一个偏蓝的块。
-        caret: Some(0xf5e0dc),
-        ansi16: [
-            0x45475a, 0xf38ba8, 0xa6e3a1, 0xf9e2af, 0x89b4fa, 0xf5c2e7, 0x94e2d5, 0xbac2de,
-            0x585b70, 0xf38ba8, 0xa6e3a1, 0xf9e2af, 0x89b4fa, 0xf5c2e7, 0x94e2d5, 0xa6adc8,
-        ],
-    },
-    Scheme {
-        id: "rose_pine",
-        name: "Rosé Pine",
-        background: 0x191724,
-        foreground: 0xe0def4,
-        caret: None,
-        ansi16: [
-            0x26233a, 0xeb6f92, 0x31748f, 0xf6c177, 0x9ccfd8, 0xc4a7e7, 0xebbcba, 0xe0def4,
-            0x6e6a86, 0xeb6f92, 0x31748f, 0xf6c177, 0x9ccfd8, 0xc4a7e7, 0xebbcba, 0xe0def4,
-        ],
-    },
-    Scheme {
-        id: "one_light",
-        name: "One Light",
-        background: 0xfafafa,
-        foreground: 0x383a42,
-        caret: None,
-        ansi16: [
-            0x383a42, 0xe45649, 0x50a14f, 0xc18401, 0x4078f2, 0xa626a4, 0x0184bc, 0xa0a1a7,
-            0x696c77, 0xe45649, 0x50a14f, 0xc18401, 0x4078f2, 0xa626a4, 0x0184bc, 0xfafafa,
-        ],
-    },
-    Scheme {
-        id: "catppuccin_latte",
-        name: "Catppuccin Latte",
-        background: 0xeff1f5,
-        foreground: 0x4c4f69,
-        caret: None,
-        ansi16: [
-            0xbcc0cc, 0xd20f39, 0x40a02b, 0xdf8e1d, 0x1e66f5, 0xea76cb, 0x179299, 0x5c5f77,
-            0xacb0be, 0xd20f39, 0x40a02b, 0xdf8e1d, 0x1e66f5, 0xea76cb, 0x179299, 0x6c6f85,
-        ],
-    },
-    Scheme {
-        id: "rose_pine_dawn",
-        name: "Rosé Pine Dawn",
-        background: 0xfaf4ed,
-        foreground: 0x575279,
-        caret: None,
-        ansi16: [
-            0xf2e9e1, 0xb4637a, 0x286983, 0xea9d34, 0x56949f, 0x907aa9, 0xd7827e, 0x575279,
-            0x9893a5, 0xb4637a, 0x286983, 0xea9d34, 0x56949f, 0x907aa9, 0xd7827e, 0x575279,
-        ],
-    },
-];
+// 由 build.rs 从 `themes/` 下的 alacritty TOML 生成（OUT_DIR），别手改 ——
+// 改主题改那边的文件。深色在前、浅色在后，组内按名字排。
+include!(concat!(env!("OUT_DIR"), "/imported_schemes.rs"));
 
-/// 按 id 找一套配色。空串（跟随界面主题）与认不出来的 id 都是 `None`。
+/// 全部内置方案。深色在前、浅色在后，选择器照这个顺序摆、按 [`is_light`]
+/// 分组。
+pub fn all() -> &'static [Scheme] {
+    &IMPORTED
+}
+
+/// 底色亮度过没过半。与 build.rs 分组用的是同一条公式，两头的分组必须一致。
+pub fn is_light(scheme: &Scheme) -> bool {
+    let (r, g, b) = (
+        (scheme.background >> 16 & 0xff) as f32,
+        (scheme.background >> 8 & 0xff) as f32,
+        (scheme.background & 0xff) as f32,
+    );
+    (r * 0.299 + g * 0.587 + b * 0.114) / 255. > 0.5
+}
+
+/// 旧 id → 上游 id。换成上游主题表之前自起的那些名字，落库的选择不能作废。
+const ALIASES: &[(&str, &str)] = &[("one_dark_pro", "one_dark")];
+
+/// 按 id 找一套配色。空串（跟随界面主题）与认不出的 id 都是 `None`。
 pub fn find(id: &str) -> Option<&'static Scheme> {
-    PRESETS.iter().find(|scheme| scheme.id == id)
+    let id = ALIASES
+        .iter()
+        .find_map(|(old, new)| (*old == id).then_some(*new))
+        .unwrap_or(id);
+    IMPORTED.iter().find(|scheme| scheme.id == id)
 }
 
 /// 选中的配色 id 在进程里的那一份缓存。正本在库里（`settings` 表）。

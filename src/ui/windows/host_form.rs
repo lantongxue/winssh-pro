@@ -26,6 +26,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Icon, IconName, IndexPath, Root, Sizable as _, StyledExt as _,
     TitleBar, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
+    combobox::{Combobox, ComboboxState},
     group_box::GroupBoxVariant,
     h_flex,
     input::{Input, InputContentType, InputEvent, InputState, Textarea, TextareaState},
@@ -42,6 +43,7 @@ use gpui_kit::{
 
 use crate::{
     credential::{Credential, CredentialKind},
+    ui::pickers::scheme_picker::{SchemePickerDelegate, scheme_picker},
     easytier::{
         DEFAULT_LISTEN_PORT, DEFAULT_SOCKS5_PORT, EasyTierAccess, EasyTierSettings, split_lines,
     },
@@ -500,6 +502,10 @@ pub struct HostForm {
     /// 同上，SSH 私钥那一档。
     vault_keys: Vec<Credential>,
     vault_key_pick: Entity<SelectState<Vec<SharedString>>>,
+    /// 终端主题那一格的选择器（可搜索、每行 16 色预览，见
+    /// [`crate::ui::pickers::scheme_picker`]）。选中的是方案 id，空串那一条
+    /// 是"跟随全局"；换选不落库，跟着"保存"一起走 —— `build_draft` 现读。
+    terminal_scheme: Entity<ComboboxState<SchemePickerDelegate>>,
 }
 
 impl HostForm {
@@ -563,6 +569,21 @@ impl HostForm {
             Some((host, _)) => host.proxy.clone(),
             None => HostProxy::default(),
         };
+
+        // 终端主题：编辑时带走这台主机自己挑的那一份，新建是"跟随全局"。
+        // 认不出的 id（那一套后来被剔了）由选择器兜回"跟随全局"那一行。
+        let initial_terminal_scheme = match editing {
+            Some((host, _)) => host.terminal_scheme.to_string(),
+            None => String::new(),
+        };
+        let terminal_scheme = scheme_picker(
+            t!("host_form.terminal_scheme_follow"),
+            &initial_terminal_scheme,
+            // 换选不落库：主机表单是显式保存，build_draft 提交时才读它。
+            |_, _| {},
+            window,
+            cx,
+        );
 
         let name = cx.new(|cx| {
             InputState::new(window, cx)
@@ -1234,6 +1255,7 @@ impl HostForm {
             vault_password_pick,
             vault_keys,
             vault_key_pick,
+            terminal_scheme,
         }
     }
 
@@ -1788,6 +1810,12 @@ impl HostForm {
                 ftp: self.selected_ftp(cx),
                 webdav: self.selected_webdav(cx),
                 sftp,
+                terminal_scheme: self
+                    .terminal_scheme
+                    .read(cx)
+                    .selected_value()
+                    .map(|id| id.to_string())
+                    .unwrap_or_default(),
             },
         ))
     }
@@ -2232,6 +2260,20 @@ impl HostForm {
         field(
             t!("host_form.field_proxy_jump").into(),
             Select::new(&self.proxy_jump).w_full(),
+            cx,
+        )
+    }
+
+    /// 终端主题那一格：两百来套方案的可搜索选择器，每行带 16 色预览。选中
+    /// 的是方案 id，空串那一条是"跟随全局"（保存时机见 [`Self::terminal_scheme`]）。
+    fn render_terminal_scheme(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        field(
+            t!("host_form.terminal_scheme").into(),
+            Combobox::new(&self.terminal_scheme)
+                .w_full()
+                .menu_width(px(420.))
+                .menu_max_h(px(320.))
+                .search_placeholder(t!("settings.terminal_scheme_search")),
             cx,
         )
     }
@@ -3150,12 +3192,13 @@ impl HostFormWindow {
             })
             .page(self.connection_page(kind))
             .page(self.auth_page(kind));
-        // 串口是本机设备：没有跳板机也没有 SOCKS5 代理（那是网络协议才有的
-        // 两个概念），「高级」页整个不挂；EasyTier 也不挂 —— 它自己就是去连
-        // 别的节点的那一层，不经跳板机，也不经上游代理。别的类型照旧。
+        // 串口没有跳板机与代理那两组（那是网络协议的概念），但「高级」页
+        // 还是要挂 —— 终端主题那一格在里面，串口也是终端。EasyTier 整页
+        // 不挂：它自己就是去连别的节点的那一层，不经跳板机也不经上游代理，
+        // 而且不进终端，终端主题那一格对它没有意义。别的类型照旧。
         let settings = match kind {
-            HostKind::Serial | HostKind::EasyTier => settings,
-            _ => settings.page(self.advanced_page()),
+            HostKind::EasyTier => settings,
+            _ => settings.page(self.advanced_page(kind)),
         };
         // 协议专属配置是一级类目，插在「高级」与「标签」之间：
         // 一台主机同一时刻只有一种连接类型，对应那一页跟着类型出现。
@@ -3219,21 +3262,32 @@ impl HostFormWindow {
             .group(group)
     }
 
-    fn advanced_page(&self) -> SettingPage {
-        SettingPage::new(t!("host_form.page_advanced"))
+    fn advanced_page(&self, kind: HostKind) -> SettingPage {
+        let page = SettingPage::new(t!("host_form.page_advanced"))
             .icon(AppIcon::Zap)
             .default_open(true)
-            .resettable(false)
-            .group(
-                SettingGroup::new()
-                    .title(t!("host_form.group_jump"))
-                    .item(self.row(|this, cx| this.render_jump(cx).into_any_element())),
-            )
-            .group(
-                SettingGroup::new()
-                    .title(t!("host_form.group_proxy"))
-                    .item(self.row(|this, cx| this.render_proxy_section(cx).into_any_element())),
-            )
+            .resettable(false);
+        let terminal = || {
+            SettingGroup::new()
+                .title(t!("host_form.group_terminal"))
+                .item(self.row(|this, cx| this.render_terminal_scheme(cx).into_any_element()))
+        };
+        match kind {
+            // 串口：只剩终端那一组 —— 跳板机与代理是网络协议的事，本机设备不沾。
+            HostKind::Serial => page.group(terminal()),
+            _ => page
+                .group(
+                    SettingGroup::new()
+                        .title(t!("host_form.group_jump"))
+                        .item(self.row(|this, cx| this.render_jump(cx).into_any_element())),
+                )
+                .group(
+                    SettingGroup::new()
+                        .title(t!("host_form.group_proxy"))
+                        .item(self.row(|this, cx| this.render_proxy_section(cx).into_any_element())),
+                )
+                .group(terminal()),
+        }
     }
 
     /// VNC 专属配置页：一级类目，页名即类目名。单组且不带头衔 ——
@@ -3465,6 +3519,7 @@ impl HostFormWindow {
                             draft.jump_host_id.clone().map(|value| value.into());
                         updated_host.tags = draft.tags.clone();
                         updated_host.proxy = draft.proxy.clone();
+                        updated_host.terminal_scheme = draft.terminal_scheme.clone().into();
                         updated_host.vnc = draft.vnc;
                         updated_host.rdp = draft.rdp.clone();
                         updated_host.easytier = draft.easytier.clone();

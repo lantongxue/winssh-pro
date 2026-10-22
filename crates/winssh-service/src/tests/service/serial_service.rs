@@ -9,6 +9,7 @@
             ftp: Default::default(),
             webdav: Default::default(),
             sftp: Default::default(),
+            terminal_scheme: "".into(),
             kind: HostKind::Serial,
             id: "test-serial-missing".into(),
             name: "serial-missing".into(),

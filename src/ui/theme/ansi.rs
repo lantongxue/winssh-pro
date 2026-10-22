@@ -4,9 +4,11 @@
 //! 只有前景、底色、边框那几档。终端要的是另一套东西：程序用 `\x1b[31m` 说
 //! "红"，这一套得回答"红是哪个红"。
 //!
-//! 从哪儿取那一套，由用户在设置里挑的配色方案决定（[`crate::terminal::scheme`]）：
+//! 从哪儿取那一套，分三层：主机自己挑的（`Host::terminal_scheme`）优先，没挑
+//! 就跟全局（设置里挑的那一份，[`crate::terminal::scheme::active`]），全局也没挑
+//! 就是出厂档：
 //!
-//! | 挑的是 | 16 色、前景、底色、光标从哪儿来 |
+//! | 落到哪一层 | 16 色、前景、底色、光标从哪儿来 |
 //! | --- | --- |
 //! | 跟随界面主题（出厂档） | 这里的 [`DARK`] / [`LIGHT`]，跟着主题的明暗切；底色用主题底色 |
 //! | Dracula、Nord…… | 那一套自己带的整份色表，界面明暗不影响它 |
@@ -66,8 +68,11 @@ const DARK_FOREGROUND: u32 = 0xd4d4d4;
 /// （见 [`crate::ui::elements::TerminalGridElement`] 的 `cell_colors`），
 /// 所以画网格的那个容器必须铺的就是这一个色 —— 铺主题底色的话，挑了 Dracula
 /// 之后满屏的空白处仍旧是界面主题那个底，只有写了字的地方是 Dracula。
-pub fn background(cx: &App) -> Hsla {
-    match scheme::active() {
+///
+/// 哪台主机的终端就传它挑的方案 id：空串是"跟全局"（见 [`AnsiPalette::for_host`]）。
+/// 铺底色的容器跟网格取色必须走同一个入口，不然空白处和有字的地方两副面孔。
+pub fn background_for_host(host_scheme: &str, cx: &App) -> Hsla {
+    match scheme::find(host_scheme).or_else(scheme::active) {
         Some(scheme) => rgb(scheme.background).into(),
         // 跟随那一档用主题底色：终端是面板的内容区，它和四周的 chrome
         // 应该是同一个底。
@@ -113,9 +118,11 @@ fn selection_tints() -> (Hsla, Hsla) {
 }
 
 impl AnsiPalette {
-    /// 取当前这一套配色。
-    pub fn new(cx: &App) -> Self {
-        match scheme::active() {
+    /// 取这一台主机的配色：主机挑的方案优先（认不出就退回全局，全局没挑
+    /// 就是跟随界面主题）。窗格每帧从 `host.terminal_scheme` 读一遍 ——
+    /// 查一次是百来个字符串比较，比缓存一份再管失效便宜。空串就是"跟全局"。
+    pub fn for_host(host_scheme: &str, cx: &App) -> Self {
+        match scheme::find(host_scheme).or_else(scheme::active) {
             Some(scheme) => Self::from_scheme(scheme),
             None => Self::following_the_app_theme(cx),
         }
