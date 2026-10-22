@@ -161,6 +161,19 @@ impl SchemePickerDelegate {
         }
         self.sections = sections;
     }
+
+    /// 第 `section` 节的节头文案；跟随档没有文案，回一个空格占位。
+    ///
+    /// 组件库量节头高度只量第 0 节，量出来多高，每个非空节的节头槽位就
+    /// 统一摆多高 —— 跟随档要是什么都不给，量出的就是 0 高，“深色”那行
+    /// 节头便整个叠到第一套方案上（线上见过的那处重叠）。空格能把行高
+    /// 撑出来，画出来又什么都没有。
+    fn header_label(&self, section: usize) -> Option<SharedString> {
+        Some(match self.sections.get(section)?.header.clone() {
+            Some(header) => header,
+            None => SharedString::from(" "),
+        })
+    }
 }
 
 impl SearchableListDelegate for SchemePickerDelegate {
@@ -202,16 +215,16 @@ impl SearchableListDelegate for SchemePickerDelegate {
         Task::ready(())
     }
 
-    /// 照组件库默认节头的样子画（`py_0p5` / `px_2` / 次要色），只是跟随档
-    /// 那一节不画 —— 返回 `None` 会落回废弃的 [`SearchableListDelegate::section`]，
-    /// 它默认也是 `None`，两头都空才真的没有头。
+    /// 照组件库默认节头的样子画（`py_0p5` / `px_2` / 次要色）。跟随档那一节
+    /// 也照画，只是文案换成 [`Self::header_label`] 给的空格占位 —— 为什么
+    /// 不能回 `None`，见彼处。
     fn render_section_header(
         &self,
         section: usize,
         _window: &mut Window,
         cx: &mut App,
     ) -> Option<AnyElement> {
-        let header = self.sections.get(section)?.header.clone()?;
+        let header = self.header_label(section)?;
         Some(
             div()
                 .py_0p5()

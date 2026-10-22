@@ -89,6 +89,26 @@ fn search_narrows_to_matching_schemes() {
     assert!(delegate.sections.is_empty());
 }
 
+/// 节头文案：深浅两组各有其名；跟随档没有文案，也得回一个空格占位 ——
+/// 组件库量节头高度只量第 0 节，回 `None` 量出来就是 0 高，“深色”那行
+/// 节头会整个叠到第一套方案上（线上见过的那处重叠）。
+#[test]
+fn every_section_yields_a_header_label() {
+    let delegate = SchemePickerDelegate::new("跟随全局");
+
+    let follow = delegate.header_label(0).expect("跟随档也要有节头占位");
+    assert_eq!(
+        follow,
+        SharedString::from(" "),
+        "占位只是撑出行高，不该有字"
+    );
+
+    // 节头文案走 i18n，测试环境未必加载了词表，只钉“深浅两节各有名、且不相同”。
+    let dark = delegate.header_label(1).expect("深色组有节头");
+    let light = delegate.header_label(2).expect("浅色组有节头");
+    assert_ne!(dark, light, "深浅两节的节头不该是同一个词");
+}
+
 /// position 从值反查行：跟随档与具体方案都能定位，认不出的是 `None`
 /// —— 工厂拿它决定起笔在哪一行。
 #[test]
