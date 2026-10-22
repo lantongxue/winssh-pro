@@ -83,3 +83,23 @@
             assert_eq!(copies, None);
         }
     }
+
+    /// SFTP 面板那几个文件列表键只认表格里的焦点。绑在 `SftpPanel` 整层时，
+    /// 路径栏输入框里敲回车：输入框处理完那一轮还放行（单行框的
+    /// `InputBaseState::enter` 显式 `propagate()`），派发按深度逐条继续，
+    /// 轮到面板那层，选中的文件就被打开了。
+    #[test]
+    fn sftp_table_keys_stay_out_of_the_path_input() {
+        assert_eq!(
+            dispatch(&["Root", "SftpPanel", "DataTable"], "enter").as_deref(),
+            Some(OpenSelection.name())
+        );
+        // 路径栏 / 过滤框 / 队列搜索框 —— 面板里的输入框一概不沾。
+        assert_eq!(dispatch(&["Root", "SftpPanel", "Input"], "enter"), None);
+        assert_eq!(dispatch(&["Root", "SftpPanel", "Input"], "shift-up"), None);
+        assert_eq!(dispatch(&["Root", "SftpPanel", "Input"], "shift-down"), None);
+        assert_eq!(
+            dispatch(&["Root", "SftpPanel", "Input"], &format!("{CMD}-a")),
+            None
+        );
+    }

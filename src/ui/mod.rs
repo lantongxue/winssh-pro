@@ -115,13 +115,17 @@ fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-f", Find, Some("Terminal")),
         KeyBinding::new("escape", CloseSearch, Some("Terminal")),
         // SFTP 文件列表里的多选。方向键、Esc 归表格自己（`DataTable` 上下文里
-        // 已经绑过），这里只补它没有的那几个。绑在 `SftpPanel` 上下文而不是全局：
-        // 焦点落在面板里的输入框（路径栏、过滤框）时，输入框自己的 `cmd-a`
-        // 更靠里，全选文字仍然归它。
-        KeyBinding::new(&format!("{CMD}-a"), SelectAllEntries, Some("SftpPanel")),
-        KeyBinding::new("shift-up", ExtendSelectionUp, Some("SftpPanel")),
-        KeyBinding::new("shift-down", ExtendSelectionDown, Some("SftpPanel")),
-        KeyBinding::new("enter", OpenSelection, Some("SftpPanel")),
+        // 已经绑过），这里只补它没有的那几个。上下文钉成 `SftpPanel > DataTable`
+        // —— 只在焦点落进文件表格里时匹配。不能挂在 `SftpPanel` 整层上：路径栏、
+        // 过滤框那些输入框也是面板的后代，而按键派发是按深度逐条进行的，输入框
+        // 处理完放行（单行框的回车在 `InputBaseState::enter` 里显式 `propagate()`；
+        // shift-up/down 在单行框里没有监听，派空了也照样放行）就会轮到浅处的下
+        // 一条 —— 于是路径栏里敲回车会把选中的文件打开。输入框自己的 `cmd-a`
+        // 仍然归它（`Input` 上下文更靠里）。
+        KeyBinding::new(&format!("{CMD}-a"), SelectAllEntries, Some("SftpPanel > DataTable")),
+        KeyBinding::new("shift-up", ExtendSelectionUp, Some("SftpPanel > DataTable")),
+        KeyBinding::new("shift-down", ExtendSelectionDown, Some("SftpPanel > DataTable")),
+        KeyBinding::new("enter", OpenSelection, Some("SftpPanel > DataTable")),
         // 终端里的复制粘贴。`ctrl-c` / `ctrl-v` 在终端里是中断和控制字符，
         // 不能拿来当复制粘贴，所以非 macOS 平台也走 `ctrl-shift-*`
         // —— 各家终端都是这么让开的。
