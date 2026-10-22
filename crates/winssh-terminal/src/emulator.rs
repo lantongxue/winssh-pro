@@ -72,6 +72,22 @@ const SCROLL_HISTORY_LINES: usize = 10_000;
 const INITIAL_COLUMNS: usize = 80;
 const INITIAL_LINES: usize = 24;
 
+/// 双击选词时分隔符之外补认的中文标点（含全角空格）。
+///
+/// alacritty 那张默认表只认 ASCII 标点，而中文句子里没有空格 —— 不补这一档，
+/// 双击中文会把逗号句号连同前后整句连成一坨。
+const CJK_ESCAPE_CHARS: &str = "，。、；：？！“”‘’（）《》〈〉【】〔〕「」『』…—·　";
+
+/// 四条字节源（PTY / SSH / Telnet / 串口）共用的那份 `Term` 配置。
+fn term_config() -> Config {
+    Config {
+        scrolling_history: SCROLL_HISTORY_LINES,
+        // 制表画线也当分隔符，`tree` 的输出才不会连成一坨。
+        semantic_escape_chars: format!("{SEMANTIC_ESCAPE_CHARS}─{CJK_ESCAPE_CHARS}"),
+        ..Config::default()
+    }
+}
+
 /// 终端在窗口里占的那一块，连同一个字符格子有多大。
 ///
 /// 行列数由这三个量算出来，所以它同时是 alacritty 的 [`Dimensions`]：
@@ -498,12 +514,7 @@ impl Emulator {
         let bounds = TerminalBounds::default();
         let (events_tx, events_rx) = mpsc::unbounded();
 
-        let config = Config {
-            scrolling_history: SCROLL_HISTORY_LINES,
-            // 双击选词时把制表画线也当成分隔符，`tree` 的输出才不会连成一坨。
-            semantic_escape_chars: format!("{SEMANTIC_ESCAPE_CHARS}─"),
-            ..Config::default()
-        };
+        let config = term_config();
         let term = Arc::new(FairMutex::new(Term::new(
             config,
             &bounds,
@@ -579,11 +590,7 @@ impl Emulator {
         let bounds = TerminalBounds::default();
         let (events_tx, events_rx) = mpsc::unbounded();
 
-        let config = Config {
-            scrolling_history: SCROLL_HISTORY_LINES,
-            semantic_escape_chars: format!("{SEMANTIC_ESCAPE_CHARS}─"),
-            ..Config::default()
-        };
+        let config = term_config();
         let term = Arc::new(FairMutex::new(Term::new(
             config,
             &bounds,
@@ -637,11 +644,7 @@ impl Emulator {
         let bounds = TerminalBounds::default();
         let (events_tx, events_rx) = mpsc::unbounded();
 
-        let config = Config {
-            scrolling_history: SCROLL_HISTORY_LINES,
-            semantic_escape_chars: format!("{SEMANTIC_ESCAPE_CHARS}─"),
-            ..Config::default()
-        };
+        let config = term_config();
         let term = Arc::new(FairMutex::new(Term::new(
             config,
             &bounds,
@@ -700,11 +703,7 @@ impl Emulator {
         let bounds = TerminalBounds::default();
         let (events_tx, events_rx) = mpsc::unbounded();
 
-        let config = Config {
-            scrolling_history: SCROLL_HISTORY_LINES,
-            semantic_escape_chars: format!("{SEMANTIC_ESCAPE_CHARS}─"),
-            ..Config::default()
-        };
+        let config = term_config();
         let term = Arc::new(FairMutex::new(Term::new(
             config,
             &bounds,
@@ -753,11 +752,7 @@ impl Emulator {
     pub fn new_empty(cx: &mut App) -> Entity<Self> {
         let bounds = TerminalBounds::default();
         let (events_tx, events_rx) = mpsc::unbounded();
-        let config = Config {
-            scrolling_history: SCROLL_HISTORY_LINES,
-            semantic_escape_chars: format!("{SEMANTIC_ESCAPE_CHARS}─"),
-            ..Config::default()
-        };
+        let config = term_config();
         let term = Arc::new(FairMutex::new(Term::new(
             config,
             &bounds,
@@ -1692,23 +1687,71 @@ impl Emulator {
         self.refresh(cx);
     }
 
-    /// 开始拖选。`ty` 决定这一下选的是字符、词还是整行。
-    pub fn start_selection(&mut self, point: GridPoint, ty: SelectionType, cx: &mut Context<Self>) {
-        self.term.lock().selection =
-            Some(Selection::new(ty, point.to_alacritty(), Direction::Left));
+    /// 开始拖选。`ty` 决定这一下选的是字符、词还是整行；`side` 说的是指针落在
+    /// 首格的哪半边 —— 右半边意味着"从这格**之后**起选"，alacritty 按它削掉
+    /// 首格（见 [`Selection::new`]）。
+    pub fn start_selection(
+        &mut self,
+        point: GridPoint,
+        side: Direction,
+        ty: SelectionType,
+        cx: &mut Context<Self>,
+    ) {
+        self.term.lock().selection = Some(Selection::new(ty, point.to_alacritty(), side));
         self.refresh(cx);
     }
 
     /// 把选中的那一端拖到新的位置。没有正在选的东西时什么也不做。
-    pub fn extend_selection(&mut self, point: GridPoint, cx: &mut Context<Self>) {
+    pub fn extend_selection(
+        &mut self,
+        point: GridPoint,
+        side: Direction,
+        cx: &mut Context<Self>,
+    ) {
         let mut term = self.term.lock();
         let Some(mut selection) = term.selection.take() else {
             return;
         };
-        selection.update(point.to_alacritty(), Direction::Left);
+        selection.update(point.to_alacritty(), side);
         term.selection = Some(selection);
         drop(term);
         self.refresh(cx);
+    }
+
+    /// 拖选自动滚动走一步：本地回卷 `lines` 行，再把选区的活动端钉到视口
+    /// 上沿或下沿的同一列 —— 指针已经跑到网格外面了，这一端能到哪儿
+    /// 就到哪儿。
+    ///
+    /// 滚到回卷区顶（或底）之后 `scroll_display` 自然空转，视口不动也就不
+    /// 请求重画。备用屏没有回卷区，本来就是空转。
+    pub fn drag_scroll_extend(
+        &mut self,
+        lines: i32,
+        column: usize,
+        side: Direction,
+        cx: &mut Context<Self>,
+    ) {
+        if lines == 0 {
+            return;
+        }
+        let mut term = self.term.lock();
+        let before = term.grid().display_offset();
+        term.scroll_display(Scroll::Delta(lines));
+        let after = term.grid().display_offset();
+        let row = if lines > 0 {
+            0
+        } else {
+            term.screen_lines().saturating_sub(1)
+        };
+        let point = AlacPoint::new(Line(row as i32 - after as i32), Column(column));
+        if let Some(mut selection) = term.selection.take() {
+            selection.update(point, side);
+            term.selection = Some(selection);
+        }
+        drop(term);
+        if before != after {
+            self.refresh(cx);
+        }
     }
 
     fn clear_selection(&mut self) {

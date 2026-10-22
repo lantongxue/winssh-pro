@@ -79,15 +79,61 @@
             screen_lines: 24,
             ..Content::default()
         };
+        // 第 3 格的正中间（4.5/9），半格判定不偏不倚归左。
         let position = point(px(8. + 9. * 3.5), px(18. * 5.5));
 
         assert_eq!(cell_at(position, &g, &content), (3, 5));
-        assert_eq!(point_at(position, &g, &content), at(3, 5));
+        assert_eq!(point_at(position, &g, &content), (at(3, 5), Direction::Left));
 
         // 往回滚 10 行：屏幕行号不变，缓冲行号变成负的。
         content.display_offset = 10;
         assert_eq!(cell_at(position, &g, &content), (3, 5));
-        assert_eq!(point_at(position, &g, &content), at(3, -5));
+        assert_eq!(point_at(position, &g, &content), (at(3, -5), Direction::Left));
+    }
+
+    /// 半格判定：指针在哪格的哪半边，选区的锚就在那格的哪一侧 —— 没有它，
+    /// 松手时最后那个字总是差半格没选进来（alacritty 按锚的侧别削首末格）。
+    #[test]
+    fn the_side_follows_which_half_of_the_cell_the_pointer_is_in() {
+        let g = grid(10., 20., 0.);
+        let content = Content {
+            columns: 80,
+            screen_lines: 24,
+            ..Content::default()
+        };
+        // 第 3 格横跨 x 30..40：左半边归左、右半边归右，正中（0.5）归左。
+        assert_eq!(
+            point_at(point(px(30.1), px(10.)), &g, &content).1,
+            Direction::Left
+        );
+        assert_eq!(
+            point_at(point(px(35.), px(10.)), &g, &content).1,
+            Direction::Left
+        );
+        assert_eq!(
+            point_at(point(px(35.1), px(10.)), &g, &content).1,
+            Direction::Right
+        );
+        assert_eq!(
+            point_at(point(px(39.9), px(10.)), &g, &content).1,
+            Direction::Right
+        );
+    }
+
+    /// 指针跑到网格外面时，格子夹回边界、侧别按原方向取：右边出界锚右
+    /// （末格算选上）、左边出界锚左（首格不算被跨过）。
+    #[test]
+    fn sides_outside_the_grid_follow_the_direction_of_the_overshoot() {
+        let g = grid(10., 20., 0.);
+        let content = Content {
+            columns: 80,
+            screen_lines: 24,
+            ..Content::default()
+        };
+        let (at, side) = point_at(point(px(99_999.), px(10.)), &g, &content);
+        assert_eq!((at.column, side), (79, Direction::Right));
+        let (at, side) = point_at(point(px(-500.), px(10.)), &g, &content);
+        assert_eq!((at.column, side), (0, Direction::Left));
     }
 
     fn hit(line: i32, columns: std::ops::RangeInclusive<usize>) -> Match {

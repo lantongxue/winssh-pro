@@ -23,7 +23,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use alacritty_terminal::selection::SelectionType;
+use alacritty_terminal::{index::Direction, selection::SelectionType};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
     StyledExt as _,
@@ -38,8 +38,9 @@ use gpui_kit::component::{
 use gpui_kit::{
     App, AppContext as _, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, SharedString, Styled as _, Subscription, Window, actions, div, px,
+    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, ScrollDelta,
+    ScrollWheelEvent, SharedString, Styled as _, Subscription, Window, actions, canvas, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::{
@@ -102,6 +103,42 @@ const LINE_HEIGHT: f32 = 1.4;
 /// 双击算"选一个词"、三击算"选一行"的击数门槛。
 const DOUBLE_CLICK: usize = 2;
 const TRIPLE_CLICK: usize = 3;
+
+/// 拖选自动滚动的一程：指针在网格外悬着的位置（超出了几行、在哪一列、
+/// 锚在哪半边），每 50ms 照着它滚一程。
+#[derive(Clone, Copy, Debug)]
+struct DragScroll {
+    /// 指针超出上沿多少行（正数），或超出下沿多少行（负数）。
+    overshoot: f32,
+    /// 指针所在的那一列。滚完之后选区的活动端就钉在这一列上。
+    column: usize,
+    /// 指针在那格的哪半边（见 [`point_at`]）。
+    side: Direction,
+}
+
+/// 指针超出网格上下沿多少行：上沿之外是正数、下沿之外是负数、在里面是 0。
+/// 折成行数而不是像素，好让"滚多快"直接跟着超出的距离走。
+fn drag_overshoot(y: Pixels, bounds: Bounds<Pixels>, line_height: Pixels) -> f32 {
+    let line_height = f32::from(line_height).max(1.);
+    if y < bounds.top() {
+        f32::from(bounds.top() - y) / line_height
+    } else if y > bounds.bottom() {
+        -f32::from(y - bounds.bottom()) / line_height
+    } else {
+        0.
+    }
+}
+
+/// 一程滚几行：超得越远滚得越快，1 行起步、8 行封顶 —— 封顶是怕一程跳过
+/// 半屏，选区的端点追着视口跑会看着发晕。
+fn drag_scroll_step(overshoot: f32) -> i32 {
+    let lines = overshoot.abs().ceil().clamp(1., 8.) as i32;
+    if overshoot < 0. {
+        -lines
+    } else {
+        lines
+    }
+}
 
 /// 搜索栏浮在网格右上角的位置与大小。它遮住的行数由这两个数算出来
 /// （见 [`TerminalPane::rows_behind_the_search_bar`]），所以改这里就要想到
@@ -172,6 +209,12 @@ pub struct TerminalPane {
     grid: TerminalBounds,
     /// 鼠标左键是否按着。按着才把移动当成拖选。
     selecting: bool,
+    /// 拖选时指针跑出了网格上下沿：按超出多少行每 50ms 自动滚一程
+    /// （[`Self::select_autoscroll`]，tty7 同款）。
+    drag_scroll: Option<DragScroll>,
+    /// 自动滚动那计程器的代次。一程之内它只认自己那个代次 —— 指针回到
+    /// 网格里停了旧的计程器、再出去又起一程新的，靠它分清谁是谁。
+    drag_scroll_epoch: u64,
     /// 搜索栏的输入框。`None` 表示搜索栏没开着。
     ///
     /// 命中、当前落在第几个那些状态在 [`Emulator`] 那边（扫描要锁 `Term`），
@@ -214,6 +257,8 @@ impl TerminalPane {
                 error: None,
                 grid: TerminalBounds::default(),
                 selecting: false,
+                drag_scroll: None,
+                drag_scroll_epoch: 0,
                 search_input: None,
                 _search_sub: None,
                 last_query: SearchQuery::default(),
@@ -1114,6 +1159,30 @@ impl TerminalPane {
             )
     }
 
+    /// 拖选期间挂在**窗口上**的指针回调，由一片什么也不画的 `canvas` 在 paint
+    /// 里登记（`window.on_mouse_event` 只能在 paint 里调）。
+    ///
+    /// 不挂在网格那块 `div` 上：`div::on_mouse_move` 只收得到指针还悬在它上面
+    /// 的移动，指针一出网格就断了 —— 而拖选恰恰要到网格外面去（拖过边界
+    /// 自动滚动、拖着拖着路过隔壁面板）。回调自己幂等：gpui 的鼠标派发分
+    /// 捕获/冒泡两趟，两趟都放它过，别的元素 `stop_propagation` 也截不断
+    /// 拖选（tty7 同款做法）。
+    fn select_drag_listener(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let pane = cx.entity();
+        canvas(
+            |_bounds, _window, _cx| {},
+            move |_bounds, _state, window, _cx| {
+                window.on_mouse_event(move |ev: &MouseMoveEvent, _phase, _window, cx| {
+                    pane.update(cx, |pane, cx| {
+                        pane.on_select_drag(ev.position, ev.pressed_button, cx)
+                    });
+                });
+            },
+        )
+        .absolute()
+        .size_full()
+    }
+
     /// 远端文件拖进终端时盖在网格上的那层提示遮罩。
     ///
     /// 与 SFTP 栏里下载/上传的遮罩同一套做法（见 `sftp.rs` 的 `local-drop-overlay`）：
@@ -1251,6 +1320,21 @@ impl TerminalPane {
             return;
         }
 
+        // Shift + 单击：把已有选区的活动端挪到这一格，而不是另起一段 ——
+        // 和别的编辑器"按住 Shift 点哪儿选到哪儿"是同一个约定（tty7 同款）。
+        // 双击、三击不带这个礼遇：词与行的粒度和"端点在哪一格"对不上。
+        if event.modifiers.shift
+            && event.click_count == 1
+            && emulator.read(cx).has_selection()
+        {
+            let (point, side) = self.point_at(event.position, cx);
+            self.selecting = true;
+            emulator.update(cx, |emulator, cx| {
+                emulator.extend_selection(point, side, cx);
+            });
+            return;
+        }
+
         // 双击选词、三击选行，和别的终端一致。三种起手都能接着拖，
         // 拖的粒度跟着起手的那一下走：双击起手再拖，是按词扩。
         let ty = match event.click_count {
@@ -1260,9 +1344,9 @@ impl TerminalPane {
         };
         self.selecting = true;
 
-        let point = self.point_at(event.position, cx);
+        let (point, side) = self.point_at(event.position, cx);
         emulator.update(cx, |emulator, cx| {
-            emulator.start_selection(point, ty, cx);
+            emulator.start_selection(point, side, ty, cx);
         });
     }
 
@@ -1281,18 +1365,108 @@ impl TerminalPane {
                 Some(button) => emulator.mouse_drag(button, column, line, &mods),
                 None => emulator.mouse_motion(column, line, &mods),
             });
-            return;
         }
 
-        // 也看按键状态，不只看自己那个标志：拖到面板外面松手的话，
-        // 松手事件落不到这里，标志会一直留在"正在拖"上。
-        if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
+        // 拖选不在这里跟：这一路只收得到指针还悬在网格上的移动，指针一出网格
+        // （哪怕只是出到隔壁面板上）就断了，选区会卡在边上。跟移动这件事
+        // 整个交给窗口级的回调（[`Self::select_drag_listener`]）。
+    }
+
+    /// 拖选中的一次指针移动：把选区活动端拖过去，指针在网格外的话
+    /// 起一程自动滚动。
+    ///
+    /// 由窗口级鼠标回调调它（见 [`Self::select_drag_listener`]），所以指针
+    /// 跑到哪儿都跟得上 —— `position` 可能远在网格之外，换算那边自己会夹。
+    /// 键不在了就在这里收摊：在窗口外松手的那一下 gpui 不会送 mouse-up 进
+    /// 任何一个元素，不在这儿收的话自动滚动会自己转个没完。
+    fn on_select_drag(
+        &mut self,
+        position: Point<Pixels>,
+        pressed: Option<MouseButton>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.selecting {
+            return;
+        }
+        if pressed != Some(MouseButton::Left) {
             self.selecting = false;
+            self.drag_scroll = None;
             return;
         }
+        let Some(emulator) = self.emulator.clone() else {
+            return;
+        };
+        let (point, side) = self.point_at(position, cx);
+        let column = point.column;
+        emulator.update(cx, |emulator, cx| {
+            emulator.extend_selection(point, side, cx);
+        });
+        let overshoot = drag_overshoot(position.y, self.grid.bounds, self.grid.line_height);
+        self.select_autoscroll(overshoot, column, side, cx);
+    }
 
-        let point = self.point_at(event.position, cx);
-        emulator.update(cx, |emulator, cx| emulator.extend_selection(point, cx));
+    /// 拖选自动滚动的账房：指针在外面就记账、起一程计程器，回到网格里
+    /// 就把账清了。计程器每 50ms 走一步（[`Self::drag_scroll_tick`]），
+    /// 一直走到指针回来或松手。
+    fn select_autoscroll(
+        &mut self,
+        overshoot: f32,
+        column: usize,
+        side: Direction,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.selecting || overshoot == 0. {
+            self.drag_scroll = None;
+            return;
+        }
+        let was_idle = self.drag_scroll.is_none();
+        self.drag_scroll = Some(DragScroll {
+            overshoot,
+            column,
+            side,
+        });
+        if !was_idle {
+            return;
+        }
+        self.drag_scroll_epoch += 1;
+        let epoch = self.drag_scroll_epoch;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(50))
+                    .await;
+                if !matches!(
+                    this.update(cx, |pane, cx| pane.drag_scroll_tick(epoch, cx)),
+                    Ok(true)
+                ) {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// 自动滚动计程器的一步。换了代次、或者拖选已经结束，就到这儿为止 ——
+    /// 返回 `false` 让计程器收摊；滚到回卷区顶/底只是空转，计程器照走，
+    /// 指针挪回可滚的方向它自己就又动了。
+    fn drag_scroll_tick(&mut self, epoch: u64, cx: &mut Context<Self>) -> bool {
+        if epoch != self.drag_scroll_epoch {
+            return false;
+        }
+        if !self.selecting {
+            self.drag_scroll = None;
+        }
+        let Some(ds) = self.drag_scroll else {
+            return false;
+        };
+        let Some(emulator) = self.emulator.clone() else {
+            return false;
+        };
+        let lines = drag_scroll_step(ds.overshoot);
+        emulator.update(cx, |emulator, cx| {
+            emulator.drag_scroll_extend(lines, ds.column, ds.side, cx);
+        });
+        true
     }
 
     /// 松手：选中的那一段留在屏幕上，但不再跟着鼠标走。
@@ -1307,12 +1481,17 @@ impl TerminalPane {
             });
         }
         self.selecting = false;
+        self.drag_scroll = None;
     }
 
-    /// 指针位置落在网格的哪个格子上（缓冲坐标，供选区用）。
-    fn point_at(&self, position: gpui_kit::Point<gpui_kit::Pixels>, cx: &App) -> GridPoint {
+    /// 指针位置落在网格的哪个格子上、以及那格的哪半边（缓冲坐标，供选区用）。
+    fn point_at(
+        &self,
+        position: gpui_kit::Point<gpui_kit::Pixels>,
+        cx: &App,
+    ) -> (GridPoint, Direction) {
         let Some(emulator) = &self.emulator else {
-            return GridPoint::default();
+            return (GridPoint::default(), Direction::Left);
         };
         point_at(position, &self.grid, emulator.read(cx).content())
     }
@@ -1973,6 +2152,12 @@ impl Render for TerminalPane {
                         }
                     }),
             )
+            // 拖选一开就挂上那片登记窗口级指针回调的 canvas（见
+            // [`Self::select_drag_listener`]）。按下那一帧的下一个重绘里它才
+            // 在场 —— 中间差的那几毫秒里指针还没来得及挪出半格，看不出来。
+            .when(self.selecting, |pane| {
+                pane.child(self.select_drag_listener(cx))
+            })
             // 滚动条紧跟网格画，压在格子上、垫在搜索栏这些浮层下面。
             .child(self.render_scrollbar())
             // 搜索栏与 ZMODEM 进度条浮在网格上（`absolute`），所以放在网格
@@ -1986,3 +2171,7 @@ impl Render for TerminalPane {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/ui/panels/terminal_pane.rs"]
+mod tests;

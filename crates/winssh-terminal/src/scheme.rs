@@ -44,15 +44,6 @@ impl Scheme {
     pub fn cursor(&self) -> u32 {
         self.caret.unwrap_or(self.foreground)
     }
-
-    /// 选中那一段的底色。
-    ///
-    /// 配色表里没有这一项（上游那几个项目也大多不定义它），按前景往底色里
-    /// 兑 24% 算出来 —— 深色方案得到一块略亮的底，浅色方案得到一块略暗的，
-    /// 两头都不会把字盖掉。这一档和 tty7 的 `active_palette` 取的是同一个数。
-    pub fn selection(&self) -> u32 {
-        mix(self.background, self.foreground, 0.24)
-    }
 }
 
 /// 内置的几套配色。深色在前、浅色在后，下拉里就照这个顺序摆。
@@ -243,6 +234,7 @@ pub fn decode(raw: &str) -> SharedString {
 }
 
 /// 按比例把 `b` 兑进 `a`。`t` 是 `b` 占的份额。
+#[cfg(test)]
 fn mix(a: u32, b: u32, t: f32) -> u32 {
     let channel = |shift: u32| {
         let (from, to) = ((a >> shift & 0xff) as f32, (b >> shift & 0xff) as f32);

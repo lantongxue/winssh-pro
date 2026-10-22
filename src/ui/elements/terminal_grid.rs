@@ -34,7 +34,7 @@ use gpui_kit::{
     TextRun, UnderlineStyle, Window, fill, outline, point, px, relative, size,
 };
 
-use alacritty_terminal::{term::search::Match, vte::ansi::CursorShape};
+use alacritty_terminal::{index::Direction, term::search::Match, vte::ansi::CursorShape};
 
 use crate::{
     terminal::{
@@ -808,7 +808,8 @@ fn cell_rect(at: GridPoint, bounds: &TerminalBounds) -> Bounds<Pixels> {
 ///
 /// 底色的优先级：**当前命中 > 其余命中 > 选中 > 程序自己设的底色**。
 /// 搜索压过选中，是因为搜索栏开着的时候用户看的就是那些黄块；而当前那一个
-/// 又必须压过其余的，不然"我现在在第几个上"就没有着落了。
+/// 又必须压过其余的，不然"我现在在第几个上"就没有着落了。选中与命中一样
+/// 是半透明的洗色：叠在格子原有的底色上，而不是顶替它。
 fn cell_colors(
     cell: &GridCell,
     palette: &AnsiPalette,
@@ -847,7 +848,13 @@ fn cell_colors(
     }
 
     if selected {
-        return (foreground, Some(palette.selection()));
+        // 选中是半透明的一层"洗色"，叠在格子原本的底色上 —— 和上面搜索命中
+        // 同一条规矩：`ls` 的目录、diff 的红绿、反显的提示符在选中时还得看
+        // 得出来，顶替成一块实底就把这些信息全洗掉了。
+        return (
+            foreground,
+            Some(over(palette.selection(), background.unwrap_or(palette.background()))),
+        );
     }
 
     (foreground, background)
@@ -1038,18 +1045,38 @@ pub fn cell_at(
     )
 }
 
-/// 指针位置落在哪个格子上，供拖选用。
+/// 指针位置落在哪个格子上、以及在那格的哪半边，供拖选用。半边说的是指针
+/// 离这格的左沿近还是右沿近：alacritty 的选区锚点带一个"边"
+/// （`Direction::Left` / `Right`），右半边意味着"锚在这格**之后**"——
+/// 没有它，选区的两端永远差半格，松手时最后那个字总是差一点没选进来
+/// （tty7 的 `pos_to_cell` 同款判定）。
 ///
 /// 行号按快照的坐标系给（可见区域第一行是 0，回卷区是负数），所以调用方
 /// 拿到的和 [`Content::cells`] 里的 `point` 是同一套坐标。和 [`cell_at`] 的
 /// 区别就在这儿：那个是屏幕坐标，这个是缓冲坐标。
-pub fn point_at(position: Point<Pixels>, bounds: &TerminalBounds, content: &Content) -> GridPoint {
+pub fn point_at(
+    position: Point<Pixels>,
+    bounds: &TerminalBounds,
+    content: &Content,
+) -> (GridPoint, Direction) {
+    let origin = bounds.bounds.origin;
+    // 不夹半格判定用的那个分数：指针在网格外面（左半边是负数、右半边超过 1）
+    // 时，夹回边界的那一列该取哪半边，正好由原分数的符号与大小说出来。
+    let column = (position.x - origin.x) / bounds.cell_width;
+    let side = if column - column.floor() <= 0.5 {
+        Direction::Left
+    } else {
+        Direction::Right
+    };
     let (column, line) = cell_at(position, bounds, content);
-    GridPoint {
-        // 夹的是"屏幕上第几行"，减完才是缓冲里的行号。
-        line: line as i32 - content.display_offset as i32,
-        column,
-    }
+    (
+        GridPoint {
+            // 夹的是"屏幕上第几行"，减完才是缓冲里的行号。
+            line: line as i32 - content.display_offset as i32,
+            column,
+        },
+        side,
+    )
 }
 
 #[cfg(test)]

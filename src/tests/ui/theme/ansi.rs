@@ -30,7 +30,6 @@
                     rgb(dracula.ansi16[9]).into()
                 );
                 assert_eq!(palette.cursor(), rgb(dracula.cursor()).into());
-                assert_eq!(palette.selection(), rgb(dracula.selection()).into());
             });
         }
     }
@@ -53,6 +52,27 @@
         assert_eq!(dark, rgb(DARK[2]).into());
         assert_eq!(light, rgb(LIGHT[2]).into());
         assert_ne!(dark, light, "明暗两套得是不同的绿");
+    }
+
+    /// 选中是一层半透明的洗色，从方案的前景兑出来（24%）—— 画的时候叠在
+    /// 格子原本的底色上，`ls` 的目录、diff 的红绿才不会被一块实底洗掉。
+    /// 兑在默认底色上等于 `mix(background, foreground, 0.24)`，可读性由
+    /// `winssh-terminal` 那边的 `the_selection_wash_stays_legible_over_the_background`
+    /// 把关；这里钉住"洗色本体"是从哪儿来的。
+    #[gpui_kit::test]
+    fn the_selection_wash_derives_from_the_scheme_foreground(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let _guard = scheme::exclusive_for_test();
+        cx.update(gpui_kit::init);
+
+        let dracula = scheme::find("dracula").expect("内置方案");
+        scheme::set_global(dracula.id);
+        let tint: Hsla = rgb(dracula.foreground).into();
+
+        cx.update(|cx| {
+            assert_eq!(AnsiPalette::new(cx).selection(), tint.opacity(0.24));
+        });
     }
 
     /// 画网格的那个容器铺的底色，必须和调色板认的底色是同一个 —— 满屏的

@@ -34,7 +34,9 @@ pub struct AnsiPalette {
     background: Hsla,
     /// 光标那一块的底色。
     cursor: Hsla,
-    /// 选中那一段的底色。
+    /// 选中那一层洗色。半透明：画的时候叠在格子原本的底色上（见
+    /// [`crate::ui::elements::TerminalGridElement`] 的 `cell_colors`），程序
+    /// 自己画的底色要透得出来。
     selection: Hsla,
     /// 搜索命中的底色，以及当前那一个的。
     match_hit: Hsla,
@@ -105,7 +107,11 @@ impl AnsiPalette {
             foreground: rgb(scheme.foreground).into(),
             background: rgb(scheme.background).into(),
             cursor: rgb(scheme.cursor()).into(),
-            selection: rgb(scheme.selection()).into(),
+            // 配色表里没有"选中"这一项（上游几个项目也大多不定义它），
+            // 按前景兑 24% 的洗色 —— 深色方案略提亮、浅色方案略压暗，
+            // 两头都不会把字盖掉。这一档和 tty7 的 `active_palette` 取的是
+            // 同一个数：`default_fg` 打上 `a = 0.24`。
+            selection: rgb(scheme.foreground).opacity(0.24).into(),
             match_hit,
             match_current,
         }
@@ -126,7 +132,10 @@ impl AnsiPalette {
             },
             background: cx.theme().background,
             cursor: cx.theme().foreground,
-            selection: cx.theme().selection,
+            // 出厂档跟着界面主题的选中色走，但降成半透明的洗色 —— 终端格子
+            // 底下压着的常常是程序自己画的底色，不透的话 `ls`、diff 被选中
+            // 时就看不出命中落在什么东西上了。
+            selection: cx.theme().selection.opacity(0.35),
             match_hit,
             match_current,
         }
