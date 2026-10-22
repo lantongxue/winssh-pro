@@ -57,7 +57,7 @@ impl HostService {
     }
 
     /// 内存库：测试用的独立一座。磁盘库打不开时的退路在 [`db::app`] 那一层。
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn in_memory() -> Result<Self> {
         let db = db::connect(None).await?;
         Ok(Self {
@@ -65,6 +65,19 @@ impl HostService {
             db,
             persistent: false,
         })
+    }
+
+    /// 同上，但同步。界面层测试要在开窗之前把这一下阻塞做完，
+    /// 理由见 [`crate::SnippetService::in_memory_blocking`]。
+    ///
+    /// 会话信息栏那两颗（命令历史、配色）都跟着"库里有没有这台主机"走，
+    /// 画得出来画不出来全看这一格里放没放东西 —— 那一条只有真的塞一份
+    /// 服务进去才验得到。
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn in_memory_blocking() -> Self {
+        db::runtime()
+            .block_on(Self::in_memory())
+            .expect("初始化内存数据库失败")
     }
 
     /// 全部分组及其主机，按用户排出来的顺序返回。
@@ -465,6 +478,30 @@ impl HostService {
             let affected = this
                 .repo
                 .update_host_shell_integration(&this.db, &id, enabled)
+                .await?;
+            ensure!(
+                affected == 1,
+                "{}",
+                t!("host_service.host_missing", id => id)
+            );
+            Ok(())
+        })
+        .await
+    }
+
+    /// 记下这台主机的终端配色。
+    ///
+    /// 和 shell 集成开关那一条同一个来路：会话工具条上那颗配色按钮手上只有
+    /// 方案 id，而主机表单整行重写那条路它走不了（十几格它都不知道）。空串是
+    /// 合法的值 —— 意思正是"跟随全局"，跟库里放着的出厂档是同一个词。
+    pub async fn update_terminal_scheme(&self, id: &str, scheme: &str) -> Result<()> {
+        let this = self.clone();
+        let id = id.to_owned();
+        let scheme = scheme.to_owned();
+        db::run(async move {
+            let affected = this
+                .repo
+                .update_host_terminal_scheme(&this.db, &id, &scheme)
                 .await?;
             ensure!(
                 affected == 1,

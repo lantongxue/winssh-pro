@@ -223,6 +223,30 @@
         assert_eq!(draft.key_passphrase, "hunter2");
     }
 
+    /// 编辑一台带配色的主机：库里那份带走，认不出的 id 与别名都在存回去之前
+    /// 收干净。
+    ///
+    /// 认不出的 id（那一套后来被上游剔了）留着只是一个谁都画不出来的值；别名
+    /// （`one_dark_pro` 那批自起名）存的是正名，日后上游改表也还认得出。手改过
+    /// 库、或者从旧版本升上来的机器上就会走到这两条。
+    #[gpui_kit::test]
+    fn a_stale_terminal_scheme_is_cleaned_before_it_is_saved(cx: &mut gpui_kit::TestAppContext) {
+        for (stored, expected) in [
+            ("dracula", "dracula"),
+            ("one_dark_pro", "one_dark"),
+            ("查无此色", ""),
+        ] {
+            let (mut host, group) = keyed_host(KEY_TEXT, "hunter2");
+            host.terminal_scheme = stored.into();
+            let (form, cx) = draw_form(cx, Some((host, group)));
+
+            let (_, draft) = form
+                .read_with(cx, |this, cx| this.build_draft(cx))
+                .expect("这张表填得是全的");
+            assert_eq!(draft.terminal_scheme, expected, "库里存的是 {stored:?}");
+        }
+    }
+
     /// 密钥那两格只有选了密钥认证才画得到，所以单独把这一屏画一遍：
     /// 深 builder 链上的错 `cargo check` 看不见，只有真的走一趟才掉得出来。
     #[gpui_kit::test]

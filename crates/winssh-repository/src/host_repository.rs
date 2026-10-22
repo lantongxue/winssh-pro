@@ -250,6 +250,25 @@ impl HostRepository {
         Ok(result.rows_affected)
     }
 
+    /// 只改一台主机的终端配色那一列。
+    ///
+    /// 与上面几条同一个道理：调用方（会话工具条上那颗配色按钮）手上只有方案
+    /// id 这一个词，主机表单整行重写那条路它走不了 —— 里面十几格它都不知道，
+    /// 照着空值写回去就是把用户的连接配置抹了。
+    pub async fn update_host_terminal_scheme(
+        &self,
+        conn: &impl ConnectionTrait,
+        id: &str,
+        scheme: &str,
+    ) -> Result<u64, DbErr> {
+        let result = host::Entity::update_many()
+            .col_expr(host::Column::TerminalScheme, Expr::value(scheme))
+            .filter(host::Column::Id.eq(id))
+            .exec(conn)
+            .await?;
+        Ok(result.rows_affected)
+    }
+
     /// 只改一台主机的 SFTP 收藏夹那一列。
     ///
     /// 与上面三条同一个道理：调用方（SFTP 面板右侧那一颗 ⭐/📌）手上只有
