@@ -40,7 +40,7 @@ use crate::{
     terminal::{
         Content, Emulator, GridCell, GridPoint, SearchState, TerminalBounds, is_default_background,
     },
-    ui::{elements::boxdraw, theme::ansi::AnsiPalette},
+    ui::{elements::boxdraw, theme::ansi::{AnsiPalette, over}},
 };
 
 /// 终端网格左右留空、上下贴边：上下 0 彻底消除与信息栏/状态栏的间距，
@@ -850,10 +850,11 @@ fn cell_colors(
     if selected {
         // 选中是半透明的一层"洗色"，叠在格子原本的底色上 —— 和上面搜索命中
         // 同一条规矩：`ls` 的目录、diff 的红绿、反显的提示符在选中时还得看
-        // 得出来，顶替成一块实底就把这些信息全洗掉了。
+        // 得出来，顶替成一块实底就把这些信息全洗掉了。往哪个方向洗、洗多重，
+        // 由 [`AnsiPalette::selection_over`] 按这一格的底色定。
         return (
             foreground,
-            Some(over(palette.selection(), background.unwrap_or(palette.background()))),
+            Some(palette.selection_over(background.unwrap_or(palette.background()))),
         );
     }
 
@@ -887,19 +888,6 @@ fn cursor_ink(caret: Hsla, background: Hsla, foreground: Hsla) -> Hsla {
     } else {
         foreground
     }
-}
-
-/// 把半透明的 `top` 合成到不透明的 `bottom` 上，得到一个不透明色。
-fn over(top: Hsla, bottom: Hsla) -> Hsla {
-    let (top, bottom) = (gpui_kit::Rgba::from(top), gpui_kit::Rgba::from(bottom));
-    let a = top.a.clamp(0., 1.);
-    gpui_kit::Rgba {
-        r: top.r * a + bottom.r * (1. - a),
-        g: top.g * a + bottom.g * (1. - a),
-        b: top.b * a + bottom.b * (1. - a),
-        a: 1.,
-    }
-    .into()
 }
 
 /// 一个格子的字形开关：粗、斜、下划线、删除线。每格算一次，只读几个 bit，

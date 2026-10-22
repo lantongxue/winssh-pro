@@ -34,10 +34,11 @@ pub struct AnsiPalette {
     background: Hsla,
     /// 光标那一块的底色。
     cursor: Hsla,
-    /// 选中那一层洗色。半透明：画的时候叠在格子原本的底色上（见
-    /// [`crate::ui::elements::TerminalGridElement`] 的 `cell_colors`），程序
-    /// 自己画的底色要透得出来。
-    selection: Hsla,
+    /// 选中那层洗色的两档：`selection_lift` 往上提亮，`selection_shade`
+    /// 往下压暗。两档都是半透明的，画的时候按这一格的底色挑一档叠上去
+    /// （见 [`AnsiPalette::selection_over`]），程序自己画的底色要透得出来。
+    selection_lift: Hsla,
+    selection_shade: Hsla,
     /// 搜索命中的底色，以及当前那一个的。
     match_hit: Hsla,
     match_current: Hsla,
@@ -89,6 +90,28 @@ fn match_tints() -> (Hsla, Hsla) {
     )
 }
 
+/// 选中洗色的两档：提亮档压在近黑底与各家深色方案的底上，压暗档压在浅色底上。
+/// 两档都在界面主题那两档选中色（`#55a0fc` 与 `#1d4ed8`）的蓝族里，取的是能
+/// 同时占住"看得出来选中了"与"字还读得清"那两端的数：主题深色档的本色
+/// 留作压暗档，提亮档取比主题浅色档略深的一档，好在五成的兑入量下不糊字。
+///
+/// 不跟着配色方案走，理由同 [`match_tints`]：那是界面给的一个提示，不是程序
+/// 输出的一部分。
+const SELECTION_LIFT: u32 = 0x3b82f6;
+const SELECTION_SHADE: u32 = 0x1d4ed8;
+
+/// 两档各自的兑入量。提亮档开到五成：底下程序自己画的底色还剩一半透得出来。
+const SELECTION_LIFT_ALPHA: f32 = 0.5;
+const SELECTION_SHADE_ALPHA: f32 = 0.42;
+
+/// 选中的两档洗色。
+fn selection_tints() -> (Hsla, Hsla) {
+    (
+        rgb(SELECTION_LIFT).opacity(SELECTION_LIFT_ALPHA).into(),
+        rgb(SELECTION_SHADE).opacity(SELECTION_SHADE_ALPHA).into(),
+    )
+}
+
 impl AnsiPalette {
     /// 取当前这一套配色。
     pub fn new(cx: &App) -> Self {
@@ -102,26 +125,25 @@ impl AnsiPalette {
     /// Dracula，不是"浅色界面下的 Dracula"。
     fn from_scheme(scheme: &Scheme) -> Self {
         let (match_hit, match_current) = match_tints();
+        let (selection_lift, selection_shade) = selection_tints();
         Self {
             colors: scheme.ansi16.map(|color| rgb(color).into()),
             foreground: rgb(scheme.foreground).into(),
             background: rgb(scheme.background).into(),
             cursor: rgb(scheme.cursor()).into(),
-            // 配色表里没有"选中"这一项（上游几个项目也大多不定义它），
-            // 按前景兑 24% 的洗色 —— 深色方案略提亮、浅色方案略压暗，
-            // 两头都不会把字盖掉。这一档和 tty7 的 `active_palette` 取的是
-            // 同一个数：`default_fg` 打上 `a = 0.24`。
-            selection: rgb(scheme.foreground).opacity(0.24).into(),
+            selection_lift,
+            selection_shade,
             match_hit,
             match_current,
         }
     }
 
-    /// 出厂那一档：16 色跟着界面主题的明暗切，底色与选中色直接用主题的。
+    /// 出厂那一档：16 色跟着界面主题的明暗切，底色直接用主题的。
     fn following_the_app_theme(cx: &App) -> Self {
         let dark = cx.theme().mode.is_dark();
         let colors = if dark { DARK } else { LIGHT };
         let (match_hit, match_current) = match_tints();
+        let (selection_lift, selection_shade) = selection_tints();
 
         Self {
             colors: colors.map(|color| rgb(color).into()),
@@ -132,10 +154,8 @@ impl AnsiPalette {
             },
             background: cx.theme().background,
             cursor: cx.theme().foreground,
-            // 出厂档跟着界面主题的选中色走，但降成半透明的洗色 —— 终端格子
-            // 底下压着的常常是程序自己画的底色，不透的话 `ls`、diff 被选中
-            // 时就看不出命中落在什么东西上了。
-            selection: cx.theme().selection.opacity(0.35),
+            selection_lift,
+            selection_shade,
             match_hit,
             match_current,
         }
@@ -150,13 +170,35 @@ impl AnsiPalette {
         self.foreground
     }
 
-    /// 终端的默认底色。半透明的搜索高亮要合成到它上面。
+    /// 终端的默认底色。半透明的搜索高亮与选中洗色要合成到它上面。
     pub fn background(&self) -> Hsla {
         self.background
     }
 
-    pub fn selection(&self) -> Hsla {
-        self.selection
+    /// 选中洗色压在这一格的底色上之后是哪块颜色。
+    ///
+    /// 两档都算一遍，挑把这一格挪得更开的那一档，而不是按界面明暗、也不是
+    /// 按底色明暗定死一档：
+    ///
+    /// - 只留压暗那一档，压在近黑底上亮度只挪 1.3:1 —— 旧的"深色模式完全
+    ///   看不出选中"就是这么来的；
+    /// - 只留提亮那一档，压在浅色底上会把字埋了；
+    /// - 中间调的彩底（青、洋红那一档）离某一档特别近，按底色明暗一刀切就会
+    ///   在那一档上几乎不动 —— 挑挪得更开的，那种底色就自己走到另一档去了。
+    ///
+    /// 挑档只看底色、不看正文颜色：一段选中里常常混着好几种正文色（`ls --color`
+    /// 的目录、可执行文件、普通文件），按正文挑会让同一条选中带画出好几种深浅。
+    ///
+    /// `base` 必须是不透明的（一格的底色没设时交进来的是 [`AnsiPalette::background`]）。
+    pub fn selection_over(&self, base: Hsla) -> Hsla {
+        let lifted = over(self.selection_lift, base);
+        let shaded = over(self.selection_shade, base);
+        // 比的是"把这一格挪开多少"，不是"挪到了多亮"。
+        let moved = |washed: Hsla| (luma(washed) - luma(base)).abs();
+        match moved(lifted) >= moved(shaded) {
+            true => lifted,
+            false => shaded,
+        }
     }
 
     /// 搜索命中的底色。
@@ -251,6 +293,27 @@ fn spec(color: Rgb) -> Hsla {
         r: color.r as f32 / 255.,
         g: color.g as f32 / 255.,
         b: color.b as f32 / 255.,
+        a: 1.,
+    }
+    .into()
+}
+
+/// sRGB 上的加权亮度，不做 gamma 解算。这个数只用来比大小（见
+/// [`AnsiPalette::selection_over`]），而一屏几千个格每帧都要算 ——
+/// `powf` 在刷屏时是要钱的。
+fn luma(color: Hsla) -> f32 {
+    let color = Rgba::from(color);
+    color.r * 0.299 + color.g * 0.587 + color.b * 0.114
+}
+
+/// 把半透明的 `top` 合成到不透明的 `bottom` 上，得到一个不透明色。
+pub(crate) fn over(top: Hsla, bottom: Hsla) -> Hsla {
+    let (top, bottom) = (Rgba::from(top), Rgba::from(bottom));
+    let a = top.a.clamp(0., 1.);
+    Rgba {
+        r: top.r * a + bottom.r * (1. - a),
+        g: top.g * a + bottom.g * (1. - a),
+        b: top.b * a + bottom.b * (1. - a),
         a: 1.,
     }
     .into()

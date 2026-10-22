@@ -80,23 +80,9 @@
         assert!(active().is_none());
     }
 
-    /// 选中的洗色兑在默认底色上之后要落在正文和底色中间：和底色一样就看不出
-    /// 选了什么，和正文一样就把字盖掉了。（兑 24% 的洗色压在没设底色的格子上
-    /// 就等于 `mix(background, foreground, 0.24)` —— 真正的合成在界面层的
-    /// `cell_colors` 里做，这里只管这个"最常见底色"下的可读性。）
-    #[test]
-    fn the_selection_wash_stays_legible_over_the_background() {
-        for scheme in &PRESETS {
-            let washed = mix(scheme.background, scheme.foreground, 0.24);
-            assert_ne!(washed, scheme.background, "{}", scheme.id);
-            assert!(
-                contrast(scheme.foreground, washed) >= 3.,
-                "{}：选中之后正文只剩 {:.2}:1",
-                scheme.id,
-                contrast(scheme.foreground, washed)
-            );
-        }
-    }
+    // 选中的洗色不再从方案的前景兑出来（它改由界面层的
+    // `crate::ui::theme::ansi::AnsiPalette::selection_over` 按底色挑档），
+    // 那一头的可读性量尺也跟着挪去了 `src/tests/ui/theme/ansi.rs`。
 
     #[test]
     fn mixing_walks_from_one_color_to_the_other() {
