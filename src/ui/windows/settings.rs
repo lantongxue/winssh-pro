@@ -49,6 +49,7 @@ use crate::proxy::{self, GlobalProxy, ProxyConfig};
 use crate::service::{BackupService, SettingService, UpdateService, update as update_prefs};
 use crate::terminal::cursor;
 use crate::terminal::font::{self, TerminalFont};
+use crate::terminal::right_click::{self, RightClickMode};
 use crate::terminal::scheme;
 use crate::ui::cards::ProviderCard;
 use crate::ui::dialogs::{BackupRestoreDialog, UpdateDialog};
@@ -191,6 +192,23 @@ fn persist_cursor_blink(blink: bool, cx: &mut App) {
     cx.background_spawn(async move {
         if let Err(error) = SettingService::open().save_cursor_blink(blink).await {
             log::error!("终端光标闪烁存不下去：{error:#}");
+        }
+    })
+    .detach();
+}
+
+/// 换掉终端右键行为：缓存立刻生效、重画所有窗口、落库派到后台。
+fn persist_terminal_right_click(mode: RightClickMode, cx: &mut App) {
+    right_click::set_global(mode);
+    for handle in cx.windows() {
+        _ = handle.update(cx, |_, window, _| window.refresh());
+    }
+    cx.background_spawn(async move {
+        if let Err(error) = SettingService::open()
+            .save_terminal_right_click(mode)
+            .await
+        {
+            log::error!("终端右键行为存不下去：{error:#}");
         }
     })
     .detach();
@@ -1160,6 +1178,25 @@ impl SettingsWindow {
                         SettingField::switch(
                             |_cx: &App| cursor::global(),
                             |checked: bool, cx: &mut App| persist_cursor_blink(checked, cx),
+                        ),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.terminal_right_click"),
+                        SettingField::dropdown(
+                            vec![
+                                (
+                                    RightClickMode::Menu.as_str().into(),
+                                    t!("settings.terminal_right_click_menu").into(),
+                                ),
+                                (
+                                    RightClickMode::Paste.as_str().into(),
+                                    t!("settings.terminal_right_click_paste").into(),
+                                ),
+                            ],
+                            |_cx: &App| right_click::global().as_str().into(),
+                            |value: SharedString, cx: &mut App| {
+                                persist_terminal_right_click(right_click::decode(&value), cx);
+                            },
                         ),
                     )),
             )

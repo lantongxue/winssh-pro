@@ -29,6 +29,7 @@ use crate::{
     terminal::{
         cursor,
         font::{self, TerminalFont},
+        right_click::{self, RightClickMode},
         scheme,
     },
     zmodem::config as zmodem_config,
@@ -44,6 +45,8 @@ const TERMINAL_SCHEME_KEY: &str = "terminal.scheme";
 const ASSISTANT_CONFIG_KEY: &str = "assistant.config";
 /// 终端光标闪烁在 `settings` 表里的键。存的是 "true" 或 "false"。
 const CURSOR_BLINK_KEY: &str = "terminal.cursor_blink";
+/// 终端右键行为在 `settings` 表里的键。存的是 "menu" 或 "paste"。
+const TERMINAL_RIGHT_CLICK_KEY: &str = "terminal.right_click";
 /// 关窗缩托盘在 `settings` 表里的键。存的是 "true" 或 "false"。
 const CLOSE_TO_TRAY_KEY: &str = "tray.close_to_tray";
 /// 数据备份同步配置在 `settings` 表里的键。存的是一份 JSON。
@@ -105,6 +108,7 @@ impl SettingService {
                 this.load_tun_settings().await,
                 this.load_close_to_tray().await,
                 this.load_update_preferences().await,
+                this.load_terminal_right_click().await,
             )
         });
         match loaded.0 {
@@ -146,6 +150,10 @@ impl SettingService {
         match loaded.9 {
             Ok(preferences) => crate::update::set_global(preferences),
             Err(error) => log::warn!("更新偏好读不出来，这次运行按出厂档处理：{error:#}"),
+        }
+        match loaded.10 {
+            Ok(mode) => right_click::set_global(mode),
+            Err(error) => log::warn!("终端右键行为读不出来，这次运行按右键菜单处理：{error:#}"),
         }
     }
 
@@ -278,6 +286,30 @@ impl SettingService {
         db::run(async move {
             this.repo
                 .set(&this.db, CURSOR_BLINK_KEY, &encoded)
+                .await
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    /// 库里那份终端右键行为。没写过就是出厂档（右键菜单）。
+    pub async fn load_terminal_right_click(&self) -> Result<RightClickMode> {
+        let this = self.clone();
+        db::run(async move {
+            let raw = this.repo.get(&this.db, TERMINAL_RIGHT_CLICK_KEY).await?;
+            Ok(right_click::decode(&raw.unwrap_or_default()))
+        })
+        .await
+    }
+
+    /// 写回终端右键行为，并同时换掉进程里那份缓存。
+    pub async fn save_terminal_right_click(&self, mode: RightClickMode) -> Result<()> {
+        right_click::set_global(mode);
+        let this = self.clone();
+        let encoded = right_click::encode(mode);
+        db::run(async move {
+            this.repo
+                .set(&this.db, TERMINAL_RIGHT_CLICK_KEY, &encoded)
                 .await
                 .map_err(Into::into)
         })

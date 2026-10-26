@@ -409,6 +409,15 @@ settings.terminal_font_size:
 settings.terminal_cursor_blink:
   en: Cursor blinking
   zh-CN: 光标闪烁
+settings.terminal_right_click:
+  en: Right-click action
+  zh-CN: 右键行为
+settings.terminal_right_click_menu:
+  en: Context menu
+  zh-CN: 右键菜单
+settings.terminal_right_click_paste:
+  en: Auto-copy selection, paste on right-click
+  zh-CN: 选中后复制，右键粘贴
 settings.tab_proxy:
   en: Network Proxy
   zh-CN: 网络代理

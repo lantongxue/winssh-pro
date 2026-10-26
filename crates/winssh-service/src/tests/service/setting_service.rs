@@ -120,6 +120,30 @@
         });
     }
 
+    /// 终端右键行为默认弹菜单，自动复制与右键粘贴档能落库并同步缓存。
+    #[test]
+    fn the_terminal_right_click_round_trips_into_its_own_row() {
+        let _guard = right_click::exclusive_for_test();
+        db::runtime().block_on(async {
+            let service = SettingService::in_memory().await.unwrap();
+            assert_eq!(
+                service.load_terminal_right_click().await.unwrap(),
+                RightClickMode::Menu,
+                "没写过就是右键菜单"
+            );
+
+            service
+                .save_terminal_right_click(RightClickMode::Paste)
+                .await
+                .unwrap();
+            assert_eq!(
+                service.load_terminal_right_click().await.unwrap(),
+                RightClickMode::Paste
+            );
+            assert_eq!(right_click::global(), RightClickMode::Paste, "缓存也一起换了");
+        });
+    }
+
     /// 数据备份与同步配置走的是独立的一行，读写与出厂档都要成立，缓存同步更新。
     #[test]
     fn the_backup_config_round_trips_into_its_own_row() {

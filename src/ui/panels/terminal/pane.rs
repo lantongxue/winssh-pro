@@ -51,6 +51,7 @@ use crate::{
     ssh::SshSession,
     terminal::{
         Emulator, EmulatorEvent, GridPoint, SearchQuery, TerminalBounds, cursor, font,
+        right_click::{self, RightClickMode},
         rows_under_the_bar, shell_integration,
     },
     trusted_host::{HostKeyInfo, TrustPolicy},
@@ -223,7 +224,7 @@ pub struct TerminalPane {
     _search_sub: Option<Subscription>,
     /// 关掉搜索栏之后仍然记着上一次查的词：再开一次多半还是找它。
     last_query: SearchQuery,
-    /// 最近这一下右键该不该弹菜单（[`terminal_menu_allowed`] 的判断结果）。
+    /// 最近这一下右键该不该弹菜单（鼠标模式与右键行为的共同结论）。
     ///
     /// 要在这儿存一份，是因为弹层那个元素（组件库的 `ContextMenu`）
     /// 自己拿走了右键的 mouse-down，而交给菜单构建器的参数里没有事件，读不到
@@ -1298,7 +1299,8 @@ impl TerminalPane {
         // 所以必须在下面那个 early return 之前。
         if event.button == MouseButton::Right {
             self.context_menu_allowed =
-                terminal_menu_allowed(self.mouse_mode(cx), event.modifiers.shift);
+                terminal_menu_allowed(self.mouse_mode(cx), event.modifiers.shift)
+                    && right_click::global() == RightClickMode::Menu;
         }
 
         let Some(emulator) = self.emulator.clone() else {
@@ -1314,9 +1316,13 @@ impl TerminalPane {
             return;
         }
 
-        // 选区只认左键。右键中键在不报鼠标的时候没有本地含义，
-        // 落到这里就当没发生 —— 尤其不能让它清掉已经选好的那一段。
+        // 右键粘贴档把剪贴板送进终端；中键没有本地含义，右键也不能清掉选区。
         if event.button != MouseButton::Left {
+            if event.button == MouseButton::Right
+                && right_click::global() == RightClickMode::Paste
+            {
+                self.paste_clipboard(cx);
+            }
             return;
         }
 
@@ -1389,8 +1395,7 @@ impl TerminalPane {
             return;
         }
         if pressed != Some(MouseButton::Left) {
-            self.selecting = false;
-            self.drag_scroll = None;
+            self.finish_selection(cx);
             return;
         }
         let Some(emulator) = self.emulator.clone() else {
@@ -1469,6 +1474,16 @@ impl TerminalPane {
         true
     }
 
+    /// 结束一次鼠标选择；自动复制档在松手时复制最终选区。
+    fn finish_selection(&mut self, cx: &mut Context<Self>) {
+        let completed = self.selecting;
+        self.selecting = false;
+        self.drag_scroll = None;
+        if completed && right_click::global() == RightClickMode::Paste {
+            self.copy_selection(cx);
+        }
+    }
+
     /// 松手：选中的那一段留在屏幕上，但不再跟着鼠标走。
     fn on_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.reports_mouse(event.modifiers.shift, cx)
@@ -1480,8 +1495,7 @@ impl TerminalPane {
                 emulator.mouse_release(event.button, column, line, &mods);
             });
         }
-        self.selecting = false;
-        self.drag_scroll = None;
+        self.finish_selection(cx);
     }
 
     /// 指针位置落在网格的哪个格子上、以及那格的哪半边（缓冲坐标，供选区用）。
@@ -1504,6 +1518,18 @@ impl TerminalPane {
         cell_at(position, &self.grid, emulator.read(cx).content())
     }
 
+    /// 复制当前选区；没有选区时保持剪贴板不变。
+    fn copy_selection(&self, cx: &mut Context<Self>) {
+        let Some(text) = self
+            .emulator
+            .as_ref()
+            .and_then(|emulator| emulator.read(cx).selected_text())
+        else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
     fn on_copy_selection(
         &mut self,
         _: &CopySelection,
@@ -1513,14 +1539,18 @@ impl TerminalPane {
         if !self.terminal_is_focused(window) {
             return;
         }
-        let Some(text) = self
-            .emulator
-            .as_ref()
-            .and_then(|emulator| emulator.read(cx).selected_text())
-        else {
+        self.copy_selection(cx);
+    }
+
+    /// 把剪贴板文本送进当前终端。
+    fn paste_clipboard(&self, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        let Some(emulator) = self.emulator.clone() else {
+            return;
+        };
+        emulator.update(cx, |emulator, cx| emulator.paste(&text, cx));
     }
 
     fn on_paste_clipboard(
@@ -1532,13 +1562,7 @@ impl TerminalPane {
         if !self.terminal_is_focused(window) {
             return;
         }
-        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-            return;
-        };
-        let Some(emulator) = self.emulator.clone() else {
-            return;
-        };
-        emulator.update(cx, |emulator, cx| emulator.paste(&text, cx));
+        self.paste_clipboard(cx);
     }
 
     /// 从 SFTP 面板拖远端文件落进这个终端：把路径做 shell 转义后按空格拼好粘进来，
@@ -1917,17 +1941,8 @@ impl TerminalPane {
             return;
         };
         match action {
-            TerminalAction::Copy => {
-                if let Some(text) = emulator.read(cx).selected_text() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                }
-            }
-            TerminalAction::Paste => {
-                let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-                    return;
-                };
-                emulator.update(cx, |emulator, cx| emulator.paste(&text, cx));
-            }
+            TerminalAction::Copy => self.copy_selection(cx),
+            TerminalAction::Paste => self.paste_clipboard(cx),
             TerminalAction::SelectAll => {
                 emulator.update(cx, |emulator, cx| emulator.select_all(cx));
             }
@@ -2170,8 +2185,13 @@ impl Render for TerminalPane {
             .children(self.render_search_bar(cx))
             // 拖远端文件的提示遮罩浮在最上面一格（absolute），作为最后一个可见层。
             .child(self.render_drop_overlay(cx))
-            .context_menu(self.context_menu_builder(cx))
-            .into_any_element()
+            .map(|grid| match right_click::global() {
+                RightClickMode::Menu => grid
+                    .context_menu(self.context_menu_builder(cx))
+                    .into_any_element(),
+                // 空 ContextMenu 不可见也会抢焦点，粘贴档不能挂它。
+                RightClickMode::Paste => grid.into_any_element(),
+            })
     }
 }
 

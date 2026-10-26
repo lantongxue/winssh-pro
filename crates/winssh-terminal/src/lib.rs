@@ -30,6 +30,7 @@ pub mod cursor;
 mod emulator;
 pub mod font;
 mod keys;
+pub mod right_click;
 pub mod scheme;
 mod search;
 mod semantic;
