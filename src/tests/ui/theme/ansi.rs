@@ -54,6 +54,37 @@
         assert_ne!(dark, light, "明暗两套得是不同的绿");
     }
 
+    /// 界面上的色条（选择器的触发行、预览页脚）取的是同一份 16 色：
+    /// 挑了方案就是那一套，跟随档就是界面主题明暗对应的那一套 ——
+    /// 自己照着 `Scheme::ansi16` 拼一份的话，跟随档就会画成一片空白。
+    #[gpui_kit::test]
+    fn ansi16_for_host_matches_what_the_grid_paints(cx: &mut gpui_kit::TestAppContext) {
+        let _guard = scheme::exclusive_for_test();
+        cx.update(gpui_kit::init);
+
+        let dracula = scheme::find("dracula").expect("内置方案");
+        scheme::set_global(dracula.id);
+        let picked = cx.update(|cx| ansi16_for_host("", cx));
+        assert_eq!(picked, dracula.ansi16, "跟随档下就是全局挑的那一套");
+
+        let host = cx.update(|cx| ansi16_for_host("nord", cx));
+        assert_eq!(
+            host,
+            scheme::find("nord").expect("内置方案").ansi16,
+            "主机自己挑的方案优先于全局"
+        );
+
+        // 全局也没挑：明暗两套跟着界面主题走，和网格那边取的是同一张表。
+        scheme::set_global("");
+        for (mode, table) in [(ThemeMode::Dark, DARK), (ThemeMode::Light, LIGHT)] {
+            let colors = cx.update(|cx| {
+                Theme::change(mode, None, cx);
+                ansi16_for_host("", cx)
+            });
+            assert_eq!(colors, table, "{mode:?} 下该用界面的那一套");
+        }
+    }
+
     /// WCAG 的相对亮度与对比度。"选没选上看得出来"与"字还读得清"两条
     /// 都按它钉。
     fn luminance(color: Hsla) -> f32 {

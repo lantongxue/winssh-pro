@@ -26,9 +26,10 @@ use gpui_kit::{
     rgb,
 };
 
+use crate::terminal::scheme;
 use crate::ui::{
     panels::SplitLayout,
-    theme::{AppIcon, palette},
+    theme::{AppIcon, ansi, palette},
 };
 use rust_i18n::t;
 
@@ -41,6 +42,17 @@ const DOT_SIZE: Pixels = px(6.);
 
 /// 这一条里图标的尺寸。26 高的条比列表窄，图标再收一档。
 const ICON_SIZE: Pixels = px(12.);
+
+/// 配色那一颗的方块尺寸。它不像别的按钮那样画图标 —— 自己就是一块样本，
+/// 所以按条高留出上下各 4px。
+const SWATCH_SIZE: Pixels = px(18.);
+
+/// 配色那一颗的测试探针名。
+///
+/// 它是一块自己画的方块，没有 `Button` 那样的元素 id 可查，而"这颗按钮
+/// 画没画出来"只有量一量才知道（见 [`crate::ui::panels::terminal`] 的测试
+/// —— 那条用例在标签页那一层，量不到这个模块的私有名）。
+pub(crate) const SCHEME_PROBE: &str = "session-info-scheme";
 
 type Handler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -61,6 +73,10 @@ pub struct SessionInfoBar {
     on_history: Option<Handler>,
     on_sftp: Option<Handler>,
     on_monitor: Option<Handler>,
+    on_scheme: Option<Handler>,
+    /// 这个终端现在用的是哪一套配色：方案 id，空串是"跟随全局"。
+    /// 它决定了那颗方块画成什么颜色（见 [`Self::render_scheme`]）。
+    scheme: SharedString,
     on_split: Option<Rc<SplitHandler>>,
     split: SplitLayout,
     monitor_active: bool,
@@ -86,6 +102,8 @@ impl SessionInfoBar {
             on_history: None,
             on_sftp: None,
             on_monitor: None,
+            on_scheme: None,
+            scheme: SharedString::default(),
             on_split: None,
             split: SplitLayout::default(),
             monitor_active: false,
@@ -184,6 +202,64 @@ impl SessionInfoBar {
     pub fn tunnels_count(mut self, count: usize) -> Self {
         self.tunnels_count = count;
         self
+    }
+
+    /// 这个终端现在用的是哪一套配色（方案 id，空串是"跟随全局"）。
+    pub fn scheme(mut self, scheme: impl Into<SharedString>) -> Self {
+        self.scheme = scheme.into();
+        self
+    }
+
+    /// 换这台会话的配色。没接这个回调就不画那一颗 —— 和右边其余几颗同一条
+    /// 规矩：本机 shell 没有主机记录，换出来的配色无处可存。
+    pub fn on_scheme(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_scheme = Some(Box::new(handler));
+        self
+    }
+
+    /// 配色那一颗。
+    ///
+    /// 它不是一颗画着图标的按钮，**它就是那块颜色本身**：该方案的底色打底、
+    /// 前景色写着 `Aa`，和设置页那一行的触发器、以及选择器里那片预览同一个
+    /// 样子。图标说明不了"现在用的是哪一套"，一块样本可以 —— 十二个终端并排
+    /// 摆着的时候，哪一块是 Dracula 一眼就认得出。
+    ///
+    /// 没接 [`Self::on_scheme`] 时不画（见 [`Self::render_tunnels`]）。
+    fn render_scheme(&mut self, cx: &App) -> Option<AnyElement> {
+        let handler = self.on_scheme.take()?;
+        let background = ansi::background_for_host(&self.scheme, cx);
+        let foreground = ansi::AnsiPalette::for_host(&self.scheme, cx).foreground();
+        // 空串是"跟随全局"：这一档没有自己的名字，写它跟的是哪一档。
+        // 文案借主机表单那一份（"跟随全局"）—— 全局设置页那一份叫"跟随界面
+        // 主题"，那是**站在全局设置页**说的，从这个终端的角度看是另一件事。
+        let name = match scheme::find(&self.scheme) {
+            Some(scheme) => SharedString::from(scheme.name),
+            None => SharedString::from(t!("host_form.terminal_scheme_follow")),
+        };
+        let tooltip = SharedString::from(t!("session_info.scheme_tooltip", name => name));
+
+        Some(
+            div()
+                .id("session-info-scheme")
+                .debug_selector(|| SCHEME_PROBE.to_owned())
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(SWATCH_SIZE)
+                .rounded_sm()
+                .border_1()
+                .border_color(cx.theme().border)
+                .bg(background)
+                .hover(|this| this.border_color(cx.theme().ring))
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                .on_click(handler)
+                .child(div().text_size(px(8.)).text_color(foreground).child("Aa"))
+                .into_any_element(),
+        )
     }
 
     /// 分屏那一组：单屏 / 上下 / 左右，三选一。
@@ -385,6 +461,7 @@ impl RenderOnce for SessionInfoBar {
         let history = self.render_history(cx);
         let sftp = self.render_sftp(cx);
         let monitor = self.render_monitor(cx);
+        let scheme = self.render_scheme(cx);
 
         h_flex()
             .flex_shrink_0()
@@ -460,6 +537,7 @@ impl RenderOnce for SessionInfoBar {
                     .children(history)
                     .children(sftp)
                     .children(monitor)
+                    .children(scheme)
                     .child(
                         Button::new("session-info-copy")
                             .ghost()

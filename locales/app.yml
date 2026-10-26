@@ -192,6 +192,12 @@ session_info.monitor_hide:
 session_info.monitor_show:
   en: Show right-side monitor (Alt+M)
   zh-CN: 显示右侧资源监控（Alt+M）
+session_info.scheme:
+  en: Color scheme
+  zh-CN: 配色方案
+session_info.scheme_tooltip:
+  en: "Color scheme: %{name} (click to change)"
+  zh-CN: "配色方案：%{name}（点击更换）"
 session_info.history:
   en: History
   zh-CN: 命令历史
@@ -400,6 +406,21 @@ settings.terminal_scheme_light:
 settings.terminal_scheme_search:
   en: Search themes…
   zh-CN: 搜索主题…
+scheme_picker.confirm:
+  en: OK
+  zh-CN: 确定
+scheme_picker.cancel:
+  en: Cancel
+  zh-CN: 取消
+scheme_picker.hint_settings:
+  en: Click a scheme to preview it here — nothing changes until you press OK.
+  zh-CN: 点一套只换上面的预览，按确定才真的换。
+scheme_picker.hint_host_form:
+  en: Pick one — it is saved together with the host.
+  zh-CN: 选中后点确定，保存主机时一并存下。
+scheme_picker.hint_session:
+  en: Click a scheme to preview it here; OK switches this session and saves it to the host.
+  zh-CN: 点一套只换上面的预览，按确定才换这条会话并存到主机上。
 settings.terminal_font:
   en: Font
   zh-CN: 字体
@@ -3908,6 +3929,9 @@ terminal.save_forwards_failed:
 terminal.save_shell_integration_failed:
   en: "Shell integration is active in this session, but the setting could not be saved: %{error}"
   zh-CN: shell 集成在当前会话中已生效，但开关未保存：%{error}
+terminal.save_terminal_scheme_failed:
+  en: "The scheme is active in this session, but it could not be saved to this host: %{error}"
+  zh-CN: 配色在当前会话中已生效，但没存到这台主机上：%{error}
 terminal.banner_local_ready:
   en: Local shell is ready.
   zh-CN: 本机 Shell 已就绪。

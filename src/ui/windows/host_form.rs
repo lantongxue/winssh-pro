@@ -22,11 +22,12 @@
 //! 分组并选中新主机，编辑完刷新列表与右侧的信息面板。落库是事务式的 —— 新建时那条
 //! 记录还不存在，改不了即存，所以底部留一个显式的保存按钮。
 
+use std::rc::Rc;
+
 use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Icon, IconName, IndexPath, Root, Sizable as _, StyledExt as _,
     TitleBar, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
-    combobox::{Combobox, ComboboxState},
     group_box::GroupBoxVariant,
     h_flex,
     input::{Input, InputContentType, InputEvent, InputState, Textarea, TextareaState},
@@ -43,7 +44,7 @@ use gpui_kit::{
 
 use crate::{
     credential::{Credential, CredentialKind},
-    ui::pickers::scheme_picker::{SchemePickerDelegate, scheme_picker},
+    ui::pickers::scheme_picker::{SchemePicker, SchemePickerOptions, scheme_trigger},
     easytier::{
         DEFAULT_LISTEN_PORT, DEFAULT_SOCKS5_PORT, EasyTierAccess, EasyTierSettings, split_lines,
     },
@@ -57,6 +58,7 @@ use crate::{
         SerialSettings, SerialStopBits,
     },
     service::{HostService, LocalFileService, SerialService, SshService},
+    terminal::scheme,
     webdav::{AuthMode, WebdavSettings},
     ui::{
         theme::{AppIcon, appearance, palette},
@@ -502,10 +504,10 @@ pub struct HostForm {
     /// 同上，SSH 私钥那一档。
     vault_keys: Vec<Credential>,
     vault_key_pick: Entity<SelectState<Vec<SharedString>>>,
-    /// 终端主题那一格的选择器（可搜索、每行 16 色预览，见
-    /// [`crate::ui::pickers::scheme_picker`]）。选中的是方案 id，空串那一条
-    /// 是"跟随全局"；换选不落库，跟着"保存"一起走 —— `build_draft` 现读。
-    terminal_scheme: Entity<ComboboxState<SchemePickerDelegate>>,
+    /// 终端主题那一格的值：方案 id，空串是"跟随全局"。挑一次点开的是那个
+    /// 左右分栏、带真终端预览的选择器（见 [`crate::ui::pickers::scheme_picker`]）。
+    /// 它不落库，跟着"保存"一起走 —— `build_draft` 现读。
+    terminal_scheme: SharedString,
 }
 
 impl HostForm {
@@ -571,19 +573,12 @@ impl HostForm {
         };
 
         // 终端主题：编辑时带走这台主机自己挑的那一份，新建是"跟随全局"。
-        // 认不出的 id（那一套后来被剔了）由选择器兜回"跟随全局"那一行。
-        let initial_terminal_scheme = match editing {
-            Some((host, _)) => host.terminal_scheme.to_string(),
-            None => String::new(),
+        // 认不出的 id（那一套后来被剔了）交给选择器与触发器兜底 ——
+        // 两边都按"跟随全局"那一档画，不会在格子空着。
+        let terminal_scheme = match editing {
+            Some((host, _)) => host.terminal_scheme.clone(),
+            None => SharedString::default(),
         };
-        let terminal_scheme = scheme_picker(
-            t!("host_form.terminal_scheme_follow"),
-            &initial_terminal_scheme,
-            // 换选不落库：主机表单是显式保存，build_draft 提交时才读它。
-            |_, _| {},
-            window,
-            cx,
-        );
 
         let name = cx.new(|cx| {
             InputState::new(window, cx)
@@ -1810,12 +1805,13 @@ impl HostForm {
                 ftp: self.selected_ftp(cx),
                 webdav: self.selected_webdav(cx),
                 sftp,
-                terminal_scheme: self
-                    .terminal_scheme
-                    .read(cx)
-                    .selected_value()
-                    .map(|id| id.to_string())
-                    .unwrap_or_default(),
+                // 认不出的 id（那一套后来被剔了）不写回库里，顺带把别名收成
+                // 正名（`one_dark_pro` → `one_dark`）：它在库里谁都画不出来，
+                // 留着等于给这台主机存了个空档。
+                terminal_scheme: match scheme::find(&self.terminal_scheme) {
+                    Some(scheme) => scheme.id.to_string(),
+                    None => String::new(),
+                },
             },
         ))
     }
@@ -2264,16 +2260,45 @@ impl HostForm {
         )
     }
 
-    /// 终端主题那一格：两百来套方案的可搜索选择器，每行带 16 色预览。选中
-    /// 的是方案 id，空串那一条是"跟随全局"（保存时机见 [`Self::terminal_scheme`]）。
+    /// 终端主题那一格：一条触发行（当前那套的底色、前景与 16 色都在上面），
+    /// 点开是那个左右分栏、带真终端预览的选择器。值是方案 id，空串是
+    /// "跟随全局"（保存时机见 [`Self::terminal_scheme`]）。
     fn render_terminal_scheme(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = self.terminal_scheme.clone();
+        let follow = SharedString::from(t!("host_form.terminal_scheme_follow").to_string());
+        let open_selected = selected.clone();
+        let open_follow = follow.clone();
+        let form = cx.entity();
+
         field(
             t!("host_form.terminal_scheme").into(),
-            Combobox::new(&self.terminal_scheme)
-                .w_full()
-                .menu_width(px(420.))
-                .menu_max_h(px(320.))
-                .search_placeholder(t!("settings.terminal_scheme_search")),
+            scheme_trigger(
+                "host-form-terminal-scheme",
+                selected,
+                follow,
+                move |_, window, cx| {
+                    let form = form.clone();
+                    SchemePicker::open(
+                        SchemePickerOptions {
+                            title: t!("host_form.terminal_scheme").to_string().into(),
+                            follow_label: open_follow.clone(),
+                            hint: t!("scheme_picker.hint_host_form").to_string().into(),
+                            selected: open_selected.clone(),
+                            // 主机表单是显式保存：确定才把值写进表单，
+                            // 再跟"保存"一起落库。
+                            on_confirm: Rc::new(move |id, _, cx| {
+                                form.update(cx, |this, cx| {
+                                    this.terminal_scheme = id;
+                                    cx.notify();
+                                });
+                            }),
+                        },
+                        window,
+                        cx,
+                    );
+                },
+                cx,
+            ),
             cx,
         )
     }

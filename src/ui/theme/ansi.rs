@@ -80,6 +80,22 @@ pub fn background_for_host(host_scheme: &str, cx: &App) -> Hsla {
     }
 }
 
+/// 这一档方案的 16 色，给界面上的色条用（选择器的触发行与预览页脚）。
+///
+/// 取法与 [`background_for_host`] 同一条链：主机挑的优先，没挑跟全局，全局也
+/// 没挑就是跟随界面主题那一套。**必须走这个入口**，不能在别处照着
+/// [`Scheme::ansi16`] 自己拼一份 —— 跟随档在 [`scheme::find`] 里查不到，
+/// 自己拼就会漏掉它在界面上显出来的颜色。
+pub fn ansi16_for_host(host_scheme: &str, cx: &App) -> [u32; 16] {
+    match scheme::find(host_scheme).or_else(scheme::active) {
+        Some(scheme) => scheme.ansi16,
+        None => match cx.theme().mode.is_dark() {
+            true => DARK,
+            false => LIGHT,
+        },
+    }
+}
+
 /// 搜索命中的那两档底色：其余命中、当前那一个。
 ///
 /// 不跟着配色方案走 —— 那是界面给的一个提示，不是程序输出的一部分。

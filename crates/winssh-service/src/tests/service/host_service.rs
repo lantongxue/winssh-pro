@@ -620,6 +620,40 @@
         });
     }
 
+    /// 会话里换的配色存得住、读得回，空串也写得进去。
+    ///
+    /// 空串那一条要钉死：它是"跟随全局"这个词本身，不是"没值"。真写不进去的
+    /// 话，用户在会话里挑回跟随、下次连上却还是上一次挑的那一套。
+    #[test]
+    fn the_terminal_scheme_round_trips_and_the_empty_value_means_follow() {
+        db::runtime().block_on(async {
+            let service = service().await;
+            let host = service.insert_host("分组", draft("web-01")).await.unwrap();
+            assert_eq!(host.terminal_scheme, "", "新主机跟随全局");
+
+            service
+                .update_terminal_scheme(&host.id, "dracula")
+                .await
+                .unwrap();
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].terminal_scheme, "dracula");
+
+            service
+                .update_terminal_scheme(&host.id, "")
+                .await
+                .unwrap();
+            let groups = service.load_groups().await.unwrap();
+            assert_eq!(groups[0].hosts[0].terminal_scheme, "");
+
+            // 库里没有这台主机时要说出来，不能悄悄什么都没做 —— 会话那一头
+            // 等的是这一声，它好弹一句"配色只在本次会话里生效"。
+            assert!(
+                service.update_terminal_scheme("查无此机", "dracula").await.is_err(),
+                "主机不存在时应当报错"
+            );
+        });
+    }
+
     /// 主机表单不认这一列，改一次连接配置不该把开关抹掉 ——
     /// 和采集节奏、转发规则是同一条边界。
     #[test]

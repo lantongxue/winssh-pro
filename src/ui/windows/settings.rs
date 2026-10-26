@@ -25,7 +25,6 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputContentType, InputEvent, InputState, NumberInput},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
-    combobox::{Combobox, ComboboxState},
     setting::{
         RenderOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
     },
@@ -54,7 +53,7 @@ use crate::terminal::scheme;
 use crate::ui::cards::ProviderCard;
 use crate::ui::dialogs::{BackupRestoreDialog, UpdateDialog};
 use crate::ui::forms::{ModelCancelHandler, ModelForm, ModelSavedHandler};
-use crate::ui::pickers::scheme_picker::{SchemePickerDelegate, scheme_picker};
+use crate::ui::pickers::scheme_picker::{SchemePicker, SchemePickerOptions, scheme_trigger};
 use crate::ui::theme::{AppIcon, appearance, palette};
 use crate::zmodem::config as zmodem_config;
 use rust_i18n::t;
@@ -152,7 +151,7 @@ pub fn persist_assistant_config(config: AssistantConfig, cx: &mut App) {
     .detach();
 }
 
-/// 换掉终端配色方案。缓存立刻生效、重画所有窗口、落库派到后台，
+/// 换掉终端配色方案并落库。缓存立刻生效、重画所有窗口、落库派到后台，
 /// 三步都同 [`persist_terminal_font`]。
 fn persist_terminal_scheme(id: SharedString, cx: &mut App) {
     scheme::set_global(&id);
@@ -165,6 +164,25 @@ fn persist_terminal_scheme(id: SharedString, cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// 打开终端配色选择器：左栏一列可搜索的方案，右栏一整片真终端预览
+/// （见 [`crate::ui::pickers::scheme_picker`]）。
+///
+/// 只有"确定"会走到这儿 —— 选中本身只换选择器里那片预览，开着的终端一直等到
+/// 落了库、重画过窗口才跟着换。
+fn open_scheme_picker(window: &mut Window, cx: &mut App) {
+    SchemePicker::open(
+        SchemePickerOptions {
+            title: t!("settings.terminal_scheme").to_string().into(),
+            follow_label: t!("settings.terminal_scheme_follow").to_string().into(),
+            hint: t!("scheme_picker.hint_settings").to_string().into(),
+            selected: scheme::global(),
+            on_confirm: Rc::new(|id, _, cx| persist_terminal_scheme(id, cx)),
+        },
+        window,
+        cx,
+    );
 }
 
 /// 换掉自动更新的偏好。缓存立刻生效、落库派到后台；不用重画窗口 ——
@@ -310,10 +328,6 @@ pub struct SettingsWindow {
     /// 全局代理那四格，见 [`ProxyInputs`]。
     proxy: ProxyInputs,
     _proxy_inputs: Vec<Subscription>,
-    /// 终端配色那一格的选择器（组件库 Combobox 那一档）。两百来套方案要
-    /// 搜索、要看色块预览，是终端页里状态最重的一个控件 —— 归这扇窗持有，
-    /// 切走再回来还是同一份，跟代理那四格一个道理。
-    terminal_scheme: Entity<ComboboxState<SchemePickerDelegate>>,
     /// 智能助手页上打开的是哪一家服务商（[`Provider::id`]）的详情。
     /// `None` 是服务商列表页；`Some` 但 id 已经找不到（刚被删了）时也回退列表。
     assistant_detail: Option<String>,
@@ -844,16 +858,6 @@ impl SettingsWindow {
             .into_iter()
             .collect();
 
-        // 配色那一格同代理那四格：起笔读进程缓存（启动时 prime 灌过），
-        // 换选即存（订阅在工厂里装好了）。
-        let terminal_scheme = scheme_picker(
-            t!("settings.terminal_scheme_follow"),
-            &scheme::global(),
-            |id, cx| persist_terminal_scheme(id, cx),
-            window,
-            cx,
-        );
-
         // 同代理那四格：读进程缓存，不再查一次库。每一格只写自己那个字段，
         // 理由见 [`AssistantInputs`]。进详情页时再照那一家重填。
         let assistant = AssistantInputs::new(None, window, cx);
@@ -911,7 +915,6 @@ impl SettingsWindow {
             _appearance,
             proxy,
             _proxy_inputs,
-            terminal_scheme,
             assistant_detail: None,
             assistant,
             _assistant_inputs,
@@ -1121,17 +1124,22 @@ impl SettingsWindow {
                     .title(t!("settings.terminal_appearance"))
                     .item(SettingItem::new(
                         t!("settings.terminal_scheme"),
-                        // 两百来套内置方案，纯下拉翻不动：走可搜索的 Combobox，
-                        // 每行带 16 色预览（见 [`scheme_picker`]）。
-                        SettingField::render({
-                            let picker = self.terminal_scheme.clone();
-                            move |_, _, _| {
-                                Combobox::new(&picker)
-                                    .w_full()
-                                    .menu_width(px(420.))
-                                    .menu_max_h(px(320.))
-                                    .search_placeholder(t!("settings.terminal_scheme_search"))
-                            }
+                        // 两百来套内置方案摆不平一列下拉，所以这一格只摆一条
+                        // 触发行（当前那套的底色、前景与 16 色都在上面），点开
+                        // 才是那个左右分栏、带真终端预览的选择器
+                        // （见 [`crate::ui::pickers::scheme_picker`]）。
+                        SettingField::render(|_, _, cx: &mut App| {
+                            h_flex().w_full().justify_end().child(
+                                div().w(px(260.)).child(scheme_trigger(
+                                    "settings-terminal-scheme",
+                                    scheme::global(),
+                                    SharedString::from(
+                                        t!("settings.terminal_scheme_follow").to_string(),
+                                    ),
+                                    |_, window, cx| open_scheme_picker(window, cx),
+                                    cx,
+                                )),
+                            )
                         }),
                     ))
                     .item(SettingItem::new(

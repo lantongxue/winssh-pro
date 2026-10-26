@@ -65,6 +65,7 @@ use crate::{
             ShellIntegrationHandler, ZmodemTransferDialog,
         },
         panels::{MonitorEvent, MonitorPanel, SftpPanel, SftpPanelEvent},
+        pickers::scheme_picker::{SchemePicker, SchemePickerOptions},
         theme::palette,
     },
 };
@@ -1118,6 +1119,81 @@ impl TerminalPanel {
         .detach();
     }
 
+    /// 打开配色选择器：左栏一列可搜索的方案，右栏一整片真终端预览。
+    ///
+    /// 只有"确定"会走到这儿：选中本身只换选择器里那片预览，这条会话的终端
+    /// 一直等到点了确定才跟着换（见 [`Self::save_terminal_scheme`]）。
+    fn open_scheme_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 这个回调不走 `cx.listener`：它把参数递成 `&SharedString`，而选择器
+        // 给的是值（选中的 id 是它自己挪出来的一份）。拿实体自己 update 更直白。
+        let panel = cx.entity();
+        let on_confirm: Rc<dyn Fn(SharedString, &mut Window, &mut App)> = Rc::new(move |id, window, cx| {
+            panel.update(cx, |this, cx| this.save_terminal_scheme(id, window, cx));
+        });
+
+        SchemePicker::open(
+            SchemePickerOptions {
+                title: t!("session_info.scheme").to_string().into(),
+                // 这一档借主机表单那一份文案：站在一台终端上说"跟随全局"，
+                // 跟的是设置页里挑的那一套（全局也没挑就还是界面主题）。
+                follow_label: t!("host_form.terminal_scheme_follow").to_string().into(),
+                hint: t!("scheme_picker.hint_session").to_string().into(),
+                selected: self.host.terminal_scheme.clone(),
+                on_confirm,
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// 换这条会话的配色，先在本会话里生效。
+    ///
+    /// 新值推给**每一个**窗格，不只是活动的那一半：分屏出来的两条 shell 各自
+    /// 画各自的网格，只推一半的话，另一半点亮着的还是旧配色（同
+    /// [`Self::save_shell_integration`]）。
+    fn apply_session_scheme(&mut self, scheme: SharedString, cx: &mut Context<Self>) {
+        self.host.terminal_scheme = scheme.clone();
+        for pane in self.panes.clone() {
+            pane.update(cx, |pane, cx| pane.set_terminal_scheme(scheme.clone(), cx));
+        }
+        cx.notify();
+    }
+
+    /// 换配色并写回这台主机。
+    ///
+    /// 顺序和保存转发规则、保存 shell 集成一样：先在本会话里生效，再落库。
+    /// 落库失败只报一声 —— 颜色已经换了，用户看得见，那一句说的是"下次连上
+    /// 不一定是这一套"。
+    fn save_terminal_scheme(
+        &mut self,
+        scheme: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_session_scheme(scheme.clone(), cx);
+
+        let Some(hosts) = self.hosts.clone() else {
+            // 本机 Shell 没有主机记录。这一档根本走不到（那颗按钮跟着 `hosts`
+            // 走），留着是为了万一将来走得到时不会悄悄丢掉。
+            return;
+        };
+        let id = self.host.id.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = hosts.update_terminal_scheme(&id, &scheme).await;
+            this.update_in(cx, |_, window, cx| match outcome {
+                // 落库了才报：主机列表听见这一声会回库里重读一份快照
+                // （[`SessionEvent::HostChanged`]），跟 shell 集成那一条同理。
+                Ok(()) => cx.emit(SessionEvent::HostChanged),
+                Err(error) => window.push_notification(
+                    t!("terminal.save_terminal_scheme_failed", error => format!("{error:#}")),
+                    cx,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// 展开或收起右侧监控面板。
     ///
     /// 收起之后采集不停 —— 状态栏中间那三个数字一直看得见，而它们来自同一次
@@ -1372,6 +1448,10 @@ impl Render for TerminalPanel {
         let split = self.split;
         let over_ssh = self.source.over_ssh();
         let has_history = self.history.is_some();
+        // 库里有没有这台主机。信息栏上"命令历史"与"配色"那两颗都跟着它走
+        // （`history` 是 `hosts` 的派生，见 [`Self::history`]），但分成两个
+        // 名字读：将来哪一颗松了绑，不至于顺手把另一颗也带过去。
+        let saved_host = self.hosts.is_some();
         let sftp_open = self.sftp_open;
         let tunnels = self.active_forwards();
         let terminal = self.render_panes(window, cx);
@@ -1424,6 +1504,14 @@ impl Render for TerminalPanel {
                     bar.on_history(cx.listener(|this, _, window, cx| {
                         this.open_history(window, cx);
                     }))
+                })
+                // 配色那一颗跟着"库里有没有这台主机"走，同命令历史那一颗。
+                // 本机 shell 换出来的配色无处可存，那一档就不摆这颗按钮。
+                .when(saved_host, |bar| {
+                    bar.scheme(self.host.terminal_scheme.clone())
+                        .on_scheme(cx.listener(|this, _, window, cx| {
+                            this.open_scheme_picker(window, cx);
+                        }))
                 })
                 .on_copy(cx.listener(|this, _: &ClickEvent, _, cx| this.copy_all(cx)))
                 .on_clear(cx.listener(|this, _: &ClickEvent, _, cx| this.clear(cx))),

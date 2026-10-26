@@ -1,5 +1,8 @@
     use super::*;
 
+    use crate::service::HostService;
+    use crate::ui::bars::SCHEME_PROBE;
+
     /// 把这一栏完整画一遍：layout → prepaint → paint 全走完。
     ///
     /// 存在的理由是一次真的翻车：把终端拆成 [`TerminalPane`] 之后元素树深了
@@ -48,6 +51,79 @@
         });
         // 再画一帧：理由同 [`the_panel_draws_all_the_way_through`]。
         cx.update(|window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// 库里有这台主机时，信息栏上多一颗配色按钮；本机 shell 那一档不摆。
+    ///
+    /// 它和命令历史那一颗跟着同一个条件（`saved_host`），走的却是另一条分支，
+    /// 不专门画一遍就没有用例走到它。反面同样要钉：本机 shell 没有主机记录，
+    /// 换出来的配色无处可存 —— 摆一颗存不下去的按钮比不摆更让人困惑。
+    #[gpui_kit::test]
+    fn a_session_backed_by_a_host_record_draws_its_scheme_button(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        // 开窗之前把这一下阻塞做完，之后一次异步都不能再发
+        // （见 [`HostService::in_memory_blocking`]）。
+        let hosts = HostService::in_memory_blocking();
+        let (panel, cx) = draw_panel(cx);
+
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds(SCHEME_PROBE).is_none(),
+            "本机 shell 不该摆配色那一颗"
+        );
+
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.hosts = Some(hosts);
+                panel.host.terminal_scheme = "dracula".into();
+                cx.notify();
+            });
+            window.draw(cx).clear(cx);
+        });
+        // 再画一帧：理由同 [`the_panel_draws_all_the_way_through`]。
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let bounds = cx
+            .debug_bounds(SCHEME_PROBE)
+            .expect("库里有这台主机时该摆出配色那一颗");
+        assert!(
+            bounds.size.width > px(0.) && bounds.size.height > px(0.),
+            "配色那一颗被压没了（{:?}）",
+            bounds.size
+        );
+    }
+
+    /// 换配色要推给**每一个**窗格，不只是活动的那一半。
+    ///
+    /// 窗格手上那份 `Host` 是构造时拷的一份快照，靠标签页推下去才跟着变
+    /// （见 [`TerminalPane::set_terminal_scheme`]）。只推一半的话，分屏出来的
+    /// 另一半会一直画着开会话那一刻的配色 —— 两半并排摆着，一眼就看得出来。
+    #[gpui_kit::test]
+    fn switching_the_scheme_reaches_every_pane(cx: &mut gpui_kit::TestAppContext) {
+        let (panel, cx) = draw_panel(cx);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_split(SplitLayout::Rows, window, cx)
+            })
+        });
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.apply_session_scheme("dracula".into(), cx)
+            })
+        });
+
+        panel.read_with(cx, |panel, cx| {
+            assert_eq!(panel.panes.len(), 2, "这一档是上下两半");
+            assert_eq!(panel.host.terminal_scheme, "dracula");
+            for (ix, pane) in panel.panes.iter().enumerate() {
+                assert_eq!(
+                    pane.read(cx).terminal_scheme(),
+                    "dracula",
+                    "第 {ix} 半没跟上"
+                );
+            }
+        });
     }
 
     /// 三档分屏都要画得出来，包括中间那条拖得动的分隔条。

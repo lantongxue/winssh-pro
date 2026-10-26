@@ -826,6 +826,30 @@ impl TerminalPane {
         }
     }
 
+    /// 这台主机的终端配色换了，标签页把新值推下来。
+    ///
+    /// 同 [`Self::set_shell_integration`]：窗格手上那份 `Host` 是构造时拷的一份
+    /// 快照，不推的话它会一直画着开会话那一刻的配色。这一格每帧都要读
+    /// （`AnsiPalette::for_host` 与铺底色那一处），所以推完还得通知重画 ——
+    /// 不通知的话满屏格子还是旧色，只有新开的标签页是新配色。
+    pub fn set_terminal_scheme(&mut self, scheme: SharedString, cx: &mut Context<Self>) {
+        if self.host.terminal_scheme == scheme {
+            return;
+        }
+        self.host.terminal_scheme = scheme;
+        cx.notify();
+    }
+
+    /// 测试用：窗格手上那份主机的配色。
+    ///
+    /// 私有的，只有[标签页那边的用例]量得到 —— 那一条钉的是"推给每一个窗格"，
+    /// 只推活动那一半的话另一半的配色会一直停在开会话那一刻。
+    /// [标签页那边的用例]: crate::ui::panels::terminal::tests
+    #[cfg(test)]
+    pub(crate) fn terminal_scheme(&self) -> &SharedString {
+        &self.host.terminal_scheme
+    }
+
     /// 往这条 shell 里装一份 OSC 133 集成。
     ///
     /// 就是把 [`shell_integration::SCRIPT`] 当成一条用户敲的命令送进去，所以
