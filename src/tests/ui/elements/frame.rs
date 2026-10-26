@@ -1,6 +1,6 @@
     use super::*;
     use gpui_kit::{
-        Context, Render, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext,
+        Context, Render, ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext,
     };
     use image::{Frame, RgbaImage};
 
@@ -110,7 +110,7 @@
         let before = display.get().expect("frame was painted");
 
         for delta in [point(px(-30.), px(0.)), point(px(0.), px(-20.))] {
-            cx.simulate_event(ScrollWheelEvent {
+            cx.simulate_event(ScrollEvent {
                 position: point(px(10.), px(10.)),
                 delta: ScrollDelta::Pixels(delta),
                 ..Default::default()

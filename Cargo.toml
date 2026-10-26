@@ -109,7 +109,7 @@ anyhow = "1"
 # 才真的高亮。代价是这些语法的 tree-sitter 语法是 C crate，首次要多编一会儿、二进制
 # 大几 MB —— 想瘦身就把这一行换成精选子集（如只留 tree-sitter-bash / -python / -yaml…），
 # 未知语言本就优雅退化为纯文本，改不改都不影响正确性。
-gpui-kit = { path = "refs/gpui-kit/crates/kit", version = "0.7.1", features = ["tree-sitter-languages"] }
+gpui-kit = { path = "refs/gpui-kit/crates/kit", version = "0.8.1", features = ["tree-sitter-languages"] }
 
 # 帧率浮层（设置里那个"FPS 监控"开关点亮的那块 HUD）。读数来自 gpui 自己的
 # 帧追踪（`gpui::FrameTimingCollector`），量的是框架真正花在 `Window::draw`
@@ -117,7 +117,7 @@ gpui-kit = { path = "refs/gpui-kit/crates/kit", version = "0.7.1", features = ["
 # 不要 SDK 也不要提权。和 gpui-kit 同一个仓库、同一个版本号，因此钉在同一份
 # `gpui-pre` 快照上 —— 这是它能用的前提：换一份 gpui 就是两套不兼容的 `Window`
 # 类型，报错还只说类型对不上，不说版本。走本地检出与 gpui-kit 一致。
-gpui-fps = { path = "refs/gpui-kit/crates/fps", version = "0.7.1" }
+gpui-fps = { path = "refs/gpui-kit/crates/fps", version = "0.8.1" }
 
 # 终端内核。VT 解析、屏幕缓冲、滚动回卷与 PTY 都由 alacritty 提供。
 # 用的是 zed 的那个 fork，rev 与 `refs/zed` 自己钉的一致（见 refs/alacritty）：
@@ -668,7 +668,7 @@ flate2 = { workspace = true }
 # rustcrypto-ff/group/ff_derive 0.14.0-rc.x）在 picky/sspi 的补丁里只去掉
 # `=`，保留预发布版本号 —— russh 那条链不用它们，图上只有这一份。
 #
-# 最后两处是 GPUI 本体（gpui-kit 钉的 `=0.3.9` 快照），给它补一档"应用给的光标
+# 最后两处是 GPUI 本体（gpui-kit 钉的 `=0.3.10` 快照），给它补一档"应用给的光标
 # 位图"：RDP 的远端光标要当成真正的系统光标用（反色、隐藏、零延迟跟手），
 # 而 GPUI 只有一张固定的 `CursorStyle` 表。`vendor/gpui-pre` 加接口（按 hitbox
 # 登记一张光标图，平台不支持时退回样式），`vendor/gpui-pre-windows` 用

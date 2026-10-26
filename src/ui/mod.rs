@@ -55,10 +55,22 @@ use workspace::{
 };
 
 /// 主修饰键：macOS 用 Command，其余平台用 Ctrl。
-#[cfg(target_os = "macos")]
-const CMD: &str = "cmd";
-#[cfg(not(target_os = "macos"))]
-const CMD: &str = "ctrl";
+/// `KeyBinding::new` 只接受静态按键文本，因此在编译期拼好完整键位。
+macro_rules! command_key {
+    ($name:ident, $key:literal) => {
+        #[cfg(target_os = "macos")]
+        const $name: &str = concat!("cmd-", $key);
+        #[cfg(not(target_os = "macos"))]
+        const $name: &str = concat!("ctrl-", $key);
+    };
+}
+command_key!(CMD_K, "k");
+command_key!(CMD_B, "b");
+command_key!(CMD_COMMA, ",");
+command_key!(CMD_W, "w");
+command_key!(CMD_S, "s");
+command_key!(CMD_A, "a");
+command_key!(CMD_C, "c");
 
 /// VNC 面板的按键上下文，和 [`VncPanel`](panels::VncPanel) 里那句
 /// `key_context` 同一个名字。
@@ -87,17 +99,17 @@ pub fn init(cx: &mut App) {
 /// 以及 `gpui_kit::init` 更早注册的那些（`Root` 的 tab / 复制）。
 fn bindings() -> Vec<KeyBinding> {
     let mut bindings = vec![
-        KeyBinding::new(&format!("{CMD}-k"), ToggleCommandPalette, None),
-        KeyBinding::new(&format!("{CMD}-b"), ToggleSidebar, None),
-        KeyBinding::new(&format!("{CMD}-,"), OpenSettingsWindow, None),
+        KeyBinding::new(CMD_K, ToggleCommandPalette, None),
+        KeyBinding::new(CMD_B, ToggleSidebar, None),
+        KeyBinding::new(CMD_COMMA, OpenSettingsWindow, None),
         KeyBinding::new("alt-3", OpenVaultWindow, None),
         KeyBinding::new("alt-4", OpenTrustedHosts, None),
-        KeyBinding::new(&format!("{CMD}-w"), ClosePanel, None),
+        KeyBinding::new(CMD_W, ClosePanel, None),
         KeyBinding::new("shift-escape", ToggleZoom, None),
         // 远端文件编辑标签页里的保存。绑在 `SftpEditor` 上下文而不是全局：焦点落在编辑器
         // （它是那个面板的孩子）里时冒泡上来命中；别处（终端、表格）的 cmd-s 不受影响。
         // 编辑器内层是 `Input` 上下文、不绑 cmd-s，所以让得开。
-        KeyBinding::new(&format!("{CMD}-s"), SaveFile, Some("SftpEditor")),
+        KeyBinding::new(CMD_S, SaveFile, Some("SftpEditor")),
         // 终端内的 Tab / Shift-Tab：必须在 `Terminal` 上下文中显式绑定并消费，
         // 否则会被 `Root` 的 `Tab`（焦点切换）抢走，终端永远收不到 `\x09` / `\x1b[Z`。
         KeyBinding::new("tab", Tab, Some("Terminal")),
@@ -124,15 +136,19 @@ fn bindings() -> Vec<KeyBinding> {
         // shift-up/down 在单行框里没有监听，派空了也照样放行）就会轮到浅处的下
         // 一条 —— 于是路径栏里敲回车会把选中的文件打开。输入框自己的 `cmd-a`
         // 仍然归它（`Input` 上下文更靠里）。
-        KeyBinding::new(&format!("{CMD}-a"), SelectAllEntries, Some("SftpPanel > DataTable")),
+        KeyBinding::new(CMD_A, SelectAllEntries, Some("SftpPanel > DataTable")),
         KeyBinding::new("shift-up", ExtendSelectionUp, Some("SftpPanel > DataTable")),
-        KeyBinding::new("shift-down", ExtendSelectionDown, Some("SftpPanel > DataTable")),
+        KeyBinding::new(
+            "shift-down",
+            ExtendSelectionDown,
+            Some("SftpPanel > DataTable"),
+        ),
         KeyBinding::new("enter", OpenSelection, Some("SftpPanel > DataTable")),
         // 终端里的复制粘贴。`ctrl-c` / `ctrl-v` 在终端里是中断和控制字符，
         // 不能拿来当复制粘贴，所以非 macOS 平台也走 `ctrl-shift-*`
         // —— 各家终端都是这么让开的。
         #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-c", CopySelection, None),
+        KeyBinding::new(CMD_C, CopySelection, None),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-v", PasteClipboard, None),
         #[cfg(not(target_os = "macos"))]
@@ -176,15 +192,15 @@ fn bindings() -> Vec<KeyBinding> {
             KeyBinding::new("alt-3", NoAction, Some(context)),
             KeyBinding::new("alt-4", NoAction, Some(context)),
             #[cfg(not(target_os = "macos"))]
-            KeyBinding::new(&format!("{CMD}-c"), NoAction, Some(context)),
+            KeyBinding::new(CMD_C, NoAction, Some(context)),
             #[cfg(not(target_os = "macos"))]
-            KeyBinding::new(&format!("{CMD}-k"), NoAction, Some(context)),
+            KeyBinding::new(CMD_K, NoAction, Some(context)),
             #[cfg(not(target_os = "macos"))]
-            KeyBinding::new(&format!("{CMD}-b"), NoAction, Some(context)),
+            KeyBinding::new(CMD_B, NoAction, Some(context)),
             #[cfg(not(target_os = "macos"))]
-            KeyBinding::new(&format!("{CMD}-w"), NoAction, Some(context)),
+            KeyBinding::new(CMD_W, NoAction, Some(context)),
             #[cfg(not(target_os = "macos"))]
-            KeyBinding::new(&format!("{CMD}-,"), NoAction, Some(context)),
+            KeyBinding::new(CMD_COMMA, NoAction, Some(context)),
             #[cfg(not(target_os = "macos"))]
             KeyBinding::new("ctrl-shift-c", NoAction, Some(context)),
             #[cfg(not(target_os = "macos"))]

@@ -69,7 +69,7 @@ use gpui_kit::{
     InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, Modifiers,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Size, Styled as _, Subscription, WeakEntity, Window, black,
+    ScrollEvent, SharedString, Size, Styled as _, Subscription, WeakEntity, Window, black,
     div, prelude::FluentBuilder as _, px,
 };
 use tokio::sync::mpsc::UnboundedSender;
@@ -653,7 +653,7 @@ impl VncPanel {
         });
     }
 
-    fn on_scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_scroll(&mut self, event: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
         // 画面上的滚轮属于远端；本地视口由可见滚动条移动。
         cx.stop_propagation();
         if !self.live() {
@@ -890,7 +890,7 @@ impl VncPanel {
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .on_scroll_wheel(cx.listener(Self::on_scroll))
+            .on_scroll(cx.listener(Self::on_scroll))
             .child(FrameElement::new(image, self.display.clone()).with_cursor(cursor));
 
         match self.scale {

@@ -12,7 +12,7 @@
         keymap.add_bindings([
             KeyBinding::new("tab", ToggleSidebar, Some("Root")),
             KeyBinding::new("shift-tab", ToggleSidebar, Some("Root")),
-            KeyBinding::new(&format!("{CMD}-c"), CopySelection, Some("Root")),
+            KeyBinding::new(CMD_C, CopySelection, Some("Root"))
         ]);
         keymap.add_bindings(bindings());
 
@@ -61,8 +61,8 @@
 
         // 非 macOS 上主修饰键就是 Ctrl，那批全局键正是远端最常用的一档，
         // 连 `Root` 的复制一起让开；macOS 的 ⌘ 那一档留给本地。
-        let closes_panel = dispatch(&["Root", "VncPanel"], &format!("{CMD}-w"));
-        let copies = dispatch(&["Root", "VncPanel"], &format!("{CMD}-c"));
+        let closes_panel = dispatch(&["Root", "VncPanel"], CMD_W);
+        let copies = dispatch(&["Root", "VncPanel"], CMD_C);
         if cfg!(target_os = "macos") {
             assert_eq!(closes_panel.as_deref(), Some(ClosePanel.name()));
         } else {
@@ -74,8 +74,8 @@
     /// RDP 面板把同一批 ⌃ 组合也让开（非 macOS 上就是那一档）。
     #[test]
     fn the_rdp_panel_hands_the_stolen_chords_back() {
-        let closes_panel = dispatch(&["Root", "RdpPanel"], &format!("{CMD}-w"));
-        let copies = dispatch(&["Root", "RdpPanel"], &format!("{CMD}-c"));
+        let closes_panel = dispatch(&["Root", "RdpPanel"], CMD_W);
+        let copies = dispatch(&["Root", "RdpPanel"], CMD_C);
         if cfg!(target_os = "macos") {
             assert_eq!(closes_panel.as_deref(), Some(ClosePanel.name()));
         } else {
@@ -99,7 +99,7 @@
         assert_eq!(dispatch(&["Root", "SftpPanel", "Input"], "shift-up"), None);
         assert_eq!(dispatch(&["Root", "SftpPanel", "Input"], "shift-down"), None);
         assert_eq!(
-            dispatch(&["Root", "SftpPanel", "Input"], &format!("{CMD}-a")),
+            dispatch(&["Root", "SftpPanel", "Input"], CMD_A),
             None
         );
     }

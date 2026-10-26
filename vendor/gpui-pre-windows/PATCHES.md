@@ -1,6 +1,6 @@
 # 这份 `gpui-pre-windows` 与上游的差别
 
-`vendor/gpui-pre-windows` 逐字来自 crates.io 的 **gpui-pre-windows 0.3.9**
+`vendor/gpui-pre-windows` 逐字来自 crates.io 的 **gpui-pre-windows 0.3.10**
 （Zed 的 `gpui_windows` 的快照，Apache-2.0，`LICENSE-APACHE` 与
 `Cargo.toml.orig` 原样留着），`Cargo.toml` 里的 `[patch.crates-io]` 指着它。
 
@@ -97,7 +97,7 @@ Windows/Linux 上显式指名，macOS 继续用系统 Apple Color Emoji。
 | `src/window.rs` | `WindowsWindowState` 多一个 `cursor_under_pointer`。补丁三：实现 `hide_window` / `show_window`。 |
 | `src/direct_write.rs` | 补丁二：`raster_bounds` 空矩形判定收紧为 `<=`；空包围盒且 `params.is_emoji` 时调新加的 `color_glyph_run_bounds`（COLR 各层 alpha 包围盒的并集）兜底；非 emoji 与无彩色字形行为不变。另加全管线单测 `pure_colr_font_flag_rasterizes_to_visible_pixels`（整形 → 判定 → 包围盒 → 非全透明像素，字体字节引用应用侧 `assets/fonts/Twemoji.Mozilla.ttf`）。 |
 
-除上述文件外，其余与 crates.io 上的 0.3.9 逐字节相同。单测跑法：
+除上述文件外，其余与 crates.io 上的 0.3.10 逐字节相同。单测跑法：
 
 ```sh
 cargo test -p gpui-pre-windows --lib cursor_image

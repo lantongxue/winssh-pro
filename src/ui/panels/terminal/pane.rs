@@ -39,7 +39,7 @@ use gpui_kit::{
     App, AppContext as _, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, ScrollDelta,
-    ScrollWheelEvent, SharedString, Styled as _, Subscription, Window, actions, canvas, div,
+    ScrollEvent, SharedString, Styled as _, Subscription, Window, actions, canvas, div,
     prelude::FluentBuilder as _, px,
 };
 
@@ -1266,7 +1266,7 @@ impl TerminalPane {
         cx.stop_propagation();
     }
 
-    fn on_scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_scroll(&mut self, event: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
         let Some(emulator) = self.emulator.clone() else {
             return;
         };
@@ -2155,7 +2155,7 @@ impl Render for TerminalPane {
             // 而它该不该是 I 形取决于对端有没有打开鼠标模式 —— 那件事只有
             // 网格元素在 prepaint 取完快照之后才知道（`render` 跑在它前面）。
             // 所以交给 `TerminalGridElement::paint`，它按当帧的模式决定设不设。
-            .on_scroll_wheel(cx.listener(Self::on_scroll))
+            .on_scroll(cx.listener(Self::on_scroll))
             // 三个键都要收：开了鼠标模式的程序（btop 的右键菜单、lazygit 的
             // 面板切换）分得清是哪一个，只挂左键的话它们永远收不到另外两个。
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))

@@ -1939,7 +1939,7 @@ impl SftpPanel {
             RowPress::Down(row, modifiers) => {
                 // 带修饰键的按下留给 click 那一步（Ctrl 切换、Shift 连选）：
                 // 在这儿先选上会把它们要读的那份选中集改掉。
-                if modifiers.secondary() || modifiers.shift {
+                if modifiers.secondary(cx) || modifiers.shift {
                     return;
                 }
                 if !press_outside_selection(pane, &rows, row) {
@@ -1954,7 +1954,7 @@ impl SftpPanel {
                 pane.select_only(&rows, row);
             }
             RowPress::Click(row, modifiers) => {
-                if !modifiers.secondary() {
+                if !modifiers.secondary(cx) {
                     return;
                 }
                 if modifiers.shift {
@@ -1976,7 +1976,7 @@ impl SftpPanel {
         cx: &mut Context<Self>,
     ) {
         let modifiers = window.modifiers();
-        if modifiers.secondary() {
+        if modifiers.secondary(cx) {
             return;
         }
         self.active_local = local;

@@ -50,7 +50,7 @@ use gpui_kit::{
     FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent,
     Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ParentElement as _, PathPromptOptions, Pixels, Point, Render, RenderImage, ScrollDelta,
-    ScrollHandle, ScrollWheelEvent, SharedString, Size, Styled as _, Subscription, WeakEntity,
+    ScrollHandle, ScrollEvent, SharedString, Size, Styled as _, Subscription, WeakEntity,
     Window, black, div, px,
 };
 use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
@@ -790,7 +790,7 @@ impl RdpPanel {
         self.send_operations(vec![Operation::MouseMove(MousePosition { x, y })]);
     }
 
-    fn on_scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_scroll(&mut self, event: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
         // 画面上的滚轮属于远端；本地视口由可见滚动条移动。
         cx.stop_propagation();
         if !self.live() {
@@ -1150,7 +1150,7 @@ impl RdpPanel {
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_mouse_up))
             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .on_scroll_wheel(cx.listener(Self::on_scroll))
+            .on_scroll(cx.listener(Self::on_scroll))
             .child(FrameElement::new(image, self.display.clone()).with_cursor(cursor));
 
         let native = native_frame_size(self.resolution.unwrap_or_default(), window.scale_factor());
