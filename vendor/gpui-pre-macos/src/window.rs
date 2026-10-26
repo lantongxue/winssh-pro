@@ -1936,7 +1936,7 @@ impl PlatformWindow for MacWindow {
                 if_window_not_closed(closed, || unsafe {
                     // `orderOut:` takes the window off screen; the app keeps
                     // running and AppKit reports the occlusion change.
-                    let _: () = msg_send![window, orderOut: nil];
+                    let _: () = msg_send![window, orderOut: ptr::null_mut::<AnyObject>()];
                 })
             })
             .detach();
@@ -1951,9 +1951,9 @@ impl PlatformWindow for MacWindow {
                 if_window_not_closed(closed, || unsafe {
                     // `orderFront:` alone: bringing the window to the front is
                     // the caller's call, via `activate_window`.
-                    let visible: BOOL = msg_send![window, isVisible];
-                    if visible == NO {
-                        let _: () = msg_send![window, orderFront: nil];
+                    let visible: Bool = msg_send![window, isVisible];
+                    if visible == Bool::NO {
+                        let _: () = msg_send![window, orderFront: ptr::null_mut::<AnyObject>()];
                     }
                 })
             })
