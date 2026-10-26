@@ -18,4 +18,4 @@ pub use frame::{
     DesktopScale, FrameCursor, FrameElement, PointerOverlay, cursor_overlay, native_frame_size,
     remote_frame_point, replace_image, scrollable_frame,
 };
-pub use terminal_grid::{TerminalGridElement, cell_at, point_at};
+pub use terminal_grid::{HoverLink, TerminalGridElement, cell_at, point_at};

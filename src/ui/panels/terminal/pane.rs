@@ -50,14 +50,13 @@ use crate::{
     sftp::human_size,
     ssh::SshSession,
     terminal::{
-        Emulator, EmulatorEvent, GridPoint, SearchQuery, TerminalBounds, cursor, font,
-        right_click::{self, RightClickMode},
-        rows_under_the_bar, shell_integration,
+        Emulator, EmulatorEvent, GridPoint, SearchQuery, TerminalBounds, UrlMatch, cursor, font,
+        links, right_click::{self, RightClickMode}, rows_under_the_bar, shell_integration,
     },
     trusted_host::{HostKeyInfo, TrustPolicy},
     ui::{
         dialogs::{HostTrustDialog, TrustDecision, TrustDecisionHandler},
-        elements::{TerminalGridElement, cell_at, point_at},
+        elements::{HoverLink, TerminalGridElement, cell_at, point_at},
         menus::{TerminalAction, TerminalActionHandler, TerminalMenu, terminal_menu_allowed},
         panels::DraggedRemoteEntries,
         theme::{AppIcon, ansi, palette},
@@ -242,6 +241,11 @@ pub struct TerminalPane {
     ime_anchor: Option<Bounds<Pixels>>,
     /// 右边那条回卷区滚动条读写的把手（见 [`super::scrollbar`]）。
     scroll_handle: TerminalScrollHandle,
+    /// 鼠标悬停的 URL 链接。`None` 表示没悬停在链接上。每帧从 `on_mouse_move`
+    /// 更新，交给 `TerminalGridElement` 画下划线、设手型光标。
+    hover_link: Option<UrlMatch>,
+    /// 上一次悬停的格子（缓冲坐标）。鼠标在同一个格子上不动时不重新解析。
+    last_hover_cell: Option<GridPoint>,
     focus_handle: FocusHandle,
 }
 
@@ -268,6 +272,8 @@ impl TerminalPane {
                 preedit: SharedString::default(),
                 ime_anchor: None,
                 scroll_handle: TerminalScrollHandle::default(),
+                hover_link: None,
+                last_hover_cell: None,
                 focus_handle,
             };
             match origin {
@@ -1350,6 +1356,19 @@ impl TerminalPane {
             return;
         }
 
+        // Ctrl/Cmd + 左键点击 URL：打开链接。先于选区处理，吞掉这一下——
+        // 不然点链接还会顺带起一个选区，松手时复制一截 URL 出来。
+        // macOS 上是 Cmd，Windows/Linux 上是 Ctrl，`modifiers.secondary()` 按平台返回。
+        if event.modifiers.secondary(cx) {
+            let (point, _) = self.point_at(event.position, cx);
+            let content = emulator.read(cx).content().clone();
+            if let Some(m) = links::url_at(&content, point) {
+                cx.open_url(&m.url);
+                cx.stop_propagation();
+                return;
+            }
+        }
+
         // Shift + 单击：把已有选区的活动端挪到这一格，而不是另起一段 ——
         // 和别的编辑器"按住 Shift 点哪儿选到哪儿"是同一个约定（tty7 同款）。
         // 双击、三击不带这个礼遇：词与行的粒度和"端点在哪一格"对不上。
@@ -1395,6 +1414,22 @@ impl TerminalPane {
                 Some(button) => emulator.mouse_drag(button, column, line, &mods),
                 None => emulator.mouse_motion(column, line, &mods),
             });
+        }
+
+        // URL 链接悬停检测：鼠标在格子上不动时不重复解析。
+        // 对端开了鼠标模式时不检测——它们自己画选区，我们再叠一层链接高亮
+        // 会误导用户以为点下去能打开链接，而实际上那一下是对端的。
+        if !self.selecting && !self.reports_mouse(event.modifiers.shift, cx) {
+            let (point, _) = self.point_at(event.position, cx);
+            if self.last_hover_cell != Some(point) {
+                self.last_hover_cell = Some(point);
+                let content = emulator.read(cx).content().clone();
+                let new_link = links::url_at(&content, point);
+                if new_link != self.hover_link {
+                    self.hover_link = new_link;
+                    cx.notify();
+                }
+            }
         }
 
         // 拖选不在这里跟：这一路只收得到指针还悬在网格上的移动，指针一出网格
@@ -2177,6 +2212,10 @@ impl Render for TerminalPane {
                 TerminalGridElement::new(emulator, focused, self.cursor_visible)
                     .host_scheme(self.host.terminal_scheme.clone())
                     .preedit(self.preedit.clone())
+                    .hover_link(self.hover_link.as_ref().map(|m| HoverLink {
+                        match_: m.clone(),
+                        armed: true,
+                    }))
                     .on_input({
                         let pane = cx.entity();
                         let focus_handle = self.focus_handle.clone();

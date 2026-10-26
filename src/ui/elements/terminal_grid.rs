@@ -38,7 +38,8 @@ use alacritty_terminal::{index::Direction, term::search::Match, vte::ansi::Curso
 
 use crate::{
     terminal::{
-        Content, Emulator, GridCell, GridPoint, SearchState, TerminalBounds, is_default_background,
+        Content, Emulator, GridCell, GridPoint, SearchState, TerminalBounds,
+        is_default_background, UrlMatch,
     },
     ui::{elements::boxdraw, theme::ansi::{AnsiPalette, over}},
 };
@@ -266,6 +267,11 @@ pub struct GridLayout {
     /// 对端此刻自己收鼠标。是的话就不设 I 形指针，让它落回平台默认的箭头
     /// —— 见 [`Element::paint`] 里那一句。
     mouse_reporting: bool,
+    /// 悬停 URL 链接的像素范围（已经从缓冲坐标换算过）。armed 时画下划线、
+    /// 设手型光标。跨行的链接按行切成多段。
+    hover_link: Option<(Vec<Bounds<Pixels>>, bool)>,
+    /// 下划线的颜色（前景色），paint 里 `palette` 不在作用域，从 prepaint 带过来。
+    link_color: Hsla,
 }
 
 /// 光标画成的那一块。
@@ -273,6 +279,17 @@ struct Cursor {
     bounds: Bounds<Pixels>,
     color: Hsla,
     shape: CursorShape,
+}
+
+/// 悬停的 URL 链接：要高亮哪些格子，以及修饰键是否按下（按下才画下划线、
+/// 才设手型光标）。
+///
+/// `start`/`end` 是缓冲坐标，和 `Content` 里的格子同一个坐标系。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HoverLink {
+    pub match_: UrlMatch,
+    /// Ctrl/Cmd 是否按下。按下才 armed：链接画实下划线、指针变手型。
+    pub armed: bool,
 }
 
 pub struct TerminalGridElement {
@@ -290,6 +307,8 @@ pub struct TerminalGridElement {
     preedit: SharedString,
     /// paint 末尾调一次，参数是光标那一格：外面在里面登记输入处理器。
     on_input: Option<InputRegistration>,
+    /// 鼠标悬停的 URL 链接。`None` 表示没悬停在链接上。每帧从窗格传进来。
+    hover_link: Option<HoverLink>,
 }
 
 /// 见 [`TerminalGridElement::on_input`]。
@@ -304,6 +323,7 @@ impl TerminalGridElement {
             host_scheme: SharedString::default(),
             preedit: SharedString::default(),
             on_input: None,
+            hover_link: None,
         }
     }
 
@@ -330,6 +350,13 @@ impl TerminalGridElement {
         register: impl FnOnce(Option<Bounds<Pixels>>, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_input = Some(Box::new(register));
+        self
+    }
+
+    /// 鼠标悬停的 URL 链接。每帧从窗格传进来：外面在 `on_mouse_move` 里
+    /// 解析出当前格子上的 URL，armed 取决于 Ctrl/Cmd 是否按下。
+    pub fn hover_link(mut self, link: Option<HoverLink>) -> Self {
+        self.hover_link = link;
         self
     }
 
@@ -655,6 +682,12 @@ impl Element for TerminalGridElement {
             })
             .collect();
 
+        // 把悬停 URL 的缓冲坐标换算成像素矩形。跨行的链接按行切成多段，
+        // 每段一行——画下划线是一行一行画的。
+        let hover_link = self.hover_link.as_ref().map(|hl| {
+            let runs = link_runs(&hl.match_, &grid_bounds, content);
+            (runs, hl.armed)
+        });
         GridLayout {
             bounds: grid_bounds,
             regions,
@@ -666,6 +699,8 @@ impl Element for TerminalGridElement {
             preedit_background: palette.background(),
             hitbox,
             mouse_reporting,
+            hover_link,
+            link_color: palette.foreground(),
         }
     }
 
@@ -762,7 +797,22 @@ impl Element for TerminalGridElement {
             register(layout.caret, window, cx);
         }
 
-        // 指针样式：能划词的时候是 I 形，对端自己收鼠标的时候**什么都不设**。
+        // 悬停 URL 的下划线：armed 时画一条实线，让用户知道点下去会打开。
+        // 没按修饰键时不画——只设手型光标就够了，画线会让人觉得随时能点。
+        if let Some((runs, armed)) = &layout.hover_link
+            && *armed
+        {
+            for rect in runs {
+                let underline = Bounds::new(
+                    point(rect.origin.x, rect.bottom() - UNDERLINE_THICKNESS),
+                    size(rect.size.width, UNDERLINE_THICKNESS),
+                );
+                window.paint_quad(fill(underline, layout.link_color));
+            }
+        }
+
+        // 指针样式：悬停在 URL 上且 armed 时是手型；能划词的时候是 I 形，
+        // 对端自己收鼠标的时候**什么都不设**。
         //
         // 不设是关键 —— `set_cursor_style` 是每帧往这一帧的样式表里登记一条，
         // 不登记就没有人认领这块区域，`Window::reset_cursor_style` 那句
@@ -773,7 +823,17 @@ impl Element for TerminalGridElement {
         // 这里刻意不看 Shift，尽管按住 Shift 确实能抢回划词（见
         // `TerminalPanel::reports_mouse`）：指针跟着一个随时会松开的修饰键
         // 闪来闪去比不变更糟，各家终端也都是这么处理的。
-        if !layout.mouse_reporting {
+        //
+        // URL 链接的手型优先于 I 形：只要鼠标在链接上且按了修饰键，就是手型；
+        // 没按修饰键时不抢——对端开了鼠标模式的程序自己画选区，手型会
+        // 误导用户以为点下去能打开链接。
+        let hover_armed = layout
+            .hover_link
+            .as_ref()
+            .is_some_and(|(_, armed)| *armed);
+        if hover_armed {
+            window.set_cursor_style(CursorStyle::PointingHand, &layout.hitbox);
+        } else if !layout.mouse_reporting {
             window.set_cursor_style(CursorStyle::IBeam, &layout.hitbox);
         }
     }
@@ -1075,6 +1135,62 @@ pub fn point_at(
         },
         side,
     )
+}
+
+/// 把一条 URL 链接的缓冲坐标起止换算成像素矩形，跨行的按行切成多段。
+///
+/// `start`/`end` 是缓冲坐标。缓冲行号加上 `display_offset` 才是屏幕行号，
+/// 和 `layout_cells` 里的换算是同一步。
+fn link_runs(m: &UrlMatch, bounds: &TerminalBounds, content: &Content) -> Vec<Bounds<Pixels>> {
+    let offset = content.display_offset as i32;
+    let start_line = m.start.line + offset;
+    let end_line = m.end.line + offset;
+    if start_line < 0 || end_line < 0 {
+        return Vec::new();
+    }
+
+    // 同一行：一段。
+    if start_line == end_line {
+        let origin = cell_origin(
+            GridPoint {
+                line: start_line,
+                column: m.start.column,
+            },
+            bounds,
+        );
+        let width = bounds.cell_width * (m.end.column - m.start.column + 1) as f32;
+        return vec![Bounds::new(
+            origin,
+            size(width.ceil(), bounds.line_height),
+        )];
+    }
+
+    // 跨行：每行一段。第一行从 start.column 到行末，中间行整行，
+    // 最后一行从行首到 end.column。
+    let mut runs = Vec::new();
+    for line in start_line..=end_line {
+        if line < 0 || line as usize >= content.screen_lines {
+            continue;
+        }
+        let (col_start, col_end) = match line {
+            l if l == start_line => (m.start.column, content.columns.saturating_sub(1)),
+            l if l == end_line => (0, m.end.column),
+            _ => (0, content.columns.saturating_sub(1)),
+        };
+        let origin = cell_origin(
+            GridPoint {
+                line,
+                column: col_start,
+            },
+            bounds,
+        );
+        let width = bounds.cell_width * (col_end - col_start + 1) as f32;
+        runs.push(Bounds::new(
+            origin,
+            size(width.ceil(), bounds.line_height),
+        ));
+    }
+    runs
 }
 
 #[cfg(test)]

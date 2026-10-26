@@ -30,6 +30,7 @@ pub mod cursor;
 mod emulator;
 pub mod font;
 mod keys;
+pub mod links;
 pub mod right_click;
 pub mod scheme;
 mod search;
@@ -41,4 +42,5 @@ pub use emulator::{
     Content, Cursor, Emulator, EmulatorEvent, GridCell, GridPoint, Scrollback, TerminalBounds,
     is_default_background,
 };
+pub use links::UrlMatch;
 pub use search::{SearchQuery, SearchState, rows_under_the_bar};

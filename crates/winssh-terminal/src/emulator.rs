@@ -195,10 +195,25 @@ impl GridPoint {
 #[derive(Clone, Debug)]
 pub struct GridCell {
     pub point: GridPoint,
-    cell: AlacCell,
+    pub(crate) cell: AlacCell,
 }
 
 impl GridCell {
+    /// 供测试构造：用给定的字符和标志造一个格子。
+    #[cfg(test)]
+    pub(crate) fn from_parts(line: i32, column: usize, c: char, flags: Flags) -> Self {
+        Self {
+            point: GridPoint { line, column },
+            cell: AlacCell {
+                c,
+                flags,
+                fg: AnsiColor::Named(NamedColor::Foreground),
+                bg: AnsiColor::Named(NamedColor::Background),
+                ..AlacCell::default()
+            },
+        }
+    }
+
     pub fn character(&self) -> char {
         self.cell.c
     }
@@ -252,6 +267,11 @@ impl GridCell {
 
     pub fn has_strikeout(&self) -> bool {
         self.cell.flags.contains(Flags::STRIKEOUT)
+    }
+
+    /// 这一格是否带 `WRAPLINE` 标志（软换行接到下一行）。
+    pub fn is_wrap(&self) -> bool {
+        self.cell.flags.contains(Flags::WRAPLINE)
     }
 
     /// 这个格子除了字符本身还画了别的东西（下划线、反显、删除线）。
