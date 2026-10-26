@@ -331,6 +331,8 @@ pub struct AssistantPanel {
     transfers: HashMap<u64, LiveTransfer>,
     /// "停止"按钮。置位后运行在下一个模型/工具边界收口。
     cancel: Arc<AtomicBool>,
+    /// 当前 tokio 任务的中止句柄，用来立刻打断模型网络等待。
+    run_abort: Option<tokio::task::AbortHandle>,
     /// 事件泵。面板没了它跟着没，运行侧发现通道关了自己收口。
     _run: Option<Task<()>>,
     _composer_subscription: gpui_kit::Subscription,
@@ -439,6 +441,7 @@ impl AssistantPanel {
             pending: None,
             transfers: HashMap::new(),
             cancel: Arc::new(AtomicBool::new(false)),
+            run_abort: None,
             _run: None,
             _composer_subscription,
         }
@@ -1260,6 +1263,14 @@ impl AssistantPanel {
                 cancel,
                 transfer: Arc::new(AssistantTransfer),
             }));
+            let abort = run.abort_handle();
+            if this
+                .update(cx, |this, _| this.run_abort = Some(abort))
+                .is_err()
+            {
+                run.abort();
+                return;
+            }
 
             // 一轮收尾交出来的那几条，按屏上的先后落库。
             let save = async |finished: Vec<MessageBody>| {
@@ -1390,10 +1401,12 @@ impl AssistantPanel {
             let failure = match run.await {
                 Ok(Ok(())) => None,
                 Ok(Err(error)) => Some(format!("{error:#}")),
+                Err(join_error) if join_error.is_cancelled() => None,
                 Err(join_error) => Some(join_error.to_string()),
             };
             _ = this.update_in(cx, |this, window, cx| {
                 this.running = false;
+                this.run_abort = None;
                 // 收口之后脚注才落到这一场的最后一条上（见 [`reply_footers`]），
                 // 那一行的高度跟着变了 —— 不重新量，新长出来的脚注会被切在旧
                 // 高度里。
@@ -1419,13 +1432,15 @@ impl AssistantPanel {
         cx.notify();
     }
 
-    /// 停止这一场。置位之后运行在下一个模型/工具边界收口；正等着审核的
-    /// 那条命令连回执一起丢掉 —— 钩子那边把"没人答复"当停处理。
+    /// 停止这一场：立刻中止当前任务，原子标志留给模型/工具边界兜底。
     fn stop(&mut self, cx: &mut Context<Self>) {
         if !self.running {
             return;
         }
         self.cancel.store(true, Ordering::Relaxed);
+        if let Some(abort) = self.run_abort.take() {
+            abort.abort();
+        }
         self.pending = None;
         cx.notify();
     }

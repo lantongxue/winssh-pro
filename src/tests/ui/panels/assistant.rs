@@ -751,6 +751,25 @@
         );
     }
 
+    /// 模型首字迟迟不来时，停止要直接掐断等待，不能等下一次边界检查。
+    #[gpui_kit::test]
+    fn stopping_aborts_a_run_waiting_for_the_model(cx: &mut gpui_kit::TestAppContext) {
+        let (_root, panel, cx) = root_harness(cx, Vec::new());
+        let run = crate::db::runtime().spawn(std::future::pending::<anyhow::Result<()>>());
+        panel.update(cx, |panel, cx| {
+            panel.running = true;
+            panel.run_abort = Some(run.abort_handle());
+            panel.stop(cx);
+        });
+
+        let error = crate::db::runtime().block_on(run).unwrap_err();
+        assert!(error.is_cancelled(), "停止后任务还在等模型返回");
+        panel.read_with(cx, |panel, _| {
+            assert!(panel.cancel.load(Ordering::Relaxed));
+            assert!(panel.run_abort.is_none());
+        });
+    }
+
     /// 被停掉、出错时没等到收尾：想到一半、说到一半的照样留下来交去落库，
     /// 两个槽也照样关掉。
     #[gpui_kit::test]
