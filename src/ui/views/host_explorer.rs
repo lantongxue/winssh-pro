@@ -1379,10 +1379,19 @@ impl HostExplorerView {
             .w_full()
             .h(host_row_height())
             .pb(HOST_ROW_GAP)
-            .ml(GUIDE_OFFSET)
-            .pl(GUIDE_OFFSET)
-            .border_l_1()
-            .border_color(cx.theme().sidebar_border)
+            // 缩进只走内边距，不走外边距：`w_full()` 的宽度是父级内容宽，
+            // 再叠一个 `ml` 会让整行比列表内容宽出那一截，卡片的右缘正好
+            // 顶到侧边栏边上。导轨自己绝对定位在缩进线上。
+            .pl(GUIDE_OFFSET + GUIDE_OFFSET)
+            .child(
+                div()
+                    .absolute()
+                    .left(GUIDE_OFFSET)
+                    .top_0()
+                    .bottom_0()
+                    .w(px(1.))
+                    .bg(cx.theme().sidebar_border),
+            )
             .on_drag(
                 DraggedHost { host: dragged },
                 |dragged, click_offset, _, cx| {
@@ -1440,7 +1449,7 @@ impl HostExplorerView {
         Some(
             div()
                 .absolute()
-                .left_0()
+                .left(GUIDE_OFFSET)
                 .right_0()
                 .h(DROP_LINE)
                 .rounded_full()
