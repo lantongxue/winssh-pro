@@ -1524,6 +1524,7 @@ impl Render for TerminalPanel {
                     .child(div().flex_1().min_h_0().child(terminal))
                     .child(
                         SessionStatusBar::new(self.telemetry)
+                            .host_name(self.host.name.clone())
                             .connected(connected)
                             .grid(grid.num_columns(), grid.num_lines()),
                     );

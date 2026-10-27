@@ -2,13 +2,14 @@
 //!
 //! 和上沿的 [`super::SessionInfoBar`] 分工：那一条答的是"我是谁"（`user@host`、
 //! 当前目录、这个终端上能做的动作），一眼看完就不用再看；这一条答的是
-//! "现在怎么样"，一直在变。所以身份放上面，读数放下面 —— 这里不再重复主机名
-//! 与登录地址，上面已经写着了。
+//! "现在怎么样"，一直在变。主机名在两条上都留了一格 —— 终端占满视野时，
+//! 下沿才是余光扫得到的地方；登录地址不重复，那串字太长。
 //!
 //! 剩下这几格就是全部内容：
 //!
 //! | 格 | 回答的问题 |
 //! | --- | --- |
+//! | 主机名 | 这个终端连着哪台机器 |
 //! | 连接点 | 这条连接还通不通 |
 //! | RTT | 敲下去到看见回显要等多久 |
 //! | CPU / MEM / DISK | 对端那台机器忙不忙、还剩多少余量 |
@@ -16,7 +17,7 @@
 //! | 网格 | 这个终端现在多大（改窗口、分屏之后要看一眼） |
 //!
 //! 砍掉的是不随时间变的东西（`SSH-2.0`、`UTF-8` 永远是这两个值）、上面那条
-//! 已经说过的东西（主机名、地址），以及和数字说同一件事的东西（进度条、
+//! 已经说过的东西（登录地址），以及和数字说同一件事的东西（进度条、
 //! 平均负载的三个数、内存的绝对值 —— 绝对值挪进了 MEM 的悬浮提示）。
 //! 状态栏是用余光扫的，格子越少，扫到异常越快。
 //!
@@ -32,7 +33,7 @@
 //! 除了网格，其余读数都来自 [`crate::session::SessionTelemetry`] ——
 //! 右侧监控面板每次采集顺带带回来的那一份（见 [`crate::service::MonitorService`]）。
 
-use gpui_kit::component::{ActiveTheme as _, h_flex, tooltip::Tooltip};
+use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, tooltip::Tooltip};
 use gpui_kit::{
     AnyElement, App, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
     RenderOnce, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
@@ -56,6 +57,10 @@ const PERCENT_WIDTH: Pixels = px(34.);
 const RATE_WIDTH: Pixels = px(66.);
 const GRID_WIDTH: Pixels = px(58.);
 
+/// 主机名的最大宽度。名字长短差得很远，不封顶的话一个长名字会把右边的
+/// 读数整排推走；超出的部分截断，完整名字留给悬浮提示。
+const HOST_WIDTH: Pixels = px(180.);
+
 /// 占用率的三档分界，`(该看一眼了, 过线了)`。低于第一档不上色。
 ///
 /// CPU 与内存共用这一套：过半就算忙起来了。
@@ -78,6 +83,8 @@ const UNKNOWN: &str = "—";
 pub struct SessionStatusBar {
     /// 对端的读数。还没采到第一次时是 `None`。
     telemetry: Option<SessionTelemetry>,
+    /// 这条会话连着哪台主机：主机表单里起的显示名，不是 `user@host`。
+    host_name: Option<SharedString>,
     connected: bool,
     /// 网格的列数与行数。这是终端自己量出来的，不是示例值。
     grid: (usize, usize),
@@ -87,9 +94,17 @@ impl SessionStatusBar {
     pub fn new(telemetry: Option<SessionTelemetry>) -> Self {
         Self {
             telemetry,
+            host_name: None,
             connected: true,
             grid: (0, 0),
         }
+    }
+
+    /// 主机显示名。和连接点一起摆在最左边 —— 名字回答"这是哪台"，
+    /// 点回答"还通不通"，两者都是这条连接的即时状态。
+    pub fn host_name(mut self, name: impl Into<SharedString>) -> Self {
+        self.host_name = Some(name.into());
+        self
     }
 
     /// 连接还在不在。
@@ -125,13 +140,37 @@ impl RenderOnce for SessionStatusBar {
             .text_xs()
             .text_color(palette::idle(cx))
             .child(
-                div()
-                    .flex_shrink_0()
-                    .size(DOT_SIZE)
-                    .rounded_full()
-                    .bg(match self.connected {
-                        true => palette::green(),
-                        false => palette::idle(cx),
+                // 连接点和主机名是一组：点说“通不通”，名字说“是哪台”。
+                // 名字会随窗口变窄而截断，所以给它一个上限，别去挤右边的读数。
+                h_flex()
+                    .min_w_0()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .size(DOT_SIZE)
+                            .rounded_full()
+                            .bg(match self.connected {
+                                true => palette::green(),
+                                false => palette::idle(cx),
+                            }),
+                    )
+                    .when_some(self.host_name.clone(), |this, name| {
+                        let full = name.clone();
+                        this.child(
+                            div()
+                                .id("session-status-host")
+                                .min_w_0()
+                                .max_w(HOST_WIDTH)
+                                .truncate()
+                                .font_semibold()
+                                .text_color(cx.theme().foreground)
+                                .child(name)
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(full.clone()).build(window, cx)
+                                }),
+                        )
                     }),
             )
             .child(self.render_latency(cx))
