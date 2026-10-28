@@ -3466,54 +3466,26 @@ impl SftpPanel {
             .border_b_1()
             .border_color(cx.theme().border)
             .bg(palette::recessed(cx))
-            .child(self.render_host_badge(cx))
+            .child(self.render_local_refresh(cx))
             .child(self.render_follow_toggle(cx))
             .child(self.render_path_bar(cx))
             .child(self.render_view_toggles(cx))
     }
 
-    /// 左边那块徽标。`Host` 上没有颜色字段，所以那颗点说的是"这条 SFTP 通道在不在"：
-    /// 通道没开起来时它是灰的 —— 灰点配上下方那句开不起来的原因，比一颗永远绿的
-    /// 假点诚实。
-    fn render_host_badge(&self, cx: &App) -> impl IntoElement {
-        h_flex()
-            .flex_shrink_0()
-            .items_center()
-            .gap_1p5()
-            .px_1p5()
-            .h(px(20.))
-            .rounded(cx.theme().radius)
-            .bg(palette::surface(cx))
-            .border_1()
-            .border_color(cx.theme().border)
-            .child(
-                div()
-                    .size(px(6.))
-                    .flex_shrink_0()
-                    .rounded_full()
-                    .bg(match self.service {
-                        Some(_) => palette::green(),
-                        None => palette::idle(cx),
-                    }),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .font_semibold()
-                    .text_color(palette::teal())
-                    .truncate()
-                    .max_w(px(140.))
-                    .child(self.host.name.clone()),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(palette::idle(cx))
-                    .child(SharedString::from(match self.service.as_ref() {
-                        Some(service) => service.label().to_string(),
-                        None => self.host.kind.label().to_string(),
-                    })),
-            )
+    /// 本地目录刷新按钮：重新列出当前本地目录的内容。
+    /// 放在同步目录按钮左侧，与远端栏的刷新按钮风格一致。
+    fn render_local_refresh(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        nav_button(
+            "sftp-panel-local-refresh",
+            Icon::new(AppIcon::RefreshCw).with_size(px(12.)),
+            t!("sftp.refresh").into(),
+            cx,
+        )
+        .disabled(self.local.loading)
+        .on_click(cx.listener(|this, _, window, cx| {
+            let dir = this.local_dir.clone();
+            this.list_local(dir, window, cx);
+        }))
     }
 
     fn render_follow_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
