@@ -137,7 +137,8 @@ use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Axis, ClipboardEntry, ClipboardItem, Context,
     ElementId, Entity, EventEmitter, FocusHandle, Focusable, Hsla, InteractiveElement as _,
     IntoElement, ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Task, WeakEntity, Window, div, img, prelude::FluentBuilder as _, px,
+    StyleRefinement, Styled as _, Subscription, Task, WeakEntity, Window, div, img,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::assistant::{
@@ -1632,7 +1633,7 @@ impl AssistantPanel {
         // （见 [`reply_footers`]）。
         let footer = Rc::new(reply_footers(&self.messages, self.running));
         let this = cx.entity().downgrade();
-        MessageScroller::new(
+        let scroller = MessageScroller::new(
             "assistant-transcript",
             self.scroller.clone(),
             move |index, _, cx| {
@@ -1649,19 +1650,36 @@ impl AssistantPanel {
                         })
                     },
                 };
-                render_message(
+                let element = render_message(
                     message,
                     disclosure,
                     thinking == Some(index),
                     footer.contains(&index),
                     live.get(&index),
                     cx,
-                )
+                );
+                // 底部间距放进最后一行里：列表自己的下内边距会和滚动条量程
+                // 脱钩（见下面 with_list_style 处的账），放那儿最后一段滚轮够不到。
+                // "最后一行"翻面带来的高度变化，组件库 splice 时自己会重新量
+                // （最后一行＋邻行）。
+                if index + 1 == messages.len() {
+                    div().pb_6().child(element).into_any_element()
+                } else {
+                    element
+                }
             },
         )
         .with_bottom_fade(cx.theme().background)
-        .size_full()
-        .into_any_element()
+        // 列表两端内边距归零，把三套"底"的口径对齐：滚动条量程
+        // （max_offset_for_scrollbar）完全不算列表内边距，排版滚得到的空间到
+        // "内容＋下内边距"为止，到端判断（跟尾重接、ScrollBounce 回写夹取、
+        // is_scrolled_to_end）还要再加上内边距。任一端非零都会脱钩：上内边距
+        // 让滚到视觉最底也重接不上跟尾；下内边距让从尾端手动滚一下就被夹离
+        // 真底那一截、滚轮再也回不去，滚动条拇指却先抵到最底。顶上间隙由外面
+        // 那层 pt_2 补，底部间隙在最后一行里（见上）。
+        .with_list_style(StyleRefinement::default().pt(px(0.)).pb(px(0.)))
+        .size_full();
+        div().size_full().pt_2().child(scroller).into_any_element()
     }
 
     /// 当前会话条：助手这一刻能操作的那台机器，就画在输入行上方。
