@@ -341,3 +341,83 @@
         };
         assert_eq!(only_parent.shell_paths(), None);
     }
+
+    /// 点表格下沿那片空白（铺满用的空行）要把选中清掉。
+    ///
+    /// 空行是表格自己画的，不接这一下的话选中会一直挂在那儿 —— 用户点了一块
+    /// 没有条目的地方，那一行还亮着，看着像没点中。真正清选中集的那一步
+    /// （`TableEvent::ClearSelection` → `Pane::clear_selection`）由面板订阅，
+    /// 这里盯的是表格这一头：按下就报清选中。
+    #[gpui_kit::test]
+    fn clicking_the_empty_rows_below_the_list_clears_the_selection(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::{Modifiers, point};
+
+        struct Harness {
+            table: Entity<TableState<LocalTableDelegate>>,
+        }
+
+        impl Render for Harness {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(600.)).h(px(240.)).child(
+                    // stripe 打开才有铺满下沿的空行，面板里两栏都是这么摆的。
+                    DataTable::new(&self.table).stripe(true),
+                )
+            }
+        }
+
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut delegate = LocalTableDelegate::new();
+            delegate.set_entries(vec![entry("a.png"), entry("b.png")]);
+            Harness {
+                table: cx.new(|cx| TableState::new(delegate, window, cx).row_selectable(true)),
+            }
+        });
+        let table = view.read_with(cx, |harness, _| harness.table.clone());
+        // 两帧：下沿要铺几行空行，得先量过一帧才知道。
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        table.update(cx, |table, cx| table.set_selected_row(0, cx));
+        // 行底色认的是面板推给 delegate 的那份选中集，不是表格的光标行。
+        table.update(cx, |table, cx| {
+            let mut selected = HashSet::new();
+            selected.insert(SharedString::from("/tmp/a.png"));
+            table.delegate_mut().set_selection(selected);
+            cx.notify();
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds(SELECTED_ROW_UNDERLAY).is_some(),
+            "选中的那一行要垫一层底色"
+        );
+        // 底色要铺满整行，不能只垫出一条边（`inset_0` 落在行内区，就差底下
+        // 那条分隔线）。
+        let row_height = gpui_kit::component::Size::default().table_row_height();
+        let underlay = cx
+            .debug_bounds(SELECTED_ROW_UNDERLAY)
+            .expect("刚量过的那一层还在");
+        assert!(
+            underlay.size.height >= row_height - px(1.),
+            "底色高 {:?}，一整行是 {:?}",
+            underlay.size.height,
+            row_height
+        );
+        assert_eq!(
+            table.read_with(cx, |table, _| table.selected_row()),
+            Some(0),
+            "先选上一行"
+        );
+
+        // 两行条目撑不到 210 那儿，这一片一定是空行。
+        cx.simulate_click(point(px(300.), px(210.)), Modifiers::none());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        assert_eq!(
+            table.read_with(cx, |table, _| table.selected_row()),
+            None,
+            "点空白处该把选中清掉"
+        );
+    }

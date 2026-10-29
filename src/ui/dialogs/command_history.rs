@@ -384,7 +384,7 @@ impl CommandHistoryDialog {
             .items_center()
             .cursor_pointer()
             .group(ROW_GROUP)
-            .hover(|this| this.bg(palette::selected_row(cx)))
+            .hover(|this| this.bg(cx.theme().table_hover))
             .on_click(cx.listener(move |this, _, window, cx| this.run(row, window, cx)))
             .child(
                 div()

@@ -93,9 +93,14 @@ pub fn recessed(cx: &App) -> Hsla {
     cx.theme().sidebar
 }
 
-/// 文件列表里被选中的那一行。和悬停同色 —— 选中不该比"鼠标正好停在这儿"更响，
-/// 多选时也就不会有一片抢眼的色块。表格自己那层选中样式已经在
-/// [`crate::ui::theme::appearance`] 里按透明关掉了，选中底色由文件列表自己画。
-pub fn selected_row(cx: &App) -> Hsla {
-    cx.theme().table_hover
+/// 文件列表里被选中的那一行。
+///
+/// 原型里是一层蓝（`#007ACC` 的 25%）：选中得一眼看得出来。早先这一档和悬停同色，
+/// 结果点完那一行和没点一样，多选之后也数不清选了哪几行。
+///
+/// 底色由文件列表自己在行里垫一层画（见 `sftp.rs` 的 `selected_underlay`）：
+/// 表格那层只认一个"光标行"，悬停、光标与真正的选中集对不上号，那层在
+/// [`crate::ui::theme::appearance`] 里已经按透明关掉了。
+pub fn selected_row() -> Hsla {
+    blue().opacity(0.25)
 }

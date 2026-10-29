@@ -490,6 +490,43 @@ fn row_press_listeners(
     })
 }
 
+/// 选中行底色那层的探针名：界面测试拿它认"这一行画成选中了没有"。
+const SELECTED_ROW_UNDERLAY: &str = "sftp-selected-row";
+
+/// 选中行的底色：在行里垫一层，格子盖在它上面。
+///
+/// 不用 `bg()` 直接刷行自己：表格那层给“光标行”刷一层底色（主题里已按透明
+/// 关掉），悬停又会把行自己的底色换成 `table_hover`，两种情形下选中都看不出
+/// 来了。垫在格子下面这一层谁也不碰，悬停、光标与选中集对不上号时也还是选中
+/// 那层颜色。
+fn selected_underlay(row: Stateful<Div>) -> Stateful<Div> {
+    row.relative().child(
+        div()
+            .debug_selector(|| SELECTED_ROW_UNDERLAY.to_string())
+            .absolute()
+            .inset_0()
+            .bg(palette::selected_row()),
+    )
+}
+
+/// 铺满表格下沿的那几行空行，也就是"表格的空白处"。
+///
+/// 按下去就把这一栏的选中清掉 —— 点在一个不是条目的地方，选中就该让位；
+/// Esc 走的是同一条 [`TableState::clear_selection`]，面板在
+/// [`TableEvent::ClearSelection`] 里收拢两份选中集。空行本身也是表格的一部分，
+/// 不接这一下，点空白之后那行还会一直亮着，看着像没点中。
+///
+/// 押在鼠标按下而不是抬起：真行也是按下就选，两边手感要一样。
+fn blank_row<D: TableDelegate>(
+    id: (&'static str, usize),
+    cx: &mut Context<TableState<D>>,
+) -> Stateful<Div> {
+    div().id(id).on_mouse_down(
+        MouseButton::Left,
+        cx.listener(|table, _, _, cx| table.clear_selection(cx)),
+    )
+}
+
 /// 本地文件数据表格 Delegate。
 pub struct LocalTableDelegate {
     pub entries: Vec<FileEntry>,
@@ -659,8 +696,9 @@ impl TableDelegate for LocalTableDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
         let Some(entry) = self.entries.get(row_ix) else {
-            // 铺满表格下沿的那些空行：没有条目，也就没有选中、拖拽与菜单。
-            return div().id(("local-table-row", row_ix));
+            // 铺满表格下沿的那些空行：没有条目，也就没有选中、拖拽与菜单，
+            // 点下去只把选中清掉。
+            return blank_row(("local-table-row", row_ix), cx);
         };
         let selected = self.selected.contains(&entry.path);
         // ".." 那一行不是条目：拖它等于拖一个字面的 ".." 路径。
@@ -668,7 +706,7 @@ impl TableDelegate for LocalTableDelegate {
             (!entry.is_parent()).then(|| drag_targets(&self.selection_targets, entry, selected));
         div()
             .id(("local-table-row", row_ix))
-            .when(selected, |this| this.bg(palette::selected_row(cx)))
+            .when(selected, selected_underlay)
             .when_some(self.row_handler.clone(), |this, handler| {
                 row_press_listeners(this, row_ix, handler)
             })
@@ -985,8 +1023,9 @@ impl TableDelegate for RemoteTableDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
         let Some(entry) = self.entries.get(row_ix) else {
-            // 铺满表格下沿的那些空行：没有条目，也就没有选中、拖拽与菜单。
-            return div().id(("remote-table-row", row_ix));
+            // 铺满表格下沿的那些空行：没有条目，也就没有选中、拖拽与菜单，
+            // 点下去只把选中清掉。
+            return blank_row(("remote-table-row", row_ix), cx);
         };
         let selected = self.selected.contains(&entry.path);
         // ".." 那一行不是条目：拖它等于拖一个字面的 ".." 路径。
@@ -994,7 +1033,7 @@ impl TableDelegate for RemoteTableDelegate {
             (!entry.is_parent()).then(|| drag_targets(&self.selection_targets, entry, selected));
         div()
             .id(("remote-table-row", row_ix))
-            .when(selected, |this| this.bg(palette::selected_row(cx)))
+            .when(selected, selected_underlay)
             .when_some(self.row_handler.clone(), |this, handler| {
                 row_press_listeners(this, row_ix, handler)
             })
