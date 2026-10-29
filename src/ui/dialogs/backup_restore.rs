@@ -16,6 +16,7 @@ use gpui_kit::component::{
     dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputContentType, InputState},
+    scroll::ScrollableElement as _,
     v_flex,
 };
 use gpui_kit::{
@@ -28,6 +29,12 @@ use crate::backup::{BackupConfig, BackupRemoteFile};
 use crate::service::BackupService;
 use crate::ui::theme::{AppIcon, palette};
 use rust_i18n::t;
+
+/// 清单第一行的探针名：滚没滚、点没点中，界面测试都拿它量（见 `tests`）。
+const FIRST_ROW_PROBE: &str = "backup-restore-first-row";
+
+/// 清单上方那行小标题的探针名。它长在清单外面，跟着挪就说明滚的是整个正文。
+const SUMMARY_PROBE: &str = "backup-restore-summary";
 
 /// 云端备份恢复对话框实体。
 pub struct BackupRestoreDialog {
@@ -354,6 +361,9 @@ impl BackupRestoreDialog {
 
         h_flex()
             .id(("backup-file-item", ix))
+            .when(ix == 0, |this| {
+                this.debug_selector(|| FIRST_ROW_PROBE.to_string())
+            })
             .w_full()
             .items_center()
             .gap_3()
@@ -599,6 +609,7 @@ impl Render for BackupRestoreDialog {
                             .items_center()
                             .justify_between()
                             .gap_2()
+                            .debug_selector(|| SUMMARY_PROBE.to_string())
                             .child(
                                 div()
                                     .text_xs()
@@ -619,7 +630,11 @@ impl Render for BackupRestoreDialog {
                             .id("backup-restore-list")
                             .w_full()
                             .max_h(px(260.))
-                            .overflow_y_scroll()
+                            // 必须走组件库这层：`.max_h` 和原生 `overflow_y_scroll`
+                            // 写在同一元素上时，最大高度把滚动区的内容也压到那么大，
+                            // 排版上没有溢出，滚轮就滚不动。它把 `max_h` 挪到外层壳上，
+                            // 里面那层才是真的滚动区，顺带画出滚动条。
+                            .overflow_y_scrollbar()
                             // 外面不再套一圈边：每份副本自己就是一张有边的卡片，
                             // 再包一层框会连带把整块看成一个输入框。
                             .gap_2()
@@ -663,3 +678,7 @@ impl Render for BackupRestoreDialog {
             })
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/ui/dialogs/backup_restore.rs"]
+mod tests;

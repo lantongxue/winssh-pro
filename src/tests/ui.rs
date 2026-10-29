@@ -3,7 +3,7 @@
 
     /// 这张 keymap 里，某个上下文栈下按这一串键会派出哪个 action。
     /// `None` 就是没有绑定 —— 那一下会落到聚焦元素的 `on_key_down`。
-    fn dispatch(contexts: &[&str], keystrokes: &str) -> Option<String> {
+    fn dispatch(contexts: &[&str], keystrokes: &'static str) -> Option<String> {
         let mut keymap = Keymap::default();
         // gpui-kit 的 `Root` 先注册（`gpui_kit::init` 跑在 `ui::init` 之前），
         // 它的 tab / shift-tab 是焦点切换、cmd-c 是复制选中文字。那几个 action
