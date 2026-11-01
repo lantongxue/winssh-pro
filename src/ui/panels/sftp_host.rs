@@ -240,6 +240,9 @@ impl DockedSftpPanel {
         // 主机设了 sudo 提权的话这一步就以 sudo 开（可能弹密码框）；面板上
         // 按过提权按钮的，重连也照那一档来。
         let launch = self.sftp_panel.read(cx).launch();
+        // 把这条连接借给 SFTP 栏：从它上面打开的编辑页要带着这台机器。
+        self.sftp_panel
+            .update(cx, |panel, _| panel.bind_session(session.handle.clone()));
         cx.spawn_in(window, async move |this, cx| {
             let outcome = SftpService::connect(session.handle, launch).await;
             _ = this.update_in(cx, |this, window, cx| match outcome {

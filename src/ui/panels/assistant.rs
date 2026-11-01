@@ -93,8 +93,14 @@
 //! 这一场只跑在原主机；跑完之后下一次事件才恢复跟随。输入行上方那条会话名
 //! 写的就是它 —— 断没断也写在那儿，命令会落在哪儿，用户不该靠猜。
 //!
+//! **文件编辑标签页也算一台机器。** 从某台主机的 SFTP 栏里打开的文件，切到
+//! 那个编辑页时助手仍停在那台上 —— 编辑页带着打开它时的 [`SessionTarget`]
+//! （`SftpEditorPanel::session_target`）。没有服务器
+//! 标识的编辑页（FTP / S3 / WebDAV 那几档）照旧按"没有会话"处理，不会
+//! 凭空绑到上一台上。
+//!
 //! **"当前会话"只认中心区。** 这块面板自己也停在 Dock 里，但
-//! [`TerminalPanel::active_in`] 只走中心区的布局树，所以它不会把自己
+//! [`ActiveCenterPanel::in_center`] 只走中心区的布局树，所以它不会把自己
 //! 或者右侧 dock 里的别的东西当成一条会话。
 //!
 //! 对话与消息的正本在库里（[`AssistantService`]），这里持有快照。
@@ -152,7 +158,7 @@ use crate::sftp::human_size;
 use crate::ui::menus::{
     ExecutionMode, ExecutionModeMenu, ModelGroup, ModelMenu, ThinkingEffortMenu,
 };
-use crate::ui::panels::{SessionEvent, TerminalPanel};
+use crate::ui::panels::{ActiveCenterPanel, SessionEvent, TerminalPanel};
 use crate::ui::theme::{AppIcon, palette};
 use crate::ui::windows::{SettingsTab, SettingsWindow, persist_assistant_config};
 use rust_i18n::t;
@@ -498,8 +504,10 @@ impl AssistantPanel {
     /// 重认一遍"助手眼下能操作的是哪台机器"，并按这台主机加载对话。
     ///
     /// 三处叫它：中心区布局一动（换标签页正是其中一种）、当前那条会话的存活
-    /// 翻面、以及每次发问之前。认的是 [`TerminalPanel::active_in`] ——
-    /// 和侧边栏发命令片段认的是同一条"当前会话"。
+    /// 翻面、以及每次发问之前。认的是 [`ActiveCenterPanel::in_center`] ——
+    /// 终端会话与"从某台主机打开的文件编辑页"都算一条绑着机器的标签页，
+    /// 与侧边栏发命令片段认的是同一棵布局树上的活动标签（那边只要终端，
+    /// 见 [`TerminalPanel::active_in`]）。
     ///
     /// **对话跟着主机走，但运行中的那一场不跟。** 空闲时切到哪台就加载那台的
     /// 对话；一场运行进行期间，[`Self::host_of`] 与会话槽钉在发起那台上，切标签
@@ -521,10 +529,19 @@ impl AssistantPanel {
             return;
         }
 
-        let panel = self
+        // 中心区当前那个标签页：终端会话，或者一份从某台主机打开的远端文件。
+        // 编辑页也绑着一台机器 —— 它是从哪台的 SFTP 栏里打开的，就还是哪一台。
+        let active = self
             .dock_area
             .upgrade()
-            .and_then(|area| TerminalPanel::active_in(&area, window, cx));
+            .and_then(|area| ActiveCenterPanel::in_center(&area, window, cx));
+
+        // 存活订阅只挂在终端上：编辑页不会自己报"断了"，它的目标在
+        // [`ActiveCenterPanel::session_target`] 里按句柄的开关现判。
+        let panel = match &active {
+            Some(ActiveCenterPanel::Terminal(panel)) => Some(panel.clone()),
+            _ => None,
+        };
 
         // 真的换了面板才重挂存活订阅：同一个面板反复重挂只是把上一条丢掉
         // 再建一条，白费。
@@ -543,7 +560,7 @@ impl AssistantPanel {
             self.current = panel.clone();
         }
 
-        let target = panel.and_then(|panel| panel.read(cx).session_target(cx));
+        let target = active.and_then(|active| active.session_target(cx));
         let active_host = target.as_ref().map(|target| target.id.clone());
         let before = self.session.get().map(|target| target.id);
         let after = active_host.clone();

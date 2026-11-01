@@ -1226,6 +1226,71 @@
         });
     }
 
+    /// 从某台主机的 SFTP 栏打开的文件编辑页也绑着那台机器：切到它时对话与
+    /// 会话都不该跟丢。
+    ///
+    /// 这条守的是一次真实踩到的回归：助手原先只认 [`TerminalPanel`]，活动
+    /// 标签页一变成文件编辑页，`current` 与 `host_of` 一起被清成 `None` ——
+    /// 正在编的那台机器的对话当场"没了"。编辑页不是"没有会话"，它身上带着
+    /// 打开它时那台主机的目标。
+    #[gpui_kit::test]
+    fn a_file_tab_opened_from_a_host_keeps_that_host_current(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::assistant::SessionTarget;
+        use crate::ssh::SftpLaunch;
+        use crate::ui::panels::SftpEditorPanel;
+
+        let (harness, cx) = dock_harness(cx, Vec::new());
+        let (dock_area, panel) = harness.read_with(cx, |harness, _| {
+            (harness.dock_area.downgrade(), harness.assistant.clone())
+        });
+
+        // 一条真的 SSH 连接（进程内的假 sshd）：编辑页带的正是这个句柄。
+        let (handle, _) =
+            crate::db::runtime().block_on(crate::ssh::exec::fake::connect("", "", true));
+        let target = SessionTarget {
+            id: "web-01".into(),
+            name: "web-01".into(),
+            login: "tester@web-01".into(),
+            platform: "Linux".into(),
+            handle,
+            sftp: SftpLaunch::default(),
+        };
+
+        cx.update(|window, cx| {
+            let area = dock_area.upgrade().expect("dock 还在");
+            let editor = cx.new(|cx| SftpEditorPanel::new_detached(Some(target), cx));
+            area.update(cx, |area, cx| {
+                area.add_panel_view(
+                    panel_handle(editor),
+                    DockPlacement::Center,
+                    None,
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(
+                panel.host_of.as_deref(),
+                Some("web-01"),
+                "切到编辑页之后对话绑的主机没了"
+            );
+            assert_eq!(
+                panel.session.get().map(|target| target.id),
+                Some(SharedString::from("web-01")),
+                "切到编辑页之后助手不知道该在哪台机器上跑命令"
+            );
+            assert!(
+                panel.current.is_none(),
+                "编辑页没有终端，不该被当成终端面板"
+            );
+        });
+    }
+
     /// 把面板当窗口的根视图画两帧，不进 Dock —— 要按下去的测试用这个。
     ///
     /// 不是图省事：Dock 把面板挂成一块 `cached` 子视图，缓存命中的那些帧

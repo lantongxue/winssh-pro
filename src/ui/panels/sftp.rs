@@ -68,6 +68,7 @@ use crate::ui::{
     theme::AppIcon,
 };
 use crate::{
+    assistant::SessionTarget,
     host::Host,
     service::{
         FileService, HostService, LocalFileService, SftpService, SudoAsk, TransferEvent,
@@ -1100,6 +1101,11 @@ pub struct SftpPanel {
     /// 或 S3（rust-s3），面板不再区分[`FileService`]。`None` 时右栏只有一个空状态
     /// —— 本地 Shell 会话、或者还没连上，都不该画一张假的文件表。
     service: Option<FileService>,
+    /// 这条会话的 SSH 连接（只有 SFTP 这一档有）。从这一栏打开的文件编辑
+    /// 标签页要带着它：切到编辑页时，智能助手的"当前会话"仍停在这台机器上
+    /// （见 [`SftpEditorPanel::new`]）。FTP / S3 / WebDAV 没有一条 SSH 连接
+    /// 可借，一直是 `None`。
+    ssh: Option<Arc<Handle<SshHandler>>>,
     /// 开不出通道时的那句话（对端没配 `Subsystem sftp` 之类）。
     connect_error: Option<SharedString>,
 
@@ -1444,6 +1450,7 @@ impl SftpPanel {
             let mut panel = Self {
                 host,
                 service: None,
+                ssh: None,
                 connect_error: None,
                 open: false,
                 height: HEIGHT_COMPACT,
@@ -1553,6 +1560,32 @@ impl SftpPanel {
     /// 问密码的钩子还是这一栏的：同一台主机输过一次，两边共用。
     pub fn host_launch(&self) -> SftpLaunch {
         sftp_launch(&self.host, None, Some(self.sudo_ask.clone()))
+    }
+
+    /// 宿主把这台机器的 SSH 连接借给这一栏。
+    ///
+    /// 从这栏打开的文件编辑页要带着它 —— 切到那个标签页时，智能助手的
+    /// "当前会话"仍停在这台上（见 [`Self::session_target`]）。
+    pub fn bind_session(&mut self, handle: Arc<Handle<SshHandler>>) {
+        self.ssh = Some(handle);
+    }
+
+    /// 这一栏手上那台机器，够给文件编辑标签页当"服务器标识"。
+    ///
+    /// 只有 SFTP 这一档有：FTP / S3 / WebDAV 没有一条 SSH 连接可借，
+    /// 那种编辑页在助手眼里就是"没有服务器标识"，退回原来的无会话态。
+    fn session_target(&self) -> Option<SessionTarget> {
+        if !matches!(self.service.as_ref(), Some(FileService::Sftp(_))) {
+            return None;
+        }
+        Some(SessionTarget {
+            id: self.host.id.clone(),
+            name: self.host.name.clone(),
+            login: format!("{}@{}", self.host.user, self.host.hostname).into(),
+            platform: self.host.platform.clone(),
+            handle: self.ssh.clone()?,
+            sftp: self.host_launch(),
+        })
     }
 
     /// 按某一档开法重开时要的那一份（提权按钮）。
@@ -2388,6 +2421,9 @@ impl SftpPanel {
         };
         let directory = self.remote_path.clone();
         let panel = cx.entity().downgrade();
+        // 这页文件属于哪台机器：从某台主机的 SFTP 栏里打开的就带着那台主机的
+        // 目标，切过去时智能助手不会把会话跟丢。
+        let session = self.session_target();
         // 存完盘要把大小与时间画对，所以重列一次。
         let on_saved: SftpSavedHandler = Rc::new(move |window, app| {
             let Some(entity) = panel.upgrade() else {
@@ -2401,6 +2437,7 @@ impl SftpPanel {
                 service,
                 entry.path.clone(),
                 entry.name.clone(),
+                session,
                 on_saved,
                 window,
                 cx,

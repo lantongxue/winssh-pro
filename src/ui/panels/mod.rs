@@ -35,12 +35,15 @@ pub use sftp::{
     SftpPanel, SftpPanelEvent,
 };
 pub use sftp_host::DockedSftpPanel;
-// `SftpEditorPanel` 与 `SavedHandler` 只在 `panels` 内部用（`sftp.rs` 直接从
-// `super::sftp_editor` 取），这里只把 `SaveFile` 抬出去给 `crate::ui::init` 绑键。
+// `SavedHandler` 只在 `panels` 内部用（`sftp.rs` 直接从 `super::sftp_editor` 取）；
+// `SaveFile` 抬出去给 `crate::ui::init` 绑键。`SftpEditorPanel` 本体只给测试要
+// （智能助手验"切到编辑标签页时还认不认得出主机"），不在生产代码里露脸。
 pub use sftp_editor::SaveFile;
+#[cfg(test)]
+pub use sftp_editor::SftpEditorPanel;
 pub use terminal::{
-    BackTab, CloseSearch, CopySelection, Find, PasteClipboard, SessionEvent, SplitLayout, Tab,
-    TerminalPanel, ToggleForwards, ToggleHistory, ToggleMonitor, ToggleSftp,
+    ActiveCenterPanel, BackTab, CloseSearch, CopySelection, Find, PasteClipboard, SessionEvent,
+    SplitLayout, Tab, TerminalPanel, ToggleForwards, ToggleHistory, ToggleMonitor, ToggleSftp,
 };
 pub use vnc::VncPanel;
 pub use webdav_host::DockedWebdavPanel;

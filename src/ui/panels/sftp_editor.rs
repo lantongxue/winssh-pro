@@ -14,6 +14,12 @@
 //!   编辑器里，改完再存一次。保存成功也不关 —— 标签页是常驻的，存完接着编是常态。
 //! - **保存是整篇覆盖**。远端 SFTP 没有"局部改"，所以同一份文件开两个标签页各自保存会
 //!   互相覆盖（后存者赢）；这一点和以前"取消即丢弃"的对话框同级，先不做去重。
+//!
+//! **编辑标签页也绑着一台机器。** 从某台主机的 SFTP 栏里打开的文件，切到这个
+//! 标签页时智能助手的"当前会话"仍停在那一台 —— 它带着打开文件那一刻的
+//! [`SessionTarget`]（见 [`SftpEditorPanel::session_target`]）。FTP / S3 / WebDAV
+//! 那几档没有 SSH 连接可借，这一格是 `None`，助手在那种页面上按"没有服务器
+//! 标识"处理。
 
 use std::rc::Rc;
 
@@ -34,6 +40,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px, relative,
 };
 
+use crate::assistant::SessionTarget;
 use crate::ui::theme::{AppIcon, palette};
 use rust_i18n::t;
 
@@ -69,7 +76,9 @@ enum Read {
 
 /// 远端文本编辑标签页。
 pub struct SftpEditorPanel {
-    service: crate::service::FileService,
+    /// 远端文件通道。`None` 只在测试的空壳（`new_detached`）里出现 ——
+    /// 那种面板不读也不写，只用来验助手认不认得出标签页绑着的主机。
+    service: Option<crate::service::FileService>,
     path: SharedString,
     name: SharedString,
     /// 从文件名解析出的语法名（如 `"rust"`、`"bash"`），喂给编辑器高亮，也在工具栏画一个
@@ -83,6 +92,10 @@ pub struct SftpEditorPanel {
     dirty: bool,
     /// 上一次保存为什么没成。内容留在编辑器里，这行字挂在工具栏上，改了还能再存一次。
     save_error: Option<SharedString>,
+    /// 这份文件是从哪台 SSH 主机上打开的。从某台主机的 SFTP 栏里开的编辑页，
+    /// 照样是一块"绑着那台机器"的标签页 —— 切到它时智能助手的对话与会话都不该
+    /// 跟丢（见 [`crate::ui::panels::AssistantPanel`]）。
+    session: Option<SessionTarget>,
     on_saved: SavedHandler,
     /// 所在标签组。关闭按钮要通过它把自己摘掉 —— 面板不知道自己在布局树哪儿，只有标签组知道。
     group: Option<WeakEntity<TabGroup>>,
@@ -102,6 +115,7 @@ impl SftpEditorPanel {
         service: crate::service::FileService,
         path: impl Into<SharedString>,
         name: impl Into<SharedString>,
+        session: Option<SessionTarget>,
         on_saved: SavedHandler,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -125,7 +139,7 @@ impl SftpEditorPanel {
         .detach();
 
         Self {
-            service,
+            service: Some(service),
             path,
             name,
             language,
@@ -134,11 +148,42 @@ impl SftpEditorPanel {
             saving: false,
             dirty: false,
             save_error: None,
+            session,
             on_saved,
             group: None,
             focus_handle: cx.focus_handle(),
             _change: None,
         }
+    }
+
+    /// 只在测试里用：不读也不写的一具空壳，只带着"这份文件属于哪台机器"。
+    ///
+    /// 智能助手要验"切到文件编辑标签页时还认不认得出那台主机"，而真的编辑器
+    /// 要一条能用的文件服务 —— 那件事不该由这条判断负责。
+    #[cfg(test)]
+    pub(crate) fn new_detached(session: Option<SessionTarget>, cx: &mut Context<Self>) -> Self {
+        Self {
+            service: None,
+            path: "/tmp/detached.conf".into(),
+            name: "detached.conf".into(),
+            language: None,
+            editor: None,
+            read: Read::Failed(SharedString::from("测试空壳不读文件")),
+            saving: false,
+            dirty: false,
+            save_error: None,
+            session,
+            on_saved: Rc::new(|_, _| {}),
+            group: None,
+            focus_handle: cx.focus_handle(),
+            _change: None,
+        }
+    }
+
+    /// 这个标签页绑着的那台机器。智能助手在它作为活动标签页时认这一条；
+    /// `None` 是"这一页没有服务器标识"。
+    pub fn session_target(&self) -> Option<SessionTarget> {
+        self.session.clone()
     }
 
     /// 读到内容了：建编辑器（带上语法与初始文本）、盯住它的改动、把焦点移进去。
@@ -190,12 +235,15 @@ impl SftpEditorPanel {
         let Some(editor) = self.editor.clone() else {
             return;
         };
+        // 空壳（`new_detached`）没有服务可写；真实面板建出来时一定有。
+        let Some(service) = self.service.clone() else {
+            return;
+        };
         self.saving = true;
         self.save_error = None;
         cx.notify();
 
         let content = editor.read(cx).value().to_string();
-        let service = self.service.clone();
         let path = self.path.to_string();
         let name = self.name.to_string();
 

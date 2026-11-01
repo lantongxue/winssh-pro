@@ -49,6 +49,7 @@ use self::{
     pane::{PaneOrigin, TerminalPane, TerminalPaneEvent},
     split::{SplitState, render_split},
 };
+use super::sftp_editor::SftpEditorPanel;
 use crate::{
     assistant::SessionTarget,
     command_history::CommandRun,
@@ -201,6 +202,78 @@ fn display_host(id: String, name: SharedString, platform: SharedString) -> Host 
         terminal_scheme: "".into(),
         shell_integration: false,
         favorites: Vec::new(),
+    }
+}
+
+/// 中心区里当前那个标签页，按智能助手认得的两种形态归成这一层。
+///
+/// 能绑着一台远端机器的标签页不止终端一种：从某台主机的 SFTP 栏里打开的
+/// 文件编辑页也带着那台机器。助手原先只认 [`TerminalPanel`] 的时候，用户
+/// 切去看一眼正在编的文件，那台机器的对话就跟着被清成了空白 —— 这个类型
+/// 就是为拦住那一下而存在的。
+#[derive(Clone)]
+pub enum ActiveCenterPanel {
+    /// 一条终端会话。
+    Terminal(Entity<TerminalPanel>),
+    /// 一份远端文件，以及打开它时那台机器的目标。`None` 是这一页没有服务器
+    /// 标识（FTP / S3 / WebDAV 那几档）。
+    Editor(Option<SessionTarget>),
+}
+
+impl ActiveCenterPanel {
+    /// 中心区里当前那个标签页：焦点落在哪个标签组的活动标签上就是哪一个；
+    /// 焦点不在中心区里（刚在侧边栏里点完东西）就取头一个。
+    ///
+    /// 中心区里停着欢迎页这类既不绑主机、也不是终端的页面时，它们不进这份
+    /// 名单 —— 一个标签组都认不出就是 `None`。
+    pub fn in_center(
+        dock_area: &Entity<DockArea>,
+        window: &Window,
+        cx: &App,
+    ) -> Option<Self> {
+        let area = dock_area.read(cx);
+        let tree = area.layout(DockPlacement::Center)?;
+
+        let mut pages: Vec<(bool, Self)> = Vec::new();
+        tree.root().walk(&mut |node| {
+            let PaneRef::Tabs { panels, active_ix } = node.kind() else {
+                return;
+            };
+            let Some(panel) = panels.get(active_ix).and_then(|id| area.panel(*id)) else {
+                return;
+            };
+            let view = panel.view();
+            if let Ok(terminal) = view.clone().downcast::<TerminalPanel>() {
+                let focused = terminal
+                    .read(cx)
+                    .focus_handle(cx)
+                    .contains_focused(window, cx);
+                pages.push((focused, Self::Terminal(terminal)));
+            } else if let Ok(editor) = view.downcast::<SftpEditorPanel>() {
+                let focused = editor
+                    .read(cx)
+                    .focus_handle(cx)
+                    .contains_focused(window, cx);
+                pages.push((focused, Self::Editor(editor.read(cx).session_target())));
+            }
+        });
+
+        pages
+            .iter()
+            .find(|(focused, _)| *focused)
+            .map(|(_, page)| page.clone())
+            .or_else(|| pages.into_iter().next().map(|(_, page)| page))
+    }
+
+    /// 这个标签页绑着的那台机器，够不着就是 `None`。
+    ///
+    /// 编辑页自带的目标是打开它那一刻记下的句柄；连接已经关了就不再充数 ——
+    /// 和终端那边"断开的会话译不出目标"是同一条口径。
+    pub fn session_target(&self, cx: &App) -> Option<SessionTarget> {
+        match self {
+            Self::Terminal(panel) => panel.read(cx).session_target(cx),
+            Self::Editor(target) => target.clone().filter(|target| !target.handle.is_closed()),
+        }
     }
 }
 
@@ -651,8 +724,10 @@ impl TerminalPanel {
     /// 东西时正是这样）就取头一个 —— 单标签、不分屏的常见情形下这两条给出的
     /// 是同一个答案。
     ///
-    /// 智能助手认的也是这一条（见 [`Self::session_target`]）："当前会话"在
-    /// 这个应用里只有一种意思，发片段发去哪台，助手就在哪台上跑命令。
+    /// **只认终端**：活动标签是文件编辑页（或者别的什么页）时这里给 `None` ——
+    /// 片段要落进一个看得见的终端，而编辑页里没有终端可写。智能助手认的
+    /// 比这一条宽一档（见 [`ActiveCenterPanel::in_center`]）：从某台主机打开
+    /// 的编辑页也算那条会话所在地。
     ///
     /// **只认活动标签**：一个标签组里藏在后面的那几条会话不算，哪怕它们也是
     /// 终端。往一条看不见的会话里发命令是危险的 —— 用户以为命令进了眼前这台
@@ -665,32 +740,10 @@ impl TerminalPanel {
         window: &Window,
         cx: &App,
     ) -> Option<Entity<Self>> {
-        let area = dock_area.read(cx);
-        let tree = area.layout(DockPlacement::Center)?;
-
-        let mut sessions: Vec<Entity<Self>> = Vec::new();
-        tree.root().walk(&mut |node| {
-            let PaneRef::Tabs { panels, active_ix } = node.kind() else {
-                return;
-            };
-            let Some(panel) = panels.get(active_ix).and_then(|id| area.panel(*id)) else {
-                return;
-            };
-            if let Ok(session) = panel.view().downcast::<Self>() {
-                sessions.push(session);
-            }
-        });
-
-        sessions
-            .iter()
-            .find(|session| {
-                session
-                    .read(cx)
-                    .focus_handle(cx)
-                    .contains_focused(window, cx)
-            })
-            .cloned()
-            .or_else(|| sessions.into_iter().next())
+        match ActiveCenterPanel::in_center(dock_area, window, cx)? {
+            ActiveCenterPanel::Terminal(panel) => Some(panel),
+            ActiveCenterPanel::Editor(_) => None,
+        }
     }
 
     /// 这条会话在智能助手眼里的样子，够不着就是 `None`。
@@ -832,6 +885,8 @@ impl TerminalPanel {
         // 主机设了 sudo 提权就以 sudo 开（可能弹密码框）；面板上按过提权按钮的，
         // 重试也照那一档来。
         let launch = panel.read(cx).launch();
+        // 把这条连接借给 SFTP 栏：从它上面打开的编辑页要带着这台机器。
+        panel.update(cx, |panel, _| panel.bind_session(handle.clone()));
         self.sftp_opening = true;
         cx.spawn_in(window, async move |this, cx| {
             let outcome = crate::service::SftpService::connect(handle, launch).await;
