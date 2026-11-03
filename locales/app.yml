@@ -50,7 +50,7 @@ menu.toggle_sidebar:
   zh-CN: 切换侧边栏
 menu.vault:
   en: Password Vault
-  zh-CN: 密码库
+  zh-CN: 保险箱
 menu.trusted_hosts:
   en: Trusted Hosts
   zh-CN: 可信主机
@@ -105,7 +105,7 @@ settings_menu.settings:
   zh-CN: 设置
 settings_menu.vault:
   en: Password Vault
-  zh-CN: 密码库
+  zh-CN: 保险箱
 settings_menu.trusted_hosts:
   en: Trusted Hosts
   zh-CN: 可信主机
@@ -147,10 +147,10 @@ welcome.browse_hosts:
   zh-CN: 浏览主机
 welcome.toggle_sidebar:
   en: Toggle sidebar
-  zh-CN: 打开侧边栏
+  zh-CN: 切换侧边栏
 welcome.toggle_host_info:
   en: Toggle host info
-  zh-CN: 打开主机信息
+  zh-CN: 切换主机信息
 welcome.open_settings:
   en: Open settings
   zh-CN: 打开偏好设置
@@ -232,7 +232,7 @@ command_history.no_match:
   zh-CN: 没有匹配的命令
 command_history.hint:
   en: Click a command to send it to this session · newest %{limit} kept
-  zh-CN: 点一条即发进当前会话 · 最近 %{limit} 条
+  zh-CN: 点击命令发送至当前会话 · 仅保留最近 %{limit} 条
 command_history.delete:
   en: Delete this command
   zh-CN: 删除这条命令
@@ -263,7 +263,7 @@ shell_integration.confirm_body:
   zh-CN: WinSSH Pro 会在当前会话中执行以下命令，并在以后每次连接此主机时自动执行。该命令仅设置提示符钩子（bash 4.4+ 走 PS0/PS1/PROMPT_COMMAND，zsh 走 precmd/preexec），使 shell 报告每条命令的起止与退出码；不写入磁盘，仅在 shell 生命周期内有效。执行前请确认会话处于提示符状态 —— 这些字符会进入当前正在读取输入的程序。
 shell_integration.script_caption:
   en: Sent verbatim, as one line
-  zh-CN: 原样发送，就这一行
+  zh-CN: 按原文整行发送
 shell_integration.copy:
   en: Copy
   zh-CN: 复制
@@ -360,13 +360,13 @@ settings.preferences:
   zh-CN: 偏好配置
 settings.tab_general:
   en: General
-  zh-CN: 通用外观
+  zh-CN: 通用
 settings.tab_terminal:
   en: Terminal
-  zh-CN: 终端偏好
+  zh-CN: 终端
 settings.tab_about:
   en: About
-  zh-CN: 关于软件
+  zh-CN: 关于
 settings.appearance:
   en: Appearance
   zh-CN: 外观
@@ -387,7 +387,7 @@ settings.close_to_tray:
   zh-CN: 关闭时最小化到托盘
 settings.close_to_tray_unsupported:
   en: This desktop can't hide windows, so closing always quits.
-  zh-CN: 这个桌面环境不能隐藏窗口，关闭即是退出。
+  zh-CN: 当前桌面环境不支持隐藏窗口，关闭窗口即退出。
 settings.terminal_appearance:
   en: Appearance
   zh-CN: 外观
@@ -414,13 +414,13 @@ scheme_picker.cancel:
   zh-CN: 取消
 scheme_picker.hint_settings:
   en: Click a scheme to preview it here — nothing changes until you press OK.
-  zh-CN: 点一套只换上面的预览，按确定才真的换。
+  zh-CN: 点击方案仅预览，点击「确定」后应用。
 scheme_picker.hint_host_form:
   en: Pick one — it is saved together with the host.
-  zh-CN: 选中后点确定，保存主机时一并存下。
+  zh-CN: 选择后点击「确定」，随主机配置一并保存。
 scheme_picker.hint_session:
   en: Click a scheme to preview it here; OK switches this session and saves it to the host.
-  zh-CN: 点一套只换上面的预览，按确定才换这条会话并存到主机上。
+  zh-CN: 点击方案仅预览，点击「确定」后应用至当前会话并保存到主机。
 settings.terminal_font:
   en: Font
   zh-CN: 字体
@@ -480,10 +480,10 @@ settings.assistant_custom:
   zh-CN: 自定义
 settings.assistant_no_provider:
   en: No provider yet. Add one, then add the models you want to chat with.
-  zh-CN: 还没有服务商。添加一个，再添加要用的模型。
+  zh-CN: 尚未添加服务商。请先添加服务商，再添加所需模型。
 settings.assistant_provider_list_hint:
   en: Each provider is one connection. Its models live under it.
-  zh-CN: 每个服务商是一份连接配置，模型挂在它下面。
+  zh-CN: 每个服务商对应一份连接配置，模型从属于该服务商。
 settings.assistant_models_count:
   en: '%{count} models'
   zh-CN: '%{count} 个模型'
@@ -525,7 +525,7 @@ settings.assistant_name_placeholder:
   zh-CN: 例如：公司中转站
 settings.assistant_thinking_switch:
   en: Thinking switch
-  zh-CN: 思考开关参数
+  zh-CN: 思考参数开关
 settings.assistant_thinking_switch_hint:
   en: How this provider turns thinking on and off. Qwen uses enable_thinking; most others (Zhipu, DeepSeek, Doubao, relays) use thinking.type. Choose Don’t send for OpenAI.
   zh-CN: 此服务商开关思考的参数。千问用 enable_thinking；智谱、DeepSeek、豆包及多数中转站用 thinking.type；OpenAI 官方选「不发送」。
@@ -552,7 +552,7 @@ settings.assistant_model_vision:
   zh-CN: 支持图片
 settings.assistant_model_no_thinking:
   en: No thinking effort
-  zh-CN: 不调思考强度
+  zh-CN: 不发送思考参数
 settings.assistant_model_max_tokens:
   en: 'Max output %{value}'
   zh-CN: 最大输出 %{value}
@@ -1250,7 +1250,7 @@ rdp.files_dir_missing:
   zh-CN: 目录 %{dir} 不存在。
 rdp.files_too_large:
   en: "%{name} is larger than 2 GiB, which this server cannot transfer through the clipboard."
-  zh-CN: "%{name} 超过 2 GiB，这台服务器不支持经剪贴板传这么大的文件。"
+  zh-CN: "%{name} 超过 2 GiB，该服务器不支持经剪贴板传输此大小的文件。"
 rdp.files_remote_refused:
   en: "The remote side did not provide the contents of %{name}."
   zh-CN: 远端未提供 %{name} 的内容。
@@ -1330,7 +1330,7 @@ easytier.check_peer_scheme:
   zh-CN: "%{peer}：不支持的协议，可用协议：%{schemes}"
 easytier.check_peer_host:
   en: "%{peer}: a host is required"
-  zh-CN: "%{peer}：要写明主机"
+  zh-CN: "%{peer}：缺少主机地址"
 easytier.check_ipv4:
   en: "Not a virtual IPv4 address: %{ipv4} (e.g. 10.144.144.10 or 10.144.144.10/24; leave it empty to get one from the network)"
   zh-CN: "无效虚拟地址：%{ipv4}（应形如 10.144.144.10 或 10.144.144.10/24；留空则由网络分配）"
@@ -1417,7 +1417,7 @@ easytier.event_connect_failed:
   zh-CN: "连接 %{url} 失败：%{error}"
 easytier.event_ipv4_assigned:
   en: "Virtual address assigned: %{ipv4}"
-  zh-CN: "分到虚拟地址 %{ipv4}"
+  zh-CN: "已分配虚拟地址 %{ipv4}"
 easytier.event_ipv4_released:
   en: "Virtual address %{ipv4} released"
   zh-CN: "虚拟地址 %{ipv4} 已释放"
@@ -1456,7 +1456,7 @@ easytier.start_failed_tun:
   zh-CN: "加入网络失败：%{error}。虚拟网卡模式需要管理员（root）权限（Windows 上应用会在可能时自动以提权进程运行），且 wintun.dll 需与程序同目录；若不可行，请在主机设置中切换为「用户态（SOCKS5 代理）」。"
 easytier.start_timeout:
   en: "The node did not start within %{secs} seconds"
-  zh-CN: "%{secs} 秒内节点没能启动"
+  zh-CN: "节点未在 %{secs} 秒内启动"
 # 虚拟网卡那一档的提权 host（winssh-easytier-host，经 broker 拉起）。
 easytier.host_missing:
   en: "Could not find winssh-easytier-host.exe next to the application."
@@ -1469,10 +1469,10 @@ easytier.host_elevation_cancelled:
   zh-CN: "创建虚拟网卡需要管理员权限，但授权被取消了。"
 easytier.host_connect_timeout:
   en: "The elevated network host did not connect within %{secs} seconds."
-  zh-CN: "组网提权进程 %{secs} 秒内没有连上。"
+  zh-CN: "组网提权进程未在 %{secs} 秒内完成连接。"
 easytier.host_exited:
   en: "The elevated network host exited (%{status})."
-  zh-CN: "组网提权进程退出了（%{status}）。"
+  zh-CN: "组网提权进程已退出（%{status}）。"
 easytier.stopped_unexpectedly:
   en: "The node stopped unexpectedly"
   zh-CN: "节点意外停止"
@@ -1584,7 +1584,7 @@ easytier.peers_count:
   zh-CN: "%{count} 个"
 easytier.peers_empty:
   en: "No other node yet. Make sure the network name and secret match the other nodes."
-  zh-CN: "未找到其他节点。请确认网络名称与密钥与其他节点一致。"
+  zh-CN: "未找到其他节点。请确认网络名称与密钥同其他节点一致。"
 easytier.peers_offline:
   en: "Not in the network."
   zh-CN: "不在网络中。"
@@ -1608,10 +1608,10 @@ easytier.col_loss:
   zh-CN: "丢包"
 easytier.col_rx:
   en: "Received"
-  zh-CN: "已收"
+  zh-CN: "接收"
 easytier.col_tx:
   en: "Sent"
-  zh-CN: "已发"
+  zh-CN: "发送"
 easytier.col_tunnel:
   en: "Tunnel"
   zh-CN: "隧道"
@@ -1694,7 +1694,7 @@ clash.download.title:
   zh-CN: "未检测到 mihomo 内核"
 clash.download.subtitle:
   en: "Proxy requires the mihomo core executable"
-  zh-CN: "启动代理需要 mihomo 核心程序支持"
+  zh-CN: 代理启动依赖 mihomo 内核可执行程序
 clash.download.confirm_desc:
   en: "The mihomo executable was not found locally. Would you like to automatically download it from GitHub Releases?"
   zh-CN: "本地未找到 mihomo 内核。启动代理需要该程序，是否从 GitHub Releases 自动下载？"
@@ -1736,13 +1736,13 @@ clash.download.connecting:
   zh-CN: "正在连接 GitHub Releases..."
 clash.download.unpacking:
   en: "Unpacking and configuring binary permissions..."
-  zh-CN: "正在解压并配置内核文件..."
+  zh-CN: 正在解压并设置可执行权限...
 clash.download.done_title:
   en: "Mihomo Core Ready"
   zh-CN: "mihomo 内核已就绪"
 clash.download.done_desc:
   en: "The core was installed successfully. You can start the proxy whenever you want."
-  zh-CN: "内核已安装完成，可手动启动代理。"
+  zh-CN: 内核安装完成，可随时启动代理。
 clash.download.failed_title:
   en: "Download Failed"
   zh-CN: "下载 mihomo 内核失败"
@@ -1922,13 +1922,13 @@ clash.form.body:
   zh-CN: 配置正文
 clash.form.body_empty:
   en: "Nothing yet — fetch it, or import a file."
-  zh-CN: "还没有正文 —— 拉一次，或者从文件导入。"
+  zh-CN: "暂无正文 —— 拉取订阅或从文件导入。"
 clash.form.body_ready:
   en: "%{nodes} nodes · %{groups} proxy groups · %{rules} rules"
   zh-CN: "%{nodes} 个节点 · %{groups} 个策略组 · %{rules} 条分流规则"
 clash.form.body_unreadable:
   en: "This body cannot be read as a Clash configuration."
-  zh-CN: "这份正文读不出 Clash 配置该有的东西。"
+  zh-CN: "无法按 Clash 配置格式解析该正文。"
 clash.form.fetch:
   en: Fetch
   zh-CN: 拉取
@@ -1940,7 +1940,7 @@ clash.form.import:
   zh-CN: 从文件导入
 clash.form.import_prompt:
   en: Pick a subscription file
-  zh-CN: 挑一份订阅文件
+  zh-CN: 选择订阅文件
 clash.form.import_failed:
   en: "Could not read that file: %{error}"
   zh-CN: "无法读取该文件：%{error}"
@@ -1961,7 +1961,7 @@ clash.form.tag:
   zh-CN: 分组标签
 clash.form.tag_placeholder:
   en: e.g. IEPL, self-hosted
-  zh-CN: 例如：IEPL高速、自建
+  zh-CN: 例如：IEPL、自建
 clash.form.color:
   en: Color
   zh-CN: 标识色
@@ -2006,7 +2006,7 @@ clash.form.user_agent_placeholder:
   zh-CN: 留空使用默认 Clash 客户端标识
 clash.form.notes:
   en: Notes
-  zh-CN: 备注说明
+  zh-CN: 备注
 clash.form.protocol_title:
   en: Supported Clash.Meta protocols
   zh-CN: 支持 Clash.Meta 协议
@@ -2055,7 +2055,7 @@ clash.view.updated_at:
   zh-CN: "更新于 %{time}"
 clash.view.unreadable:
   en: Unreadable configuration
-  zh-CN: 正文读不出来
+  zh-CN: 配置无法解析
 clash.view.running:
   en: Live
   zh-CN: 运行中
@@ -2076,22 +2076,22 @@ clash.view.auto_updated:
   zh-CN: "已自动更新 %{count} 条订阅。"
 clash.view.refresh_all:
   en: Refresh all
-  zh-CN: 一键更新全部
+  zh-CN: 全部更新
 clash.view.menu:
   en: Subscription actions
   zh-CN: 订阅操作
 clash.view.menu_set_current:
   en: Set as active
-  zh-CN: 设为当前使用
+  zh-CN: 设为当前订阅
 clash.view.menu_refresh_nodes:
   en: Refresh nodes
   zh-CN: 更新节点
 clash.view.nodes_count:
   en: "%{count} nodes"
-  zh-CN: "%{count} 节点"
+  zh-CN: "%{count} 个节点"
 clash.view.rules_count:
   en: "%{count} rules"
-  zh-CN: "%{count} 规则"
+  zh-CN: "%{count} 条规则"
 clash.view.usage:
   en: "%{used} / %{total}"
   zh-CN: "%{used} / %{total}"
@@ -2109,7 +2109,7 @@ clash.view.expire:
   zh-CN: "到期 %{date}"
 clash.view.expire_unknown:
   en: no expiry
-  zh-CN: 未注明到期
+  zh-CN: 无到期信息
 clash.view.edit:
   en: Edit
   zh-CN: 编辑
@@ -2161,7 +2161,7 @@ clash.panel.running:
   zh-CN: 运行中
 clash.panel.other_running:
   en: "%{name} is running"
-  zh-CN: "正在跑的是 %{name}"
+  zh-CN: "当前运行实例：%{name}"
 clash.panel.failed:
   en: "Failed: %{error}"
   zh-CN: "启动失败：%{error}"
@@ -2188,7 +2188,7 @@ clash.panel.stop:
   zh-CN: 停止
 clash.panel.master_running:
   en: Proxy Running
-  zh-CN: 代理已运行
+  zh-CN: 代理运行中
 clash.panel.master_stopped:
   en: Proxy Stopped
   zh-CN: 代理已停止
@@ -2227,10 +2227,10 @@ clash.panel.system_proxy:
   zh-CN: 系统代理
 clash.panel.system_proxy_hint:
   en: "Point apps at 127.0.0.1:%{port}"
-  zh-CN: "把程序指向 127.0.0.1:%{port}"
+  zh-CN: "将应用程序指向 127.0.0.1:%{port}"
 clash.panel.system_proxy_no_port:
   en: Waiting for the port
-  zh-CN: 等端口就位
+  zh-CN: 等待端口分配
 clash.panel.tun:
   en: Virtual NIC
   zh-CN: 虚拟网卡
@@ -2281,7 +2281,7 @@ clash.panel.route_search_placeholder:
   zh-CN: 输入域名测试分流，例如 github.com
 clash.panel.test_all:
   en: Test all
-  zh-CN: 一键测速
+  zh-CN: 测试全部
 clash.panel.test_node:
   en: Test this node
   zh-CN: 测试此节点
@@ -2513,7 +2513,7 @@ host_form.auth_agent:
   zh-CN: SSH Agent 转发
 host_form.field_name:
   en: Display name *
-  zh-CN: 节点显示名称 *
+  zh-CN: 显示名称 *
 host_form.field_group:
   en: Group / folder
   zh-CN: 分组 / 目录
@@ -2739,18 +2739,16 @@ serial.device_lost:
 host_form.field_key_content:
   en: Private key *
   zh-CN: 私钥 *
-host_form.field_key_passphrase:
-  en: Private key passphrase
-  zh-CN: 私钥密码
+  zh-CN: 私钥口令
 host_form.key_content_placeholder:
   en: Paste the private key, starting with -----BEGIN OPENSSH PRIVATE KEY-----
   zh-CN: 粘贴私钥内容，从 -----BEGIN OPENSSH PRIVATE KEY----- 开始
 host_form.key_passphrase_placeholder:
   en: Leave empty if the key has no passphrase
-  zh-CN: 私钥没有加密时留空
+  zh-CN: 私钥未加密时留空
 host_form.key_passphrase_hint:
   en: Only needed for an encrypted private key; leave it empty otherwise.
-  zh-CN: 只有加密过的私钥才需要填；私钥没加密就留空。
+  zh-CN: 仅加密私钥需要填写；未加密则留空。
 host_form.key_content_required:
   en: Paste (or import) the private key to use for key authentication.
   zh-CN: 请粘贴或导入用于密钥认证的私钥。
@@ -2798,10 +2796,10 @@ host_form.bastion_none:
   zh-CN: 直接连接(不经跳板)
 host_form.bastion_item:
   en: "Jump: %{name} (%{hostname})"
-  zh-CN: "跳板:%{name} (%{hostname})"
+  zh-CN: "跳板机：%{name} (%{hostname})"
 host_form.required_fields:
   en: Fill in the display name, host address and login user.
-  zh-CN: 请填写节点显示名称、主机地址与登录用户名。
+  zh-CN: 请填写显示名称、主机地址与登录用户名。
 host_form.add_tag:
   en: Add
   zh-CN: 添加
@@ -2858,7 +2856,7 @@ host_form.proxy_network_item:
   zh-CN: "%{name}（%{network}）"
 host_form.proxy_network_placeholder:
   en: Pick a network
-  zh-CN: 选一张组网
+  zh-CN: 选择组网
 host_form.proxy_network_socks5_hint:
   en: "Connects through the SOCKS5 entry %{address} of %{name}. If that network is not joined yet, its tab opens and joins it first, then this host connects."
   zh-CN: "连接时经由「%{name}」的 SOCKS5 入口 %{address}。若该网络未加入，会先打开其标签页加入，再连接此主机。"
@@ -2978,7 +2976,7 @@ vault.reveal:
   zh-CN: 显示明文
 vault.hide:
   en: Hide again
-  zh-CN: 重新打码
+  zh-CN: 重新隐藏
 vault.copy_account:
   en: Copy the account
   zh-CN: 复制账号
@@ -3038,7 +3036,7 @@ vault.empty:
   zh-CN: 保险箱为空。
 vault.empty_hint:
   en: Passwords, SSH keys and API tokens stored here can be pulled into a host form with one click.
-  zh-CN: 此处存储的账号密码、SSH 私钥与 API 令牌可在主机表单中一键取用。
+  zh-CN: 此处存储的账号密码、SSH 私钥与 API 令牌可在主机表单中直接取用。
 vault.no_match:
   en: No credential matches.
   zh-CN: 尚无匹配的凭据。
@@ -3082,7 +3080,7 @@ vault_window.title:
   zh-CN: 账号密码与私钥保险箱
 vault_window.subtitle:
   en: Server accounts, SSH key pairs and API tokens, stored and managed in one place
-  zh-CN: 集中存储管理服务器账号密码、SSH 密钥对、API 令牌与凭据
+  zh-CN: 集中存储与管理服务器账号密码、SSH 密钥对与 API 令牌
 vault_window.badge:
   en: local file · not encrypted
   zh-CN: 本机存储 · 未加密
@@ -3153,7 +3151,7 @@ credential_form.field_passphrase:
   zh-CN: 私钥口令(可选)
 credential_form.passphrase_placeholder:
   en: leave empty if the key is not encrypted
-  zh-CN: 私钥没加密就留空
+  zh-CN: 私钥未加密时留空
 credential_form.field_private_key:
   en: Private key (OpenSSH PEM)
   zh-CN: 私钥内容(OpenSSH PEM)
@@ -3253,43 +3251,43 @@ snippet.preset_docker_prune_title:
   zh-CN: Docker 深度清理
 snippet.preset_docker_prune_description:
   en: Remove every stopped container, unused network, dangling image and build cache.
-  zh-CN: 清掉所有停止的容器、无用网络、悬空镜像与构建缓存。
+  zh-CN: 清理所有已停止的容器、未使用的网络、悬空镜像与构建缓存。
 snippet.preset_docker_logs_title:
   en: Follow container logs
-  zh-CN: 跟一个容器的日志
+  zh-CN: 跟踪容器日志
 snippet.preset_docker_logs_description:
   en: Stream a container's output, starting from the last N lines.
-  zh-CN: 从最近若干行开始，实时跟一个容器的输出。
+  zh-CN: 从最近 N 行开始，实时输出容器日志。
 snippet.preset_large_files_title:
   en: Ten largest files
-  zh-CN: 最大的十个文件
+  zh-CN: 最大的 10 个文件
 snippet.preset_large_files_description:
   en: Scan a directory and list the ten files taking up the most space.
-  zh-CN: 扫一个目录，列出最占地方的十个文件。
+  zh-CN: 扫描指定目录，列出占用空间最大的 10 个文件。
 snippet.preset_nginx_reload_title:
   en: Nginx check and reload
   zh-CN: Nginx 检查并热重载
 snippet.preset_nginx_reload_description:
   en: Verify the configuration first, reload the workers only if it parses.
-  zh-CN: 先验一遍配置，通过了再让 worker 平滑重载。
+  zh-CN: 先校验配置，通过后再平滑重载 worker。
 snippet.preset_mysql_dump_title:
   en: MySQL compressed dump
   zh-CN: MySQL 压缩备份
 snippet.preset_mysql_dump_description:
   en: Dump a database and gzip it into a file named after today.
-  zh-CN: 导出一个库，压成以当天日期命名的 gz 文件。
+  zh-CN: 导出数据库并压缩为以当天日期命名的 gz 文件。
 snippet.preset_listening_ports_title:
   en: Listening ports
   zh-CN: 监听中的端口
 snippet.preset_listening_ports_description:
   en: List every listening TCP/UDP socket along with the process holding it.
-  zh-CN: 列出所有监听中的 TCP/UDP 端口，连占用它的进程一起。
+  zh-CN: 列出所有监听中的 TCP/UDP 端口及其占用进程。
 snippet.preset_git_reset_title:
   en: Force sync with the remote branch
   zh-CN: 强制同步远端分支
 snippet.preset_git_reset_description:
   en: Throw away local changes and line up exactly with the upstream branch.
-  zh-CN: 丢掉本地改动，与上游分支完全对齐。
+  zh-CN: 丢弃本地改动，与上游分支完全对齐。
 
 # ── 命令片段（侧边栏视图与片段卡片） ─────────────────────────────────────
 snippet_vault.search_placeholder:
@@ -3345,7 +3343,7 @@ snippet_vault.empty:
   zh-CN: 尚无命令片段。
 snippet_vault.empty_hint:
   en: "Save a command you keep retyping — one click sends it to the current session, and any {{name}} in it is asked for first."
-  zh-CN: "将总要重新输入的命令保存下来 —— 一键发送至当前会话，命令中的 {{name}} 会先弹出输入框。"
+  zh-CN: "保存经常重复输入的命令 —— 点击即发送至当前会话，命令中的 {{name}} 会先弹出参数输入框。"
 snippet_vault.no_match:
   en: No snippet matches.
   zh-CN: 尚无符合条件的片段。
@@ -3359,13 +3357,13 @@ snippet_form.title_edit:
   zh-CN: 编辑命令片段
 snippet_form.subtitle:
   en: Reusable commands and scripts, sent to a session in one click
-  zh-CN: 可复用的命令与脚本，一键发送至会话
+  zh-CN: 可复用的命令与脚本，点击发送至会话
 snippet_form.presets:
   en: Templates
   zh-CN: 快速模板
 snippet_form.presets_hint:
   en: click to fill the form
-  zh-CN: 点一下填进表单
+  zh-CN: 点击后填入表单
 snippet_form.field_title:
   en: Title
   zh-CN: 片段名称
@@ -3380,7 +3378,7 @@ snippet_form.field_command:
   zh-CN: 命令 / 脚本
 snippet_form.command_hint:
   en: "{{name}} is a parameter"
-  zh-CN: "{{name}} 是参数"
+  zh-CN: "{{name}} 表示参数"
 snippet_form.command_placeholder:
   en: "e.g. docker logs -f --tail={{lines}} {{container}}"
   zh-CN: "例如：docker logs -f --tail={{lines}} {{container}}"
@@ -3389,7 +3387,7 @@ snippet_form.field_parameters:
   zh-CN: 参数 (%{count})
 snippet_form.parameters_hint:
   en: read from the command; what you type here is the default
-  zh-CN: 从命令里认出来的，这里填的是默认值
+  zh-CN: 从命令中解析出的参数，此处填写默认值
 snippet_form.default_placeholder:
   en: default value
   zh-CN: 默认值
@@ -3407,7 +3405,7 @@ snippet_form.field_description:
   zh-CN: 说明
 snippet_form.description_placeholder:
   en: One line on what this command does
-  zh-CN: 一句话说清这条命令干什么
+  zh-CN: 一句话说明该命令的用途
 snippet_form.required_title:
   en: Give the snippet a title.
   zh-CN: 片段名称未填写。
@@ -3474,7 +3472,7 @@ password_generator.strength:
   zh-CN: 强度：%{label}
 password_generator.regenerate:
   en: Draw another
-  zh-CN: 换一个
+  zh-CN: 重新生成
 password_generator.copy:
   en: Copy
   zh-CN: 复制
@@ -3483,7 +3481,7 @@ password_generator.copied:
   zh-CN: 密码已复制到剪贴板。
 password_generator.use_it:
   en: Create a credential with it
-  zh-CN: 用它新建一条凭据
+  zh-CN: 以该密码新建凭据
 
 # ── 生成 SSH 密钥对的对话框 ──────────────────────────────────────────────
 key_generator.title:
@@ -3518,7 +3516,7 @@ key_generator.required_name:
   zh-CN: 请为此密钥命名。
 key_generator.generate:
   en: Generate and store
-  zh-CN: 生成并入库
+  zh-CN: 生成并保存
 key_generator.generating:
   en: Working out the key pair…
   zh-CN: 正在计算密钥对……
@@ -3527,7 +3525,7 @@ key_generator.failed:
   zh-CN: 生成密钥对失败
 key_generator.saved:
   en: "“%{name}” is in the vault — fingerprint %{fingerprint}"
-  zh-CN: "“%{name}”已存进保险箱 —— 指纹 %{fingerprint}"
+  zh-CN: "“%{name}”已保存至保险箱 —— 指纹 %{fingerprint}"
 key_generator.category:
   en: SSH keys
   zh-CN: SSH 密钥
@@ -3583,7 +3581,7 @@ sudo_password.placeholder:
   zh-CN: sudo 密码
 sudo_password.retry:
   en: That password was rejected by sudo. Try again.
-  zh-CN: sudo 拒绝了这个密码，请重新输入。
+  zh-CN: sudo 拒绝了该密码，请重新输入。
 sudo_password.hint:
   en: Kept in memory only until the app quits; the SFTP panel and the assistant share it for this host.
   zh-CN: 只保存在内存里，应用退出即清除；同一台主机的 SFTP 面板与智能助手共用。
@@ -3692,7 +3690,7 @@ sftp_chmod.describe_444:
   zh-CN: 所有人只读
 sftp_chmod.describe_600:
   en: Only you can read and write
-  zh-CN: 只有自己能读写
+  zh-CN: 仅属主可读写
 sftp_chmod.describe_644:
   en: You can read and write, everyone else can read
   zh-CN: 自己能读写，其他人只读
@@ -3701,10 +3699,10 @@ sftp_chmod.describe_666:
   zh-CN: 所有人可读写
 sftp_chmod.describe_700:
   en: Only you can enter, read and write
-  zh-CN: 只有自己能进、能读写
+  zh-CN: 仅属主可进入、读写
 sftp_chmod.describe_755:
   en: You can enter, read and write; everyone else can enter and read
-  zh-CN: 自己能进能读写，其他人只能进和读
+  zh-CN: 属主可进入、读写，其他人可进入与读取
 sftp_chmod.describe_777:
   en: Everyone can read, write and execute
   zh-CN: 所有人可读、可写、可执行
@@ -3864,7 +3862,7 @@ port_forward.delete_rule:
   zh-CN: 删除这条转发规则
 port_forward.dynamic_target:
   en: Chosen per connection
-  zh-CN: 每条连接自己指定
+  zh-CN: 由各连接自行指定
 port_forward.traffic:
   en: "Traffic: %{amount}"
   zh-CN: 流量：%{amount}
@@ -3879,7 +3877,7 @@ port_forward.test_port:
   zh-CN: 测试端口
 port_forward.test_port_tooltip:
   en: Connect to this port once and see whether the tunnel carries
-  zh-CN: 连接此端口一次，检查隧道是否畅通
+  zh-CN: 连接一次该端口，验证隧道连通性
 port_forward.copy_cli:
   en: Copy CLI
   zh-CN: 复制 CLI
@@ -3944,10 +3942,10 @@ terminal.save_forwards_failed:
 # 装是装上了（那一行已经敲进去了），只是没记住"下次也装"。
 terminal.save_shell_integration_failed:
   en: "Shell integration is active in this session, but the setting could not be saved: %{error}"
-  zh-CN: shell 集成在当前会话中已生效，但开关未保存：%{error}
+  zh-CN: shell 集成已在当前会话生效，但设置未能保存：%{error}
 terminal.save_terminal_scheme_failed:
   en: "The scheme is active in this session, but it could not be saved to this host: %{error}"
-  zh-CN: 配色在当前会话中已生效，但没存到这台主机上：%{error}
+  zh-CN: 配色方案已在当前会话生效，但未能保存到此主机：%{error}
 terminal.banner_local_ready:
   en: Local shell is ready.
   zh-CN: 本机 Shell 已就绪。
@@ -4099,7 +4097,7 @@ monitor.empty_failed_title:
   zh-CN: 采集失败
 monitor.empty_failed_detail:
   en: The line above is the reason the remote gave. Fix it and press refresh, or wait for the next automatic retry.
-  zh-CN: 上面那条为远端返回的原因。修复后请刷新，或等待下次自动重试。
+  zh-CN: 上述信息为远端返回的错误原因。修复后可点击刷新，或等待自动重试。
 monitor.empty_sampling_title:
   en: Sampling…
   zh-CN: 正在采集…
@@ -4120,7 +4118,7 @@ monitor.processes_no_match:
   zh-CN: 没有匹配的进程
 monitor.settings_note:
   en: The sampling interval follows this host; it will still be this rhythm next time you open it.
-  zh-CN: 采集频率跟随此主机，下次打开时保持相同节奏。
+  zh-CN: 采集间隔随主机配置保存，下次打开仍按此间隔执行。
 monitor.interval_panel_title:
   en: Monitor panel
   zh-CN: 监控面板
@@ -4188,9 +4186,7 @@ sftp.col_modified:
 sftp.col_perm:
   en: Perms
   zh-CN: 权限
-sftp.col_owner:
-  en: Owner
-  zh-CN: 所属
+  zh-CN: 所有者
 sftp.col_action:
   en: Actions
   zh-CN: 操作
@@ -4205,10 +4201,10 @@ sftp.row_download:
   zh-CN: 下载到本地
 sftp.row_open_folder:
   en: Open this directory
-  zh-CN: 进到这个目录
+  zh-CN: 打开该目录
 sftp.row_delete:
   en: Delete this entry
-  zh-CN: 删掉这个条目
+  zh-CN: 删除该条目
 sftp.path_placeholder:
   en: Remote path, e.g. /var/log or ~/logs
   zh-CN: 远端路径，例如 /var/log 或 ~/logs
@@ -4289,7 +4285,7 @@ sftp.names_and_more:
   zh-CN: "%{head} 等 %{count} 项"
 sftp.count_truncated:
   en: "%{count} items · truncated, the directory is larger"
-  zh-CN: "%{count} 项 · 已截断，目录比这大"
+  zh-CN: "%{count} 项 · 列表已截断"
 sftp.count_items:
   en: "%{count} items"
   zh-CN: "%{count} 项"
@@ -4301,7 +4297,7 @@ sftp.follow_cwd_off:
   zh-CN: 同步目录：关
 sftp.follow_cwd_tooltip:
   en: Keep the right pane on the terminal's current directory
-  zh-CN: 让右栏跟着终端的当前目录走
+  zh-CN: 右栏跟随终端当前工作目录
 sftp.go:
   en: Go
   zh-CN: 前往
@@ -4316,7 +4312,7 @@ sftp.parent_dir:
   zh-CN: 上一级目录
 sftp.remote_home:
   en: Remote home directory
-  zh-CN: 远端家目录
+  zh-CN: 远端主目录
 sftp.new_file_here:
   en: Create an empty file in this directory
   zh-CN: 在这个目录里新建一个空文件
@@ -4331,10 +4327,10 @@ sftp.side_by_side:
   zh-CN: 两栏并排
 sftp.elevate_with:
   en: "Reopen with elevated privileges (%{identity})"
-  zh-CN: "以提升的权限重新打开（%{identity}）"
+  zh-CN: "以提升后的权限重新打开（%{identity}）"
 sftp.elevated_as:
   en: "Opened as %{identity}. Click to go back to normal privileges"
-  zh-CN: "已以 %{identity} 身份打开，点击恢复普通权限"
+  zh-CN: "已以 %{identity} 身份打开，点击恢复默认权限"
 sftp.elevate_not_connected:
   en: The SSH connection is not up yet, so SFTP cannot be reopened
   zh-CN: SSH 连接尚未建立，无法重新打开 SFTP
@@ -4376,10 +4372,10 @@ sftp.favorites_menu_tooltip:
   zh-CN: 打开远端目录收藏夹
 sftp.favorites_empty:
   en: (empty) Star the current directory to pin it here
-  zh-CN: （空）点星把当前目录钉进来
+  zh-CN: （空）收藏当前目录以固定显示于此
 sftp.favorites_full:
   en: Favorites list is full
-  zh-CN: 收藏夹满了
+  zh-CN: 收藏列表已达上限
 sftp.favorite_add_current:
   en: Star current directory
   zh-CN: 收藏当前目录
@@ -4406,7 +4402,7 @@ sftp.parent_row:
   zh-CN: "[上级目录]"
 sftp.hint:
   en: Double-click a file to edit it; Ctrl/Shift-click to select several; drag between the panes to upload or download; right-click a row for more.
-  zh-CN: 双击文件打开编辑；Ctrl/Shift 点击多选；支持左右栏拖拽上传/下载；右键查看更多操作。
+  zh-CN: 双击文件进行编辑；Ctrl/Shift 多选；跨栏拖拽即上传/下载；右键查看更多操作。
 sftp.transfers_active:
   en: Transfers (%{active}/%{total})
   zh-CN: 传输（%{active}/%{total}）
@@ -4468,13 +4464,13 @@ queue.resume_all_tooltip:
   zh-CN: 恢复所有暂停的传输
 queue.pause_all_tooltip:
   en: Hold the running transfers; queued ones wait for their turn
-  zh-CN: 暂停所有运行中的传输；排队中的等待轮到
+  zh-CN: 暂停所有运行中的传输；排队中的任务按序等待
 queue.clear_finished:
   en: Clear finished
   zh-CN: 清除已完成
 queue.clear_finished_tooltip:
   en: Drop the rows that are done; running ones have to be cancelled first
-  zh-CN: 清除已完成的行；运行中的需先取消
+  zh-CN: 仅清除已完成的任务；运行中的任务需先取消
 queue.collapse:
   en: Collapse the queue
   zh-CN: 收起队列
@@ -4483,7 +4479,7 @@ queue.empty:
   zh-CN: 尚无传输任务；将文件拖入右栏，或在条目菜单中选择上传/下载。
 queue.child_files:
   en: Child files
-  zh-CN: 子项文件
+  zh-CN: 子文件
 queue.resume_one:
   en: Carry on
   zh-CN: 继续
@@ -4541,22 +4537,22 @@ sftp_err.failed:
   zh-CN: "%{action} 失败：%{message}%{hint}"
 sftp_err.hint_no_such_file:
   en: " (the remote says this path does not exist)"
-  zh-CN: （远端说这个路径不存在）
+  zh-CN: （远端报告路径不存在）
 sftp_err.hint_permission_denied:
   en: " (not enough permission)"
-  zh-CN: （权限不够）
+  zh-CN: （权限不足）
 sftp_err.hint_unsupported:
   en: " (the remote does not support this operation)"
-  zh-CN: （远端不支持这个操作）
+  zh-CN: （远端不支持该操作）
 sftp_err.hint_connection_lost:
   en: " (the SFTP channel dropped)"
-  zh-CN: （SFTP 通道断了）
+  zh-CN: （SFTP 通道已断开）
 sftp_err.action_open_session:
   en: Opening the SFTP session
   zh-CN: 建立 SFTP 会话
 sftp_err.action_query_home:
   en: Querying the remote home directory
-  zh-CN: 查询远端家目录
+  zh-CN: 查询远端主目录
 sftp_err.action_read_dir:
   en: Reading directory %{path}
   zh-CN: 读取目录 %{path}
@@ -4577,7 +4573,7 @@ sftp_err.action_delete_dir:
   zh-CN: 删除目录 %{path}
 sftp_err.action_rename:
   en: Renaming %{from} to %{to}
-  zh-CN: 把 %{from} 改名为 %{to}
+  zh-CN: 将 %{from} 重命名为 %{to}
 sftp_err.action_chmod:
   en: Changing the permissions of %{path}
   zh-CN: 修改 %{path} 的权限
@@ -4598,7 +4594,7 @@ sftp_err.action_create_remote_temp:
   zh-CN: 创建远端临时文件 %{path}
 sftp_err.action_finalize_remote:
   en: Putting %{path} into place
-  zh-CN: 落下 %{path}
+  zh-CN: 将临时文件提交为 %{path}
 sftp_err.action_stat_remote_dir:
   en: Checking remote directory %{path}
   zh-CN: 检查远端目录 %{path}
@@ -4619,13 +4615,13 @@ sftp_err.not_utf8:
   zh-CN: "%{path} 不是 UTF-8 文本，不能在这里编辑"
 sftp_err.bad_mode:
   en: "Permissions have to be octal 0000–7777, got %{mode}"
-  zh-CN: 权限只能是八进制 0000~7777，收到 %{mode}
+  zh-CN: 权限须为八进制 0000~7777，当前值 %{mode}
 sftp_err.download_incomplete:
   en: "Download incomplete: %{moved} / %{total} bytes"
-  zh-CN: 下载不完整：%{moved} / %{total} 字节
+  zh-CN: 下载未完成：%{moved} / %{total} 字节
 sftp_err.upload_incomplete:
   en: "Upload incomplete: %{moved} / %{total} bytes"
-  zh-CN: 上传不完整：%{moved} / %{total} 字节
+  zh-CN: 上传未完成：%{moved} / %{total} 字节
 sftp_err.create_local_dir:
   en: Could not create local directory %{path}
   zh-CN: 创建本地目录 %{path} 失败
@@ -4637,7 +4633,7 @@ sftp_err.open_local_file:
   zh-CN: 打开本地文件 %{path} 失败
 sftp_err.filename_not_utf8:
   en: "The file name cannot be turned into a string: %{path}"
-  zh-CN: 文件名无法转成字符串：%{path}
+  zh-CN: 文件名包含无效的 UTF-8 编码：%{path}
 sftp_err.read_local_dir:
   en: Could not read local directory %{path}
   zh-CN: 读取本地目录 %{path} 失败
@@ -4704,16 +4700,16 @@ keygen.encode_private_failed:
 # ── 端口转发服务 ─────────────────────────────────────────────────────────
 forward_service.remote_untestable:
   en: A remote listen port lives on the other machine, so it cannot be tested from here.
-  zh-CN: 远端监听的端口在对端机器上，本机测不到它。
+  zh-CN: 远端监听端口位于对端机器，无法在本机探测。
 forward_service.test_ok:
   en: "The listener on %{host}:%{port} answers — the tunnel is healthy."
-  zh-CN: "%{host}:%{port} 上的监听是通的，隧道健康。"
+  zh-CN: "%{host}:%{port} 监听端口连通，隧道状态正常。"
 forward_service.test_connect_failed:
   en: "Connecting to %{host}:%{port} failed"
-  zh-CN: "连 %{host}:%{port} 失败"
+  zh-CN: "连接 %{host}:%{port} 失败"
 forward_service.test_timeout:
   en: "%{host}:%{port} did not answer within %{seconds} s."
-  zh-CN: "连 %{host}:%{port} 超过 %{seconds} 秒没有反应。"
+  zh-CN: "连接 %{host}:%{port} 超过 %{seconds} 秒无响应。"
 
 # ── 监控服务 ─────────────────────────────────────────────────────────────
 monitor_service.exec_failed:
@@ -4797,7 +4793,7 @@ ssh.proxy_connect_failed:
   zh-CN: "经代理 %{proxy} 连接到 %{host}:%{port} 失败"
 ssh.proxy_misconfigured:
   en: "The proxy for %{host} is not set up: %{reason}"
-  zh-CN: "%{host} 的代理没配好：%{reason}"
+  zh-CN: "%{host} 的代理配置不完整：%{reason}"
 ssh.resize_failed:
   en: Sending the window size change failed
   zh-CN: 发送窗口尺寸变化失败
@@ -4818,13 +4814,13 @@ ssh.no_key_content:
   zh-CN: 未配置私钥，无法使用密钥认证
 ssh.key_decode_failed:
   en: This is not a private key we can read (a public key was pasted, or part of it is missing)
-  zh-CN: 这不是一份能识别的私钥（可能粘成了公钥，或者少复制了一段）
+  zh-CN: 无法识别该私钥（可能粘贴的是公钥，或内容不完整）
 ssh.key_encrypted:
   en: The private key is encrypted, but no passphrase is configured for this host
-  zh-CN: 私钥已加密，但这台主机没有配置私钥密码
+  zh-CN: 私钥已加密，但该主机未配置私钥口令
 ssh.key_passphrase_wrong:
   en: The private key could not be decrypted, the passphrase may be wrong
-  zh-CN: 私钥解不开，私钥密码可能不对
+  zh-CN: 私钥解密失败，口令可能不正确
 ssh.auth_password_failed:
   en: "Password authentication failed (methods the remote still offers: %{remaining})"
   zh-CN: 密码认证失败（对端剩余方法：%{remaining}）
@@ -4844,7 +4840,7 @@ telnet.proxy_connect_failed:
   zh-CN: "经代理 %{proxy} 连接到 %{host}:%{port} 失败"
 telnet.proxy_misconfigured:
   en: "The proxy for %{host} is not set up: %{reason}"
-  zh-CN: "%{host} 的代理没配好：%{reason}"
+  zh-CN: "%{host} 的代理配置不完整：%{reason}"
 
 # ── SSH 端口转发 ─────────────────────────────────────────────────────────
 ssh_forward.bind_failed:
@@ -4873,7 +4869,7 @@ ssh_forward.reject_connect_failed:
   zh-CN: 对端无法连接目标
 ssh_forward.reject_unknown_type:
   en: The remote does not recognise this channel type
-  zh-CN: 对端不认识此通道类型
+  zh-CN: 对端无法识别此通道类型
 ssh_forward.reject_resource:
   en: The remote is short on resources
   zh-CN: 对端资源不足
@@ -4894,7 +4890,7 @@ ssh_forward.socks_no_anon:
   zh-CN: 客户端不接受无认证的 SOCKS5
 ssh_forward.socks_write_choice:
   en: Replying with the chosen SOCKS5 method failed
-  zh-CN: 回 SOCKS5 方法选择失败
+  zh-CN: 回复 SOCKS5 方法选择失败
 ssh_forward.socks_read_request:
   en: Reading the SOCKS5 request failed
   zh-CN: 读 SOCKS5 请求失败
@@ -4906,13 +4902,13 @@ ssh_forward.socks_domain_not_utf8:
   zh-CN: SOCKS5 域名不是 UTF-8
 ssh_forward.socks_bad_atyp:
   en: SOCKS5 address type %{atyp} is not recognised
-  zh-CN: SOCKS5 地址类型 %{atyp} 不认识
+  zh-CN: 无法识别 SOCKS5 地址类型 %{atyp}
 ssh_forward.socks_read_port:
   en: Reading the SOCKS5 target port failed
   zh-CN: 读 SOCKS5 目标端口失败
 ssh_forward.socks_write_reply:
   en: Replying to the SOCKS5 request failed
-  zh-CN: 回 SOCKS5 答复失败
+  zh-CN: 回复 SOCKS5 响应失败
 
 # ── SFTP 子系统 ──────────────────────────────────────────────────────────
 ssh_sftp.open_channel_failed:
@@ -5016,7 +5012,7 @@ assistant.auto_badge:
   zh-CN: 自动
 assistant.composer:
   en: Ask about your servers…
-  zh-CN: 问问你的服务器…
+  zh-CN: 询问服务器相关问题…
 assistant.send:
   en: Send
   zh-CN: 发送
@@ -5133,7 +5129,7 @@ assistant.local_replaces:
   zh-CN: 将覆盖已有文件
 assistant.local_sensitive:
   en: This location holds keys or credentials
-  zh-CN: 这里存放着密钥或凭据
+  zh-CN: 该位置存有密钥或凭据
 assistant.local_shell_approval:
   en: 'Run this command on your computer with %{shell}?'
   zh-CN: 在本机用 %{shell} 运行这条命令？
@@ -5142,10 +5138,10 @@ assistant.local_shell_spawn_failed:
   zh-CN: 无法启动本机 shell 进程
 assistant.empty_title:
   en: WinSSH Pro AI Assistant
-  zh-CN: WinSSH Pro 智能助手
+  zh-CN: WinSSH Pro AI 助手
 assistant.empty_hint:
   en: I can run commands on the session you currently have open to diagnose and fix issues — switch tabs and I follow you there — read, write and search files on this computer, run commands in this computer's own shell (PowerShell on Windows, bash on Linux and macOS), and upload or download files between the two. By default commands (local or remote) and file reads ask for your approval first (switch modes at the bottom left); file writes, transfers and anything touching keys or credentials always do.
-  zh-CN: 我可以在当前打开的会话上执行命令，帮你排查和处理问题（切换标签页即跟随到对应机器）；也能读写、搜索本机上的文件，在本机自己的 shell（Windows 用 PowerShell，Linux/macOS 用 bash）里执行命令，并在本机与服务器之间上传、下载。默认命令（无论本机还是远端）与读取本机文件前均需你确认（左下角可切换模式）；写入本机文件、传输文件，以及涉及密钥或凭据的操作一律需要确认。
+  zh-CN: 助手可在当前打开的会话中执行命令，用于问题排查与修复（切换标签页后自动跟随对应主机）；支持读取、写入与搜索本机文件，在本机 shell（Windows 为 PowerShell，Linux/macOS 为 bash）中执行命令，并在本机与服务器之间上传、下载文件。默认情况下，命令执行（本机或远端）与读取本机文件前均需确认（左下角可切换模式）；写入本机文件、传输文件以及涉及密钥或凭据的操作一律需要确认。
 assistant.current_session:
   en: 'Current session:'
   zh-CN: 当前会话：
@@ -5197,7 +5193,7 @@ assistant.vision_off:
   zh-CN: 当前模型未开启图片支持。可换一个支持图片的模型，或在「设置 → AI 助手」中为它开启「支持图片输入」。
 assistant.too_many_images:
   en: A message can carry at most %{count} images.
-  zh-CN: 一条提问最多带 %{count} 张图片。
+  zh-CN: 单条消息最多包含 %{count} 张图片。
 assistant.image_preparing:
   en: Images are still being processed. Send again in a moment.
   zh-CN: 图片仍在处理，请稍后再发送。
@@ -5209,7 +5205,7 @@ assistant.image_unknown:
   zh-CN: 无法识别的图片格式
 assistant.image_undecodable:
   en: 'The image can’t be decoded (%{error})'
-  zh-CN: 图片解不开（%{error}）
+  zh-CN: 图片解码失败（%{error}）
 assistant.image_too_large:
   en: The image is too large
   zh-CN: 图片过大
@@ -5282,7 +5278,7 @@ model_form.max_tokens_hint:
   zh-CN: 可选。留空时 Anthropic 协议按 %{value} 发送（它要求必填），其他协议不发送，用服务商的默认值。
 model_form.max_tokens_invalid:
   en: Max output tokens must be a positive whole number.
-  zh-CN: 最大输出 tokens 需要是正整数。
+  zh-CN: 最大输出 tokens 须为正整数。
 model_form.name_required:
   en: Enter a model name.
   zh-CN: 请填写模型名。
@@ -5349,7 +5345,7 @@ cert_trust.label_fingerprint:
   zh-CN: 指纹
 cert_trust.unknown:
   en: (unreadable)
-  zh-CN: （解析不出）
+  zh-CN: （无法解析）
 cert_trust.problem_self_signed:
   en: The certificate is self-signed — it was not issued by any authority the system trusts.
   zh-CN: 这是一张自签名证书 —— 不是由系统信任的机构签发的。
@@ -5387,7 +5383,7 @@ trusted_hosts.subtitle:
   zh-CN: 管理已保存的 SSH 主机密钥指纹。
 trusted_hosts.reload_tooltip:
   en: Reload the list
-  zh-CN: 重新拉一次列表
+  zh-CN: 重新加载列表
 trusted_hosts.added_at:
   en: 'Added'
   zh-CN: 建档
@@ -5582,7 +5578,7 @@ ftp_err.proxy_failed:
   zh-CN: 经代理 %{proxy} 连接失败：%{error}
 ftp_err.timed_out:
   en: Timed out waiting for the server
-  zh-CN: 等服务器响应超时
+  zh-CN: 等待服务器响应超时
 ftp_err.tls_failed:
   en: "TLS handshake failed: %{error}"
   zh-CN: TLS 握手失败：%{error}
@@ -5624,7 +5620,7 @@ ftp_err.action_delete_dir:
   zh-CN: 删除目录 %{path}
 ftp_err.action_rename:
   en: Rename %{from} to %{to}
-  zh-CN: 把 %{from} 改成 %{to}
+  zh-CN: 将 %{from} 重命名为 %{to}
 ftp_err.action_read_file:
   en: Read the file %{path}
   zh-CN: 读取文件 %{path}
@@ -5652,13 +5648,13 @@ webdav_err.bad_endpoint:
   zh-CN: "不是有效的 WebDAV 服务器地址：%{endpoint}"
 webdav_err.unauthorized:
   en: The server rejected these credentials (401)
-  zh-CN: 服务器拒绝了这组账号密码（401）
+  zh-CN: 服务器拒绝了当前凭据（401）
 webdav_err.forbidden:
   en: The server refused this path (403)
   zh-CN: 服务器拒绝访问这个路径（403）
 webdav_err.not_found:
   en: The server says this path does not exist (404)
-  zh-CN: 服务器说这个路径不存在（404）
+  zh-CN: 服务器返回路径不存在（404）
 webdav_err.method_not_allowed:
   en: "This address does not accept WebDAV requests (405) — check that the server URL includes the WebDAV mount path, e.g. https://host/dav"
   zh-CN: 这个地址不接受 WebDAV 请求（405）—— 检查服务器地址是否带上了 WebDAV 的挂载路径，例如 https://host/dav
@@ -5679,7 +5675,7 @@ webdav_err.insufficient_storage:
   zh-CN: 服务器空间不足（507）
 webdav_err.status:
   en: "The server answered HTTP %{code}"
-  zh-CN: "服务器回了 HTTP %{code}"
+  zh-CN: "服务器返回 HTTP %{code}"
 webdav_err.server:
   en: "The server refused the request (%{code}): %{message}"
   zh-CN: "服务器拒绝了这次请求（%{code}）：%{message}"
@@ -5715,7 +5711,7 @@ webdav_err.action_delete_dir:
   zh-CN: "删除目录 %{path}"
 webdav_err.action_rename:
   en: "Rename %{from} to %{to}"
-  zh-CN: "把 %{from} 改名为 %{to}"
+  zh-CN: "将 %{from} 重命名为 %{to}"
 webdav_err.action_read_file:
   en: "Read %{path}"
   zh-CN: "读取 %{path}"
@@ -5763,7 +5759,7 @@ s3_err.action_delete_dir:
   zh-CN: 删除目录 %{path}
 s3_err.action_rename:
   en: Rename %{from} to %{to}
-  zh-CN: 把 %{from} 改成 %{to}
+  zh-CN: 将 %{from} 重命名为 %{to}
 s3_err.action_read_file:
   en: Read the file %{path}
   zh-CN: 读取文件 %{path}
@@ -5969,7 +5965,7 @@ update.title:
   zh-CN: 发现新版本
 update.available:
   en: WinSSH Pro %{version} is available
-  zh-CN: 新版本 %{version} 可以安装
+  zh-CN: 新版本 %{version} 已发布
 update.checking:
   en: Checking for updates…
   zh-CN: 正在检查更新…
@@ -6017,7 +6013,7 @@ update.installed_restart:
   zh-CN: 更新已安装，重启 WinSSH Pro 后生效。
 update.manual_required:
   en: This copy cannot update itself; download the new version from the release page.
-  zh-CN: 这份安装无法自动更新，请到发布页下载新版本。
+  zh-CN: 当前安装方式无法自动更新，请到发布页下载新版本。
 update.manual.portable:
   en: The portable build is not updated automatically; download the new version from the release page.
   zh-CN: 免安装版不支持自动更新，请到发布页下载新版本。
