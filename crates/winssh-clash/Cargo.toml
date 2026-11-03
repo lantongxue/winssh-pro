@@ -10,6 +10,8 @@ license = "Apache-2.0"
 winssh-db = { workspace = true }
 # 与提权 broker 共用的那条命名管道消息协议。
 winssh-broker-protocol = { workspace = true }
+# broker 的 GUI 客户端（与 EasyTier 的提权 host 共用同一份实现）。
+winssh-broker-client = { workspace = true }
 # 订阅正文是 YAML；跟本机 mihomo 外部控制口说话用 reqwest。
 reqwest = { workspace = true }
 serde = { workspace = true }

@@ -2,8 +2,9 @@
 ;
 ; 由 `.github/workflows/release.yml` 在打完 release 二进制之后调起：
 ;   ISCC.exe /DAppVersion=<tag 去掉 v> /DArch=<Inno 的架构标识> /DArchLabel=<文件名里那段> /DSourceDir=<包目录> scripts\win-installer.iss
-; 包目录里是 `winssh-pro.exe`、`winssh-broker.exe`、`wintun.dll` 三个文件，
-; 与前几次发版打的 `.tar.gz` 里那份逐字节相同 —— 这里只负责摆位置、建快捷方式。
+; 包目录里是 `winssh-pro.exe`、`winssh-broker.exe`、`winssh-easytier-host.exe`、
+; `wintun.dll` 四个文件，与前几次发版打的 `.tar.gz` 里那份逐字节相同 ——
+; 这里只负责摆位置、建快捷方式。
 ;
 ; 本脚本里所有相对路径都按**本脚本所在目录**（`scripts/`）解析，不是按
 ; 运行 ISCC 时的当前目录 —— 所以下面两个默认值都带 `..\`，CI 那边传的
@@ -73,8 +74,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "chinesesimplified"; MessagesFile: "inno-languages\ChineseSimplified.isl"
 
 [CustomMessages]
-english.BrokerServiceTask=Install the WinSSH Pro broker service (needed by Clash TUN mode; avoids a UAC prompt on first use)
-chinesesimplified.BrokerServiceTask=安装 WinSSH Pro 提权服务（Clash 的 TUN 模式要用；装上之后首次开启不再弹 UAC）
+english.BrokerServiceTask=Install the WinSSH Pro broker service (needed by Clash TUN mode and the EasyTier virtual NIC; avoids a UAC prompt on first use)
+chinesesimplified.BrokerServiceTask=安装 WinSSH Pro 提权服务（Clash 的 TUN 模式与 EasyTier 虚拟网卡要用；装上之后首次开启不再弹 UAC）
 english.BrokerServiceGroup=System service:
 chinesesimplified.BrokerServiceGroup=系统服务：
 
@@ -88,9 +89,12 @@ Name: "brokerservice"; Description: "{cm:BrokerServiceTask}"; GroupDescription: 
 
 [Files]
 Source: "{#SourceDir}\winssh-pro.exe"; DestDir: "{app}"; Flags: ignoreversion
-; broker 是 Clash 那一档拨 TUN 时经 UAC 拉起的提权小助手（src/bin/broker.rs），
-; 必须与主 exe 同目录 —— clash::broker::broker_binary_path 找的就是那儿。
+; broker 是拨 TUN 时经 UAC 拉起的提权服务（src/bin/broker.rs），必须与主 exe
+; 同目录 —— winssh-broker-client 的 broker_binary_path 找的就是那儿。
 Source: "{#SourceDir}\winssh-broker.exe"; DestDir: "{app}"; Flags: ignoreversion
+; EasyTier 虚拟网卡那一档的提权 host（src/bin/easytier_host.rs）：GUI 没提权
+; 时 broker 把整张网拉进这个进程，它也要与主 exe、wintun.dll 同目录。
+Source: "{#SourceDir}\winssh-easytier-host.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; wintun.dll 由 EasyTier 的虚拟网卡那一档按名字加载，第一站就是 exe 所在目录，
 ; 少一份那档就报 "The file is not signed."（详见 build.rs 的 copy_wintun）。
 Source: "{#SourceDir}\wintun.dll"; DestDir: "{app}"; Flags: ignoreversion

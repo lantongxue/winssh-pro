@@ -13,6 +13,14 @@ license = "Apache-2.0"
 name = "winssh-broker"
 path = "src/bin/broker.rs"
 
+# EasyTier 虚拟网卡那一档的提权 host（见 `crates/winssh-easytier/src/host.rs`）：
+# GUI 自己没提权时，经 broker 把它拉起来，整张网跑在它里面（建 wintun 网卡、
+# 配地址、加路由都要管理员）。与主 exe、broker 同目录，broker 的
+# `validate_start` 按这个名字放行。
+[[bin]]
+name = "winssh-easytier-host"
+path = "src/bin/easytier_host.rs"
+
 [package.metadata.deb]
 maintainer = "WinSSH Pro contributors <noreply@github.com>"
 copyright = "2026 WinSSH Pro contributors"
@@ -74,6 +82,7 @@ winssh-telnet = { path = "crates/winssh-telnet" }
 winssh-webdav = { path = "crates/winssh-webdav" }
 winssh-ftp = { path = "crates/winssh-ftp" }
 winssh-broker-protocol = { path = "crates/winssh-broker-protocol" }
+winssh-broker-client = { path = "crates/winssh-broker-client" }
 winssh-clash = { path = "crates/winssh-clash" }
 winssh-assistant = { path = "crates/winssh-assistant" }
 winssh-zmodem = { path = "crates/winssh-zmodem" }
@@ -459,7 +468,8 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] 
 # `VariantArray`。三个都本来就在依赖树里（EasyTier 用它们），变成直接依赖不多
 # 编译一份东西。
 url = "2"
-cidr = "0.3"
+# `serde`：运行快照里的代理子网要跨进程（提权 host 与 GUI 之间）走 JSON。
+cidr = { version = "0.3", features = ["serde"] }
 strum = "0.28"
 # WebDAV 那一头的两件小工具，本来就在依赖树里（`url` 与 reqwest 自己都拖着
 # 它们），变成直接依赖不多编译一份东西。

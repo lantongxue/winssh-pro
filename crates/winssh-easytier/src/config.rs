@@ -16,7 +16,9 @@
 use anyhow::{Context as _, Result};
 use easytier::common::config::{ConfigLoader as _, NetworkIdentity, PeerConfig, TomlConfig};
 
-use super::settings::{EasyTierAccess, listener_urls, parse_ipv4, parse_peer, parse_proxy_network};
+use super::settings::{
+    EasyTierAccess, EasyTierSettings, listener_urls, parse_ipv4, parse_peer, parse_proxy_network,
+};
 use winssh_domain::host::Host;
 
 /// 实例名的前缀。EasyTier 用实例名区分同一进程里的几张网（日志、RPC 选择器
@@ -26,21 +28,36 @@ const INSTANCE_PREFIX: &str = "winssh";
 /// 照主机配置建一份实例配置。先按 [`super::EasyTierSettings::check`] 的口径
 /// 再校验一遍 —— 库里那一份可能是更早的版本存下来的。
 pub fn build(host: &Host) -> Result<TomlConfig> {
-    let settings = &host.easytier;
+    build_parts(
+        &host.id,
+        host.hostname.trim(),
+        &host.password,
+        &host.easytier,
+    )
+}
+
+/// 照拆开的几样建配置。虚拟网卡那一档的实例跑在提权 host 里（`host` 模块），
+/// 那边拿到的是 `host_protocol::Spec` 里的同一组字段，走同一个函数 —— 两条路
+/// 出来的配置必须一模一样，否则"进程内能起、提权 host 起不来"这种差分极难查。
+pub fn build_parts(
+    instance_id: &str,
+    network_name: &str,
+    secret: &str,
+    settings: &EasyTierSettings,
+) -> Result<TomlConfig> {
     settings
         .check()
         .map_err(|message| anyhow::anyhow!("{message}"))?;
-    let network_name = host.hostname.trim();
     if network_name.is_empty() {
         anyhow::bail!("{}", rust_i18n::t!("easytier.check_network_name"));
     }
 
     let config = TomlConfig::default();
-    config.set_inst_name(format!("{INSTANCE_PREFIX}-{}", host.id));
+    config.set_inst_name(format!("{INSTANCE_PREFIX}-{instance_id}"));
     // 密钥原样交出去，不 trim：和登录密码同一个道理，空格是它的一部分。
     config.set_network_identity(NetworkIdentity::new(
         network_name.to_string(),
-        host.password.to_string(),
+        secret.to_string(),
     ));
     let node_name = settings.node_name.trim();
     config.set_hostname((!node_name.is_empty()).then(|| node_name.to_string()));

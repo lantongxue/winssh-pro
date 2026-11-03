@@ -29,7 +29,8 @@
 //!   授权把 `winssh-broker` 拉起来代管内核（[`broker`] / [`broker_protocol`]，
 //!   本体在 `src/bin/broker.rs`；Windows 走 UAC，macOS 走 `osascript` 的
 //!   "输入密码授权"那一框，Linux 走 polkit 的 `pkexec`），GUI 自己留在
-//!   用户态；broker 随 GUI 退出自动收走内核，不装服务、不留后台。
+//!   用户态；内核跟着这条连接走 —— GUI 退出、连接一断，broker 就把内核
+//!   收掉（Windows 上 broker 本身是装一次、常驻的 SCM 服务）。
 //! - **接**（[`system_proxy`]）：把系统代理指向那个混合端口，或者指向虚拟网卡
 //!   （后者由 mihomo 自己建网卡，我们只负责把它的 TUN 开关拨上去）。
 //!
@@ -48,8 +49,11 @@ rust_i18n::i18n!("../../locales", fallback = "en");
 const _: &str = include_str!("../../../locales/app.yml");
 
 pub mod api;
+// 提权 broker 的 GUI 客户端（装/卸 helper、连管道、起停内核、收事件）已抽成
+// 独立 crate —— EasyTier 的提权 host 也走同一份。这里原名字再导出，
+// `crate::clash::broker` 照旧可用。
 #[cfg(any(windows, unix))]
-pub mod broker;
+pub use winssh_broker_client as broker;
 // 与提权 broker 共用的那条管道消息协议已抽成独立的轻 crate；这里原名字再导出，
 // `crate::clash::broker_protocol` 与 `super::broker_protocol` 照旧可用。
 pub use winssh_broker_protocol as broker_protocol;

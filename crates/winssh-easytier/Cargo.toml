@@ -10,6 +10,9 @@ license = "Apache-2.0"
 winssh-domain = { workspace = true }
 # 起 wss/quic 隧道前先把 aws-lc-rs 装成进程默认 rustls 后端。
 winssh-tls = { workspace = true }
+# 虚拟网卡那一档要管理员权限：GUI 经提权 broker 拉起 `winssh-easytier-host`，
+# 整张网跑在它里面（与 Clash 代拉 mihomo 同一套客户端）。
+winssh-broker-client = { workspace = true }
 # EasyTier 本体（进程内嵌库）与其控制面。版本/特性钉子见根 Cargo.toml 的注释。
 easytier = { workspace = true }
 easytier-core = { workspace = true }
@@ -25,6 +28,10 @@ futures = { workspace = true }
 chrono = { workspace = true }
 cidr = { workspace = true }
 url = { workspace = true }
+# 提权 host 与 GUI 之间那条命名管道：消息编解码、管道名随机后缀。
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 # 会话测试真的在回环上起一张用户态网，再经它的 SOCKS5 入口连一下虚拟 IP，

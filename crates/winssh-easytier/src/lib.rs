@@ -30,7 +30,9 @@
 //! 访问得到别人，别人却访问不到它的虚拟 IP（实测过：两个用户态节点之间经
 //! SOCKS5 连对方的虚拟 IP 是连不通的，连自己的才通），所以要连的那一头得是
 //! 以虚拟网卡接入的机器（服务器上装 EasyTier 的常规做法）。**虚拟网卡**那一档建一块
-//! TUN 设备，整台机器都看得见这张网，代价是要以管理员（root）身份运行，
+//! TUN 设备，整台机器都看得见这张网，代价是要管理员（root）权限 —— Windows
+//! 上 GUI 自己没提权时，整张网会经 broker 挪进提权的 [`host`] 进程去跑
+//! （建网卡、配地址、加路由都在那边）；应用本身就以管理员身份跑着时走进程内。
 //! Windows 上还要 `wintun.dll` 在程序旁边；权限不够时启动失败，原因原样摆在
 //! 标签页上。
 //!
@@ -62,6 +64,8 @@ rust_i18n::i18n!("../../locales", fallback = "en");
 const _: &str = include_str!("../../../locales/app.yml");
 
 mod config;
+pub mod host;
+mod host_protocol;
 pub mod portal;
 mod session;
 mod settings;

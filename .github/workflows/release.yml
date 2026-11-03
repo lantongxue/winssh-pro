@@ -372,17 +372,22 @@ jobs:
             # wintun.dll 是虚拟网卡那一档（EasyTier TUN）按名字加载的驱动库，
             # 得和 exe 在同一个目录。build.rs 已按目标架构把它从 third_party/
             # 拷到了 exe 旁边，这里照原样一起打包；少了它 cp 直接失败。
-            # winssh-broker.exe 是 Clash 那一档拨 TUN 时经 UAC 拉起的提权小助手
+            # winssh-broker.exe 是拨 TUN 时经 UAC 拉起的提权服务
             # （见 src/bin/broker.rs），cargo 的必产物，与主 exe 同目录才能被找到。
+            # winssh-easytier-host.exe 是 EasyTier 虚拟网卡那一档的提权 host
+            # （见 src/bin/easytier_host.rs）：GUI 没提权时 broker 把整张网拉进
+            # 这个进程，它也要与主 exe、wintun.dll 同目录。
             # mihomo.exe 不在这里打包 —— 订阅页会引导用户下载到用户数据目录
             # （见 src/clash/downloader.rs），clash::runtime::binary_path 会去那里找。
             package_dir="$(mktemp -d)"
             cp "target/${{ matrix.target }}/release/winssh-pro${{ matrix.extension }}" \
               "target/${{ matrix.target }}/release/winssh-broker${{ matrix.extension }}" \
+              "target/${{ matrix.target }}/release/winssh-easytier-host${{ matrix.extension }}" \
               "target/${{ matrix.target }}/release/wintun.dll" \
               "$package_dir/"
             tar -czf "dist/$artifact.tar.gz" -C "$package_dir" \
-              "winssh-pro${{ matrix.extension }}" winssh-broker${{ matrix.extension }} wintun.dll
+              "winssh-pro${{ matrix.extension }}" winssh-broker${{ matrix.extension }} \
+              "winssh-easytier-host${{ matrix.extension }}" wintun.dll
 
             # 安装包用 Inno Setup 的 ISCC 编（脚本见 scripts/win-installer.iss）。
             # `windows-2022`（6.7.1）与 `windows-11-arm`（6.6.1）两个镜像都预装了

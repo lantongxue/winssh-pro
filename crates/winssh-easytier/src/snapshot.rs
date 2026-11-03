@@ -17,13 +17,78 @@ use easytier::proto::api::manage::NetworkInstanceRunningInfo;
 use easytier::proto::common::NatType;
 use gpui_kit::SharedString;
 use rust_i18n::t;
+use serde::{Deserialize, Serialize};
+
+/// `SharedString` 在线上就是个普通字符串。快照要跨进程走 JSON（虚拟网卡那
+/// 一档的实例跑在提权 host 里），而 `SharedString` 是 gpui 的类型、没有
+/// serde 实现 —— 这几个小模块让字段照旧用 `SharedString`，只在编解码时
+/// 换一层。
+mod shared_string {
+    use gpui_kit::SharedString;
+    use serde::{Deserialize as _, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        value: &SharedString,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(value.as_ref())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<SharedString, D::Error> {
+        String::deserialize(deserializer).map(SharedString::from)
+    }
+}
+
+mod optional_shared_string {
+    use gpui_kit::SharedString;
+    use serde::{Deserialize as _, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        value: &Option<SharedString>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(value) => serializer.serialize_some(value.as_ref()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<SharedString>, D::Error> {
+        Option::<String>::deserialize(deserializer).map(|value| value.map(SharedString::from))
+    }
+}
+
+mod shared_strings {
+    use gpui_kit::SharedString;
+    use serde::{Deserialize as _, Deserializer, Serialize as _, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        value: &[SharedString],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let text: Vec<&str> = value.iter().map(SharedString::as_ref).collect();
+        text.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<SharedString>, D::Error> {
+        Vec::<String>::deserialize(deserializer)
+            .map(|values| values.into_iter().map(SharedString::from).collect())
+    }
+}
 
 /// 事件日志最多留多少行。再多的话，一个连不上的节点每几秒报一次
 /// "正在连接"，几个小时就是几千行 —— 界面上没人往回翻那么远。
 pub const LOG_LIMIT: usize = 200;
 
 /// NAT 类型。决定两台节点之间打不打得通 P2P：两边都是对称型就只能中继。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NatKind {
     #[default]
     Unknown,
@@ -71,23 +136,29 @@ impl NatKind {
 }
 
 /// 本机这台节点。
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LocalNode {
     /// 本机的虚拟 IPv4（`10.144.144.3/24`）。DHCP 还没分下来时是 `None`。
+    #[serde(with = "optional_shared_string")]
     pub ipv4: Option<SharedString>,
+    #[serde(with = "shared_string")]
     pub hostname: SharedString,
     pub peer_id: u32,
+    #[serde(with = "shared_string")]
     pub version: SharedString,
     /// 打洞探测出来的 UDP NAT 类型。
     pub nat: NatKind,
     /// STUN 看到的本机公网地址。
+    #[serde(with = "shared_strings")]
     pub public_ips: Vec<SharedString>,
     /// 正在监听的地址。不监听时是空的。
+    #[serde(with = "shared_strings")]
     pub listeners: Vec<SharedString>,
 }
 
 /// 到一台节点走的是哪条路。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PeerPath {
     /// 直连（P2P，路由代价 1）。
     Direct,
@@ -112,11 +183,13 @@ impl PeerPath {
 }
 
 /// 网里的另一台节点（节点列表的一行）。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PeerNode {
     pub peer_id: u32,
+    #[serde(with = "shared_string")]
     pub hostname: SharedString,
     /// 它的虚拟 IPv4，不带前缀长度。公共服务器没有地址。
+    #[serde(with = "optional_shared_string")]
     pub ipv4: Option<SharedString>,
     pub path: PeerPath,
     /// 往返时延，毫秒。还没测到是 `None`。
@@ -127,8 +200,10 @@ pub struct PeerNode {
     pub rx_bytes: u64,
     pub tx_bytes: u64,
     /// 连着它的隧道协议（`tcp`、`udp`……），去重。中继的节点是空的。
+    #[serde(with = "shared_strings")]
     pub tunnels: Vec<SharedString>,
     pub nat: NatKind,
+    #[serde(with = "shared_string")]
     pub version: SharedString,
     /// 它是不是一台公共服务器（只转发、不在虚拟网里有地址）。
     pub public_server: bool,
@@ -142,7 +217,7 @@ pub struct PeerNode {
 ///
 /// 和 EasyTier 自己挑路时问的是同一件事（`get_msg_dst_peer`：目标落在哪台
 /// 节点上）：落在这里面，SOCKS5 入口就走网里；不在，它会退回本机路由直连。
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Reach {
     hosts: Vec<Ipv4Addr>,
     subnets: Vec<Ipv4Cidr>,
@@ -155,12 +230,13 @@ impl Reach {
 }
 
 /// 一次采样：整张网此刻的样子。
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct NetworkSnapshot {
     pub local: LocalNode,
     /// 本机之外的节点。公共服务器排在前面，其余按虚拟地址排。
     pub peers: Vec<PeerNode>,
     /// 虚拟网卡的设备名（`utun5`、`tun0`）。用户态那一档是空的。
+    #[serde(with = "shared_string")]
     pub dev_name: SharedString,
     /// 和上一次采样之间的平均收/发速率，KB/s。第一次采样没有"上一次"，是 `None`。
     pub rate_kbps: Option<(f32, f32)>,
@@ -311,7 +387,8 @@ fn peer_from_pair(pair: &PeerRoutePair) -> PeerNode {
 }
 
 /// 一行日志的轻重。界面按它上色。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LogTone {
     Info,
     Warn,
@@ -319,11 +396,13 @@ pub enum LogTone {
 }
 
 /// 事件日志的一行。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LogLine {
     /// 本地时间 `HH:MM:SS`。同一句话连着来的时候是最后那一次的时间。
+    #[serde(with = "shared_string")]
     pub time: SharedString,
     pub tone: LogTone,
+    #[serde(with = "shared_string")]
     pub text: SharedString,
     /// 同一句话连着来了几次（≥ 1）。一个连不上的节点每几秒报一次
     /// "正在连接"，叠成一行比刷满一屏好读。

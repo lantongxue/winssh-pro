@@ -18,13 +18,23 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-/// broker 认的那一个程序名。它跑在管理员权限下，**只**替 GUI 拉这一个
+/// broker 认的那几个程序名。它跑在管理员权限下，**只**替 GUI 拉这几个
 /// 内核——"帮我把任意 exe 提权跑起来"那种指令必须在这层就死掉
 /// （Clash Verge 出过同类的提权漏洞，见其 issue #3428）。
+///
+/// * [`KERNEL_EXE`]：Clash 的 mihomo；
+/// * [`EASYTIER_HOST_EXE`]：EasyTier 的提权 host（`winssh-easytier-host`，
+///   本体是 `src/bin/easytier_host.rs`），虚拟网卡那一档整张网都在它里面跑，
+///   好让建网卡、配地址、加路由都拿得到管理员权限。
 #[cfg(windows)]
 pub const KERNEL_EXE: &str = "mihomo.exe";
 #[cfg(not(windows))]
 pub const KERNEL_EXE: &str = "mihomo";
+
+#[cfg(windows)]
+pub const EASYTIER_HOST_EXE: &str = "winssh-easytier-host.exe";
+#[cfg(not(windows))]
+pub const EASYTIER_HOST_EXE: &str = "winssh-easytier-host";
 
 /// GUI → broker 的指令。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,8 +72,8 @@ pub enum Event {
 /// 先过一遍，把错拦在弹 UAC 之前。
 ///
 /// 两条规矩：路径必须是绝对的（相对路径在 broker 的工作目录里没有意义，
-/// 还可能被人拿 `..\` 玩花样）；文件名必须恰好是 [`KERNEL_EXE`]
-/// （Windows 不分大小写）。
+/// 还可能被人拿 `..\` 玩花样）；文件名必须恰好是 [`KERNEL_EXE`] 或
+/// [`EASYTIER_HOST_EXE`]（Windows 不分大小写）。
 pub fn validate_start(exe: &str) -> Result<(), String> {
     let path = Path::new(exe);
     if !path.is_absolute() {
@@ -73,12 +83,12 @@ pub fn validate_start(exe: &str) -> Result<(), String> {
         .file_name()
         .map(|name| name.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    if name != KERNEL_EXE.to_lowercase() {
-        return Err(format!(
-            "refusing to launch {exe:?}: only {KERNEL_EXE} is allowed"
-        ));
+    if name == KERNEL_EXE.to_lowercase() || name == EASYTIER_HOST_EXE.to_lowercase() {
+        return Ok(());
     }
-    Ok(())
+    Err(format!(
+        "refusing to launch {exe:?}: only {KERNEL_EXE} / {EASYTIER_HOST_EXE} are allowed"
+    ))
 }
 
 /// 把一条指令编成管道上的一行（不含换行符）。

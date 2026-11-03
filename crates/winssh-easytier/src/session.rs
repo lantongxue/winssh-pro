@@ -1,5 +1,11 @@
 //! 一条活着的组网会话：一个嵌在本进程里的 EasyTier 实例，外加盯着它的那条循环。
 //!
+//! Windows 上**虚拟网卡**那一档是例外：建 wintun 网卡、配地址、加路由都要管理员
+//! 权限，GUI 自己没提权时整张网跑在经 broker 拉起的提权 host（`winssh-easytier-host`，
+//! 见 [`super::host`]）里。这一边的线程只负责拉起它、摆管道、转指令与事件
+//! （本文件末尾的 `elevated` 模块），实例本身在 host 进程里；用户态（SOCKS5）那一档与已经提权
+//! 运行的应用仍走进程内这条老路。
+//!
 //! **每条会话一扇自己的 OS 线程 + 一个自己的多线程 tokio runtime**，不进应用级
 //! runtime（[`crate::db::runtime`]）。EasyTier 一个实例会在当前 runtime 上铺开
 //! 几十个常驻任务（监听、打洞、路由同步、SOCKS5 入口、心跳……），这些任务的
@@ -40,7 +46,7 @@ use tokio::sync::mpsc;
 use super::config;
 use super::portal::{self, Ticket};
 use super::settings::EasyTierAccess;
-use super::snapshot::{LogLine, LogTone, NetworkSnapshot};
+use super::snapshot::{LogLine, LogTone, NetworkSnapshot, Reach};
 use winssh_domain::host::Host;
 
 /// 多久取一次运行快照。一秒一拍：时延、速率这几个数要"看得见在动"；
@@ -60,6 +66,40 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 /// 这张网用的 worker 数。一台桌面客户端上的一张网，流量不过是几条 SSH /
 /// 远程桌面，两条足够；给多了只是多几条空转的线程。
 const WORKER_THREADS: usize = 2;
+
+/// 网起来了、每次采样走得到哪些地址、要停了 —— 实例运行循环往外报的三件事。
+/// 进程内那一档由入口登记处（[`portal::Ticket`]）接住；虚拟网卡那一档跑在
+/// 提权 host 里，那边没有登记处，用 [`Unobserved`] 接。
+pub(crate) trait SessionObserver: Send + Sync {
+    fn running(&self, socks5: Option<SocketAddr>);
+    fn reach(&self, reach: Reach);
+    fn stopping(&self);
+}
+
+impl SessionObserver for Ticket {
+    fn running(&self, socks5: Option<SocketAddr>) {
+        Ticket::running(self, socks5);
+    }
+
+    fn reach(&self, reach: Reach) {
+        Ticket::reach(self, reach);
+    }
+
+    fn stopping(&self) {
+        Ticket::stopping(self);
+    }
+}
+
+/// 提权 host 那一侧的观察者：那边没有拨号要等这张网，什么也不做。
+#[cfg(windows)]
+pub(crate) struct Unobserved;
+
+#[cfg(windows)]
+impl SessionObserver for Unobserved {
+    fn running(&self, _: Option<SocketAddr>) {}
+    fn reach(&self, _: Reach) {}
+    fn stopping(&self) {}
+}
 
 /// 界面要会话做的事。
 #[derive(Debug)]
@@ -120,10 +160,28 @@ impl EasyTierSession {
 
         let thread_name = format!("easytier-{}", host.id);
         let access = host.easytier.access;
+        // 虚拟网卡那一档在 Windows 上要管理员：GUI 自己没提权时，整张网交给
+        // 经 broker 拉起的提权 host 去跑（见 [`super::host`]）。用户态那一档
+        // 不要权限，已经以管理员身份跑着的应用也不必绕这一圈。
+        #[cfg(windows)]
+        let elevated = (access == EasyTierAccess::Tun && !winssh_broker_client::app_elevated())
+            .then(|| super::host_protocol::Spec {
+                locale: rust_i18n::locale().to_string(),
+                instance_id: host.id.to_string(),
+                network_name: host.hostname.trim().to_string(),
+                secret: host.password.to_string(),
+                settings: host.easytier.clone(),
+            });
         // 线程起不来的话闭包连同登记那一格一起掉在地上，登记处当它出了事。
         std::thread::Builder::new()
             .name(thread_name)
-            .spawn(move || session_thread(config, access, socks5, ticket, input_rx, events_tx))
+            .spawn(move || {
+                #[cfg(windows)]
+                if let Some(spec) = elevated {
+                    return elevated::thread(spec, socks5, ticket, input_rx, events_tx);
+                }
+                session_thread(config, access, socks5, ticket, input_rx, events_tx);
+            })
             .map_err(|error| anyhow!("启动组网会话线程失败：{error}"))?;
 
         Ok(Self {
@@ -179,7 +237,7 @@ async fn run(
     config: TomlConfig,
     access: EasyTierAccess,
     socks5: Option<SocketAddr>,
-    ticket: &Ticket,
+    observer: &dyn SessionObserver,
     mut input_rx: mpsc::UnboundedReceiver<EasyTierInput>,
     events_tx: &mpsc::UnboundedSender<EasyTierOutput>,
 ) -> Option<SharedString> {
@@ -199,14 +257,14 @@ async fn run(
         started = tokio::time::timeout(START_TIMEOUT, instance.start()) => started,
         // 启动期间用户就点了停（或者面板关了）：不等它起完。
         _ = input_rx.recv() => {
-            ticket.stopping();
+            observer.stopping();
             stop(&instance).await;
             return None;
         }
     };
     match started {
         Ok(Ok(())) => {
-            ticket.running(socks5);
+            observer.running(socks5);
             send(EasyTierOutput::Started);
         }
         Ok(Err(error)) => {
@@ -246,7 +304,7 @@ async fn run(
                 match network_instance_running_info(instance.as_ref()).await {
                     Ok(info) => {
                         let mut snapshot = NetworkSnapshot::from_running_info(&info);
-                        ticket.reach(snapshot.reach());
+                        observer.reach(snapshot.reach());
                         let totals = snapshot.total_bytes();
                         let now = Instant::now();
                         snapshot.rate_kbps = previous.map(|(before, at)| rates(before, totals, now - at));
@@ -261,10 +319,23 @@ async fn run(
 
     // 要它停的：先从登记处拿掉，收尾那几秒里别再有拨号往里走。
     if outcome.is_none() {
-        ticket.stopping();
+        observer.stopping();
     }
     stop(&instance).await;
     outcome
+}
+
+/// 提权 host（`winssh-easytier-host`）用的入口：没有入口登记处，别的都一样。
+/// 实例的起停、事件与每秒一拍的采样全在这个进程里跑。
+#[cfg(windows)]
+pub(crate) async fn run_for_host(
+    config: TomlConfig,
+    access: EasyTierAccess,
+    socks5: Option<SocketAddr>,
+    input_rx: mpsc::UnboundedReceiver<EasyTierInput>,
+    events_tx: &mpsc::UnboundedSender<EasyTierOutput>,
+) -> Option<SharedString> {
+    run(config, access, socks5, &Unobserved, input_rx, events_tx).await
 }
 
 /// 事件总线的下一条。落后太多（界面那边不会，但总线容量有限）就跳过丢掉的
@@ -309,6 +380,266 @@ fn rates(before: (u64, u64), after: (u64, u64), elapsed: Duration) -> (f32, f32)
     let rate =
         |before: u64, after: u64| (after.saturating_sub(before) as f64 / 1024. / secs) as f32;
     (rate(before.0, after.0), rate(before.1, after.1))
+}
+
+/// 虚拟网卡那一档的"会话"跑在别的地方：Windows 上建 wintun 网卡、配地址、
+/// 加路由都要管理员权限，GUI 自己没提权时就把整张网交给经 broker 拉起的
+/// 提权 host（[`super::host`]，独立进程 `winssh-easytier-host.exe`）。这条
+/// 线程只做四件事：摆好管道、拉起 host、转指令与事件、收尾。
+#[cfg(windows)]
+mod elevated {
+    use std::net::SocketAddr;
+
+    use anyhow::{Context as _, Result};
+    use gpui_kit::SharedString;
+    use rust_i18n::t;
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    use tokio::net::windows::named_pipe::ServerOptions;
+    use tokio::sync::mpsc;
+    use winssh_broker_client as broker;
+
+    use super::{
+        EasyTierAccess, EasyTierInput, EasyTierOutput, LogLine, LogTone, SHUTDOWN_GRACE, Ticket,
+        WORKER_THREADS, failure,
+    };
+    use crate::host_protocol::{self, Event as HostEvent, Request, Spec};
+
+    /// 等提权 host 连上 GUI 摆好的管道。装 broker 的 UAC 与进程启动都在
+    /// 这之前，这里的期限只管"起来了到连上来"那一小段。
+    const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+    /// 让 host 优雅收网（停实例、放掉网卡）的期限。到点就不等了：broker
+    /// 那边的保险丝会把它收掉。
+    const STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    pub(super) fn thread(
+        spec: Spec,
+        socks5: Option<SocketAddr>,
+        ticket: Ticket,
+        input_rx: mpsc::UnboundedReceiver<EasyTierInput>,
+        events_tx: mpsc::UnboundedSender<EasyTierOutput>,
+    ) {
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(WORKER_THREADS)
+            .thread_name("easytier-worker")
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                let reason = SharedString::from(t!("easytier.runtime_failed", error => error));
+                ticket.finish(Some(reason.clone()));
+                let _ = events_tx.send(EasyTierOutput::Stopped(Some(reason)));
+                return;
+            }
+        };
+        let outcome = runtime.block_on(run(spec, socks5, &ticket, input_rx, &events_tx));
+        runtime.shutdown_timeout(SHUTDOWN_GRACE);
+        ticket.finish(outcome.clone());
+        let _ = events_tx.send(EasyTierOutput::Stopped(outcome));
+    }
+
+    async fn run(
+        spec: Spec,
+        socks5: Option<SocketAddr>,
+        ticket: &Ticket,
+        mut input_rx: mpsc::UnboundedReceiver<EasyTierInput>,
+        events_tx: &mpsc::UnboundedSender<EasyTierOutput>,
+    ) -> Option<SharedString> {
+        let send = |output: EasyTierOutput| {
+            let _ = events_tx.send(output);
+        };
+
+        // 管道由 GUI 这头先摆好：host 是客户端，连上来我们才把规格发给它。
+        // 这样提权进程连的是一条普通用户自己创建的管道，不必在提权那一侧
+        // 摆任何对外开着的服务端。
+        let pipe_name = host_protocol::new_pipe_name();
+        let server = match ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(format!(r"\\.\pipe\{pipe_name}"))
+        {
+            Ok(server) => server,
+            Err(error) => {
+                return Some(failure(
+                    &anyhow::anyhow!("创建组网 host 管道失败：{error}"),
+                    EasyTierAccess::Tun,
+                ));
+            }
+        };
+
+        // 第一次拨 TUN 要装 broker（一次 UAC），之后都直连。这期间用户点了
+        // 断开就当场收手 —— 别让一个没人要的提权进程在后台起来。
+        let logs = events_tx.clone();
+        let broker = tokio::select! {
+            biased;
+            _ = input_rx.recv() => {
+                ticket.stopping();
+                return None;
+            }
+            spawned = broker::spawn(move |line| {
+                let _ = logs.send(EasyTierOutput::Log(LogLine::now(LogTone::Warn, line)));
+            }) => match spawned {
+                Ok(broker) => broker,
+                Err(error) => return Some(elevation_failure(&error)),
+            }
+        };
+
+        let host = match host_binary_path() {
+            Ok(path) => path,
+            Err(error) => {
+                broker.kill().await;
+                return Some(SharedString::from(format!("{error:#}")));
+            }
+        };
+        let cwd = host.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let args = vec!["--pipe".to_owned(), pipe_name];
+        if let Err(error) = broker.start(&host, &args, cwd).await {
+            broker.kill().await;
+            return Some(t!("easytier.host_failed", error => format!("{error:#}")).into());
+        }
+
+        // 等 host 连上管道。它也可能一起来就退（缺 wintun.dll、参数不对）——
+        // broker 的退出回执比超时先到的话直接报那一句。
+        let connected = tokio::select! {
+            result = tokio::time::timeout(CONNECT_TIMEOUT, server.connect()) => result,
+            info = broker.wait_exit() => {
+                return Some(host_exit_text(info));
+            }
+        };
+        match connected {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                broker.kill().await;
+                return Some(
+                    t!("easytier.host_failed", error => format!("连组网 host 管道失败：{error}"))
+                        .into(),
+                );
+            }
+            Err(_) => {
+                broker.kill().await;
+                return Some(SharedString::from(t!(
+                    "easytier.host_connect_timeout",
+                    secs => CONNECT_TIMEOUT.as_secs()
+                )));
+            }
+        }
+
+        let (read_half, write_half) = tokio::io::split(server);
+        let (request_tx, mut request_rx) = mpsc::unbounded_channel::<String>();
+        tokio::spawn(async move {
+            let mut sink = write_half;
+            while let Some(line) = request_rx.recv().await {
+                if sink.write_all(line.as_bytes()).await.is_err()
+                    || sink.write_all(b"\n").await.is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let _ = request_tx.send(host_protocol::encode_request(&Request::Start(Box::new(
+            spec,
+        ))));
+
+        let mut lines = BufReader::new(read_half).lines();
+        let mut outcome: Option<SharedString> = None;
+        loop {
+            tokio::select! {
+                command = input_rx.recv() => match command {
+                    Some(EasyTierInput::Stop) | None => {
+                        ticket.stopping();
+                        let _ = request_tx.send(host_protocol::encode_request(&Request::Stop));
+                        wait_stopped(&mut lines).await;
+                        break;
+                    }
+                },
+                line = lines.next_line() => match line {
+                    Ok(Some(line)) => match host_protocol::decode_event(&line) {
+                        Ok(HostEvent::Started) => {
+                            ticket.running(socks5);
+                            send(EasyTierOutput::Started);
+                        }
+                        Ok(HostEvent::Snapshot(snapshot)) => {
+                            ticket.reach(snapshot.reach());
+                            send(EasyTierOutput::Snapshot(Box::new(snapshot)));
+                        }
+                        Ok(HostEvent::Log(line)) => send(EasyTierOutput::Log(line)),
+                        Ok(HostEvent::Stopped { reason }) => {
+                            outcome = reason.map(SharedString::from);
+                            break;
+                        }
+                        // 一行认不出来的东西不该把整张网拆了。
+                        Err(_) => log::warn!("组网 host 发来一行认不出的事件：{line}"),
+                    },
+                    Ok(None) | Err(_) => {
+                        outcome = Some(host_exit_text(broker.wait_exit().await));
+                        break;
+                    }
+                },
+                info = broker.wait_exit() => {
+                    outcome = Some(host_exit_text(info));
+                    break;
+                }
+            }
+        }
+
+        broker.kill().await;
+        outcome
+    }
+
+    /// 用户点了断开之后，等 host 回 `Stopped` 的那一段（有期限）。这期间
+    /// 界面已经是"正在退出"，中间的快照与日志不必再转。
+    async fn wait_stopped(
+        lines: &mut tokio::io::Lines<
+            BufReader<tokio::io::ReadHalf<tokio::net::windows::named_pipe::NamedPipeServer>>,
+        >,
+    ) {
+        let deadline = tokio::time::Instant::now() + STOP_TIMEOUT;
+        loop {
+            match tokio::time::timeout_at(deadline, lines.next_line()).await {
+                Ok(Ok(Some(line))) => {
+                    if matches!(
+                        host_protocol::decode_event(&line),
+                        Ok(HostEvent::Stopped { .. })
+                    ) {
+                        return;
+                    }
+                }
+                _ => return,
+            }
+        }
+    }
+
+    /// 提权 host 那个可执行文件在哪儿：与主 exe 同目录（发版与 `cargo build`
+    /// 都是这个摆法），`..` 那一下兜住 `target/<profile>/deps/` 里的测试 exe。
+    fn host_binary_path() -> Result<std::path::PathBuf> {
+        let name = "winssh-easytier-host.exe";
+        let exe = std::env::current_exe().context("拿不到自己的 exe 路径")?;
+        let dir = exe.parent().context("exe 路径没有所在目录")?;
+        for candidate in [dir.join(name), dir.join("..").join(name)] {
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+        anyhow::bail!("{}", t!("easytier.host_missing"))
+    }
+
+    /// 拉 host 本身没成功（broker 起不来 / 用户取消装服务 / host 起不来）。
+    fn elevation_failure(error: &anyhow::Error) -> SharedString {
+        if error.downcast_ref::<broker::ElevationCancelled>().is_some() {
+            return t!("easytier.host_elevation_cancelled").into();
+        }
+        t!("easytier.host_failed", error => format!("{error:#}")).into()
+    }
+
+    /// host 退出（还没把网交给我们）时的那句话。
+    fn host_exit_text(info: Option<broker::ExitInfo>) -> SharedString {
+        let status = match info {
+            Some(broker::ExitInfo { code: Some(code) }) => format!("exit code: {code}"),
+            Some(_) => "terminated".to_owned(),
+            None => "unknown".to_owned(),
+        };
+        t!("easytier.host_exited", status => status).into()
+    }
 }
 
 #[cfg(test)]

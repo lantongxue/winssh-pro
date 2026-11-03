@@ -9,8 +9,9 @@
 //! | macOS | `osascript` 一锤子买卖装 launchd 守护（`net.winssh.pro.helper`） | launchd 拉起、`RunAtLoad` + `KeepAlive` | 固定路径 Unix socket（`/var/run/net.winssh.pro.helper.sock`） |
 //! | Linux | （计划）`pkexec` 装 systemd 单元 | systemd | （计划）固定路径 Unix socket |
 //!
-//! 三个 GUI 侧（`src/clash/broker.rs`）是同构的：第一次拨 TUN 装一次、
-//! 之后直连。就连卸载也是同一个按钮发 `--uninstall-service`（Windows）。
+//! GUI 侧客户端在 `crates/winssh-broker-client`（Clash 与 EasyTier 共用）：
+//! 第一次拨 TUN 装一次、之后直连。就连卸载也是同一个按钮发
+//! `--uninstall-service`（Windows）。
 //!
 //! ## 客户端正身（Windows）
 //!
@@ -20,7 +21,7 @@
 //! 应用各开各的实例）。**只有这一道**：管道 SD 是我们显式摆宽到 Everyone
 //! 可读写的（服务是 LocalSystem，系统给的那份默认 SD 只放**读**，普通用户
 //! 的 GUI 连都连不上）——摆宽是有意的，权限那一档挡不住恶意本地用户，
-//! 只能在指令层下闸（`validate_start` 只放 mihomo、新连接 fencing）。
+//! 只能在指令层下闸（`validate_start` 只放 mihomo 与 EasyTier host）。
 //! 反过来，客户端连上
 //! 后用 `GetNamedPipeServerProcessId` 拿服务 PID，对镜像路径跟 SCM 里登
 //! 记的 `binPath` 必须一字不差。
@@ -40,45 +41,45 @@
 //! 舍：往旧版本里塞"自杀"指令做不到，而旧 broker 活着本身就带着它自己的
 //! 保险丝（父进程死 → 它也死）。
 //!
-//! 跑在 root/SYSTEM 权限下的底线（只拉起白名单内核、新连接顶替旧连接、
+//! 跑在 root/SYSTEM 权限下的底线（只拉起白名单内核、连接断了就收内核、
 //! 日志有界通道）与 macOS 半边一致，见下面 imp 的模块文档。
 //!
 //! ## 它跑在 root 权限下，所以处处设闸
 //!
-//! * **只认 `mihomo`**：`Start` 指令里的路径先过
+//! * **只认白名单里的内核**：`Start` 指令里的路径先过
 //!   `broker_protocol::validate_start`（绝对路径 + 文件名恰好是
-//!   `KERNEL_EXE`）。"帮我把任意程序提权跑起来"必须在这层死掉。
+//!   `KERNEL_EXE` 或 `EASYTIER_HOST_EXE`）。"帮我把任意程序提权跑起来"
+//!   必须在这层死掉。
 //! * **socket 文件 0666**：GUI 是普通用户、broker 是 root，文件 owner 是
 //!   root。文件权限从来就挡不住"能不能连进来"（UDS 在 macOS 没有 peer
 //!   credential 接口），所以直接摆宽：本地任何人都能连，但每条指令都
-//!   从上一条闸里过 —— 别的进程最多让 root 启停 mihomo，而 mihomo 干
+//!   从上一条闸里过 —— 别的进程最多让 root 启停内核，而内核干
 //!   的事（TUN、改路由）本来就是这个 helper 存在的意义。
 //! * **socket 挑 `/var/run/`**：macOS 的 `/tmp` 与 `/var/tmp` 都会被
 //!   tmpcleaner/`/etc/periodic` 定期扫，`/var/run` 是 root 自己的，没人扫。
-//! * **一次只服务一个连接**：新连接进来就把上一个顶掉。理由见下文
-//!   「单连接语义」。
 //!
 //! ## 三层保险丝（谁死了都不留孤儿内核）
 //!
-//! 1. **broker 死了**：它退出前**总是**会把当前那个 mihomo 收掉，不留
-//!   孤儿。macOS 上是退出路径里显式 reap（`reap_before_exit` + 信号钩子），
+//! 1. **broker 死了**：它退出前**总是**会把手上所有内核收掉，不留孤儿。
+//!   macOS 上是退出路径里显式 reap（`reap_before_exit` + 信号钩子），
 //!   Windows 上是 KILL_ON_JOB_CLOSE 的 job 对象——它一闭眼，内核跟着走。
-//! 2. **GUI 死了**：broker 不主动看 GUI 的 pid；服务管理器（launchd/SCM）
-//!   一直把 socket/管道拿着。下次有连接进来（哪怕是另一个 GUI 实例），
-//!   broker 拿「新连接」当信号把上一个内核收掉，让新主接着发号施令。
+//! 2. **GUI 死了**：连接另半边的读任务读到 EOF，当根连接的内核随之被
+//!   reap；job 对象与 service 的生命周期兜底。
 //! 3. **服务管理器看着 broker**：macOS 的 `KeepAlive=true`、Windows 的
 //!   restart-on-failure——broker 真挂了它就再拉起来一个；新 broker 手上的
 //!   内核表里是空的，旧内核早随上一个 broker 的退出路径被收走。
 //!
-//! ## 单连接语义
+//! ## 每根连接一个内核
 //!
-//! 一根 socket 同时只服务一根连接。新连接进来时 broker 关掉上一根连接
-//! （正在跑的内核随之被 reap）。理由两条：
+//! 每根连接各自持有它拉起的那个内核，连接断了（EOF / broker 被叫停）就由
+//! 这根连接的收尾路径把内核 reap 掉。连接之间互不干扰：
 //!
-//! * 状态机只有一份（`current_kernel`、`last_seen_pid`）。两根连接同时给
-//!   broker 发指令会变成「谁也说服不了谁」。
-//! * GUI 死活没法可靠拿到 —— pid 复用会让"GUI 死了"看起来像"GUI 还在"。
-//!   把「新连接 = GUI（重）启动」当信号，天然的 fencing。
+//! * Clash 拨 TUN 拉起 mihomo、EasyTier 拨 TUN 拉起 `winssh-easytier-host`，
+//!   两条内核可以同时在跑，各走各的连接；
+//! * 同一个 GUI 进程里开两条连接（上面这两种），谁也顶不掉谁 —— 早先「新
+//!   连接把旧连接顶掉」的 fencing 是为一次性 UAC broker 设计的，服务常驻
+//!   之后它只会误伤第二颗内核；
+//! * 状态机跟着连接走：一根连接只会有一个内核，指令不会串台。
 //!
 //! ## 背压（管道写满不能反压到内核）
 //!
@@ -115,8 +116,9 @@ mod imp {
     //!   **正身核对**：
     //!   `GetNamedPipeClientProcessId` 拿对端 pid，镜像文件名必须是
     //!   `winssh-pro.exe`（或带" (n)"版本后缀的它），不是立刻断开。
-    //! - 指令这层永远过 `validate_start`，只有 mihomo 能被拉起。
-    //! - 单连接 fencing：新连接进来把旧的顶掉，内核随之被 reap。
+    //! - 指令这层永远过 `validate_start`，只有 mihomo 与 EasyTier host 能被拉起。
+    //! - 每根连接各自持有一个内核：连接进来不顶掉别人，连接断了它自己的
+    //!   内核随之被 reap。Clash 与 EasyTier 的两颗内核因此可以同时在跑。
     //! - 内核从不是"裸奔"的：`CreateProcessWithTokenW` 先创建挂起进程，
     //!   把 PID 塞进 job（KILL_ON_JOB_CLOSE）再 resume —— job 始终兜得住。
     //!
@@ -134,7 +136,7 @@ mod imp {
     use crate::broker_protocol::{Command, Event, decode_command, encode_event, validate_start};
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
     use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
-    use tokio::sync::{Mutex, Notify, mpsc};
+    use tokio::sync::{Notify, mpsc};
     use windows_sys::Win32::Foundation::{
         CloseHandle, ERROR_FAILED_SERVICE_CONTROLLER_CONNECT, ERROR_PIPE_CONNECTED,
         ERROR_SERVICE_DOES_NOT_EXIST, GetLastError, HANDLE, HANDLE_FLAG_INHERIT, HLOCAL, LUID,
@@ -173,7 +175,7 @@ mod imp {
         ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
     };
 
-    /// 与 GUI 侧 `clash/broker.rs` 里的常量硬同步。整个 crate 只那一份。
+    /// 与 GUI 侧 `winssh-broker-client` 里的常量硬同步。整个 crate 只那一份。
     const PIPE_PATH: &str = r"\\.\pipe\winssh-broker";
     const SERVICE_NAME: &str = "WinSSHProBroker";
     const SERVICE_DISPLAY_NAME: &str = "WinSSH Pro Broker";
@@ -187,9 +189,6 @@ mod imp {
 
     /// `Shutdown` 时给 supervisor 收内核的宽限。
     const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
-
-    /// 新连接顶掉旧连接后，等旧连接把内核收掉的那一拍。
-    const REPLACE_GRACE: Duration = Duration::from_millis(50);
 
     /// `Stop` 时给 supervisor 的宽限。到点还没到就强收。
     const STOP_GRACE: Duration = Duration::from_secs(3);
@@ -495,8 +494,9 @@ mod imp {
         let _ = unsafe { SetServiceStatus(handle, &status) };
     }
 
-    /// 服务主循环：挂 job 保险丝 → 摆管道 → 一根接一根地处理连接。
-    /// 收到 STOP（`STOP_NOTIFY` 响）就把手上内核收掉、退出循环。
+    /// 服务主循环：挂 job 保险丝 → 摆管道 → 一直接连接，每根连接各自管
+    /// 自己的内核。收到 STOP（`STOP_NOTIFY` 响）就关掉 job——里面所有内核
+    /// 被 KILL_ON_JOB_CLOSE 一并收走——然后退出循环。
     async fn run_service_loop(status_handle: SERVICE_STATUS_HANDLE) {
         STATUS_HANDLE.store(status_handle as usize, Ordering::SeqCst);
 
@@ -513,8 +513,6 @@ mod imp {
             }
         };
 
-        // 单连接的接力棒。`None` = 上一根还没人接走（idle）。
-        let service: Arc<Mutex<Option<ServiceSlot>>> = Arc::new(Mutex::new(None));
         let stop_signal = &STOP_NOTIFY;
 
         loop {
@@ -533,12 +531,11 @@ mod imp {
                                     return;
                                 }
                             };
-                            let service = Arc::clone(&service);
                             // HANDLE 不能过 tokio::spawn 的边界（不是 Send）——
                             // 换成 usize 进去，那头再还原。
                             let job_usize = job.map(|j| j as usize);
                             tokio::spawn(async move {
-                                handle_connection(stream, service, job_usize).await;
+                                handle_connection(stream, job_usize).await;
                             });
                         }
                         Err(error) => {
@@ -555,17 +552,8 @@ mod imp {
             }
         }
 
-        // 服务被 SCM 叫停：把手上内核收掉。SCM 会再给我们一段退出时间。
-        let replaced = {
-            let mut guard = service.lock().await;
-            guard.take()
-        };
-        if let Some(old) = replaced {
-            old.replace.notify_one();
-            if let Some(slot) = old.child.lock().await.take() {
-                slot.kill.notify_one();
-            }
-        }
+        // 服务被 SCM 叫停：关掉 job，手上所有内核一起走。SCM 会再给我们
+        // 一段退出时间；连接任务里的收尾路径即便来不及跑，job 也兜得住。
         if let Some(job) = job {
             unsafe { CloseHandle(job) };
         }
@@ -591,7 +579,7 @@ mod imp {
     ///
     /// 摆宽是有意的：本地权限那一档本来就挡不住恶意用户（把自己命名成
     /// `winssh-pro.exe` 就过了正身核对），真正的闸在指令层 ——
-    /// `validate_start` 只放 mihomo、新连接 fencing。
+    /// `validate_start` 只放白名单里的内核。
     struct PipeSecurity {
         attributes: SECURITY_ATTRIBUTES,
         descriptor: PSECURITY_DESCRIPTOR,
@@ -630,11 +618,6 @@ mod imp {
         }
     }
 
-    struct ServiceSlot {
-        replace: Arc<Notify>,
-        child: Arc<Mutex<Option<ChildSlot>>>,
-    }
-
     struct ChildSlot {
         kill: Arc<Notify>,
     }
@@ -643,11 +626,10 @@ mod imp {
         code: Option<i32>,
     }
 
-    async fn handle_connection(
-        stream: NamedPipeServer,
-        service: Arc<Mutex<Option<ServiceSlot>>>,
-        job: Option<usize>,
-    ) {
+    /// 一根 GUI 连接。每根连接**各自**持有它拉起的那个内核，连接之间互不
+    /// 顶替 —— Clash 与 EasyTier 的两颗内核可以同时在跑。连接断掉（EOF /
+    /// 对端消失 / `Shutdown`）时把这根连接的内核收掉再走。
+    async fn handle_connection(stream: NamedPipeServer, job: Option<usize>) {
         // 第一道闸：正身核对，同时把对端 pid 留下来（spawn_kernel 要用它
         // 从客户端复制令牌）。
         let client_pid = match client_pid_if_gui(&stream) {
@@ -655,18 +637,6 @@ mod imp {
             None => return,
         };
         append_broker_log(&format!("接了一条 GUI 连接：pid={client_pid}"));
-
-        let replaced = {
-            let mut guard = service.lock().await;
-            guard.take()
-        };
-        if let Some(old) = replaced {
-            old.replace.notify_one();
-            tokio::time::sleep(REPLACE_GRACE).await;
-            if let Some(slot) = old.child.lock().await.take() {
-                slot.kill.notify_one();
-            }
-        }
 
         let (read_half, write_half) = tokio::io::split(stream);
 
@@ -677,16 +647,6 @@ mod imp {
         tokio::spawn(writer_task(write_half, ctrl_rx, log_rx));
 
         let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<ChildExit>();
-
-        let replace = Arc::new(Notify::new());
-        let child_handle: Arc<Mutex<Option<ChildSlot>>> = Arc::new(Mutex::new(None));
-        {
-            let mut guard = service.lock().await;
-            *guard = Some(ServiceSlot {
-                replace: Arc::clone(&replace),
-                child: Arc::clone(&child_handle),
-            });
-        }
 
         let mut lines = BufReader::new(read_half).lines();
         let mut child: Option<ChildSlot> = None;
@@ -724,9 +684,6 @@ mod imp {
                                 &log_tx,
                             ) {
                                 Ok((slot, pid)) => {
-                                    child_handle.lock().await.replace(ChildSlot {
-                                        kill: Arc::clone(&slot.kill),
-                                    });
                                     child = Some(slot);
                                     let _ = ctrl_tx.send(encode_event(&Event::Started { pid }));
                                 }
@@ -736,10 +693,17 @@ mod imp {
                                 }
                             }
                         }
-                        Ok(Command::Stop) => match &child {
+                        Ok(Command::Stop) => match child.take() {
                             Some(slot) => {
                                 slot.kill.notify_one();
-                                let _ = tokio::time::timeout(STOP_GRACE, exit_rx.recv()).await;
+                                // supervisor 收完尸会回一条 Exit；这里直接把它转给
+                                // GUI —— `BrokerSession::kill` 等的就是这一条回执。
+                                if let Ok(Some(exit)) =
+                                    tokio::time::timeout(STOP_GRACE, exit_rx.recv()).await
+                                {
+                                    let _ = ctrl_tx
+                                        .send(encode_event(&Event::Exit { code: exit.code }));
+                                }
                             }
                             None => {
                                 let _ = ctrl_tx.send(encode_event(&Event::Exit { code: None }));
@@ -748,7 +712,6 @@ mod imp {
                         Ok(Command::Shutdown) => {
                             if let Some(slot) = child.take() {
                                 slot.kill.notify_one();
-                                child_handle.lock().await.take();
                                 let _ = tokio::time::timeout(SHUTDOWN_GRACE, exit_rx.recv()).await;
                             }
                             let _ = ctrl_tx.send(encode_event(&Event::Bye));
@@ -760,26 +723,15 @@ mod imp {
                 },
                 Some(exit) = exit_rx.recv() => {
                     child = None;
-                    child_handle.lock().await.take();
                     let _ = ctrl_tx.send(encode_event(&Event::Exit { code: exit.code }));
-                }
-                _ = replace.notified() => {
-                    append_broker_log("被新连接顶掉，收内核走人");
-                    if let Some(slot) = child.take() {
-                        slot.kill.notify_one();
-                        child_handle.lock().await.take();
-                        let _ = tokio::time::timeout(SHUTDOWN_GRACE, exit_rx.recv()).await;
-                    }
-                    return;
                 }
             }
         }
 
-        let mut guard = service.lock().await;
-        if let Some(slot) = guard.as_ref()
-            && Arc::ptr_eq(&slot.replace, &replace)
-        {
-            *guard = None;
+        // 连接断掉：把这根连接自己的内核收掉。job 对象兜底（服务退出/被停）。
+        if let Some(slot) = child.take() {
+            slot.kill.notify_one();
+            let _ = tokio::time::timeout(SHUTDOWN_GRACE, exit_rx.recv()).await;
         }
     }
 
@@ -1293,7 +1245,7 @@ mod imp {
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
     use tokio::net::{UnixListener, UnixStream};
     use tokio::process::{Child, Command as ProcessCommand};
-    use tokio::sync::{Mutex, Notify, mpsc};
+    use tokio::sync::{Notify, mpsc};
 
     /// 与 GUI 侧 `broker::imp::SOCKET_PATH`（即 `clash/broker.rs` 里的那条
     /// 常量）保持一致。
@@ -1353,15 +1305,10 @@ mod imp {
         // 让同机的 GUI（普通用户）能连上：socket 文件 0666。**安全不靠这一
         // 道**——macOS 的 UDS 没有 `SO_PEERCRED` 那种直接看对端凭证的接口，
         // 文件权限拦的也只是"能不能连进来"。指令这一头有 `validate_start`
-        // （只放 mihomo）与新连接 fencing（新连接把旧的顶掉），本地别的用户
-        // 就算连进来也只能让 root 启停 mihomo——mihomo 干的事（开 TUN、
-        // 改路由）本来就是这个 helper 存在的意义，不是漏洞。
+        // （只放 mihomo 与 EasyTier host），本地别的用户就算连进来也只能让
+        // root 启停内核——内核干的事（开 TUN、改路由）本来就是这个 helper
+        // 存在的意义，不是漏洞。
         let _ = std::fs::set_permissions(SOCKET_PATH, std::fs::Permissions::from_mode(0o666));
-
-        // 两条连接发号施令的接力棒。`take` 出来的是 `ChildSlot` 与
-        // 这一边的"活着的 writer"而言它是孤的。`None` 表示**上一根连接
-        // 还没被任何人接走**（idle）；`Some` 表示**有一根连接正被服务**。
-        let service: Arc<Mutex<Option<ServiceSlot>>> = Arc::new(Mutex::new(None));
 
         loop {
             let (stream, _addr) = match listener.accept().await {
@@ -1370,49 +1317,15 @@ mod imp {
                 // launchd 把我们再拉起来 —— 那等于"重新生一个干净的"。
                 Err(_) => return,
             };
-            let service = Arc::clone(&service);
             tokio::spawn(async move {
-                handle_connection(stream, service).await;
+                handle_connection(stream).await;
             });
         }
     }
 
-    /// 一次只服务一根连接的那一根。新连接进来就把旧的顶掉：
-    ///
-    /// 1. `service.lock().take()` 把上一根的把手和内核都收出来；
-    /// 2. 上一根 supervisor 任务看到 `replace` 信号就把内核收掉；
-    /// 3. 这一根装进 `service`。
-    ///
-    /// 之后这一根的指令循环跑起来，直到它自己 EOF / Shutdown / 又被顶掉。
-    struct ServiceSlot {
-        /// 把当前这一根的"作者权限"撤掉的摇铃：下一根连接进来时它响。
-        replace: Arc<Notify>,
-        /// 这一根正在跑的内核的把手。它在指令循环里会被拿走 —— 这只
-        /// 给"换主"leanup 那条路用，日常是空的。
-        child: Arc<Mutex<Option<ChildSlot>>>,
-    }
-
-    async fn handle_connection(stream: UnixStream, service: Arc<Mutex<Option<ServiceSlot>>>) {
-        // 顶掉上一根（如果有的话）。先拿锁把把手抢出来再摇铃 —— 顺序反了
-        // 的话，上一根可能还没意识到自己就被拉掉。
-        let replaced = {
-            let mut guard = service.lock().await;
-            guard.take()
-        };
-        if let Some(old) = replaced {
-            old.replace.notify_one();
-            // 等一拍，让上一根的 supervisor 看到摇铃再收内核。不等的话
-            // 内核可能短暂地有两个 master。
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let child = old.child.lock().await.take();
-            if let Some(slot) = child {
-                slot.kill.notify_one();
-            }
-            // 旧连接那一边的 IO 任务会因为 replace / child-killed /
-            // write-half 那条线自闭。我们不强行等它们干净 ——
-            // 让 tokio 自己把任务收走。
-        }
-
+    /// 一根 GUI 连接，各自持有它拉起的那个内核。连接断了就把自己的内核
+    /// 收掉；连接之间互不顶替。
+    async fn handle_connection(stream: UnixStream) {
         let (read_half, write_half) = tokio::io::split(stream);
 
         let (ctrl_tx, ctrl_rx) = mpsc::unbounded_channel::<String>();
@@ -1420,16 +1333,6 @@ mod imp {
         tokio::spawn(writer_task(write_half, ctrl_rx, log_rx));
 
         let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<ChildExit>();
-
-        let replace = Arc::new(Notify::new());
-        let child_handle: Arc<Mutex<Option<ChildSlot>>> = Arc::new(Mutex::new(None));
-        {
-            let mut guard = service.lock().await;
-            *guard = Some(ServiceSlot {
-                replace: Arc::clone(&replace),
-                child: Arc::clone(&child_handle),
-            });
-        }
 
         let mut lines = BufReader::new(read_half).lines();
         let mut child: Option<ChildSlot> = None;
@@ -1451,9 +1354,6 @@ mod imp {
                             }
                             match spawn_kernel(&exe, &args, &cwd, &log_tx, &exit_tx) {
                                 Ok((slot, pid)) => {
-                                    child_handle.lock().await.replace(ChildSlot {
-                                        kill: Arc::clone(&slot.kill),
-                                    });
                                     child = Some(slot);
                                     let _ = ctrl_tx.send(encode_event(&Event::Started { pid }));
                                 }
@@ -1471,7 +1371,6 @@ mod imp {
                             // 的内核收掉，broker 自己留着 —— launchd 会看着它。
                             if let Some(slot) = child.take() {
                                 slot.kill.notify_one();
-                                child_handle.lock().await.take();
                                 let _ =
                                     tokio::time::timeout(SHUTDOWN_GRACE, exit_rx.recv()).await;
                             }
@@ -1485,30 +1384,16 @@ mod imp {
                 },
                 Some(exit) = exit_rx.recv() => {
                     child = None;
-                    child_handle.lock().await.take();
                     let _ = ctrl_tx.send(encode_event(&Event::Exit { code: exit.code }));
-                }
-                _ = replace.notified() => {
-                    // 新连接已经顶上来：把手上内核收掉，把这条连接安静地断掉。
-                    if let Some(slot) = child.take() {
-                        slot.kill.notify_one();
-                        child_handle.lock().await.take();
-                        let _ = tokio::time::timeout(SHUTDOWN_GRACE, exit_rx.recv()).await;
-                    }
-                    return;
                 }
             }
         }
 
-        // 连接这条线退出时：清 service 那一格里"这是我"的占位，让下一根
-        // 进来不必顶。
-        let mut guard = service.lock().await;
-        if let Some(slot) = guard.as_ref()
-            && Arc::ptr_eq(&slot.replace, &replace)
-        {
-            *guard = None;
+        // 连接断了：把这条连接自己的内核收掉再走。守护本身不退。
+        if let Some(slot) = child.take() {
+            slot.kill.notify_one();
+            let _ = tokio::time::timeout(SHUTDOWN_GRACE, exit_rx.recv()).await;
         }
-        // child_handle 已被 take；Mutex 自己释放。
     }
 
     fn send_error(ctrl_tx: &mpsc::UnboundedSender<String>, message: &str) {

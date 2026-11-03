@@ -2,8 +2,13 @@
 //!
 //! 对面那个进程见 `src/bin/broker.rs`：拨 TUN 需要管理员权限时，这里拉起
 //! 一个**永驻的系统助手**（macOS 是 launchd 守护、Windows 是 SCM 服务、
-//! Linux 是 systemd 单元），之后 mihomo 由它代拉代管，两边只有一条进程间
-//! 管道（NDJSON，协议在 [`super::broker_protocol`]）。GUI 自己留在用户态。
+//! Linux 是 systemd 单元），之后内核由它代拉代管，两边只有一条进程间
+//! 管道（NDJSON，协议在 [`winssh_broker_protocol`]）。GUI 自己留在用户态。
+//!
+//! 这一份客户端被两处共用：Clash 的 runtime 用它代拉 mihomo，EasyTier 的会话
+//! 用它代拉提权 host（`winssh-easytier-host.exe`，见 `winssh-easytier` 的
+//! `host` 模块）。两条内核各占**一条自己的连接**，broker 按连接收尸，谁也
+//! 不会因为另一条连接进来而被顶掉。
 //!
 //! 三条平台是**同一个模型**：一个装进系统服务管理器的常驻助手（macOS 的
 //! launchd 守护、Windows 的 SCM 服务、Linux 的 systemd 单元），GUI 与它
@@ -37,8 +42,7 @@
 //! 正身核对在服务端：每条新连接拿 `GetNamedPipeClientProcessId` 的 pid 去
 //! `QueryFullProcessImageNameW`，只放行正身是 `winssh-pro.exe`（或带
 //! ` (<n>)` 版本后缀的它）的客户端；不是立刻断开。管道是固定公共名，这只
-//! 是其中一道闸——`validate_start`（只放 mihomo）与新连接 fencing 另外两
-//! 道一直在。
+//! 是其中一道闸——`validate_start`（只放 mihomo 与 EasyTier host）一直在。
 //!
 //! ## Linux 这边的做法
 //!
@@ -47,12 +51,18 @@
 //!
 //! ## 事件的走法（不做同步 RPC）
 //!
-//! broker 回的事件由一个泵任务统一收：日志行直接推进 [`Logs`]，
-//! `started` / `exit` / `error` 各写进一条 `watch`。要结果的调用方
+//! broker 回的事件由一个泵任务统一收：日志行交给调用方的 `on_log`
+//! 闭包，`started` / `exit` / `error` 各写进一条 `watch`。要结果的调用方
 //! （[`BrokerSession::start`] / [`BrokerSession::kill`]）先把对应格子清成
 //! `None` 再下指令，然后在 watch 上等 `Some` —— 泵任务因此永远在排水，
 //! 两头不会互相等死。泵退出（管道 EOF = broker 没了）时 `alive` 翻假，
 //! 所有还在等的调用当场醒过来报错。
+
+// 面向用户的错误文案走多语言查表，`t!` 展开成本 crate 的 `_rust_i18n_t!`；
+// `../../locales` 相对本 crate 的 CARGO_MANIFEST_DIR 指回仓库根那一份 locales/。
+rust_i18n::i18n!("../../locales", fallback = "en");
+// 与 winssh-clash 那边同一个讲究：把语言表记进 dep-info，只改文案时才会重编。
+const _: &str = include_str!("../../../locales/app.yml");
 
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -63,7 +73,7 @@ use rust_i18n::t;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, ReadHalf, WriteHalf};
 use tokio::sync::{mpsc, watch};
 
-use super::broker_protocol::{Command, Event, decode_event, encode_command};
+use winssh_broker_protocol::{Command, Event, decode_event, encode_command};
 
 /// `start` 指令等 `started`/`error` 回话的期限。
 const START_TIMEOUT: Duration = Duration::from_secs(15);
@@ -168,14 +178,19 @@ pub fn broker_binary_path() -> Result<PathBuf> {
 /// 弹授权框把永驻 helper 装好（macOS / Linux），或者经 UAC 把 broker 拉起
 /// 到一条命名管道上（Windows），然后回话一个连好的会话。
 ///
-/// `on_log` 收内核日志的每一行（`runtime` 递进来的是 `Logs::push`）。
+/// `on_log` 收内核 stdout/stderr 的每一行。
 /// 用户取消授权时返回的错里躺着 [`ElevationCancelled`]，调用方
 /// `downcast_ref` 认它。
 ///
 /// 装好之后（launchd 守护起来、socket 通）就不会再弹授权框；后面所有
 /// `spawn` 调用都走"直连 socket"那一档。
 pub async fn spawn(on_log: impl Fn(String) + Send + Sync + 'static) -> Result<BrokerSession> {
+    // 同一进程里 Clash 与 EasyTier 可能几乎同时第一次拨 TUN。安装那一下
+    // 排个队，免得两边都去弹一次 UAC、各装一遍服务。
+    static ENSURE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _guard = ENSURE.lock().await;
     imp::ensure_running().await?;
+    drop(_guard);
     imp::connect_with_retry()
         .await
         .map(|stream| BrokerSession::attach(stream, on_log))
@@ -637,15 +652,12 @@ mod imp {
     }
 }
 
-// broker 的 macOS 半边单元测试。挂在文件模块 `broker` 的顶层，而不是
-// `mod imp` 内部：内联模块里 `#[path]` 的基准目录是 `src/clash/broker/imp/`，
-// 那几层目录并不真实存在，相对路径无法被文件系统解析到 `src/tests/`（这也
-// 是这条测试此前只在 Linux/Windows 上因 `cfg` 排除而“没报错”的原因）。放在
-// 文件模块顶层，基准目录就是真实存在的 `src/clash/`，`tests/clash/broker.rs`
-// 正常指到 `src/tests/clash/broker.rs`。测试体经 `super::imp::*` 取那几个
-// macOS 专用函数（它们已放开到 `pub(super)`）。
+// broker 的 macOS 半边单元测试。挂在 crate 根模块，而不是 `mod imp` 内部：
+// 内联模块里 `#[path]` 的基准目录是 `src/imp/`，那层目录并不真实存在，相对
+// 路径无法解析到 `src/tests/`。测试体经 `super::imp::*` 取那几个 macOS
+// 专用函数（它们已放开到 `pub(super)`）。
 #[cfg(all(test, target_os = "macos"))]
-#[path = "tests/clash/broker.rs"]
+#[path = "tests/broker.rs"]
 mod broker_macos_tests;
 
 // ---------- Linux 半边 ----------

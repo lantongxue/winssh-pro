@@ -1,0 +1,19 @@
+[package]
+name = "winssh-broker-client"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 提权 broker 在 GUI 这头的半边：装/卸 helper、连管道、起停内核、收事件"
+license = "Apache-2.0"
+
+[dependencies]
+# 与 broker 服务共用的那条命名管道/Unix socket 消息协议。
+winssh-broker-protocol = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+rust-i18n = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# 装服务那一次 UAC 的 ShellExecuteExW(runas)、SCM 查询、管道互认等。
+# `Win32_System_Registry`：windows-sys 0.61 里非 x86 的 `SHELLEXECUTEINFOW`
+# 门在这个特性后面（结构体带注册表句柄字段），少了它这里编不过。
+windows-sys = { workspace = true, features = ["Win32_System_Registry"] }

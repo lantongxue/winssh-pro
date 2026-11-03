@@ -1452,11 +1452,27 @@ easytier.start_failed:
   en: "Could not join the network: %{error}"
   zh-CN: "加入网络失败：%{error}"
 easytier.start_failed_tun:
-  en: "Could not join the network: %{error}. The virtual NIC mode needs WinSSH Pro to run as administrator (root), and wintun.dll next to the program on Windows; if that is not possible, switch the host to user space (SOCKS5 proxy)."
-  zh-CN: "加入网络失败：%{error}。虚拟网卡模式需以管理员（root）身份运行 WinSSH Pro，Windows 上还需 wintun.dll 与程序同目录；若不可行，请在主机设置中切换为「用户态（SOCKS5 代理）」。"
+  en: "Could not join the network: %{error}. The virtual NIC mode needs administrator (root) rights — on Windows the app runs an elevated helper automatically when it can — and wintun.dll next to the program; if that is not possible, switch the host to user space (SOCKS5 proxy)."
+  zh-CN: "加入网络失败：%{error}。虚拟网卡模式需要管理员（root）权限（Windows 上应用会在可能时自动以提权进程运行），且 wintun.dll 需与程序同目录；若不可行，请在主机设置中切换为「用户态（SOCKS5 代理）」。"
 easytier.start_timeout:
   en: "The node did not start within %{secs} seconds"
   zh-CN: "%{secs} 秒内节点没能启动"
+# 虚拟网卡那一档的提权 host（winssh-easytier-host，经 broker 拉起）。
+easytier.host_missing:
+  en: "Could not find winssh-easytier-host.exe next to the application."
+  zh-CN: "应用旁边找不到 winssh-easytier-host.exe。"
+easytier.host_failed:
+  en: "Could not start the elevated network host: %{error}"
+  zh-CN: "组网提权进程启动失败：%{error}"
+easytier.host_elevation_cancelled:
+  en: "Creating the virtual NIC needs administrator permission, but the elevation prompt was cancelled."
+  zh-CN: "创建虚拟网卡需要管理员权限，但授权被取消了。"
+easytier.host_connect_timeout:
+  en: "The elevated network host did not connect within %{secs} seconds."
+  zh-CN: "组网提权进程 %{secs} 秒内没有连上。"
+easytier.host_exited:
+  en: "The elevated network host exited (%{status})."
+  zh-CN: "组网提权进程退出了（%{status}）。"
 easytier.stopped_unexpectedly:
   en: "The node stopped unexpectedly"
   zh-CN: "节点意外停止"
@@ -1804,11 +1820,11 @@ clash.tun.helper_label:
   en: "Privileged helper"
   zh-CN: "系统特权助手"
 clash.tun.helper_caption_macos:
-  en: "A launchd daemon that creates the virtual NIC on demand. Remove it to stop using TUN entirely."
-  zh-CN: "常驻 launchd 守护进程，拨 TUN 时创建虚拟网卡。不再使用 TUN 时卸载。"
+  en: "A launchd daemon that runs privileged kernels on demand (Clash TUN, EasyTier virtual NIC). Remove it to stop using them entirely."
+  zh-CN: "常驻 launchd 守护进程，按需以管理员权限拉起内核（Clash TUN、EasyTier 虚拟网卡）。不再使用这些功能时卸载。"
 clash.tun.helper_caption_windows:
-  en: "A Windows system service (SCM) that creates the virtual NIC on demand. Installed once; remove it to stop using TUN entirely."
-  zh-CN: "常驻 Windows 系统服务（SCM），拨 TUN 时创建虚拟网卡。安装一次即常驻，不再使用 TUN 时卸载。"
+  en: "A Windows system service (SCM) that runs privileged kernels on demand (Clash TUN, EasyTier virtual NIC). Installed once; remove it to stop using them entirely."
+  zh-CN: "常驻 Windows 系统服务（SCM），按需以管理员权限拉起内核（Clash TUN、EasyTier 虚拟网卡）。安装一次即常驻，不再使用这些功能时卸载。"
 clash.tun.helper_caption_linux:
   en: "Linux helper is not available yet."
   zh-CN: "Linux 暂不支持特权助手。"

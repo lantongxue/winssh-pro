@@ -14332,6 +14332,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "winssh-broker-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rust-i18n",
+ "tokio",
+ "windows-sys 0.61.2",
+ "winssh-broker-protocol",
+]
+
+[[package]]
 name = "winssh-broker-protocol"
 version = "0.1.0"
 dependencies = [
@@ -14359,6 +14370,7 @@ dependencies = [
  "tokio",
  "windows-sys 0.61.2",
  "winreg 0.56.0",
+ "winssh-broker-client",
  "winssh-broker-protocol",
  "winssh-db",
  "zip",
@@ -14418,10 +14430,14 @@ dependencies = [
  "futures",
  "gpui-kit",
  "log",
+ "rand 0.10.3",
  "rust-i18n",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-socks",
  "url",
+ "winssh-broker-client",
  "winssh-domain",
  "winssh-tls",
 ]

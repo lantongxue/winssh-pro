@@ -51,20 +51,29 @@
         assert_eq!(line, r#"{"op":"start","exe":"m","args":[],"cwd":"c"}"#);
     }
 
-    /// 提权边界的闸门：只认绝对路径的 mihomo.exe，别的程序一律不放行。
+    /// 提权边界的闸门：只认绝对路径的 mihomo 与 EasyTier host，别的程序
+    /// 一律不放行。
     #[test]
-    fn start_only_accepts_an_absolute_mihomo_path() {
+    fn start_only_accepts_the_known_kernels() {
         // 正例：文件名大小写不敏感。"绝对路径"各平台各有各的写法，
         // 例子跟着跑测试的平台走。
         #[cfg(windows)]
-        let ok_cases = [r"C:\app\mihomo.exe", r"C:\app\MIHOMO.EXE"];
+        let ok_cases = [
+            r"C:\app\mihomo.exe",
+            r"C:\app\MIHOMO.EXE",
+            r"C:\app\winssh-easytier-host.exe",
+        ];
         #[cfg(not(windows))]
-        let ok_cases = ["/opt/clash/mihomo", "/opt/clash/MIHOMO"];
+        let ok_cases = [
+            "/opt/clash/mihomo",
+            "/opt/clash/MIHOMO",
+            "/opt/winssh/winssh-easytier-host",
+        ];
         for case in ok_cases {
             assert!(validate_start(case).is_ok(), "{case}");
         }
 
-        // 反例：相对路径、别的程序、拿 mihomo 当目录名的花活。
+        // 反例：相对路径、别的程序、拿内核名当目录名的花活。
         #[cfg(windows)]
         {
             assert!(validate_start("mihomo.exe").is_err());
@@ -72,6 +81,7 @@
             assert!(validate_start(r"C:\app\evil.exe").is_err());
             assert!(validate_start(r"C:\app\mihomo.exe\..\evil.exe").is_err());
             assert!(validate_start(r"C:\app\mihomo.exe ").is_err());
+            assert!(validate_start(r"C:\app\winssh-easytier-host.exe.tmp").is_err());
         }
         #[cfg(not(windows))]
         {
@@ -79,6 +89,7 @@
             assert!(validate_start("./mihomo").is_err());
             assert!(validate_start("/opt/clash/evil").is_err());
             assert!(validate_start("/opt/clash/mihomo/../evil").is_err());
+            assert!(validate_start("/opt/winssh/winssh-easytier-host.tmp").is_err());
         }
         assert!(validate_start("").is_err());
     }
