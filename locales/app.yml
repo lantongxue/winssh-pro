@@ -4055,9 +4055,6 @@ monitor.tab_processes:
 monitor.tab_processes_count:
   en: Procs (%{count})
   zh-CN: 进程（%{count}）
-monitor.tab_diagnostics:
-  en: Diag
-  zh-CN: 诊断
 monitor.interval_not_integer:
   en: The sampling interval has to be a whole number of seconds.
   zh-CN: 采集间隔须为整数秒。

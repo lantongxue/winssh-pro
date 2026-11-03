@@ -18,18 +18,22 @@ use super::{
     sample::{CpuTimes, NetTotals, ProbeSample},
 };
 
-/// CPU sparkline 留多少个点。面板那一格宽度就画得下这么多。
-pub const HISTORY_LEN: usize = 12;
+/// CPU / 内存历史曲线各留多少个点。CPU 卡片上半是一条加高的面积图，
+/// 十来个点撑不起"完整负载历史"的样子，按两个轮询周期的粒度留上一两分钟。
+pub const HISTORY_LEN: usize = 60;
 
 /// 两次采样间隔超过这么久就不再拿它们算速率：面板收起过一段时间、或者对端卡
 /// 住过，中间那段的平均值没有意义。
 const MAX_GAP_SECS: f64 = 30.;
 
 /// 一次采集与下一次之间要记住的东西。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Previous {
     uptime_secs: f64,
     cpu: CpuTimes,
+    /// 上一次的每核累计，与 [`Previous::cpu`] 同一次采样。每核占用在轻量采集
+    /// （没有窗口）时拿它与本次相比。
+    cores: Vec<CpuTimes>,
     net: NetTotals,
 }
 
@@ -42,6 +46,9 @@ pub struct MonitorCollector {
     /// 最近一个算得出来的 CPU 占用。第一次轻量采集拿不到（没有可比的前一次），
     /// 那时候显示上一个值而不是 0 —— 0 是"闲着"，不是"不知道"。
     last_cpu: f32,
+    /// 每核占用同上一个已知值，口径与 [`Self::last_cpu`] 一样。空着表示
+    /// "还不知道"，柱状图不画。
+    last_cores: Vec<f32>,
 }
 
 impl MonitorCollector {
@@ -51,6 +58,7 @@ impl MonitorCollector {
             cpu_history: VecDeque::with_capacity(HISTORY_LEN),
             mem_history: VecDeque::with_capacity(HISTORY_LEN),
             last_cpu: 0.,
+            last_cores: Vec::new(),
         }
     }
 
@@ -60,7 +68,7 @@ impl MonitorCollector {
     /// 由服务层量。
     pub fn ingest(&mut self, sample: ProbeSample, latency_ms: u32) -> MonitorTelemetry {
         // 对端重启过：累计值全部对不上了，之前记的一律作废。
-        if let Some(previous) = self.previous
+        if let Some(previous) = self.previous.as_ref()
             && sample.uptime_secs + 1. < previous.uptime_secs
         {
             self.previous = None;
@@ -69,6 +77,7 @@ impl MonitorCollector {
         }
 
         let cpu_percent = self.cpu_percent(&sample);
+        let cpu_per_core = self.cpu_per_core(&sample);
         let (net_in_kbps, net_out_kbps) = self.net_rates(&sample);
         // 内存占用没有累计值的概念，这一次就能算：used/total，和遥测里那个
         // `memory_percent()` 同一个式子。总量算不出来（0）就当 0，不塞进历史。
@@ -82,12 +91,17 @@ impl MonitorCollector {
         self.previous = Some(Previous {
             uptime_secs: sample.uptime_secs,
             cpu: sample.cpu_after.unwrap_or(sample.cpu),
+            cores: sample
+                .cpu_cores_after
+                .clone()
+                .unwrap_or_else(|| sample.cpu_cores.clone()),
             net: sample.net,
         });
 
         let disk = sample.disk.unwrap_or_default();
         MonitorTelemetry {
             cpu_percent,
+            cpu_per_core,
             cpu_history: self.cpu_history.iter().copied().collect(),
             memory_history: self.mem_history.iter().copied().collect(),
             memory_used_gb: gigabytes(sample.mem.used_kb()),
@@ -111,6 +125,7 @@ impl MonitorCollector {
             Some(after) => CpuTimes::busy_percent(sample.cpu, after),
             None => self
                 .previous
+                .as_ref()
                 .and_then(|previous| CpuTimes::busy_percent(previous.cpu, sample.cpu)),
         };
 
@@ -123,10 +138,42 @@ impl MonitorCollector {
         percent
     }
 
+    /// 这一刻的每核占用，口径与 [`Self::cpu_percent`] 相同：优先远端窗口内的
+    /// 差值，退回与上一次采集相比，再退回上一个已知值。两次采样的核数对不上
+    /// （热插拔）不算 —— 少的那几颗核会画成旧的读数，比错位强。
+    fn cpu_per_core(&mut self, sample: &ProbeSample) -> Vec<f32> {
+        let pairs = match &sample.cpu_cores_after {
+            Some(after) if !after.is_empty() && after.len() == sample.cpu_cores.len() => {
+                Some(sample.cpu_cores.iter().zip(after.iter()))
+            }
+            _ => self.previous.as_ref().and_then(|previous| {
+                (!previous.cores.is_empty() && previous.cores.len() == sample.cpu_cores.len())
+                    .then(|| previous.cores.iter().zip(sample.cpu_cores.iter()))
+            }),
+        };
+        let Some(pairs) = pairs else {
+            return self.last_cores.clone();
+        };
+        // 分母为 0 的核算不出来，那这次整体就沿用上一个已知值 —— 一半的柱子
+        // 是旧读数比整幅图退回去更糟。
+        let Some(percents) = pairs
+            .map(|(before, after)| CpuTimes::busy_percent(*before, *after))
+            .collect::<Option<Vec<f32>>>()
+        else {
+            return self.last_cores.clone();
+        };
+        let percents: Vec<f32> = percents
+            .into_iter()
+            .map(|percent| (percent * 10.).round() / 10.)
+            .collect();
+        self.last_cores = percents.clone();
+        percents
+    }
+
     /// 网络速率，单位 KB/s。第一次采集没有可比的前一次，是 0 —— 那不是"没有
     /// 流量"，而是"还不知道"，下一次轮询（几秒后）就有了。
     fn net_rates(&self, sample: &ProbeSample) -> (f32, f32) {
-        let Some(previous) = self.previous else {
+        let Some(previous) = self.previous.as_ref() else {
             return (0., 0.);
         };
         let elapsed = sample.uptime_secs - previous.uptime_secs;

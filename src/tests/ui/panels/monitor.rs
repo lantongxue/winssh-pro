@@ -220,6 +220,7 @@
     fn loaded_telemetry() -> MonitorTelemetry {
         MonitorTelemetry {
             cpu_percent: 37.4,
+            cpu_per_core: (0..8).map(|i| 5. + i as f32 * 11.).collect(),
             cpu_history: (0..crate::monitor::collector::HISTORY_LEN)
                 .map(|i| 20. + i as f32)
                 .collect(),

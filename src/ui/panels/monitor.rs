@@ -1,7 +1,7 @@
 //! 会话右侧监控面板：贴在终端右侧，展示对端主机的实时资源。
 //!
 //! 对应原型的 `SessionRightMonitorPanel`：顶部是主机名 + 活力点 + 关闭 / 刷新，
-//! 下一条是 Uptime/Load，再往下是 Tab 条（Metrics / Procs / Diag，末尾一个齿轮
+//! 下一条是 Uptime/Load，再往下是 Tab 条（Metrics / Procs，末尾一个齿轮
 //! 是设置页），内容区按当前 Tab 渲染不同的卡片与列表。
 //!
 //! 它不是一个 Dock `Panel`，而是每个终端会话自己持有的一块侧栏，生命周期跟着
@@ -16,7 +16,7 @@
 //! 而它一直看得见；进程列表只在真的显示着的时候才采。
 //!
 //! **这一栏每帧都重画，而且没法靠缓存躲开。** 它是这条标签页里最重的一块：
-//! Metrics 页一帧要建两百多个元素（四张卡片、两条面积图、十行高负载进程），
+//! Metrics 页一帧要建两百多个元素（五张卡片、两条图表、十行高负载进程），
 //! 而 120fps 一帧的预算只有 8.3ms。GPUI 每帧从根视图重建整棵元素树，终端一
 //! 刷屏就是每帧一次 `cx.notify()`，脏视图沿派发树往上标会把 `TerminalPanel`
 //! 也标脏 —— 而 Dock 恰好把整个面板挂成一块带缓存的子视图
@@ -39,7 +39,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
     VirtualListScrollHandle, WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
-    chart::AreaChart,
+    chart::{AreaChart, BarChart},
     dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputEvent, InputState, NumberInput},
@@ -48,17 +48,18 @@ use gpui_kit::component::{
     v_flex, v_virtual_list,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement, Pixels, Render, SharedString, Size,
-    StatefulInteractiveElement as _, Styled, Task, Window, div, linear_color_stop, linear_gradient,
-    prelude::FluentBuilder as _, px, rgb, size,
+    AnyElement, App, AppContext as _, Context, Corners, Entity, EventEmitter, FocusHandle,
+    Focusable, Hsla, InteractiveElement as _, IntoElement, ParentElement, Pixels, Render,
+    SharedString, Size, StatefulInteractiveElement as _, Styled, Task, Window, div,
+    linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px, rgb, size,
 };
 
 use crate::{
     host::{Host, MonitorIntervals},
-    monitor::{MonitorTelemetry, ProbeOptions, ProcessItem, diag_commands},
+    monitor::{MonitorTelemetry, ProbeOptions, ProcessItem},
     service::{HostService, MonitorService},
     session::SessionTelemetry,
+    ui::bars::format_rate,
     ui::theme::{AppIcon, palette},
 };
 use rust_i18n::t;
@@ -72,24 +73,37 @@ const RETRY_INTERVAL: Duration = Duration::from_secs(10);
 /// **真的**是这么高 —— 对不上就会错行。一行是 `text_xs` 加上下各 6px 内边距。
 const PROCESS_ROW_HEIGHT: Pixels = px(28.);
 
+/// CPU 两张卡里图的高度：总占用卡是一条加高的历史面积图，每核卡的柱子
+/// 矮一截，只要分得清忙闲就行。
+const CPU_HISTORY_HEIGHT: Pixels = px(88.);
+const CPU_CORES_HEIGHT: Pixels = px(56.);
+
+/// 每核柱状图的配色轮盘：按核心编号循环取色，相邻的核颜色不同，
+/// 一眼能对上"第几根柱子是第几颗核"。色值跟这张面板其它卡片用的同一族
+/// （VS Code 暗色主题那套），不另起炉灶。
+const CORE_COLORS: [u32; 8] = [
+    0x569CD6, // 蓝
+    0x4EC9B0, // 青
+    0xC586C0, // 紫
+    0xCE9178, // 橙
+    0xDCDCAA, // 黄
+    0x9CDCFE, // 浅蓝
+    0xB5CEA8, // 绿
+    0xD7BA7D, // 棕黄
+];
+
 /// 监控面板的子 Tab。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MonitorTab {
     Metrics,
     Processes,
-    Diagnostics,
     /// 采集节奏的设置页。排在最后，只有一个齿轮图标 —— 见 [`MonitorTab::ALL`]。
     Settings,
 }
 
 impl MonitorTab {
     /// Tab 条上的顺序。
-    const ALL: [Self; 4] = [
-        Self::Metrics,
-        Self::Processes,
-        Self::Diagnostics,
-        Self::Settings,
-    ];
+    const ALL: [Self; 3] = [Self::Metrics, Self::Processes, Self::Settings];
 
     /// 这一页占不占 Tab 条的等分宽度。
     ///
@@ -108,7 +122,6 @@ impl MonitorTab {
                 t!("monitor.tab_processes_count", count => processes).into()
             }
             (Self::Processes, None) => t!("monitor.tab_processes").into(),
-            (Self::Diagnostics, _) => t!("monitor.tab_diagnostics").into(),
             // 只有图标，见 [`Self::stretches`]。
             (Self::Settings, _) => "".into(),
         }
@@ -118,7 +131,6 @@ impl MonitorTab {
         match self {
             Self::Metrics => Icon::new(AppIcon::Activity),
             Self::Processes => Icon::new(IconName::Cpu),
-            Self::Diagnostics => Icon::new(AppIcon::Zap),
             Self::Settings => Icon::new(IconName::Settings),
         }
     }
@@ -127,8 +139,6 @@ impl MonitorTab {
 /// 对外事件。
 #[derive(Clone, Debug)]
 pub enum MonitorEvent {
-    /// 诊断命令要送进用户那条终端，让输出看得见、翻得回去。
-    SendCommand(SharedString),
     /// 采到一份新读数。终端下沿的状态栏跟着它更新，不另开一次采集。
     Reading(SessionTelemetry),
     Close,
@@ -789,12 +799,12 @@ impl MonitorPanel {
             }))
     }
 
-    /// Metrics 页：2x2 四张卡片 + 高负载进程预览。
+    /// Metrics 页：五张卡片 + 高负载进程预览。
     ///
     /// 内容直接长在传进来的那一列上（[`Render`] 那边给的是外层滚动容器），中间
     /// 不夹自己的 `v_flex` —— **内容尺寸的 flex 容器会让它下面整棵子树多排一遍
     /// 版**，而这一页是两百来个元素，那一遍就是毫秒级。同一个道理下面还用了两次
-    /// （四张卡片不再套一层、十行预览不再套一层）。量法与当时的数见
+    /// （五张卡片不再套一层、十行预览不再套一层）。量法与当时的数见
     /// [`tests::frame_cost`]。
     fn render_metrics<E: ParentElement + Styled>(
         &self,
@@ -809,17 +819,18 @@ impl MonitorPanel {
             .gap_2()
             .p_2()
             .child(self.render_cpu_card(telemetry, cx))
+            .child(self.render_cpu_cores_card(telemetry, cx))
             .child(self.render_ram_card(telemetry, mem_percent, cx))
             .child(self.render_disk_card(telemetry, disk_percent, cx))
             .child(self.render_network_card(telemetry, cx))
     }
 
+    /// CPU 总占用卡：一条负载历史的面积图。
     fn render_cpu_card(&self, telemetry: &MonitorTelemetry, cx: &App) -> impl IntoElement {
         let cpu = telemetry.cpu_percent;
         let blue = rgb(0x569CD6);
-        // `AreaChart` 画的是一串带标签的读数：把 CPU 历史按下标配上采样序号，
-        // 数值转成 `f64`（[`gpui_kit::component::chart::AreaChart`] 的 Y 轴只接受 f64）。
-        // 序号只用来当 x 轴的刻度键，卡片里不显示轴线，所以它不会露出来。
+        // 负载历史曲线，按下标配上采样序号，数值转成 `f64`（图表库的 Y 轴
+        // 只接受 f64）。序号只用来当 x 轴的刻度键，卡片里不显示轴线。
         let history: Vec<HistoryPoint> = telemetry
             .cpu_history
             .iter()
@@ -840,7 +851,7 @@ impl MonitorPanel {
             .child(
                 // 图标、标题、读数一排三个，读数靠 `ml_auto` 顶到右边 —— 与
                 // 「标题分一组 + justify_between」画出来一样，但少一层容器。
-                // 卡片头这么写的四张都是同一个理由，见 [`Self::render_metrics`]。
+                // 卡片头这么写的五张都是同一个理由，见 [`Self::render_metrics`]。
                 h_flex()
                     .gap_1()
                     .items_center()
@@ -859,9 +870,8 @@ impl MonitorPanel {
                     ),
             )
             .child(
-                // CPU 历史曲线：面积图。没有轴线、没有网格，收成一条和原来
-                // sparkline 等高的紧凑曲线，塞在这块 2x2 小卡片里。
-                div().w_full().h(px(40.)).child(
+                // 负载历史：面积图，没有轴线与网格。
+                div().w_full().h(CPU_HISTORY_HEIGHT).child(
                     AreaChart::new(history)
                         .x(|sample| sample.label.clone())
                         .y(|sample| sample.value)
@@ -872,6 +882,70 @@ impl MonitorPanel {
                             linear_color_stop(blue.opacity(0.02), 0.),
                         ))
                         .x_axis(false)
+                        .grid(false)
+                        .tooltip_value(|_, _, value| SharedString::from(format!("{value:.2}%"))),
+                ),
+            )
+    }
+
+    /// 每核负载卡：一排柱子，一颗核一根。
+    fn render_cpu_cores_card(&self, telemetry: &MonitorTelemetry, cx: &App) -> impl IntoElement {
+        let teal = rgb(0x4EC9B0);
+        // 每颗核一根柱子。band 是核心编号（悬停提示的标题），value 是那颗核的
+        // 占用百分比。轻量采集算不出每核读数时这一格是空的。
+        let cores: Vec<CorePoint> = telemetry
+            .cpu_per_core
+            .iter()
+            .enumerate()
+            .map(|(core, percent)| CorePoint {
+                core,
+                label: SharedString::from(core.to_string()),
+                value: *percent as f64,
+            })
+            .collect();
+        let count = cores.len();
+        v_flex()
+            .w_full()
+            .gap_1()
+            .p_2()
+            .rounded(cx.theme().radius)
+            .bg(cx.theme().background)
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .text_xs()
+                    .font_semibold()
+                    .text_color(cx.theme().foreground)
+                    .child(Icon::new(IconName::Cpu).with_size(px(14.)).text_color(teal))
+                    .child("CPU Cores")
+                    .when(count > 0, |this| {
+                        this.child(
+                            div()
+                                .ml_auto()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .font_bold()
+                                .text_color(teal)
+                                .child(SharedString::from(format!("{count} cores"))),
+                        )
+                    }),
+            )
+            .child(
+                // 每核占用柱状图：没有轴线、没有网格，柱宽封顶，核多的机器
+                // （几十上百颗）也不会把柱子挤到看不清。每颗核一个颜色，
+                // 按核心编号从配色轮盘里循环取，相邻的核颜色不同。
+                div().w_full().h(CPU_CORES_HEIGHT).child(
+                    BarChart::new(cores)
+                        .band(|core| core.label.clone())
+                        .value(|core| core.value)
+                        .fill(|core, _, _, _| rgb(CORE_COLORS[core.core % CORE_COLORS.len()]))
+                        .tooltip_value(|_, value| SharedString::from(format!("{value:.1}%")))
+                        .corner_radii(Corners::all(px(1.)))
+                        .max_band_width(px(16.))
+                        .label_axis(false)
+                        .value_axis(false)
                         .grid(false),
                 ),
             )
@@ -937,7 +1011,8 @@ impl MonitorPanel {
                             linear_color_stop(teal.opacity(0.02), 0.),
                         ))
                         .x_axis(false)
-                        .grid(false),
+                        .grid(false)
+                        .tooltip_value(|_, _, value| SharedString::from(format!("{value:.2}%"))),
                 ),
             )
             .child(
@@ -1056,7 +1131,8 @@ impl MonitorPanel {
                             )
                             .child(
                                 div().font_bold().text_color(rgb(0xC586C0)).child(
-                                    SharedString::from(format!("{:.0} KB/s", t.net_out_kbps)),
+                                    // 与终端下沿状态栏同一套自适应单位：KB/s → MB/s → GB/s。
+                                    format_rate(t.net_out_kbps),
                                 ),
                             ),
                     )
@@ -1066,7 +1142,7 @@ impl MonitorPanel {
                             .child(div().text_color(cx.theme().muted_foreground).child("▼ In:"))
                             .child(
                                 div().font_bold().text_color(rgb(0x4EC9B0)).child(
-                                    SharedString::from(format!("{:.0} KB/s", t.net_in_kbps)),
+                                    format_rate(t.net_in_kbps),
                                 ),
                             ),
                     ),
@@ -1264,60 +1340,6 @@ impl MonitorPanel {
             .into_any_element()
     }
 
-    fn render_diag_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let commands = diag_commands();
-        v_flex()
-            .gap_2()
-            .p_2()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Execute live diagnostic commands in active terminal session:"),
-            )
-            .children(commands.iter().enumerate().map(|(ix, diag)| {
-                let cmd = diag.cmd.clone();
-                h_flex()
-                    .id(("diag", ix))
-                    .p_2()
-                    .rounded(cx.theme().radius)
-                    .bg(cx.theme().background)
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .cursor_pointer()
-                    .justify_between()
-                    .items_center()
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        cx.emit(MonitorEvent::SendCommand(cmd.clone()));
-                    }))
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .gap(px(2.))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_family(cx.theme().mono_font_family.clone())
-                                    .font_semibold()
-                                    .text_color(rgb(0x4EC9B0))
-                                    .child(diag.label.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .truncate()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(diag.desc.clone()),
-                            ),
-                    )
-                    .child(
-                        Icon::new(AppIcon::Terminal)
-                            .with_size(px(14.))
-                            .text_color(cx.theme().muted_foreground),
-                    )
-            }))
-    }
-
     /// 设置页：这台主机的两档采集节奏。
     ///
     /// 只有采集频率这一组。别的能调的东西（排序、筛选）都在它们各自那一页上，
@@ -1492,8 +1514,8 @@ impl Render for MonitorPanel {
                     .map(|error| self.render_error(error, cx).into_any_element()),
             )
             .children(telemetry.map(|t| self.render_banner(t, cx).into_any_element()))
-            // Tab 条一直在：Diag 那一页是一串固定命令、设置页是这台主机的配置，
-            // 两页都不依赖采集，本地会话与还没采到读数的时候也该点得动。
+            // Tab 条一直在：设置页是这台主机的配置，不依赖采集，本地会话
+            // 与还没采到读数的时候也该点得动。
             .child(self.render_tabs(cx))
             .child(match (tab, telemetry) {
                 // Procs 页自己就是一条虚拟列表，滚动归它自己管。外面再套一层
@@ -1518,9 +1540,6 @@ impl Render for MonitorPanel {
                         (MonitorTab::Metrics, Some(t)) => {
                             self.render_metrics(column, t, cx).into_any_element()
                         }
-                        (MonitorTab::Diagnostics, _) => {
-                            column.child(self.render_diag_tab(cx)).into_any_element()
-                        }
                         (MonitorTab::Settings, _) => column
                             .child(self.render_settings_tab(cx))
                             .into_any_element(),
@@ -1533,11 +1552,20 @@ impl Render for MonitorPanel {
     }
 }
 
-/// 历史曲线里的一个采样点，喂给 [`AreaChart`] 用（CPU 与 RAM 卡片共用）。
+/// CPU 与 RAM 卡片历史曲线里的一个采样点，喂给 [`AreaChart`] 用。
 ///
 /// `label` 是采样的序号（只当 x 轴的刻度键，卡片里不显示），`value` 是那一
 /// 次的占用百分比 —— 图表库的 Y 轴只接受 `f64`，所以从 `f32` 转过来。
 struct HistoryPoint {
+    label: SharedString,
+    value: f64,
+}
+
+/// CPU 卡片每核柱状图里的一根柱子：`core` 是核心编号（配色的轮盘下标），
+/// `label` 是它转成文本后的刻度键（也用作悬停提示的标题），`value` 是那颗
+/// 核的占用百分比 —— 图表库的 Y 轴只接受 `f64`，所以从 `f32` 转过来。
+struct CorePoint {
+    core: usize,
     label: SharedString,
     value: f64,
 }

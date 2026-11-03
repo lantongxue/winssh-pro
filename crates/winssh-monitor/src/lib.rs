@@ -1,8 +1,8 @@
 //! 会话监控的领域层：读数模型、采集脚本、解析与累加。
 //!
-//! 对应原型里的 `ServerTelemetry`：CPU / 内存 / 磁盘 / 网络 / 进程，
-//! 以及诊断命令列表。数据全部来自对端 —— 在那台机器上跑一段 POSIX sh 读
-//! `/proc`，把结果解析成下面这些类型。三步各自一个文件：
+//! 对应原型里的 `ServerTelemetry`：CPU / 内存 / 磁盘 / 网络 / 进程。数据全部
+//! 来自对端 —— 在那台机器上跑一段 POSIX sh 读 `/proc`，把结果解析成下面这些
+//! 类型。三步各自一个文件：
 //!
 //! | 文件 | 干什么 |
 //! | --- | --- |
@@ -28,8 +28,6 @@ pub mod sample;
 pub use collector::MonitorCollector;
 pub use probe::ProbeOptions;
 pub use sample::parse_probe;
-
-use std::sync::OnceLock;
 
 use gpui_kit::SharedString;
 
@@ -57,7 +55,12 @@ pub struct ProcessItem {
 #[derive(Clone, Debug)]
 pub struct MonitorTelemetry {
     pub cpu_percent: f32,
-    /// 最近 [`collector::HISTORY_LEN`] 个点的 CPU sparkline，用于卡片顶部的迷你条。
+    /// 每颗核心当前的占用百分比，下标即核心编号，喂给 CPU 卡片里的柱状图。
+    /// 口径与 [`Self::cpu_percent`] 相同：优先远端窗口内的差值，退回与上一次
+    /// 采集相比，再退回上一个已知值；一次都没算出来过就是空的。
+    pub cpu_per_core: Vec<f32>,
+    /// 最近 [`collector::HISTORY_LEN`] 个点的 CPU 占用历史，喂给 CPU 卡片上半
+    /// 那条面积图。
     pub cpu_history: Vec<f32>,
     /// 最近 [`collector::HISTORY_LEN`] 个点的内存占用百分比，喂给 RAM 卡片里的
     /// [`AreaChart`](gpui_kit::component::chart::AreaChart)。内存不像 CPU 需要采样窗口，
@@ -110,64 +113,6 @@ impl From<&MonitorTelemetry> for SessionTelemetry {
             net_out_kbps: telemetry.net_out_kbps,
         }
     }
-}
-
-/// 诊断命令：点一下把命令送进当前终端。
-///
-/// 和监控采集有意分开：采集在自己的通道上悄悄跑，诊断是**送进用户那条终端**
-/// 的，输出要让人看见、能往上翻、能接着改参数再跑一遍。
-#[derive(Clone, Debug)]
-pub struct DiagCommand {
-    pub label: SharedString,
-    pub desc: SharedString,
-    pub cmd: SharedString,
-}
-
-/// 诊断命令表。内容是固定的，所以只建一次 —— 界面每帧都要遍历它，
-/// 每帧重建二十来个 `SharedString` 是白烧。
-pub fn diag_commands() -> &'static [DiagCommand] {
-    static COMMANDS: OnceLock<Vec<DiagCommand>> = OnceLock::new();
-    COMMANDS.get_or_init(build_diag_commands)
-}
-
-fn build_diag_commands() -> Vec<DiagCommand> {
-    vec![
-        DiagCommand {
-            label: "top -b -n 1".into(),
-            desc: "Snapshot top process memory & cpu".into(),
-            cmd: "top -b -n 1 | head -n 25".into(),
-        },
-        DiagCommand {
-            label: "free -m".into(),
-            desc: "Display memory and swap distribution".into(),
-            cmd: "free -m".into(),
-        },
-        DiagCommand {
-            label: "df -h".into(),
-            desc: "Check mounted disk space filesystem".into(),
-            cmd: "df -h".into(),
-        },
-        DiagCommand {
-            label: "netstat -tulnp".into(),
-            desc: "Active listening network ports".into(),
-            cmd: "netstat -tulnp".into(),
-        },
-        DiagCommand {
-            label: "dmesg -T | tail -20".into(),
-            desc: "Kernel buffer & hardware logs".into(),
-            cmd: "dmesg -T | tail -n 20".into(),
-        },
-        DiagCommand {
-            label: "journalctl -xe".into(),
-            desc: "Systemd service failure logs".into(),
-            cmd: "journalctl -xe --no-pager -n 20".into(),
-        },
-        DiagCommand {
-            label: "docker stats --no-stream".into(),
-            desc: "Docker live resource telemetry".into(),
-            cmd: "docker stats --no-stream".into(),
-        },
-    ]
 }
 
 #[cfg(test)]

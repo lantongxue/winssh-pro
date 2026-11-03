@@ -9,7 +9,8 @@
             load: [0.5, 0.4, 0.3],
             cpu,
             cpu_after: after,
-            cpu_cores: 4,
+            cpu_cores: Vec::new(),
+            cpu_cores_after: None,
             mem: MemInfo {
                 total_kb: 2 * 1024 * 1024,
                 available_kb: 1024 * 1024,
@@ -64,6 +65,54 @@
         // 两次之间总计 +200，空闲 +100 → 忙一半。
         assert_eq!(second.cpu_percent, 50.);
         assert_eq!(second.cpu_history, vec![50.]);
+    }
+
+    #[test]
+    fn per_core_usage_comes_from_the_remote_window() {
+        let mut collector = MonitorCollector::new();
+        let mut probe = sample(
+            100.,
+            ticks(1000, 800),
+            Some(ticks(1100, 850)),
+            NetTotals::default(),
+        );
+        // 两颗核：窗口内 0 号忙 90%（100 拍里闲 10 拍），1 号忙 10%。
+        probe.cpu_cores = vec![ticks(500, 400), ticks(500, 490)];
+        probe.cpu_cores_after = Some(vec![ticks(600, 410), ticks(600, 580)]);
+
+        let telemetry = collector.ingest(probe, 5);
+        assert_eq!(telemetry.cpu_per_core, vec![90., 10.]);
+    }
+
+    #[test]
+    fn per_core_usage_falls_back_to_the_previous_probe() {
+        let mut collector = MonitorCollector::new();
+        // 第一次轻量采集：有每核累计但没有窗口，没有可比的前一次 —— 不画。
+        let mut first = sample(100., ticks(1000, 800), None, NetTotals::default());
+        first.cpu_cores = vec![ticks(500, 400), ticks(500, 490)];
+        let first = collector.ingest(first, 3);
+        assert!(first.cpu_per_core.is_empty());
+
+        // 第二次轻量采集：拿上一次的每核累计相减。
+        let mut second = sample(105., ticks(1200, 1000), None, NetTotals::default());
+        second.cpu_cores = vec![ticks(600, 410), ticks(600, 580)];
+        let second = collector.ingest(second, 3);
+        assert_eq!(second.cpu_per_core, vec![90., 10.]);
+    }
+
+    #[test]
+    fn per_core_usage_survives_a_core_count_change_by_holding_still() {
+        let mut collector = MonitorCollector::new();
+        let mut first = sample(100., ticks(1000, 800), None, NetTotals::default());
+        first.cpu_cores = vec![ticks(500, 400)];
+        let first = collector.ingest(first, 3);
+        assert!(first.cpu_per_core.is_empty());
+
+        // 热插拔了一颗核：核数对不上就不算，沿用上一个已知值（第一次没有）。
+        let mut second = sample(105., ticks(1200, 1000), None, NetTotals::default());
+        second.cpu_cores = vec![ticks(600, 410), ticks(600, 580)];
+        let second = collector.ingest(second, 3);
+        assert!(second.cpu_per_core.is_empty());
     }
 
     #[test]

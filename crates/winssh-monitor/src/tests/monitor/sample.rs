@@ -50,7 +50,7 @@
         assert!((sample.window_secs - 0.3).abs() < 1e-6);
         assert!((sample.uptime_secs - 1000.).abs() < 1e-6);
         assert_eq!(sample.load, [0.82, 0.94, 1.15]);
-        assert_eq!(sample.cpu_cores, 2);
+        assert_eq!(sample.cpu_cores.len(), 2);
         // 进程总数来自 `##proccount`，和被截断后回传的进程列表长度是两回事。
         assert_eq!(sample.process_total, Some(234));
         assert_eq!(sample.processes.len(), 2);
@@ -59,6 +59,19 @@
         let busy = CpuTimes::busy_percent(sample.cpu, sample.cpu_after.expect("窗口末尾的采样"))
             .expect("应算得出占用");
         assert!((busy - 55.555_557).abs() < 0.01, "实际 {busy}");
+    }
+
+    #[test]
+    fn per_core_lines_parse_with_their_own_totals() {
+        let sample = parse_probe(FULL).expect("完整采集应能解析");
+        let after = sample.cpu_cores_after.expect("窗口末尾应有每核采样");
+        assert_eq!(after.len(), sample.cpu_cores.len(), "两次采样的核数要一致");
+
+        // cpu0：窗口内总计 +36，空闲 +16 → 忙 20/36。cpu1 同（差在第 7 个字段）。
+        let core0 = CpuTimes::busy_percent(sample.cpu_cores[0], after[0]).expect("应算得出占用");
+        let core1 = CpuTimes::busy_percent(sample.cpu_cores[1], after[1]).expect("应算得出占用");
+        assert!((core0 - 20. / 36. * 100.).abs() < 0.01, "实际 {core0}");
+        assert!((core1 - 20. / 36. * 100.).abs() < 0.01, "实际 {core1}");
     }
 
     #[test]
@@ -148,6 +161,8 @@
         );
         let sample = parse_probe(text).expect("轻量采集也要能解析");
         assert!(sample.cpu_after.is_none());
+        assert!(sample.cpu_cores.is_empty(), "轻量采集只有聚合行，没有每核行");
+        assert!(sample.cpu_cores_after.is_none());
         assert_eq!(sample.window_secs, 0.);
         assert!(sample.processes.is_empty());
         assert_eq!(sample.process_total, None, "轻量采集不采进程，也没有总数");

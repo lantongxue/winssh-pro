@@ -286,7 +286,7 @@ pub struct TerminalPanel {
     /// 这个标签页里的终端。单屏时一个，分屏时两个 —— 长度由
     /// [`SplitLayout::panes`] 说了算，两者不同步就会画出空的一半。
     panes: Vec<Entity<TerminalPane>>,
-    /// 活动窗格的下标。上下两条 chrome 说的是它的事，监控和 SFTP 送的命令
+    /// 活动窗格的下标。上下两条 chrome 说的是它的事，SFTP 送的命令
     /// 也进它。焦点在哪一半，它就是哪一半（[`Self::sync_active`]）。
     active: usize,
     split: SplitLayout,
@@ -796,7 +796,6 @@ impl TerminalPanel {
                     this.telemetry = Some(*telemetry);
                     cx.notify();
                 }
-                MonitorEvent::SendCommand(cmd) => this.send_line(cmd.as_str(), cx),
             },
         )
         .detach();

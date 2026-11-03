@@ -94,7 +94,11 @@ pub struct ProbeSample {
     pub cpu: CpuTimes,
     /// 采样窗口末尾的那次 CPU 采样。轻量采集时没有。
     pub cpu_after: Option<CpuTimes>,
-    pub cpu_cores: usize,
+    /// 每颗核的累计时间：`/proc/stat` 里 `cpu0`、`cpu1`… 那些行，下标即核心
+    /// 编号。聚合行只是一笔总账，"哪颗核忙"要从这里来。
+    pub cpu_cores: Vec<CpuTimes>,
+    /// 采样窗口末尾的每核累计。轻量采集时没有。
+    pub cpu_cores_after: Option<Vec<CpuTimes>>,
     pub mem: MemInfo,
     pub net: NetTotals,
     pub disk: Option<DiskUsage>,
@@ -153,14 +157,10 @@ pub fn parse_probe(stdout: &str) -> Result<ProbeSample> {
                     .split_once(&format!("\n{SPLIT}\n"))
                     .unwrap_or((body, ""));
                 sample.cpu = parse_cpu_total(before).unwrap_or_default();
-                sample.cpu_cores = before
-                    .lines()
-                    .filter(|line| {
-                        line.starts_with("cpu")
-                            && line[3..].starts_with(|c: char| c.is_ascii_digit())
-                    })
-                    .count();
+                sample.cpu_cores = parse_cpu_cores(before);
                 sample.cpu_after = parse_cpu_total(after);
+                let cores_after = parse_cpu_cores(after);
+                sample.cpu_cores_after = (!cores_after.is_empty()).then_some(cores_after);
             }
             "mem" => sample.mem = parse_meminfo(body),
             "net" => sample.net = parse_net_dev(body),
@@ -217,6 +217,18 @@ fn parse_loadavg(body: &str) -> [f32; 3] {
     load
 }
 
+/// 把 `/proc/stat` 一行的时间字段折成 [`CpuTimes`]：前 4 个字段是 user / nice
+/// / system / idle，第 5 个是 iowait（有的内核没有）。
+fn cpu_times(values: &[u64]) -> Option<CpuTimes> {
+    if values.len() < 4 {
+        return None;
+    }
+    Some(CpuTimes {
+        total: values.iter().sum(),
+        idle: values[3] + values.get(4).copied().unwrap_or(0),
+    })
+}
+
 /// `/proc/stat` 的聚合行：`cpu user nice system idle iowait irq softirq steal ...`。
 fn parse_cpu_total(body: &str) -> Option<CpuTimes> {
     let line = body
@@ -228,13 +240,27 @@ fn parse_cpu_total(body: &str) -> Option<CpuTimes> {
         .skip(1)
         .filter_map(|v| v.parse().ok())
         .collect();
-    if values.len() < 4 {
-        return None;
-    }
-    Some(CpuTimes {
-        total: values.iter().sum(),
-        idle: values[3] + values.get(4).copied().unwrap_or(0),
-    })
+    cpu_times(&values)
+}
+
+/// `/proc/stat` 的每核行：`cpu0 user nice system idle ...`，顺序即核心编号。
+/// 聚合行（`cpu `，带一个空格）不算核，字段残缺的行跳过。
+fn parse_cpu_cores(body: &str) -> Vec<CpuTimes> {
+    body.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let rest = line.strip_prefix("cpu")?;
+            if !rest.starts_with(|c: char| c.is_ascii_digit()) {
+                return None;
+            }
+            let values: Vec<u64> = line
+                .split_whitespace()
+                .skip(1)
+                .filter_map(|v| v.parse().ok())
+                .collect();
+            cpu_times(&values)
+        })
+        .collect()
 }
 
 /// `/proc/meminfo`：`MemTotal:       32791104 kB`。

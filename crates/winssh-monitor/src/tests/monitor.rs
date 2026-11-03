@@ -4,6 +4,7 @@
     fn percentages_guard_against_a_zero_total() {
         let telemetry = MonitorTelemetry {
             cpu_percent: 0.,
+            cpu_per_core: Vec::new(),
             cpu_history: Vec::new(),
             memory_history: Vec::new(),
             memory_used_gb: 1.,
