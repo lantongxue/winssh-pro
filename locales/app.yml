@@ -2739,6 +2739,8 @@ serial.device_lost:
 host_form.field_key_content:
   en: Private key *
   zh-CN: 私钥 *
+host_form.field_key_passphrase:
+  en: Private key passphrase
   zh-CN: 私钥口令
 host_form.key_content_placeholder:
   en: Paste the private key, starting with -----BEGIN OPENSSH PRIVATE KEY-----
@@ -4186,6 +4188,8 @@ sftp.col_modified:
 sftp.col_perm:
   en: Perms
   zh-CN: 权限
+sftp.col_owner:
+  en: Owner
   zh-CN: 所有者
 sftp.col_action:
   en: Actions
