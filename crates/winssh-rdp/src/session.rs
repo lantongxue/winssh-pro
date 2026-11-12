@@ -22,8 +22,16 @@
 //! 画面：`DecodedImage` 按 **`PixelFormat::BgrX32`** 建 —— 字节序恰好是 GPUI
 //! 纹理要的 BGRA，不做换序，但填充字节 X 必须转成不透明 alpha。
 //! GraphicsUpdate 只记损伤；有帧标记时在 End 提交，无标记更新等待短暂
-//! 接收间隙并检查未完成的协议包。完整快照最多挂一张，
+//! 接收间隙并检查未完成的协议包。发布时只重建损伤盖到的 tile
+//! （[`super::tiles`]），干净格子的 GPU 纹理常驻复用。完整快照最多挂一张，
 //! 慢窗口不阻塞解码，也不积压旧画面。
+//!
+//! 图形管线：协商了 GFX（MS-RDPEGFX）时，服务器改走 H.264 表面流：
+//! [`GraphicsPipelineClient`] 挂在 Drdynvc 上，ActiveStage 每条 PDU 后自动
+//! 把解码结果合成进画布并报损伤，走的还是同一条 tile 呈现路。H.264 解码
+//! 按平台：macOS VideoToolbox（[`super::videotoolbox`]）、Windows Media
+//! Foundation（ironrdp-egfx-native），其余平台暂无 AVC 档。服务器不支持
+//! GFX 或解码器建不起来时，自动落回 RemoteFX/位图那条路。
 //!
 //! 指针：连接时报了 Pointer / LargePointer 能力，服务器就不把光标画进桌面，
 //! 而是单独发光标位图。这些更新在帧边界适配拼好整包后就被截下
@@ -53,37 +61,41 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
 use futures::FutureExt as _;
-use gpui_kit::{RenderImage, SharedString};
-use ironrdp::cliprdr::backend::ClipboardMessage;
-use ironrdp::cliprdr::pdu::{ClipboardFormat, ClipboardFormatId};
-use ironrdp::cliprdr::{Cliprdr, CliprdrClient};
-use ironrdp::connector::connection_activation::{
+use gpui_kit::SharedString;
+use ironrdp_cliprdr::backend::ClipboardMessage;
+use ironrdp_cliprdr::pdu::{ClipboardFormat, ClipboardFormatId};
+use ironrdp_cliprdr::{Cliprdr, CliprdrClient};
+use ironrdp_connector::connection_activation::{
     ConnectionActivationSequence, ConnectionActivationState,
 };
-use ironrdp::connector::{
+use ironrdp_connector::{
     ClientConnector, ConnectionResult, ConnectorError, ConnectorErrorKind, Credentials,
     DesktopSize, Sequence as _, ServerName,
 };
-use ironrdp::core::{ReadCursor, WriteBuf, decode, decode_cursor, encode_vec};
-use ironrdp::displaycontrol::client::DisplayControlClient;
-use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
-use ironrdp::dvc::DrdynvcClient;
-use ironrdp::graphics::image_processing::PixelFormat;
-use ironrdp::input::{Database, Operation};
-use ironrdp::pdu::fast_path::{
+use ironrdp_core::{ReadCursor, WriteBuf, decode, decode_cursor, encode_vec};
+use ironrdp_displaycontrol::client::DisplayControlClient;
+use ironrdp_displaycontrol::pdu::MonitorLayoutEntry;
+use ironrdp_dvc::DrdynvcClient;
+use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+use ironrdp_egfx::decode::H264Decoder;
+use ironrdp_egfx::pdu::CapabilitySet;
+use ironrdp_graphics::image_processing::PixelFormat;
+use ironrdp_input::{Database, Operation};
+use ironrdp_pdu::fast_path::{
     EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode,
 };
-use ironrdp::pdu::gcc::KeyboardType;
-use ironrdp::pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabilities};
-use ironrdp::pdu::rdp::client_info::{CompressionType, TimezoneInfo};
-use ironrdp::pdu::rdp::headers::{ShareControlHeader, ShareControlPdu, ShareDataPdu};
-use ironrdp::pdu::surface_commands::FrameAction;
-use ironrdp::pdu::{Action, PduResult, mcs, x224::X224};
-use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{
+use ironrdp_pdu::gcc::KeyboardType;
+use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::rdp::capability_sets::{MajorPlatformType, client_codecs_capabilities};
+use ironrdp_pdu::rdp::client_info::{CompressionType, TimezoneInfo};
+use ironrdp_pdu::rdp::headers::{ShareControlHeader, ShareControlPdu, ShareDataPdu};
+use ironrdp_pdu::surface_commands::FrameAction;
+use ironrdp_pdu::{Action, PduResult, mcs, x224::X224};
+use ironrdp_session::image::DecodedImage;
+use ironrdp_session::{
     ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason,
 };
-use ironrdp::svc::SvcProcessorMessages;
+use ironrdp_svc::SvcProcessorMessages;
 use ironrdp_tls::upgrade as tls_upgrade;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{
@@ -99,8 +111,9 @@ use super::file_copy::outgoing::LocalFileList;
 use super::graphics::FastPathFrames;
 use super::pointer::{PointerDecoder, PointerEvent};
 use super::settings::RdpSettings;
+use super::tiles::TileCache;
 use super::transport;
-use winssh_desktop::{FrameReceiver, FrameSender, RemoteCursor, frame_channel};
+use winssh_desktop::{DesktopFrame, FrameReceiver, FrameSender, RemoteCursor, frame_channel};
 use winssh_domain::host::Host;
 use winssh_netstats::{self as netstats, LinkStats, TrafficCounters};
 use winssh_proxy::ProxyConfig;
@@ -139,8 +152,8 @@ pub enum RdpInput {
 /// 会话送给界面的东西。
 #[derive(Debug)]
 pub enum RdpOutput {
-    /// 一帧完整桌面（BGRA）。图形更新来了才产。
-    Frame(Arc<RenderImage>),
+    /// 一帧完整桌面（脏 tile 网格，BGRA）。图形更新来了才产。
+    Frame(Arc<DesktopFrame>),
     /// 远端光标变了（形状、隐藏或默认箭头），见 [`super::pointer`]。
     Cursor(RemoteCursor),
     /// 远端程序主动把光标挪到了这里（远端像素）。
@@ -344,9 +357,14 @@ async fn open(
     let mut connector =
         ClientConnector::new(connector_config(&host, desktop, &settings), client_addr);
 
-    // 动态通道：DisplayControl 是"改分辨率"那条（窗口拖大拖小时用）。
-    let drdynvc =
-        DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())));
+    // 动态通道：DisplayControl 是"改分辨率"那条（窗口拖大拖小时用）；
+    // GraphicsPipeline 是 GFX 图形管线（H.264 硬解那条，见模块文档）。
+    let drdynvc = DrdynvcClient::new()
+        .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
+        .with_dynamic_channel(GraphicsPipelineClient::new(
+            Box::new(GfxHandler),
+            platform_h264_decoder(),
+        ));
     connector = connector.with_static_channel(drdynvc);
 
     if settings.clipboard {
@@ -381,9 +399,55 @@ async fn open(
         None,
     )
     .await
+    .map_err(connect_error)?
+    // 服务器负载均衡重定向（Server Redirection）不支持：照上游口径报错，不追连。
+    .into_connected()
     .map_err(connect_error)?;
 
     Ok((framed, connection_result, peer))
+}
+
+/// GFX 事件回调：能力确认后记一笔协商到的档（实机排障用），其余全用默认。
+/// 桌面像素不经这里：ActiveStage 每条 PDU 后自动把 GFX 输出合成进画布，
+/// 经 `GraphicsUpdate` 报损伤，走的还是 tile 呈现那条路。
+struct GfxHandler;
+
+impl GraphicsPipelineHandler for GfxHandler {
+    fn on_capabilities_confirmed(&mut self, caps: &CapabilitySet) {
+        log::info!("RDP: GFX 能力协商完成：{caps:?}");
+    }
+}
+
+/// 平台的 H.264 解码器：macOS 用 VideoToolbox，Windows 用 Media Foundation，
+/// 其余平台没有（egfx 自动滤掉 AVC 能力，GFX 仍可用非 AVC 编码；服务器
+/// 不支持 GFX 时整条落回 RemoteFX 路径）。建不起来只降档，不断会话。
+fn platform_h264_decoder() -> Option<Box<dyn H264Decoder>> {
+    #[cfg(target_os = "macos")]
+    {
+        match super::videotoolbox::VideoToolboxDecoder::new() {
+            Ok(decoder) => Some(Box::new(decoder)),
+            Err(error) => {
+                log::warn!("RDP: VideoToolbox 解码器不可用，落回非 AVC 编码：{error}");
+                None
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        match ironrdp_egfx_native::MediaFoundationH264Decoder::new(
+            ironrdp_egfx_native::YuvMatrix::Bt709Full,
+        ) {
+            Ok(decoder) => Some(Box::new(decoder)),
+            Err(error) => {
+                log::warn!("RDP: Media Foundation 解码器不可用，落回非 AVC 编码：{error}");
+                None
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        None
+    }
 }
 
 /// 一台主机的 IronRDP 连接参数。
@@ -391,10 +455,10 @@ fn connector_config(
     host: &Host,
     desktop: (u16, u16),
     settings: &RdpSettings,
-) -> ironrdp::connector::Config {
+) -> ironrdp_connector::Config {
     // 位图能力：色深按设置，lossy 与 RemoteFX 码流照 ironrdp-client 的默认来。
     let codecs = client_codecs_capabilities(&["remotefx"]).unwrap_or_default();
-    let bitmap = ironrdp::connector::BitmapConfig {
+    let bitmap = ironrdp_connector::BitmapConfig {
         lossy_compression: true,
         color_depth: settings.color_depth.bitmap_depth(),
         codecs,
@@ -405,7 +469,7 @@ fn connector_config(
         false => host.name.to_string(),
     };
 
-    ironrdp::connector::Config {
+    ironrdp_connector::Config {
         credentials: Credentials::UsernamePassword {
             username: host.user.to_string(),
             password: host.password.to_string(),
@@ -416,17 +480,25 @@ fn connector_config(
         },
         enable_tls: settings.security.enable_tls(),
         enable_credssp: settings.security.enable_credssp(),
-        keyboard_type: KeyboardType::IbmEnhanced,
+        enable_standard_rdp_security: false,
+        keyboard_type: KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
         keyboard_layout: 0,
         keyboard_functional_keys_count: 12,
         ime_file_name: String::new(),
         dig_product_id: "WinSSH Pro".to_owned(),
-        desktop_size: ironrdp::connector::DesktopSize {
+        desktop_size: ironrdp_connector::DesktopSize {
             width: desktop.0,
             height: desktop.1,
         },
         desktop_scale_factor: 0,
+        monitor_layout: None,
+        desktop_physical_size: None,
+        desktop_orientation: None,
+        device_scale_factor: None,
+        monitor_extended_layout: None,
+        relative_mouse_input: false,
+        connection_type: ironrdp_pdu::gcc::ConnectionType::NotUsed,
         bitmap: Some(bitmap),
         client_build: 0,
         client_name,
@@ -436,6 +508,7 @@ fn connector_config(
         request_data: None,
         autologon: false,
         enable_audio_playback: false,
+        enable_audio_capture: false,
         performance_flags: settings.performance.flags(),
         license_cache: None,
         timezone_info: TimezoneInfo::default(),
@@ -451,6 +524,11 @@ fn connector_config(
         multitransport_flags: None,
         alternate_shell: String::new(),
         work_dir: String::new(),
+        remote_application_mode: false,
+        rail_support_level: ironrdp_pdu::rdp::capability_sets::RailSupportLevel::empty(),
+        // GFX 图形管线：open() 里注册了 GraphicsPipelineClient 才敢报这面旗，
+        // 否则服务器会把画面路到没人接的通道上，桌面一片黑。
+        support_dyn_vc_gfx_protocol: true,
     }
 }
 
@@ -539,6 +617,7 @@ async fn session_loop(
     // 光标缓存跟着会话走，重新激活不清（服务器仍会按旧下标引用）。
     let mut pointers = PointerDecoder::default();
     let mut presentation = Presentation::default();
+    let mut tiles = TileCache::default();
     // 定时到点前先取走已就绪的下一包，不能从可读的网络更新批次中间截帧。
     let mut pending_frame = None;
     let fastpath_share_id = connection_result.share_id;
@@ -632,7 +711,8 @@ async fn session_loop(
                         ConnectionActivationState::CapabilitiesExchange,
                     );
                     activation_buf.clear();
-                    let written = sequence.step(&payload, &mut activation_buf)
+                    let written = sequence
+                        .step(&payload, None, &mut activation_buf)
                         .map_err(|error| anyhow!("{}", t!("rdp.session_failed", detail => error.report())))?;
                     if exchanging_capabilities
                         && let ConnectionActivationState::ConnectionFinalization {
@@ -641,7 +721,7 @@ async fn session_loop(
                     {
                         // 发完 FontList 后服务器就可以发新尺寸的图形，不必等 FontMap。
                         reactivate_desktop(
-                            &mut active_stage, &mut image, desktop_size,
+                            &mut active_stage, &mut image, &mut tiles, desktop_size,
                             new_share_id, enable_server_pointer,
                         );
                         share_id = new_share_id;
@@ -655,7 +735,7 @@ async fn session_loop(
                 } else {
                     process_graphics_frame(
                         &mut active_stage, &mut image, &mut fastpath, &mut pointers,
-                        &mut presentation, (action, &payload), events_tx,
+                        &mut presentation, &mut tiles, (action, &payload), events_tx,
                         (fastpath_share_id, share_id, io_channel_id),
                     )?
                 }
@@ -674,7 +754,7 @@ async fn session_loop(
                     presentation.postpone(Instant::now());
                     continue;
                 }
-                presentation.publish_due(Instant::now(), &image, events_tx);
+                presentation.publish_due(Instant::now(), &image, &mut tiles, events_tx);
                 Vec::new()
             }
             input = input_rx.recv(), if activation.is_none() => {
@@ -757,8 +837,8 @@ async fn session_loop(
                     .write_all(&frame)
                     .await
                     .map_err(|error| anyhow!("{}", t!("rdp.write_failed", detail => error)))?,
-                ActiveStageOutput::GraphicsUpdate(_) => {
-                    presentation.damage(Instant::now());
+                ActiveStageOutput::GraphicsUpdate(rect) => {
+                    presentation.damage(Instant::now(), rect);
                 }
                 // 指针更新在 process_graphics_frame 里就截走了，ActiveStage
                 // 见不到，也就产不出这几样。
@@ -774,6 +854,19 @@ async fn session_loop(
                 // UDP 传输没实现：不理会，会话继续走 TCP。
                 ActiveStageOutput::MultitransportRequest(_) => {}
                 ActiveStageOutput::AutoDetect(_) => {}
+                // GFX 批次新增的输出：监视器布局、RemoteApp 窗口订单/画面、
+                // 登录信息、自动重连 Cookie 等都不支持，忽略，会话继续走
+                // TCP 桌面那条路。GFX 的桌面像素已由 ActiveStage 合成进
+                // 画布并经 GraphicsUpdate 报损伤，不经过这几样。
+                ActiveStageOutput::MonitorLayout(_)
+                | ActiveStageOutput::WindowingOrders(_)
+                | ActiveStageOutput::WindowSurfaceUpdates(_)
+                | ActiveStageOutput::SaveSessionInfo { .. }
+                | ActiveStageOutput::SessionId(_)
+                | ActiveStageOutput::AutoReconnectCookie(_)
+                | ActiveStageOutput::LogonErrors(_)
+                | ActiveStageOutput::AutoReconnectFailed
+                | ActiveStageOutput::ServerRedirection(_) => {}
                 ActiveStageOutput::Terminate(reason) => {
                     log::info!("RDP 会话结束：{}", reason.description());
                     break 'outer disconnect_reason(&reason);
@@ -782,7 +875,7 @@ async fn session_loop(
         }
     };
 
-    presentation.publish(&image, events_tx);
+    presentation.publish(&image, &mut tiles, events_tx);
     Ok(reason)
 }
 
@@ -914,6 +1007,10 @@ struct Presentation {
     first_damage: Option<Instant>,
     last_damage: Option<Instant>,
     retry_after: Option<Instant>,
+    /// 本批累积的损伤矩形，发布时用来圈脏 tile。
+    dirty_rects: Vec<InclusiveRectangle>,
+    /// 矩形太多不再逐条记，发布时按整屏重建。
+    rects_overflow: bool,
 }
 
 impl Presentation {
@@ -921,12 +1018,23 @@ impl Presentation {
     const QUIET: Duration = Duration::from_millis(4);
     // 持续不断的未标记更新不能无限等待；不在半个 PDU/逻辑分片中截帧。
     const MAX_BATCH: Duration = Duration::from_millis(16);
+    // 单批损伤矩形上限：超过就折叠成整屏重建，防无界增长。
+    const MAX_RECTS: usize = 128;
 
-    fn damage(&mut self, now: Instant) {
+    fn damage(&mut self, now: Instant, rect: InclusiveRectangle) {
         self.dirty = true;
         self.first_damage.get_or_insert(now);
         self.last_damage = Some(now);
         self.retry_after = None;
+        if self.rects_overflow {
+            return;
+        }
+        if self.dirty_rects.len() >= Self::MAX_RECTS {
+            self.dirty_rects.clear();
+            self.rects_overflow = true;
+        } else {
+            self.dirty_rects.push(rect);
+        }
     }
 
     fn deadline(&self) -> Option<Instant> {
@@ -949,19 +1057,41 @@ impl Presentation {
             .is_some_and(|first| now.saturating_duration_since(first) >= Self::MAX_BATCH)
     }
 
-    fn publish_due(&mut self, now: Instant, image: &DecodedImage, events: &FrameSender<RdpOutput>) {
+    fn publish_due(
+        &mut self,
+        now: Instant,
+        image: &DecodedImage,
+        tiles: &mut TileCache,
+        events: &FrameSender<RdpOutput>,
+    ) {
         if self.deadline().is_some_and(|deadline| now >= deadline) {
-            self.publish(image, events);
+            self.publish(image, tiles, events);
         }
     }
 
-    fn publish(&mut self, image: &DecodedImage, events: &FrameSender<RdpOutput>) {
+    fn publish(
+        &mut self,
+        image: &DecodedImage,
+        tiles: &mut TileCache,
+        events: &FrameSender<RdpOutput>,
+    ) {
         if self.dirty && !self.open {
             self.dirty = false;
             self.first_damage = None;
             self.last_damage = None;
             self.retry_after = None;
-            if let Some(frame) = render_image(image) {
+            let rects = if self.rects_overflow {
+                vec![InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: image.width().saturating_sub(1),
+                    bottom: image.height().saturating_sub(1),
+                }]
+            } else {
+                std::mem::take(&mut self.dirty_rects)
+            };
+            self.rects_overflow = false;
+            if let Some(frame) = tiles.build(image, &rects) {
                 let _ = events.send(RdpOutput::Frame(frame));
             }
         }
@@ -982,6 +1112,7 @@ fn process_graphics_frame(
     fastpath: &mut FastPathFrames,
     pointers: &mut PointerDecoder,
     presentation: &mut Presentation,
+    tiles: &mut TileCache,
     packet: (Action, &[u8]),
     events_tx: &FrameSender<RdpOutput>,
     share_ids: (u32, u32, u16),
@@ -1001,7 +1132,7 @@ fn process_graphics_frame(
         }
         if boundary == Some(FrameAction::Begin) {
             // 切入有标记的帧前提交已经完成的旧式更新。
-            presentation.publish(image, events_tx);
+            presentation.publish(image, tiles, events_tx);
             presentation.end_only_surfaces = false;
             presentation.open = true;
         }
@@ -1017,10 +1148,10 @@ fn process_graphics_frame(
             process_complete_update(active_stage, image, code, data, share_ids.0, share_ids.1)?
         {
             match output {
-                ActiveStageOutput::GraphicsUpdate(_) => {
+                ActiveStageOutput::GraphicsUpdate(rect) => {
                     // IronRDP 对纯帧标记也返回空损伤，不能因此复制整屏。
                     if boundary.is_none() {
-                        presentation.damage(Instant::now());
+                        presentation.damage(Instant::now(), rect);
                     }
                 }
                 output => outputs.push(output),
@@ -1032,7 +1163,7 @@ fn process_graphics_frame(
                 presentation.end_only_surfaces = true;
             }
             presentation.open = false;
-            presentation.publish(image, events_tx);
+            presentation.publish(image, tiles, events_tx);
         }
         Ok(())
     };
@@ -1064,7 +1195,8 @@ fn process_complete_update(
     fastpath_share_id: u32,
     share_id: u32,
 ) -> Result<Vec<ActiveStageOutput>> {
-    const CHUNK: usize = 16 * 1024;
+    // FastPath 长度字段 15 位（上限 32767），给包头留余量；比 16KB 省一半重封装开销。
+    const CHUNK: usize = 30 * 1024;
     let count = data.len().div_ceil(CHUNK).max(1);
     let mut outputs = Vec::new();
     for index in 0..count {
@@ -1101,12 +1233,7 @@ fn process_complete_update(
 fn display_control_ready(active_stage: &mut ActiveStage) -> bool {
     active_stage
         .get_dvc::<DisplayControlClient>()
-        .is_some_and(|channel| {
-            channel.is_open()
-                && channel
-                    .channel_processor_downcast_ref::<DisplayControlClient>()
-                    .is_some_and(DisplayControlClient::ready)
-        })
+        .is_some_and(|channel| channel.processor().ready())
 }
 
 /// 只把当前阶段的握手消息交给激活序列；图形、光标、剪贴板以及断开通知
@@ -1125,7 +1252,7 @@ fn is_activation_frame(
     if context.channel_id != sequence.io_channel_id() {
         return false;
     }
-    let Ok(context) = ironrdp::pdu::rdp::headers::decode_share_control(context) else {
+    let Ok(context) = ironrdp_pdu::rdp::headers::decode_share_control(context) else {
         return false;
     };
     match sequence.connection_activation_state() {
@@ -1147,14 +1274,17 @@ fn is_activation_frame(
 /// 分辨率改变没有新建传输连接。MPPC 的历史由服务器包里的 FLUSHED / AT_FRONT
 /// 标志维护；单方清零会把后续的历史引用解成零字节（包括光标尺寸和图形数据）。
 /// 同样保留光标缓存，服务器随后仍可能发送 CachedPointer。
+/// 画布重建后 tile 缓存作废：即使尺寸不变，新画布也是清零的。
 fn reactivate_desktop(
     active_stage: &mut ActiveStage,
     image: &mut DecodedImage,
+    tiles: &mut TileCache,
     desktop: DesktopSize,
     share_id: u32,
     enable_server_pointer: bool,
 ) {
     *image = DecodedImage::new(PixelFormat::BgrX32, desktop.width, desktop.height);
+    tiles.invalidate();
     active_stage.set_share_id(share_id);
     active_stage.set_enable_server_pointer(enable_server_pointer);
 }
@@ -1168,7 +1298,7 @@ fn process_server_frame(
     share_id: u32,
 ) -> Result<Vec<ActiveStageOutput>> {
     let mut outputs = active_stage
-        .process(image, action, payload)
+        .process(image, action, payload, None)
         .map_err(|error| anyhow!("{}", t!("rdp.session_failed", detail => error.report())))?;
 
     // IronRDP 的 set_share_id 只更新 X224 处理器。保留 FastPath 处理器后，
@@ -1209,16 +1339,6 @@ async fn clipboard_message(
         Some(rx) if open.load(Ordering::Relaxed) => rx.recv().await,
         _ => std::future::pending().await,
     }
-}
-
-/// 把一帧 `DecodedImage`（BgrX32）打包成 GPUI 的图像。
-///
-/// B、G、R 不换序；第 4 字节是填充值（Raw 路径可能为 0），快照时补上
-/// 不透明 alpha，不能把桌面当透明位图上传。尺寸为 0 的中间态给 `None`。
-fn render_image(image: &DecodedImage) -> Option<Arc<RenderImage>> {
-    let width = u32::from(image.width());
-    let height = u32::from(image.height());
-    winssh_desktop::opaque_frame(width, height, image.data())
 }
 
 /// 服务器主动断开时，把原因翻成人话。

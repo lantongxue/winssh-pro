@@ -85,8 +85,9 @@ cargo clippy --tests --no-deps
 
 VNC 的 15/30/60 档仍然决定请求频率；应用窗口 FPS 不等于远端桌面采集 FPS。
 无 FrameMarker 的旧式 RDP 更新没有服务器提供的整帧边界，只能在完整协议
-更新之间合并接收批次，无法保证跨越长网络停顿的独立更新属于同一次服务器采集。当前仍
-上传完整桌面纹理，4K 高频场景还会受 GPU 上传带宽和服务器编码能力限制。
+更新之间合并接收批次，无法保证跨越长网络停顿的独立更新属于同一次服务器采集。
+RDP 的整屏纹理重传与逐像素 alpha 修正已由脏 tile 增量呈现取代，GFX/H.264
+硬件解码也已接入，见文末《脏 tile 增量呈现与 GFX 硬件解码》一节。
 
 
 ## RDP 仍有错位后的补充排查
@@ -131,3 +132,91 @@ RUST_LOG=winssh_pro::rdp=debug ./target/release/winssh-pro
 日志会首次记录 FastPath/SlowPath 类型、压缩/分片、位图源裁剪，以及只用
 End 的 Surface 分帧模式，不记录像素正文或凭据。截图本身不能确定服务器
 实际选择了哪条路径；这些信息用于将实机现象与已覆盖的回归条件对应起来。
+
+## 脏 tile 增量呈现与 GFX 硬件解码
+
+2026-11-12。针对"RDP 桌面卡顿、CPU/内存占用高"的两期优化。合成渲染本身
+一直是 GPU（macOS Metal）；此前纯 CPU 的是解码后的像素搬运与纹理上传。
+
+### 一期：脏 tile 增量呈现（全平台）
+
+旧管线每帧把整屏画布复制一份、逐像素补 alpha，再交给 GPUI 一张新图——
+新 image id 意味着每帧整块纹理重传 GPU、旧纹理释放，4K 下每帧 33MB。
+
+新管线（`crates/winssh-rdp/src/tiles.rs`、`crates/winssh-desktop` 的
+`TiledFrame`/`DesktopFrame`）：
+
+- 桌面切成 256×256 的格子（边缘格可更小）。`Presentation` 收集
+  `GraphicsUpdate` 的损伤矩形（单批上限 128 条，超过折叠为整屏），
+  发布时只重建脏矩形盖到的格子；干净格子复用同一 `Arc<RenderImage>`。
+- GPUI 纹理图集按 image id 命中：复用格子的 GPU 纹理常驻不重传，
+  也不在图集里分配/释放。面板侧 `replace_frame` 只 drop 真正被换掉的
+  格子（`src/ui/elements/frame.rs`）。
+- alpha 修正只在脏格子上做，按 4 字节一组（`as_chunks_mut::<4>`）可向量化；
+  VNC 共用的 `opaque_frame` 同样受益。
+- `FrameElement` 逐格绘制，相邻格子共享同一边缘值（GPUI 对同值取整一致，
+  无缝）；滚出视口的格子提前跳过。VNC 保持整帧路径不变。
+- FastPath 重封装分片由 16KB 提到 30KB（15 位长度上限内），重封装/重解析
+  开销减半。
+
+### 二期：GFX（MS-RDPEGFX）+ 平台 H.264 硬件解码
+
+上游已有现成实现，不需要自研协议栈：`ironrdp-egfx 0.5`（能力协商、surface
+管理、AVC444 双流拼合、可插拔 `H264Decoder`）与 `ironrdp-egfx-native 0.2`
+（Windows Media Foundation 硬解）。`ironrdp-session 0.13` 的 ActiveStage 已
+内置 GFX 合成：注册 `GraphicsPipelineClient` 后每条 PDU 自动把解码结果写进
+`DecodedImage` 并发 `GraphicsUpdate(rect)`——与一期脏矩形管线同一契约，零改动衔接。
+
+- 依赖批次：crates.io 的 `ironrdp` 门面停在 0.17（旧批次），改为直接依赖
+  子 crate 并钉同一批（session 0.13 / connector 0.12 / dvc 0.10 / graphics 0.11 /
+  pdu 0.11 / cliprdr 0.9 / bulk 0.2 / tokio 0.12 / tls 0.3，以 session 0.13 的
+  依赖表为对齐基准）。sspi 精确钉 0.23.0：0.23.1 锁 picky rc.27 与 connector
+  的 rc.26 冲突。
+- vendor 补丁收缩：新批次 picky/rc.26 放宽了 aes-gcm 钉版，picky/sspi 两份
+  RustCrypto 钉版补丁退役（目录留档待删）；`vendor/ironrdp-connector` 重做到
+  0.12，只剩失效 lint expect 一处补丁。
+- 平台解码器：macOS 自研 VideoToolbox（`crates/winssh-rdp/src/videotoolbox.rs`，
+  同步解码出 NV12 全范围平面，拆 UV 交给 egfx 做 AVC444 拼合与色彩转换）；
+  Windows 用上游 Media Foundation；Linux 暂无 AVC 档（egfx 自动滤掉 AVC
+  能力，GFX 仍可用非 AVC 编码）。解码器建不起来只降档，不断会话。
+- 服务器不支持 GFX 时整条落回 RemoteFX/位图路径，两条路并存。协商到的
+  能力档记在日志（`RDP: GFX 能力协商完成`）。AVC444 是否生效取决于服务器
+  策略与硬件编码器；不生效时自动落 AVC420/RemoteFX。
+- 升级迁移要点：pdu 0.11 把压缩的 ShareData 解成 `ShareDataPdu::Compressed`
+  变体，SlowPath 适配先解压再按类型分发（回归测试守着压缩历史跨
+  FastPath/SlowPath 连续）；ActiveStage 新增输出变体按"不支持就忽略"口径。
+
+### CPU 测量（本机 macOS arm64，release，2026-11-12）
+
+不含网络、服务器采集与真实 GPU 上传；旧路径对照含其真实的逐像素 alpha
+修正。`frame_copy_cost` 量尺（`#[ignore]`）：
+
+| 场景 | 旧实现 | 新实现 |
+| --- | ---: | ---: |
+| 1920×1080，同包 64 个小更新 | 31.7 ms/批 | 0.13 ms/批 |
+| 3840×2160，同包 64 个小更新 | 125.4 ms/批 | 0.37 ms/批 |
+| 1920×1080，整屏发布（最坏情形） | 0.47 ms/帧 | 0.85 ms/帧 |
+| 3840×2160，整屏发布（最坏情形） | 2.11 ms/帧 | 4.25 ms/帧 |
+
+局部更新（真实 RemoteFX 的常态：服务器按 64×64 区域 tile 发包）快两个数量级；
+整屏 uncompressed 更新是最坏情形，tile 全量重建约两倍于单帧快照，但 4K 仍
+在 8.3ms 帧预算内，且这种负载在真实会话里少见（首帧铺底；整屏视频走 GFX
+H.264，硬解后按区域更新）。GPU 侧收益（未计入上表）：局部更新时只有脏格子
+上传纹理，图集不再每帧整块分配/释放，内存抖动消除。
+
+复现：
+
+```sh
+cargo test --release -p winssh-rdp frame_copy_cost -- --ignored --nocapture --test-threads=1
+```
+
+### 验证范围
+
+自动：winssh-desktop 6 项、winssh-rdp 79 项（含 tile 缓存、GFX 能力协商、
+VideoToolbox NAL 拆分）、winssh-vnc 64 项、根包 UI 与面板测试全绿；
+`cargo clippy --workspace --tests --no-deps` 无新增警告。VideoToolbox 真实
+码流实解测试标 `#[ignore]`（需 `WINSSH_H264_SAMPLE` 样本，注释里有生成方法）。
+
+实机（人工，不自动启动/截图）：Win10/11 带硬编的主机确认协商到 AVC444、
+拖动/视频场景的 CPU 与帧率对比；无 GFX 的旧服务器落回 RemoteFX 正常；
+重连、改分辨率、4K 与 1080p、直连与 SOCKS5；长时间运行观察显存是否稳定。

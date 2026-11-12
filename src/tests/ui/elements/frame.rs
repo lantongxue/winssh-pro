@@ -3,18 +3,19 @@
         Context, Render, ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext,
     };
     use image::{Frame, RgbaImage};
+    use winssh_desktop::{DesktopFrame, TiledFrame};
 
     struct ScrollHarness {
-        image: Arc<RenderImage>,
+        frame: Arc<DesktopFrame>,
         display: Rc<Cell<Option<Bounds<Pixels>>>>,
         scroll: ScrollHandle,
         cursor: Option<FrameCursor>,
     }
 
     impl ScrollHarness {
-        fn new(image: Arc<RenderImage>, display: Rc<Cell<Option<Bounds<Pixels>>>>) -> Self {
+        fn new(frame: Arc<DesktopFrame>, display: Rc<Cell<Option<Bounds<Pixels>>>>) -> Self {
             Self {
-                image,
+                frame,
                 display,
                 scroll: ScrollHandle::new(),
                 cursor: None,
@@ -24,7 +25,7 @@
 
     impl Render for ScrollHarness {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            let mut frame = FrameElement::new(self.image.clone(), self.display.clone());
+            let mut frame = FrameElement::new(self.frame.clone(), self.display.clone());
             if let Some(cursor) = self.cursor.clone() {
                 frame = frame.with_cursor(cursor);
             }
@@ -49,17 +50,21 @@
     fn replacing_a_streamed_image_releases_its_atlas_entry(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let first = Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(200, 150))]));
-        let (view, cx) =
-            cx.add_window_view(|_, _| ScrollHarness::new(first.clone(), Rc::new(Cell::new(None))));
+        let (view, cx) = cx.add_window_view(|_, _| {
+            ScrollHarness::new(Arc::new(first.clone().into()), Rc::new(Cell::new(None)))
+        });
         draw(cx);
         cx.update(|window, _| assert!(window.has_image_atlas_entry(&first)));
         let mut old = first;
         for _ in 0..20 {
             let next = Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(200, 150))]));
             view.update(cx, |view, cx| {
-                let mut current = Some(view.image.clone());
+                let mut current = Some(match &*view.frame {
+                    DesktopFrame::Whole(image) => image.clone(),
+                    DesktopFrame::Tiled(_) => unreachable!("整帧 harness"),
+                });
                 replace_image(&mut current, Some(next.clone()), cx);
-                view.image = current.unwrap();
+                view.frame = Arc::new(current.unwrap().into());
                 cx.notify();
             });
             draw(cx);
@@ -76,6 +81,77 @@
         cx.update(|_, cx| replace_image(&mut Some(old.clone()), None, cx));
         cx.run_until_parked();
         cx.update(|window, _| assert!(!window.has_image_atlas_entry(&old)));
+    }
+
+    /// tile 帧只回收真正被换掉的格子：复用格子的图集项保留，
+    /// GPU 纹理不重传；清空时全部释放。
+    #[gpui_kit::test]
+    fn replacing_a_tiled_frame_only_releases_the_tiles_it_replaces(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let tile = || Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(256, 256))]));
+        let tiles: Vec<Arc<RenderImage>> = (0..4).map(|_| tile()).collect();
+        let first = Arc::new(DesktopFrame::Tiled(
+            TiledFrame::new(512, 512, tiles.clone()).unwrap().into(),
+        ));
+        let (view, cx) = cx.add_window_view(|_, _| {
+            ScrollHarness::new(first.clone(), Rc::new(Cell::new(None)))
+        });
+        draw(cx);
+        cx.update(|window, _| {
+            for tile in &tiles {
+                assert!(window.has_image_atlas_entry(tile));
+            }
+        });
+        // 只换左上角那一格，其余三格复用。
+        let mut next_tiles = tiles.clone();
+        next_tiles[0] = tile();
+        let second = Arc::new(DesktopFrame::Tiled(
+            TiledFrame::new(512, 512, next_tiles.clone()).unwrap().into(),
+        ));
+        view.update(cx, |view, cx| {
+            let mut current = Some(view.frame.clone());
+            replace_frame(&mut current, Some(second), cx);
+            view.frame = current.unwrap();
+            cx.notify();
+        });
+        draw(cx);
+        cx.update(|window, _| {
+            assert!(!window.has_image_atlas_entry(&tiles[0]));
+            for index in 1..4 {
+                assert!(window.has_image_atlas_entry(&tiles[index]));
+            }
+            assert!(window.has_image_atlas_entry(&next_tiles[0]));
+        });
+        // 会话收摊：全部格子释放。
+        view.update(cx, |view, cx| {
+            let mut current = Some(view.frame.clone());
+            replace_frame(&mut current, None, cx);
+            view.frame = current.unwrap_or_else(|| Arc::new(DesktopFrame::Whole(tile())));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.update(|window, _| {
+            for tile in next_tiles.iter() {
+                assert!(!window.has_image_atlas_entry(tile));
+            }
+        });
+    }
+
+    #[test]
+    fn adjacent_tiles_share_edges_and_cover_the_frame() {
+        let bounds = Bounds::new(point(px(10.), px(20.)), size(px(500.), px(300.)));
+        // 600×400 的桌面：3×2 网格，右/下边缘格子是 88×144。
+        let resolution = (600, 400);
+        let a = tile_destination(bounds, resolution, 0, 0, (256, 256));
+        let b = tile_destination(bounds, resolution, 1, 0, (256, 256));
+        let c = tile_destination(bounds, resolution, 2, 0, (88, 256));
+        assert_eq!(a.origin.x + a.size.width, b.origin.x);
+        assert_eq!(b.origin.x + b.size.width, c.origin.x);
+        assert_eq!(c.origin.x + c.size.width, bounds.origin.x + bounds.size.width);
+        let d = tile_destination(bounds, resolution, 0, 1, (256, 144));
+        assert_eq!(a.origin.y + a.size.height, d.origin.y);
+        assert_eq!(d.origin.y + d.size.height, bounds.origin.y + bounds.size.height);
+        assert_eq!(a.origin, point(px(10.), px(20.)));
     }
 
     #[test]
@@ -104,7 +180,8 @@
         cx.update(gpui_kit::init);
         let display = Rc::new(Cell::new(None));
         let image = Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(200, 150))]));
-        let (_, cx) = cx.add_window_view(|_, _| ScrollHarness::new(image, display.clone()));
+        let (_, cx) =
+            cx.add_window_view(|_, _| ScrollHarness::new(Arc::new(image.into()), display.clone()));
         let cx: &mut VisualTestContext = cx;
         draw(cx);
         let before = display.get().expect("frame was painted");
@@ -163,8 +240,9 @@
         cx.update(gpui_kit::init);
         assert!(!cx.update(|cx| cx.supports_cursor_images()));
         let image = Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(200, 150))]));
-        let (view, cx) =
-            cx.add_window_view(|_, _| ScrollHarness::new(image, Rc::new(Cell::new(None))));
+        let (view, cx) = cx.add_window_view(|_, _| {
+            ScrollHarness::new(Arc::new(image.into()), Rc::new(Cell::new(None)))
+        });
         let overlay = cursor_overlay(&masked_cursor()).unwrap();
         for cursor in [
             FrameCursor::Arrow,

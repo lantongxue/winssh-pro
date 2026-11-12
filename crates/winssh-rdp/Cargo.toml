@@ -12,19 +12,39 @@ winssh-proxy = { workspace = true }
 winssh-desktop = { workspace = true }
 winssh-netstats = { workspace = true }
 winssh-localfs = { workspace = true }
-# RDP 协议栈（门面 + tokio  Framed + TLS 升级 + FastPath 解压）。
-ironrdp = { workspace = true }
+# RDP 协议栈（同一批子 crate，对齐基准见根 Cargo.toml）+ tokio Framed + TLS 升级。
+ironrdp-core = { workspace = true }
+ironrdp-pdu = { workspace = true }
+ironrdp-connector = { workspace = true }
+ironrdp-session = { workspace = true }
+ironrdp-input = { workspace = true }
+ironrdp-cliprdr = { workspace = true }
+ironrdp-graphics = { workspace = true }
+ironrdp-dvc = { workspace = true }
+ironrdp-svc = { workspace = true }
+ironrdp-displaycontrol = { workspace = true }
+ironrdp-egfx = { workspace = true }
+# 只为把 sspi 钉在 0.23.0（picky 版本对齐，见根 Cargo.toml）；CredSSP 实际由 connector 驱动。
+sspi = { workspace = true }
 ironrdp-tokio = { workspace = true }
 ironrdp-tls = { workspace = true }
 ironrdp-bulk = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }
-# 位图/指针像素容器与 SharedString。
+# 位图/指针像素容器与 SharedString；tile 打包也用它装像素。
 gpui-kit = { workspace = true }
+image = { workspace = true }
 anyhow = { workspace = true }
 rust-i18n = { workspace = true }
 log = { workspace = true }
 
-[dev-dependencies]
-# 位图/帧测试自己合成像素比对解码结果。
-image = { workspace = true }
+# Windows 的 H.264 硬解（Media Foundation）由上游 native crate 提供；
+# 其余平台它是空 crate，macOS 用自研 VideoToolbox 解码器。
+[target.'cfg(windows)'.dependencies]
+ironrdp-egfx-native = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { workspace = true }
+objc2-core-video = { workspace = true }
+objc2-core-media = { workspace = true }
+objc2-video-toolbox = { workspace = true }

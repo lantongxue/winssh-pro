@@ -53,14 +53,14 @@ use gpui_kit::{
     ScrollHandle, ScrollEvent, SharedString, Size, Styled as _, Subscription, WeakEntity,
     Window, black, div, px,
 };
-use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
-use ironrdp::input::{
+use ironrdp_displaycontrol::pdu::MonitorLayoutEntry;
+use ironrdp_input::{
     MouseButton as RdpMouseButton, MousePosition, Operation, Scancode, WheelRotations,
 };
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    desktop::{RemoteCursor, strip_source_locations},
+    desktop::{DesktopFrame, RemoteCursor, strip_source_locations},
     host::Host,
     netstats::LinkStats,
     rdp::{
@@ -74,7 +74,7 @@ use crate::{
         bars::link_stats_group,
         elements::{
             DesktopScale, FrameCursor, FrameElement, PointerOverlay, cursor_overlay,
-            native_frame_size, remote_frame_point, replace_image, scrollable_frame,
+            native_frame_size, remote_frame_point, replace_frame, replace_image, scrollable_frame,
         },
         menus::{DesktopSessionAction, DesktopSessionKind, DesktopSessionMenu},
         panels::SessionEvent,
@@ -184,8 +184,8 @@ pub struct RdpPanel {
     phase: RdpPhase,
     /// 输入通道的前台把手。断开后是 `None`。
     inputs: Option<UnboundedSender<RdpInput>>,
-    /// 最近一帧完整的远端桌面。
-    image: Option<Arc<RenderImage>>,
+    /// 最近一帧完整的远端桌面（脏 tile 网格）。
+    image: Option<Arc<DesktopFrame>>,
     /// 桌面分辨率，从最近一帧的图像尺寸读出。
     resolution: Option<(u16, u16)>,
     /// 最近一次布局测得的画布物理尺寸。与远端图像尺寸分开，避免反馈循环。
@@ -272,7 +272,7 @@ impl RdpPanel {
                 }),
             ];
             cx.on_release(|this, cx| {
-                replace_image(&mut this.image, None, cx);
+                replace_frame(&mut this.image, None, cx);
                 replace_image(&mut this.pointer_overlay, None, cx);
             })
             .detach();
@@ -289,7 +289,7 @@ impl RdpPanel {
         };
         self.phase = RdpPhase::Connecting;
         self.inputs = None;
-        replace_image(&mut self.image, None, cx);
+        replace_frame(&mut self.image, None, cx);
         self.resolution = None;
         self.cursor = RemoteCursor::Default;
         replace_image(&mut self.pointer_overlay, None, cx);
@@ -592,13 +592,16 @@ impl RdpPanel {
         }
     }
 
-    fn set_frame(&mut self, frame: Arc<RenderImage>, cx: &mut Context<Self>) {
+    fn set_frame(&mut self, frame: Arc<DesktopFrame>, cx: &mut Context<Self>) {
         if !matches!(self.phase, RdpPhase::Live) {
             return;
         }
-        let image = frame.size(0);
-        self.resolution = Some((image.width.0.max(0) as u16, image.height.0.max(0) as u16));
-        replace_image(&mut self.image, Some(frame), cx);
+        let (width, height) = frame.size();
+        self.resolution = Some((
+            width.min(u32::from(u16::MAX)) as u16,
+            height.min(u32::from(u16::MAX)) as u16,
+        ));
+        replace_frame(&mut self.image, Some(frame), cx);
         self.set_alive(true, cx);
         cx.notify();
     }

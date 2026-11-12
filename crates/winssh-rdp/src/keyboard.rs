@@ -17,7 +17,7 @@
 //! 3. **在按组合键**就按键帽 `key` 走美式扫描码：Ctrl+C 这类组合要的是键帽，
 //!    不是本地布局在那一格上放的是什么字。
 //!
-//! [`Scancode`]: ironrdp::input::Scancode
+//! [`Scancode`]: ironrdp_input::Scancode
 //!
 //! 修饰键（Shift/Ctrl/Alt/Win）单独说：GPUI 只在 `Keystroke.modifiers` 里
 //! 给状态不给过程，所以由 [`RdpKeyboard::modifiers`] 对着上一次的集合发差值，
@@ -28,7 +28,7 @@
 //! 补释放、`release_all` 都由它兜底，这里只负责"人做了什么"。
 
 use gpui_kit::{Keystroke, Modifiers};
-use ironrdp::input::{Operation, Scancode};
+use ironrdp_input::{Operation, Scancode};
 
 /// macOS 上 ⌘ 按着时系统不派 keyUp（与 VNC 那条同一个坑，见
 /// [`crate::vnc::keyboard`]）。按下的同一拍自己补抬起。

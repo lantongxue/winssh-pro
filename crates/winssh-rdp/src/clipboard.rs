@@ -6,7 +6,7 @@
 //!
 //! 角色分派：
 //!
-//! - [`GpuiClipboard`] 实现 `ironrdp::cliprdr::backend::CliprdrBackend`，
+//! - [`GpuiClipboard`] 实现 `ironrdp_cliprdr::backend::CliprdrBackend`，
 //!   它是**会话循环那侧**的对象（`Cliprdr` 服务持有它），但真正的剪贴板
 //!   内容在 GPUI 那边（只有面板读得到系统剪贴板）。于是这里只做转发：
 //!   对端有动静 → 通过 `events` 通道告诉面板；面板读了本地剪贴板 →
@@ -41,8 +41,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackend};
-use ironrdp::cliprdr::pdu::{
+use ironrdp_cliprdr::backend::{ClipboardMessage, CliprdrBackend};
+use ironrdp_cliprdr::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags,
     FileContentsRequest, FileContentsResponse, FileDescriptor, FormatDataRequest,
     FormatDataResponse, LockDataId, OwnedFormatDataResponse,
@@ -56,7 +56,7 @@ use super::session::RdpOutput;
 
 // `CliprdrBackend` 要求 `ironrdp_core::AsAny`（trait 自己的 `downcast` 用），
 // 而它不是 blanket impl，得由类型的作者显式点一次。
-ironrdp::core::impl_as_any!(GpuiClipboard);
+ironrdp_core::impl_as_any!(GpuiClipboard);
 
 /// 本地方此刻的剪贴板文本。空串 = 本地剪贴板里没有文本（或不可用）。
 ///

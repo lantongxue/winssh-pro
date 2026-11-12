@@ -122,7 +122,7 @@
     /// 去要文件表而不是文本；表到了给面板一份摘要，下一次复制就撤掉它。
     #[test]
     fn a_remote_file_copy_is_fetched_and_offered() {
-        use ironrdp::cliprdr::pdu::ClipboardFileAttributes;
+        use ironrdp_cliprdr::pdu::ClipboardFileAttributes;
 
         let (mut backend, mut proxy_rx, mut events_rx) = backend_with_files();
         backend.on_remote_copy(&[
@@ -210,7 +210,7 @@
     /// 读的还是上锁那一刻的文件；不带锁的读当前这批。
     #[test]
     fn a_locked_paste_reads_the_snapshot_it_locked() {
-        use ironrdp::cliprdr::pdu::FileContentsFlags;
+        use ironrdp_cliprdr::pdu::FileContentsFlags;
 
         let root = std::env::temp_dir().join(format!("winssh-pro-rdp-lock-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -278,13 +278,13 @@
     mod through_cliprdr {
         use std::time::{Duration, Instant};
 
-        use ironrdp::cliprdr::CliprdrClient;
-        use ironrdp::cliprdr::pdu::{
+        use ironrdp_cliprdr::CliprdrClient;
+        use ironrdp_cliprdr::pdu::{
             Capabilities, ClipboardFileAttributes, ClipboardPdu, ClipboardProtocolVersion,
             FileContentsFlags, FormatList, FormatListResponse, PackedFileList,
         };
-        use ironrdp::core::{decode, encode_vec};
-        use ironrdp::svc::{SvcMessage, SvcProcessor as _};
+        use ironrdp_core::{decode, encode_vec};
+        use ironrdp_svc::{SvcMessage, SvcProcessor as _};
 
         use super::*;
 

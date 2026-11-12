@@ -15,7 +15,7 @@ use std::io::{self, Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
-use ironrdp::cliprdr::pdu::{
+use ironrdp_cliprdr::pdu::{
     ClipboardFileAttributes, FileContentsFlags, FileContentsRequest, FileContentsResponse,
     FileDescriptor,
 };

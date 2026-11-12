@@ -7,14 +7,16 @@
 
 use super::bitmap::BitmapNormalizer;
 use anyhow::{Result, anyhow, ensure};
-use ironrdp::core::{ReadCursor, decode_cursor, encode_vec};
-use ironrdp::pdu::fast_path::{
+use ironrdp_core::{ReadCursor, decode_cursor, encode_vec};
+use ironrdp_pdu::fast_path::{
     FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation, UpdateCode,
 };
-use ironrdp::pdu::rdp::client_info::CompressionType;
-use ironrdp::pdu::rdp::headers::{ShareControlPdu, ShareDataPdu, decode_share_control};
-use ironrdp::pdu::surface_commands::{FrameAction, SurfaceCommand};
-use ironrdp::pdu::{mcs, slow_path};
+use ironrdp_pdu::rdp::client_info::CompressionType;
+use ironrdp_pdu::rdp::headers::{
+    ShareControlPdu, ShareDataPdu, ShareDataPduType, decode_share_control,
+};
+use ironrdp_pdu::surface_commands::{FrameAction, SurfaceCommand};
+use ironrdp_pdu::{mcs, slow_path};
 use ironrdp_bulk::{BulkCompressor, CompressionType as BulkType};
 
 // 大于 8K BGRA 整屏，限制损坏的分片序列无限积累。
@@ -33,16 +35,14 @@ impl FastPathFrames {
         self.fragment_code.is_some()
     }
     pub fn new(compression: Option<CompressionType>) -> Result<Self> {
-        let bulk = compression
-            .map(|kind| {
-                BulkCompressor::new(match kind {
-                    CompressionType::K8 => BulkType::Rdp4,
-                    CompressionType::K64 => BulkType::Rdp5,
-                    CompressionType::Rdp6 => BulkType::Rdp6,
-                    CompressionType::Rdp61 => BulkType::Rdp61,
-                })
+        let bulk = compression.map(|kind| {
+            BulkCompressor::new(match kind {
+                CompressionType::K8 => BulkType::Rdp4,
+                CompressionType::K64 => BulkType::Rdp5,
+                CompressionType::Rdp6 => BulkType::Rdp6,
+                CompressionType::Rdp61 => BulkType::Rdp61,
             })
-            .transpose()?;
+        });
         Ok(Self {
             bulk,
             fragments: Vec::new(),
@@ -148,47 +148,55 @@ impl FastPathFrames {
         let ShareControlPdu::Data(header) = context.pdu else {
             return Ok(false);
         };
-        let (data, pointer) = match header.share_data_pdu {
-            ShareDataPdu::Update(data) => (data, false),
-            ShareDataPdu::Pointer(data) => (data, true),
+        // 压缩正文被解成 Compressed 变体：先解压再按类型分发；
+        // 未压缩的 Update/Pointer 原样走。解压历史与 FastPath 共用。
+        let (pdu_type, body) = match header.share_data_pdu {
+            ShareDataPdu::Update(data) => (ShareDataPduType::Update, data),
+            ShareDataPdu::Pointer(data) => (ShareDataPduType::Pointer, data),
+            ShareDataPdu::Compressed { pdu_type, data } => {
+                let bulk = self
+                    .bulk
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("unnegotiated SlowPath compression"))?;
+                let plain = bulk.decompress(
+                    &data,
+                    u32::from(header.compression_flags.bits())
+                        | u32::from(header.compression_type.as_u8()),
+                )?;
+                (pdu_type, plain.to_vec())
+            }
             _ => return Ok(false),
         };
-        let plain = if !header.compression_flags.is_empty() {
-            let bulk = self
-                .bulk
-                .as_mut()
-                .ok_or_else(|| anyhow!("unnegotiated SlowPath compression"))?;
-            bulk.decompress(
-                &data,
-                u32::from(header.compression_flags.bits())
-                    | u32::from(header.compression_type.as_u8()),
-            )?
-        } else {
-            &data
-        };
-        let mut input = ReadCursor::new(plain);
-        if pointer {
-            let update = FastPathUpdate::Pointer(slow_path::decode_slow_path_pointer(&mut input)?);
-            emit(UpdateCode::from(&update), &encode_vec(&update)?, None)?;
-        } else {
-            match slow_path::read_graphics_update_type(&mut input)? {
-                slow_path::GraphicsUpdateType::Bitmap => {
-                    let normalized = self.bitmaps.normalize(plain)?;
-                    emit(
-                        UpdateCode::Bitmap,
-                        normalized.as_deref().unwrap_or(plain),
-                        None,
-                    )?;
-                }
-                slow_path::GraphicsUpdateType::Palette => {
-                    emit(UpdateCode::Palette, input.remaining(), None)?;
-                }
-                slow_path::GraphicsUpdateType::Synchronize => {}
-                slow_path::GraphicsUpdateType::Orders => {
-                    // 没有协商 Drawing Orders。不能把已经解压的流再走一次旧路径。
-                    log::warn!("RDP: received unnegotiated SlowPath drawing orders");
+        let mut input = ReadCursor::new(&body);
+        match pdu_type {
+            ShareDataPduType::Pointer => {
+                let update =
+                    FastPathUpdate::Pointer(slow_path::decode_slow_path_pointer(&mut input)?);
+                emit(UpdateCode::from(&update), &encode_vec(&update)?, None)?;
+            }
+            ShareDataPduType::Update => {
+                match slow_path::read_graphics_update_type(&mut input)? {
+                    slow_path::GraphicsUpdateType::Bitmap => {
+                        // normalize 要从完整正文（含 u16 updateType）解码，
+                        // 与 FastPath 的 BitmapUpdateData 同一口径。
+                        let normalized = self.bitmaps.normalize(&body)?;
+                        emit(
+                            UpdateCode::Bitmap,
+                            normalized.as_deref().unwrap_or(&body),
+                            None,
+                        )?;
+                    }
+                    slow_path::GraphicsUpdateType::Palette => {
+                        emit(UpdateCode::Palette, input.remaining(), None)?;
+                    }
+                    slow_path::GraphicsUpdateType::Synchronize => {}
+                    slow_path::GraphicsUpdateType::Orders => {
+                        // 没有协商 Drawing Orders。不能把已经解压的流再走一次旧路径。
+                        log::warn!("RDP: received unnegotiated SlowPath drawing orders");
+                    }
                 }
             }
+            _ => return Ok(false),
         }
         if self.reported_paths & (1 << 15) == 0 {
             log::debug!(

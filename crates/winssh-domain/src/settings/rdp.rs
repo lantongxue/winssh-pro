@@ -19,7 +19,7 @@
 //! 压缩开、域为空 —— 也就是 `mstsc` 在一台现代 Windows 上的默认行为。
 
 use gpui_kit::SharedString;
-use ironrdp::pdu::rdp::client_info::PerformanceFlags;
+use ironrdp_pdu::rdp::client_info::PerformanceFlags;
 use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 

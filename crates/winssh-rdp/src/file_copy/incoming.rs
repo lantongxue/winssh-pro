@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
-use ironrdp::cliprdr::pdu::{
+use ironrdp_cliprdr::pdu::{
     ClipboardFileAttributes, FileContentsFlags, FileContentsRequest, FileContentsResponse,
     FileDescriptor,
 };
@@ -167,7 +167,7 @@ fn local_component(name: &str) -> Option<String> {
         if name.is_empty() {
             return None;
         }
-        if ironrdp::cliprdr::is_windows_device_name(&name) {
+        if ironrdp_cliprdr::is_windows_device_name(&name) {
             name.insert(0, '_');
         }
     }

@@ -891,7 +891,13 @@ impl VncPanel {
             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_scroll(cx.listener(Self::on_scroll))
-            .child(FrameElement::new(image, self.display.clone()).with_cursor(cursor));
+            .child(
+                FrameElement::new(
+                    Arc::new(crate::desktop::DesktopFrame::Whole(image)),
+                    self.display.clone(),
+                )
+                .with_cursor(cursor),
+            );
 
         match self.scale {
             DesktopScale::Adaptive => viewport.child(frame.size_full()),

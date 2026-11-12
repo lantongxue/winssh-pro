@@ -1,5 +1,5 @@
     use super::*;
-    use ironrdp::input::Operation;
+    use ironrdp_input::Operation;
 
     #[test]
     fn viewport_pixels_follow_dpi_and_display_control_limits() {
@@ -112,9 +112,9 @@
 
         panel.update(cx, |panel, cx| {
             panel.set_frame(
-                Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(
-                    1280, 720,
-                ))])),
+                Arc::new(DesktopFrame::Whole(Arc::new(RenderImage::new(vec![
+                    Frame::new(RgbaImage::new(1280, 720)),
+                ])))),
                 cx,
             )
         });
@@ -406,7 +406,9 @@
                 rdp.inputs = Some(inputs);
                 rdp.requested = Some((640, 480));
                 rdp.set_frame(
-                    Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(64, 48))])),
+                    Arc::new(DesktopFrame::Whole(Arc::new(RenderImage::new(vec![
+                        Frame::new(RgbaImage::new(64, 48)),
+                    ])))),
                     cx,
                 );
             });

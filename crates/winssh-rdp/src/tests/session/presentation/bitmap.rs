@@ -1,7 +1,7 @@
 use super::*;
-use ironrdp::graphics::rdp6::{BitmapStreamEncoder, RgbChannels};
-use ironrdp::pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
-use ironrdp::pdu::geometry::InclusiveRectangle;
+use ironrdp_graphics::rdp6::{BitmapStreamEncoder, RgbChannels};
+use ironrdp_pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
+use ironrdp_pdu::geometry::InclusiveRectangle;
 
 fn bitmap_data(bitmap: BitmapData<'_>) -> Vec<u8> {
     encode_vec(&BitmapUpdateData {
@@ -92,7 +92,7 @@ fn planar_cropping_preserves_rows_colors_and_splits_large_raw_payloads() {
         }
         desktop.tick();
         let image = desktop.take();
-        let pixels = image.as_bytes(0).unwrap();
+        let bytes = pixels(&image);
         for y in 0..height {
             for x in 0..256 {
                 let expected = if (1..=253).contains(&x) && (1..=dest_height).contains(&y) {
@@ -101,7 +101,7 @@ fn planar_cropping_preserves_rows_colors_and_splits_large_raw_payloads() {
                     [0, 0, 0, 255]
                 };
                 assert_eq!(
-                    &pixels[(y * 256 + x) * 4..(y * 256 + x + 1) * 4],
+                    &bytes[(y * 256 + x) * 4..(y * 256 + x + 1) * 4],
                     &expected,
                     "pixel ({x},{y}), rle={rle}"
                 );
@@ -157,16 +157,16 @@ fn rle16_and_raw24_cropping_work_through_both_protocol_paths() {
             desktop.feed_action(action, &packet);
             desktop.tick();
             let image = desktop.take();
-            let pixels = image.as_bytes(0).unwrap();
+            let bytes = pixels(&image);
             assert_eq!(
-                &pixels[36..48],
+                &bytes[36..48],
                 &[0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 0, 255]
             );
             assert_eq!(
-                &pixels[68..80],
+                &bytes[68..80],
                 &[255, 0, 0, 255, 0, 0, 255, 255, 0, 255, 0, 255]
             );
-            assert_eq!(&pixels[100..112], &[0, 0, 0, 255].repeat(3));
+            assert_eq!(&bytes[100..112], &[0, 0, 0, 255].repeat(3));
         }
     }
 }
@@ -187,7 +187,7 @@ fn slowpath_bulk_updates_and_fastpath_pointers_share_compression_history() {
         compressed_data_header: None,
         bitmap_data: &[17; 32],
     });
-    let mut sender = BulkCompressor::new(BulkCompressionType::Rdp5).unwrap();
+    let mut sender = BulkCompressor::new(BulkCompressionType::Rdp5);
     let mut desktop = Desktop::new();
     for _ in 0..4 {
         let (size, flags) = sender.compress(&data).unwrap();
@@ -198,10 +198,7 @@ fn slowpath_bulk_updates_and_fastpath_pointers_share_compression_history() {
         };
         desktop.feed_action(Action::X224, &slow_update(bytes, flags as u8, data.len()));
         desktop.tick();
-        assert_eq!(
-            desktop.take().as_bytes(0).unwrap(),
-            &[17, 17, 17, 255].repeat(4)
-        );
+        assert_eq!(pixels(&desktop.take()), [17, 17, 17, 255].repeat(4));
         desktop.feed(&compressed_pointer(&mut sender));
         assert!(matches!(desktop.take_cursor(), RemoteCursor::Shape(_)));
         // 压缩的 SlowPath cached pointer 也占用历史，不能为了找 Bitmap 忽略它。

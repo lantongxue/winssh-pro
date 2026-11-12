@@ -1,14 +1,16 @@
     #[path = "session/presentation.rs"]
     mod presentation;
+    #[path = "gfx.rs"]
+    mod gfx;
     use super::*;
     use image::{Frame, RgbaImage};
-    use ironrdp::core::encode_vec;
-    use ironrdp::pdu::fast_path::{
+    use ironrdp_core::encode_vec;
+    use ironrdp_pdu::fast_path::{
         EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode,
     };
-    use ironrdp::pdu::pointer::{ColorPointerAttribute, Point16};
-    use ironrdp::pdu::rdp::headers::{CompressionFlags, ShareControlPdu, ShareDataPdu};
-    use ironrdp::pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
+    use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16};
+    use ironrdp_pdu::rdp::headers::{CompressionFlags, ShareControlPdu, ShareDataPdu};
+    use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
     use ironrdp_bulk::{BulkCompressor, CompressionType as BulkCompressionType};
 
     const INITIAL_SHARE_ID: u32 = 0x10000;
@@ -70,6 +72,7 @@
     fn frame_acknowledgements_use_the_reactivated_share_id() {
         let mut receiver = active_stage();
         let mut image = DecodedImage::new(PixelFormat::BgrX32, 640, 480);
+        let mut tiles = TileCache::default();
         let mut markers = Vec::new();
         for id in [7, 8] {
             markers.extend(
@@ -85,6 +88,7 @@
             reactivate_desktop(
                 &mut receiver,
                 &mut image,
+                &mut tiles,
                 DesktopSize {
                     width: 1920,
                     height: 1080,
@@ -127,7 +131,7 @@
     }
 
     fn test_connection(desktop: (u16, u16)) -> ConnectionResult {
-        use ironrdp::connector::connection_activation::ConnectionActivationFactory;
+        use ironrdp_connector::connection_activation::ConnectionActivationFactory;
         let host = Host {
             id: "test".into(),
             name: "test".into(),
@@ -168,8 +172,13 @@
                 width: desktop.0,
                 height: desktop.1,
             },
+            input_flags: ironrdp_pdu::rdp::capability_sets::InputFlags::FASTPATH_INPUT_2,
             enable_server_pointer: true,
             pointer_software_rendering: false,
+            refresh_rect_support: false,
+            suppress_output_support: false,
+            window_support_level: None,
+            monitor_layout: None,
             activation_factory: ConnectionActivationFactory::new(config, 1003, 1001),
             compression_type: Some(CompressionType::K64),
         }
@@ -179,12 +188,12 @@
     /// 在 FontMap 之前发新桌面的帧，确认既不丢包，也不会在完成握手时清掉画面。
     #[tokio::test]
     async fn reactivation_keeps_processing_interleaved_updates() {
-        use ironrdp::pdu::rdp::capability_sets::{
+        use ironrdp_pdu::rdp::capability_sets::{
             Bitmap, BitmapDrawingFlags, CapabilitySet, DemandActive, ServerDemandActive,
         };
-        use ironrdp::pdu::rdp::finalization_messages::FontPdu;
-        use ironrdp::pdu::rdp::headers::{ServerDeactivateAll, encode_share_data};
-        use ironrdp::pdu::rdp::server_error_info::{
+        use ironrdp_pdu::rdp::finalization_messages::FontPdu;
+        use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, encode_share_data};
+        use ironrdp_pdu::rdp::server_error_info::{
             ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu,
         };
         use std::borrow::Cow;
@@ -236,7 +245,7 @@
             local,
         );
         let peer = async move {
-            let mut compressor = BulkCompressor::new(BulkCompressionType::Rdp5).unwrap();
+            let mut compressor = BulkCompressor::new(BulkCompressionType::Rdp5);
             server
                 .write_all(&compressed_pointer(&mut compressor))
                 .await
@@ -336,10 +345,7 @@
                     pointers += 1;
                 }
                 RdpOutput::Frame(image) => {
-                    assert_eq!(
-                        (image.size(0).width.0, image.size(0).height.0),
-                        (1920, 1080)
-                    );
+                    assert_eq!(image.size(), (1920, 1080));
                     frames += 1;
                 }
                 _ => {}

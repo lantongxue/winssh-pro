@@ -33,6 +33,7 @@ use gpui_kit::{
 };
 use gpui_kit::{RenderImage, point};
 use image::{Frame, RgbaImage};
+use winssh_desktop::{DESKTOP_TILE, DesktopFrame, TiledFrame};
 
 /// 替换桌面或指针图像，同时释放旧图在所有窗口的纹理图集项。
 /// RenderImage 的 Arc 释放只回收 CPU 字节，不能替代 GPUI 的 drop_image。
@@ -48,6 +49,61 @@ pub fn replace_image(
         }
         cx.defer(move |cx| cx.drop_image(previous, None));
     }
+}
+
+/// 替换一帧桌面（[`DesktopFrame`]），回收不再使用的纹理图集项。
+/// tile 帧只释放真正被换掉的格子：复用格子的 id 还在新帧里，图集项保留，
+/// GPU 纹理不重传。整帧与 tile 帧互切、重连、关闭都走这里。
+pub fn replace_frame(
+    slot: &mut Option<Arc<DesktopFrame>>,
+    frame: Option<Arc<DesktopFrame>>,
+    cx: &mut App,
+) {
+    let Some(previous) = std::mem::replace(slot, frame) else {
+        return;
+    };
+    let dropped: Vec<Arc<RenderImage>> = match (&*previous, slot.as_deref()) {
+        (DesktopFrame::Whole(image), Some(DesktopFrame::Whole(next)))
+            if next.id == image.id =>
+        {
+            return;
+        }
+        (DesktopFrame::Whole(image), _) => vec![image.clone()],
+        (DesktopFrame::Tiled(old), Some(DesktopFrame::Tiled(new))) => old
+            .tiles()
+            .iter()
+            .filter(|tile| !new.tiles().iter().any(|kept| kept.id == tile.id))
+            .cloned()
+            .collect(),
+        (DesktopFrame::Tiled(old), _) => old.tiles().to_vec(),
+    };
+    if dropped.is_empty() {
+        return;
+    }
+    cx.defer(move |cx| {
+        for image in dropped {
+            cx.drop_image(image, None);
+        }
+    });
+}
+
+/// tile 格子在画面里的目标矩形。边缘用"占整帧的比例 × 画面尺寸"折算，
+/// 相邻格子共享同一个边缘值，GPUI 对同值的像素取整一致，不会出现缝。
+pub fn tile_destination(
+    bounds: Bounds<Pixels>,
+    resolution: (u32, u32),
+    col: u32,
+    row: u32,
+    tile: (u32, u32),
+) -> Bounds<Pixels> {
+    let (width, height) = resolution;
+    let left = (col * DESKTOP_TILE) as f32;
+    let top = (row * DESKTOP_TILE) as f32;
+    let x0 = bounds.origin.x + bounds.size.width * (left / width as f32);
+    let y0 = bounds.origin.y + bounds.size.height * (top / height as f32);
+    let x1 = bounds.origin.x + bounds.size.width * ((left + tile.0 as f32) / width as f32);
+    let y1 = bounds.origin.y + bounds.size.height * ((top + tile.1 as f32) / height as f32);
+    Bounds::new(point(x0, y0), size(x1 - x0, y1 - y0))
 }
 
 /// 远端桌面显示策略。面板保存选择，FrameElement 的父级决定画布尺寸。
@@ -179,7 +235,7 @@ pub fn cursor_overlay(cursor: &CursorImage) -> Option<Arc<RenderImage>> {
 
 /// 一帧远端桌面（按需带上远端光标）。见模块文档。
 pub struct FrameElement {
-    image: Arc<RenderImage>,
+    frame: Arc<DesktopFrame>,
     /// 这一帧真正落在窗口里的矩形。prepaint 写、面板的鼠标回调读 ——
     /// 同一线程，先后有序（渲染完才会派发下一轮事件），`Cell` 够用。
     display: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -188,9 +244,9 @@ pub struct FrameElement {
 }
 
 impl FrameElement {
-    pub fn new(image: Arc<RenderImage>, display: Rc<Cell<Option<Bounds<Pixels>>>>) -> Self {
+    pub fn new(frame: Arc<DesktopFrame>, display: Rc<Cell<Option<Bounds<Pixels>>>>) -> Self {
         Self {
-            image,
+            frame,
             display,
             cursor: None,
         }
@@ -261,14 +317,19 @@ impl Element for FrameElement {
         _cx: &mut App,
     ) {
         // 父级滚动容器负责裁剪实际 1:1 时超出视口的部分。
-        let _ = window.paint_image(
-            bounds,
-            bounds,
-            Default::default(),
-            self.image.clone(),
-            0,
-            false,
-        );
+        match &*self.frame {
+            DesktopFrame::Whole(image) => {
+                let _ = window.paint_image(
+                    bounds,
+                    bounds,
+                    Default::default(),
+                    image.clone(),
+                    0,
+                    false,
+                );
+            }
+            DesktopFrame::Tiled(tiled) => paint_tiles(window, bounds, tiled),
+        }
 
         let pointer = match (&self.cursor, hitbox.as_ref()) {
             (Some(FrameCursor::Arrow), Some(hitbox)) => {
@@ -282,13 +343,13 @@ impl Element for FrameElement {
             (Some(FrameCursor::Overlay(pointer)), _) => pointer.clone(),
             _ => return,
         };
-        let desktop = self.image.size(0);
-        if desktop.width.0 <= 0 || desktop.height.0 <= 0 {
+        let (width, height) = self.frame.size();
+        if width == 0 || height == 0 {
             return;
         }
         let pointer_size = pointer.image.size(0);
-        let scale_x = f32::from(bounds.size.width) / desktop.width.0 as f32;
-        let scale_y = f32::from(bounds.size.height) / desktop.height.0 as f32;
+        let scale_x = f32::from(bounds.size.width) / width as f32;
+        let scale_y = f32::from(bounds.size.height) / height as f32;
         let (x, y) = pointer.position;
         let (hotspot_x, hotspot_y) = pointer.hotspot;
         let origin = point(
@@ -318,6 +379,33 @@ impl IntoElement for FrameElement {
 
     fn into_element(self) -> Self::Element {
         self
+    }
+}
+
+/// 逐格画 tile 帧。没变的格子复用同一张图，GPUI 图集按 id 命中，
+/// 不重传纹理；滚出视口的格子提前跳过，不白登记绘制命令。
+fn paint_tiles(window: &mut Window, bounds: Bounds<Pixels>, tiled: &TiledFrame) {
+    let resolution = (tiled.width(), tiled.height());
+    for row in 0..tiled.rows() {
+        for col in 0..tiled.cols() {
+            let destination =
+                tile_destination(bounds, resolution, col, row, tiled.tile_size(col, row));
+            if destination.origin.x >= bounds.origin.x + bounds.size.width
+                || destination.origin.y >= bounds.origin.y + bounds.size.height
+                || destination.origin.x + destination.size.width <= bounds.origin.x
+                || destination.origin.y + destination.size.height <= bounds.origin.y
+            {
+                continue;
+            }
+            let _ = window.paint_image(
+                bounds,
+                destination,
+                Default::default(),
+                tiled.tile(col, row).clone(),
+                0,
+                false,
+            );
+        }
     }
 }
 

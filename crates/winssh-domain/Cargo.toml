@@ -26,7 +26,7 @@ easytier = { workspace = true }
 # EasyTier 的节点地址是 `url::Url`（监听地址与 peer 都用它）。
 url = { workspace = true }
 # `RdpSettings` 承载 IronRDP 的性能标志位。
-ironrdp = { workspace = true }
+ironrdp-pdu = { workspace = true }
 # `VncSettings` 承载 vnc-rs 的像素格式与协议版本枚举（lib 名是 `vnc`），
 # 剪贴板字符集那一档还直接给出 `encoding_rs` 的编码表。
 vnc-rs = { workspace = true }

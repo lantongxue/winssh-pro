@@ -4,8 +4,35 @@ mod bitmap;
 mod timing;
 
 use super::*;
-use ironrdp::pdu::geometry::ExclusiveRectangle;
-use ironrdp::pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu};
+use gpui_kit::RenderImage;
+use ironrdp_pdu::geometry::{ExclusiveRectangle, InclusiveRectangle};
+use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu};
+use winssh_desktop::DESKTOP_TILE;
+
+/// 把一帧桌面拼回整屏像素，供像素断言用（整帧原样返回）。
+pub(super) fn pixels(frame: &DesktopFrame) -> Vec<u8> {
+    match frame {
+        DesktopFrame::Whole(image) => image.as_bytes(0).unwrap().to_vec(),
+        DesktopFrame::Tiled(tiled) => {
+            let width = tiled.width() as usize;
+            let mut out = vec![0u8; width * tiled.height() as usize * 4];
+            for row in 0..tiled.rows() {
+                for col in 0..tiled.cols() {
+                    let (tw, th) = tiled.tile_size(col, row);
+                    let bytes = tiled.tile(col, row).as_bytes(0).unwrap();
+                    for y in 0..th as usize {
+                        let src = y * tw as usize * 4;
+                        let dst = ((row * DESKTOP_TILE) as usize + y) * width * 4
+                            + (col * DESKTOP_TILE) as usize * 4;
+                        out[dst..dst + tw as usize * 4]
+                            .copy_from_slice(&bytes[src..src + tw as usize * 4]);
+                    }
+                }
+            }
+            out
+        }
+    }
+}
 
 fn marker(action: FrameAction, id: u32) -> Vec<u8> {
     encode_vec(&SurfaceCommand::FrameMarker(FrameMarkerPdu {
@@ -42,6 +69,7 @@ struct Desktop {
     fastpath: FastPathFrames,
     pointers: PointerDecoder,
     presentation: Presentation,
+    tiles: TileCache,
     tx: FrameSender<RdpOutput>,
     rx: FrameReceiver<RdpOutput>,
 }
@@ -55,6 +83,7 @@ impl Desktop {
             fastpath: FastPathFrames::new(Some(CompressionType::K64)).unwrap(),
             pointers: PointerDecoder::default(),
             presentation: Presentation::default(),
+            tiles: TileCache::default(),
             tx,
             rx,
         }
@@ -71,6 +100,7 @@ impl Desktop {
             &mut self.fastpath,
             &mut self.pointers,
             &mut self.presentation,
+            &mut self.tiles,
             (action, packet),
             &self.tx,
             (INITIAL_SHARE_ID, INITIAL_SHARE_ID, 1003),
@@ -85,11 +115,11 @@ impl Desktop {
     fn tick(&mut self) {
         if let Some(deadline) = self.presentation.deadline() {
             self.presentation
-                .publish_due(deadline, &self.image, &self.tx);
+                .publish_due(deadline, &self.image, &mut self.tiles, &self.tx);
         }
     }
 
-    fn take(&mut self) -> Arc<RenderImage> {
+    fn take(&mut self) -> Arc<DesktopFrame> {
         let RdpOutput::Frame(frame) = self.rx.try_recv().expect("complete frame") else {
             panic!()
         };
@@ -124,15 +154,12 @@ fn split_frame_and_the_next_begin_in_one_packet_never_publish_mixed_pixels() {
     );
     desktop.tick();
     let first = desktop.take();
-    assert_eq!(first.as_bytes(0).unwrap(), [11, 11, 11, 255].repeat(4));
+    assert_eq!(pixels(&first), [11, 11, 11, 255].repeat(4));
     assert!(desktop.rx.try_recv().is_err());
     desktop.surface(&[row(1, 22), marker(FrameAction::End, 2)].concat());
+    assert_eq!(pixels(&desktop.take()), [22, 22, 22, 255].repeat(4));
     assert_eq!(
-        desktop.take().as_bytes(0).unwrap(),
-        [22, 22, 22, 255].repeat(4)
-    );
-    assert_eq!(
-        first.as_bytes(0).unwrap(),
+        pixels(&first),
         [11, 11, 11, 255].repeat(4),
         "published snapshots are immutable"
     );
@@ -149,18 +176,15 @@ fn unmarked_updates_are_coalesced_and_empty_markers_do_not_copy_the_desktop() {
     }
     assert!(desktop.rx.try_recv().is_err());
     desktop.tick();
-    assert_eq!(
-        desktop.take().as_bytes(0).unwrap(),
-        [99, 99, 99, 255].repeat(4)
-    );
+    assert_eq!(pixels(&desktop.take()), [99, 99, 99, 255].repeat(4));
     desktop.tick();
     assert!(desktop.rx.try_recv().is_err());
 }
 
 #[test]
 fn bitmap_source_stride_does_not_overwrite_rows_outside_the_destination() {
-    use ironrdp::pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
-    use ironrdp::pdu::geometry::InclusiveRectangle;
+    use ironrdp_pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
+    use ironrdp_pdu::geometry::InclusiveRectangle;
 
     let mut desktop = Desktop::new();
     desktop.image = DecodedImage::new(PixelFormat::BgrX32, 8, 4);
@@ -207,21 +231,19 @@ fn updates_without_begin_must_wait_for_the_next_known_end_marker() {
         "an End-delimited stream is not an unmarked stream"
     );
     desktop.surface(&[row(1, 22), marker(FrameAction::End, 2)].concat());
-    assert_eq!(
-        desktop.take().as_bytes(0).unwrap(),
-        [22, 22, 22, 255].repeat(4)
-    );
+    assert_eq!(pixels(&desktop.take()), [22, 22, 22, 255].repeat(4));
 }
 
 #[test]
 fn compressed_fragments_preserve_boundaries_and_history_across_resize() {
     let mut desktop = Desktop::new();
-    let mut sender = BulkCompressor::new(BulkCompressionType::Rdp5).unwrap();
+    let mut sender = BulkCompressor::new(BulkCompressionType::Rdp5);
     for round in 0..4 {
         if round > 0 {
             reactivate_desktop(
                 &mut desktop.stage,
                 &mut desktop.image,
+                &mut desktop.tiles,
                 DesktopSize {
                     width: 2,
                     height: 2,
@@ -265,19 +287,16 @@ fn compressed_fragments_preserve_boundaries_and_history_across_resize() {
                 assert!(desktop.rx.try_recv().is_err());
             }
         }
-        assert_eq!(
-            desktop.take().as_bytes(0).unwrap(),
-            [value, value, value, 255].repeat(4)
-        );
+        assert_eq!(pixels(&desktop.take()), [value, value, value, 255].repeat(4));
     }
 }
 
 #[test]
 fn pointers_bypass_the_active_stage_and_their_cache_survives_reactivation() {
-    use ironrdp::pdu::pointer::CachedPointerAttribute;
+    use ironrdp_pdu::pointer::CachedPointerAttribute;
 
     let mut desktop = Desktop::new();
-    let mut sender = BulkCompressor::new(BulkCompressionType::Rdp5).unwrap();
+    let mut sender = BulkCompressor::new(BulkCompressionType::Rdp5);
     assert!(
         desktop.feed(&compressed_pointer(&mut sender)).is_empty(),
         "指针不再交给 ActiveStage"
@@ -288,6 +307,7 @@ fn pointers_bypass_the_active_stage_and_their_cache_survives_reactivation() {
     reactivate_desktop(
         &mut desktop.stage,
         &mut desktop.image,
+        &mut desktop.tiles,
         DesktopSize {
             width: 2,
             height: 2,
@@ -365,14 +385,69 @@ fn many_updates_in_one_fastpath_packet_produce_one_snapshot() {
     assert!(desktop.rx.try_recv().is_err());
     desktop.tick();
     assert_eq!(
-        &desktop.take().as_bytes(0).unwrap()[..8],
+        &pixels(&desktop.take())[..8],
         &[42, 42, 42, 255].repeat(2)
     );
     assert!(desktop.rx.try_recv().is_err());
 }
 
+#[test]
+fn too_many_damage_rects_collapse_to_a_full_rebuild() {
+    use ironrdp_pdu::geometry::InclusiveRectangle;
+
+    let mut desktop = Desktop::new();
+    desktop.image = DecodedImage::new(PixelFormat::BgrX32, 512, 512);
+    let start = Instant::now();
+    let full = InclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: 511,
+        bottom: 511,
+    };
+    // 先铺一帧，再用超上限的矩形只脏左上角：折叠后必须整屏重建。
+    desktop.presentation.damage(start, full);
+    desktop.presentation.publish_due(
+        start + Presentation::MAX_BATCH,
+        &desktop.image,
+        &mut desktop.tiles,
+        &desktop.tx,
+    );
+    let first = desktop.take();
+    let corner = InclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: 1,
+        bottom: 1,
+    };
+    for _ in 0..Presentation::MAX_RECTS + 10 {
+        desktop.presentation.damage(start, corner.clone());
+    }
+    assert!(desktop.presentation.rects_overflow);
+    desktop.presentation.publish_due(
+        start + Presentation::MAX_BATCH,
+        &desktop.image,
+        &mut desktop.tiles,
+        &desktop.tx,
+    );
+    let second = desktop.take();
+    let DesktopFrame::Tiled(a) = &*first else {
+        panic!("tiled")
+    };
+    let DesktopFrame::Tiled(b) = &*second else {
+        panic!("tiled")
+    };
+    for index in 0..a.tiles().len() {
+        assert!(
+            !Arc::ptr_eq(&a.tiles()[index], &b.tiles()[index]),
+            "overflow must rebuild every tile, not just the corner"
+        );
+    }
+    assert!(!desktop.presentation.rects_overflow);
+}
+
 /// 同一批 64 个小更新：旧循环每个 GraphicsUpdate 都复制整屏，新循环只复制一次。
 /// 旧路径马上释放快照，未模拟旧版队列积压，量到的是它的保守开销。
+/// 另量整屏更新负载：tile 路径每格都要重建的最坏情形。
 #[test]
 #[ignore = "性能量尺，按需手动跑"]
 fn frame_copy_cost() {
@@ -394,12 +469,16 @@ fn frame_copy_cost() {
             .unwrap()
             {
                 if matches!(output, ActiveStageOutput::GraphicsUpdate(_)) {
-                    let buffer = RgbaImage::from_raw(
+                    let mut buffer = RgbaImage::from_raw(
                         u32::from(width),
                         u32::from(height),
                         desktop.image.data().to_vec(),
                     )
                     .unwrap();
+                    // 旧实现的逐像素 alpha 修正，对照要含它才忠实。
+                    for pixel in buffer.pixels_mut() {
+                        pixel.0[3] = 255;
+                    }
                     std::hint::black_box(Arc::new(RenderImage::new(vec![Frame::new(buffer)])));
                 }
             }
@@ -412,8 +491,94 @@ fn frame_copy_cost() {
             std::hint::black_box(desktop.take());
         }
         println!(
-            "RDP {width}×{height}, 64 updates: old {previous:?}, coalesced {:?}/batch",
+            "RDP {width}×{height}, 64 updates: old {previous:?}, tiled {:?}/batch",
             start.elapsed() / FRAMES
         );
+
+        // 整屏更新：每帧一块铺满桌面的 SurfaceBits，脏区省不了多少。
+        // 超过 FastPath 15 位长度上限，照真实服务器那样分片喂。
+        // 解码负载两条路相同，只对照"发布"这一步：旧式整屏复制+逐像素
+        // alpha vs tile 全量重建。
+        let pixels = vec![7u8; width as usize * height as usize * 4];
+        let command = encode_vec(&SurfaceCommand::SetSurfaceBits(SurfaceBitsPdu {
+            destination: ExclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: height,
+            },
+            extended_bitmap_data: ExtendedBitmapDataPdu {
+                bpp: 32,
+                codec_id: 0,
+                width,
+                height,
+                header: None,
+                data: &pixels,
+            },
+        }))
+        .unwrap();
+        let full = fragmented_packets(UpdateCode::SurfaceCommands, &command);
+        const FULL_FRAMES: u32 = 5;
+        let mut desktop = Desktop::new();
+        desktop.image = DecodedImage::new(PixelFormat::BgrX32, width, height);
+        let full_rect = [InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: width - 1,
+            bottom: height - 1,
+        }];
+        let mut previous = std::time::Duration::ZERO;
+        let mut tiled = std::time::Duration::ZERO;
+        for _ in 0..FULL_FRAMES {
+            for packet in &full {
+                desktop.feed(packet);
+            }
+            let start = std::time::Instant::now();
+            let mut buffer = RgbaImage::from_raw(
+                u32::from(width),
+                u32::from(height),
+                desktop.image.data().to_vec(),
+            )
+            .unwrap();
+            for pixel in buffer.pixels_mut() {
+                pixel.0[3] = 255;
+            }
+            std::hint::black_box(Arc::new(RenderImage::new(vec![Frame::new(buffer)])));
+            previous += start.elapsed();
+            let start = std::time::Instant::now();
+            std::hint::black_box(desktop.tiles.build(&desktop.image, &full_rect));
+            tiled += start.elapsed();
+        }
+        println!(
+            "RDP {width}×{height}, fullscreen publish: old {:?}, tiled {:?}/frame",
+            previous / FULL_FRAMES,
+            tiled / FULL_FRAMES
+        );
     }
+}
+
+/// 把超过 FastPath 单包上限的正文分成 First/Next/Last 包。
+fn fragmented_packets(code: UpdateCode, data: &[u8]) -> Vec<Vec<u8>> {
+    const CHUNK: usize = 30 * 1024;
+    let count = data.len().div_ceil(CHUNK).max(1);
+    (0..count)
+        .map(|index| {
+            let fragmentation = if count == 1 {
+                Fragmentation::Single
+            } else if index == 0 {
+                Fragmentation::First
+            } else if index + 1 == count {
+                Fragmentation::Last
+            } else {
+                Fragmentation::Next
+            };
+            fastpath_frame(FastPathUpdatePdu {
+                fragmentation,
+                update_code: code,
+                compression_flags: None,
+                compression_type: None,
+                data: &data[index * CHUNK..data.len().min((index + 1) * CHUNK)],
+            })
+        })
+        .collect()
 }

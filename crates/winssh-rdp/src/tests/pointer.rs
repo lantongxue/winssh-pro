@@ -1,6 +1,6 @@
     use super::*;
-    use ironrdp::core::encode_vec;
-    use ironrdp::pdu::pointer::{
+    use ironrdp_core::encode_vec;
+    use ironrdp_pdu::pointer::{
         CachedPointerAttribute, ColorPointerAttribute, LargePointerAttribute, Point16,
         PointerAttribute,
     };

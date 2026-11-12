@@ -19,6 +19,8 @@
 //!   提示，保存到本地的一个目录（GPUI 的剪贴板写不进文件）。
 //! - **光标**（[`pointer`]）：服务器发来的光标位图原样解成 GPUI 的
 //!   `CursorImage`，由平台当真正的系统光标显示（和 mstsc 一样跟手、反色）。
+//! - **画面呈现**（[`tiles`]）：桌面切成 256 见方的格子，发布一帧只重建
+//!   损伤盖到的格子；干净格子的 GPU 纹理常驻复用，不整屏重传。
 //! - **连接配置**（[`settings`]）：安全档、色深、性能档、剪贴板、压缩、域，
 //!   摆在主机表单里由用户自己拧。
 //!
@@ -46,7 +48,11 @@ mod keyboard;
 mod pointer;
 mod session;
 mod settings;
+mod tiles;
 mod transport;
+// macOS 的 VideoToolbox H.264 硬解（GFX 管线用），其余平台不编。
+#[cfg(target_os = "macos")]
+mod videotoolbox;
 
 pub use file_copy::outgoing::LocalFileList;
 pub use file_copy::{FileCopyEvent, FileTransferOutcome, FileTransferProgress, RemoteFileOffer};

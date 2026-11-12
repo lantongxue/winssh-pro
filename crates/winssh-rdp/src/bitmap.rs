@@ -6,10 +6,10 @@
 //! 多出的源像素，再走公开 BitmapUpdate API，不修改依赖的像素缓冲。
 
 use anyhow::{Result, ensure};
-use ironrdp::core::{decode, encode_vec};
-use ironrdp::graphics::{rdp6::BitmapStreamDecoder, rle};
-use ironrdp::pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
-use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
+use ironrdp_core::{decode, encode_vec};
+use ironrdp_graphics::{rdp6::BitmapStreamDecoder, rle};
+use ironrdp_pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
+use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 
 #[derive(Default)]
 pub(super) struct BitmapNormalizer {

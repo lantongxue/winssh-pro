@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use anyhow::{Result, bail, ensure};
 use gpui_kit::{CursorImage, CursorPixels};
-use ironrdp::pdu::fast_path::{FastPathUpdate, UpdateCode};
-use ironrdp::pdu::pointer::PointerUpdateData;
+use ironrdp_pdu::fast_path::{FastPathUpdate, UpdateCode};
+use ironrdp_pdu::pointer::PointerUpdateData;
 
 use winssh_desktop::RemoteCursor;
 

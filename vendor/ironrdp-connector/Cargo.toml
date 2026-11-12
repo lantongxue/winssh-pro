@@ -11,9 +11,9 @@
 
 [package]
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.94"
 name = "ironrdp-connector"
-version = "0.10.0"
+version = "0.12.0"
 authors = [
     "Devolutions Inc. <infos@devolutions.net>",
     "Teleport <goteleport.com>",
@@ -51,25 +51,20 @@ test = false
 doctest = false
 
 [dependencies.ironrdp-core]
-version = "0.2"
+version = "0.3"
 
 [dependencies.ironrdp-error]
 version = "0.2"
 
 [dependencies.ironrdp-pdu]
-version = "0.9"
+version = "0.11"
 features = ["std"]
 
 [dependencies.ironrdp-svc]
-version = "0.8"
+version = "0.10"
 
 [dependencies.picky]
-version = "=7.0.0-rc.25"
-# 本地补丁（见 PATCHES.md）：上游没关 picky 的 default features，而它的
-# default 里 jose 会拉 aes-gcm 的 rc 版；russh 那条链要的是 aes-gcm 稳定版，
-# 两者同属 0.11 兼容段，Cargo 解不开。本 crate 只用到 `picky::key`，
-# 关掉 default 之后那份 picky 与 sspi 已经在用的那一份完全一致。
-default-features = false
+version = "=7.0.0-rc.26"
 
 [dependencies.picky-asn1-der]
 version = "0.5"
@@ -81,8 +76,11 @@ version = "0.15"
 version = "0.9"
 features = ["std"]
 
+[dependencies.serde_json]
+version = "1"
+
 [dependencies.sspi]
-version = "0.21"
+version = "0.23"
 features = ["scard"]
 
 [dependencies.tracing]

@@ -1,23 +1,30 @@
 use super::*;
-use ironrdp::pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
-use ironrdp::pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::bitmap::{BitmapData, BitmapUpdateData, Compression};
+use ironrdp_pdu::geometry::InclusiveRectangle;
 use tokio::io::AsyncWriteExt as _;
 
 #[test]
 fn unmarked_damage_waits_for_quiet_and_continuous_damage_has_a_deadline() {
     let start = Instant::now();
+    let rect = InclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: 1,
+        bottom: 1,
+    };
     let mut desktop = Desktop::new();
-    desktop.presentation.damage(start);
+    desktop.presentation.damage(start, rect.clone());
     assert_eq!(
         desktop.presentation.deadline(),
         Some(start + Presentation::QUIET)
     );
     desktop
         .presentation
-        .damage(start + Duration::from_millis(3));
+        .damage(start + Duration::from_millis(3), rect.clone());
     desktop.presentation.publish_due(
         start + Duration::from_millis(4),
         &desktop.image,
+        &mut desktop.tiles,
         &desktop.tx,
     );
     assert!(
@@ -31,7 +38,7 @@ fn unmarked_damage_waits_for_quiet_and_continuous_damage_has_a_deadline() {
     for ms in 4..30 {
         desktop
             .presentation
-            .damage(start + Duration::from_millis(ms));
+            .damage(start + Duration::from_millis(ms), rect.clone());
     }
     assert_eq!(
         desktop.presentation.deadline(),
@@ -47,6 +54,7 @@ fn unmarked_damage_waits_for_quiet_and_continuous_damage_has_a_deadline() {
     desktop.presentation.publish_due(
         start + Duration::from_millis(34),
         &desktop.image,
+        &mut desktop.tiles,
         &desktop.tx,
     );
     desktop.take();
@@ -61,7 +69,7 @@ fn bitmap_updates_after_a_surface_frame_do_not_wait_for_nonexistent_surface_mark
     desktop.feed(&bitmap_row(0, 23));
     desktop.tick();
     assert_eq!(
-        &desktop.take().as_bytes(0).unwrap()[..8],
+        &pixels(&desktop.take())[..8],
         &[23, 23, 23, 255].repeat(2)
     );
 }
@@ -147,7 +155,7 @@ async fn session_does_not_present_while_the_next_bitmap_packet_is_incomplete() {
             let RdpOutput::Frame(image) = event else {
                 panic!("expected completed bitmap batch")
             };
-            assert_eq!(image.as_bytes(0).unwrap(), &[73, 73, 73, 255].repeat(4));
+            assert_eq!(pixels(&image), [73, 73, 73, 255].repeat(4));
             drop(input_tx);
             let _ = done.send(());
         };
