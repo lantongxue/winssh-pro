@@ -141,19 +141,20 @@ alacritty_terminal = { path = "refs/alacritty/alacritty_terminal", version = "0.
 # 接上。选它而不是 fork lrzsz：协议里 hex/bin16/bin32 三种头、ZDLE 转义、
 # CRC 回退、子包与回执这些细节，自己写一份等于把几十年的兼容性坑重踩一遍。
 # 0.7.2 支持手动接受文件（等用户决策期间不产线字节）与批量传输，见
-# `src/zmodem/session.rs`。
-zmodem2 = "0.7.2"
+# `src/zmodem/session.rs`。0.7.3 放宽了流式窗口（吞吐大涨）并把中止序列
+# 换成 lrzsz 同款 CAN+退格，取消测试的圈数假设已按新行为校准。
+zmodem2 = "0.7.3"
 futures = "0.3"
 async-trait = "0.1"
 flate2 = "1"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # macOS 更新包是 `.tar.gz`（与发版产物同一份），解包用 tar + flate2。
 tar = "0.4"
 log = "0.4"
 env_logger = "0.11"
 
 # SSH 传输：russh 是 Tokio 上的异步 SSH-2 客户端/服务端实现，aws-lc-rs 为默认加密后端。
-russh = { version = "0.63", default-features = false, features = ["aws-lc-rs", "rsa"] }
+russh = { version = "0.65", default-features = false, features = ["aws-lc-rs", "rsa"] }
 ssh-key = { version = "0.7.0-rc.11", features = ["encryption"] }
 
 # Telnet 协议：`telnet` 是 SLMT/telnet-rs（crates.io 上的 crate 名叫 `telnet`），
@@ -183,11 +184,11 @@ telnet = "0.2"
 serialport = { version = "4.8", default-features = false }
 
 # SFTP 客户端。`russh-sftp` 只讲 SFTP 协议本身，字节流从外面喂进去
-# （`SftpSession::new(stream)`），russh 是它的 dev-dependency 而已 —— 所以这里
-# 用 0.63 的 russh 不会有版本打架；它自己不碰 socket，子系统通道还是我们的
+# （`SftpSession::new(stream)`），3.x 起连 russh 都不再依赖 —— 所以这里
+# 用 0.65 的 russh 不会有版本打架；它自己不碰 socket，子系统通道还是我们的
 # `ssh::sftp` 开。`tokio-util` 是它的传递依赖，这里直接用它的
 # `CancellationToken` 做传输任务的取消。
-russh-sftp = "2.4"
+russh-sftp = "3"
 
 # SOCKS5 客户端。SSH 本身不认识代理，代理换掉的是它下面那条 TCP：这里只用
 # `Socks5Stream::connect` 握一次手，拿到的流交给 `russh::client::connect_stream`
@@ -238,7 +239,7 @@ sea-orm = { version = "2.0", features = ["sqlx-sqlite", "runtime-tokio", "macros
 # 走的是 `kill()`。
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "fs", "process"] }
 # 跨平台的应用数据目录（Windows 是 %APPDATA%，macOS 是 ~/Library/Application Support）。
-dirs = "6"
+dirs = "7"
 # 智能助手的本机 `search_files`：ripgrep 那套目录遍历（认 .gitignore、跳隐藏
 # 目录、不跟软链接）、文件名 glob 与正文正则。三个本来就在依赖树里（别的库
 # 间接带进来的），这里只是变成直接依赖。
@@ -265,8 +266,8 @@ rand = "0.10"
 # reqwest 传输拆成了单独的 crate），客户端的 `client()` 构造器门在它后面；
 # `rustls` 给它开 TLS，少了它 https 地址一个都连不上。`derive` 特性
 # 不开：工具都是手写的 `Tool` impl，用不着再拖一份宏展开的依赖。
-rig-agent = { version = "0.45", default-features = false }
-rig-core = { version = "0.45", default-features = false, features = ["reqwest", "rustls"] }
+rig-agent = { version = "0.46", default-features = false }
+rig-core = { version = "0.46", default-features = false, features = ["reqwest", "rustls"] }
 
 # 界面文案的多语言查表。选 rust-i18n 是因为组件库自己就在用它（见
 # `refs/gpui-kit/crates/component/src/lib.rs` 的 `i18n!`）：同一个库意味着
@@ -302,7 +303,7 @@ reqwest_dav = { version = "0.3.3", default-features = false, features = ["rustls
 # 证书先问系统证书库，系统不认再弹确认框按指纹认，见 `src/ftp/tls.rs`。
 # `deprecated` 开的是隐式 FTPS（990 端口）那个入口 `connect_secure_implicit`，
 # 协议上不推荐，但老 NAS、Serv-U 一类还在用。
-suppaftp = { version = "10", default-features = false, features = ["tokio-rustls-aws-lc-rs", "deprecated"] }
+suppaftp = { version = "12", default-features = false, features = ["tokio-rustls-aws-lc-rs", "deprecated"] }
 # FTPS 证书校验的"系统证书库"那一层（Windows 上是系统的证书链引擎）。它本来
 # 就在依赖树里（reqwest 0.13 用它），变成直接依赖不多编译一份东西。
 rustls-platform-verifier = "0.7"
@@ -457,8 +458,8 @@ ironrdp-bulk = "0.1.1"
 # Windows 上那个构建脚本自己会下一份。x86_64 Windows 上 `easytier` 的构建脚本
 # 还会用 curl + 7z 下载 VC-LTL（它为 Win7 兼容做的 CRT 替换，经 link-search
 # 作用到最终的 exe 上）—— GitHub 的 Windows runner 两样都有。
-easytier = { git = "https://github.com/EasyTier/EasyTier", rev = "ff3921ce6842f9660d629eafac499498026c6784", default-features = false, features = ["web-client", "smoltcp", "socks5", "tun", "dhcp-ipv4", "proxy-cidr-monitor", "icmp-proxy", "tcp-hole-punch", "ring-crypto", "websocket", "quic", "wireguard", "endpoint-discovery"] }
-easytier-core = { git = "https://github.com/EasyTier/EasyTier", rev = "ff3921ce6842f9660d629eafac499498026c6784", default-features = false }
+easytier = { git = "https://github.com/EasyTier/EasyTier", rev = "8877d9a6e8c76ac51e838cea3b4d975999807b04", default-features = false, features = ["web-client", "smoltcp", "socks5", "tun", "dhcp-ipv4", "proxy-cidr-monitor", "icmp-proxy", "tcp-hole-punch", "ring-crypto", "websocket", "quic", "wireguard", "endpoint-discovery"] }
+easytier-core = { git = "https://github.com/EasyTier/EasyTier", rev = "8877d9a6e8c76ac51e838cea3b4d975999807b04", default-features = false }
 # 进程级 rustls 后端的开关（`src/tls.rs`）。EasyTier 的 WebSocket / QUIC 隧道把
 # rustls 的 `ring` 后端也点亮了，两个后端同在时不指名后端的入口会 panic，
 # 开进程时要先把 `aws-lc-rs` 装成默认 —— 要调它就得直接依赖 rustls。版本就是

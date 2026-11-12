@@ -143,6 +143,7 @@ impl Site {
                     Stream::connect_secure_implicit((host, self.port), self.connector()?, host).await?;
                 let peer = stream
                     .get_ref()
+                    .await
                     .peer_addr()
                     .map_err(FtpError::ConnectionError)?;
                 (stream, data_host(false, Some(peer.ip()), host))

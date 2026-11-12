@@ -445,7 +445,7 @@ async fn put_bytes(stream: &mut Stream, target: &str, bytes: &[u8]) -> FtpResult
         sink.write_all(bytes).await.map_err(FtpError::ConnectionError)
     })
     .await?;
-    within(COMMAND_TIMEOUT, stream.finalize_put_stream(sink)).await
+    within(COMMAND_TIMEOUT, sink.finish()).await
 }
 
 /// 整份读一个远端文件（`RETR`），最多 `limit` 字节 —— 超了就报太大，不往下读。
@@ -463,7 +463,7 @@ async fn get_bytes(stream: &mut Stream, target: &str, limit: u64) -> FtpResult<V
     if bytes.len() as u64 > limit {
         return Err(too_large(bytes.len() as u64));
     }
-    within(COMMAND_TIMEOUT, stream.finalize_retr_stream(source)).await?;
+    within(COMMAND_TIMEOUT, source.finish()).await?;
     Ok(bytes)
 }
 
@@ -839,7 +839,7 @@ async fn fetch_into(
     sink.shutdown().await.with_context(|| {
         t!("sftp_err.create_local_temp", path => temp.display()).to_string()
     })?;
-    until_cancel(ctx.cancel, within(COMMAND_TIMEOUT, stream.finalize_retr_stream(source)))
+    until_cancel(ctx.cancel, within(COMMAND_TIMEOUT, source.finish()))
         .await?
         .map_err(|error| failed(ctx.trust, &action(), &error))?;
     Ok(moved)
@@ -985,7 +985,7 @@ async fn push_file(
     }
     // 关数据通道（TLS 下会先发 close_notify，vsftpd 这类严格的服务器没收到它
     // 会把这次上传判成失败），再收那句 226。
-    until_cancel(ctx.cancel, within(COMMAND_TIMEOUT, stream.finalize_put_stream(sink)))
+    until_cancel(ctx.cancel, within(COMMAND_TIMEOUT, sink.finish()))
         .await?
         .map_err(|error| failed(ctx.trust, &action(), &error))?;
 

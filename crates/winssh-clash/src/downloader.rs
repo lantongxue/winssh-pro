@@ -303,7 +303,10 @@ fn unpack_zip(src: &Path, dst: &Path) -> Result<()> {
         let mut file = archive
             .by_index(i)
             .with_context(|| format!("读取 zip 内文件索引 {i} 失败"))?;
-        let name = file.name().to_string();
+        let name = file
+            .name()
+            .with_context(|| format!("读取 zip 内文件索引 {i} 的文件名失败"))?
+            .to_string();
         if name.ends_with(".exe") {
             let mut out_file = std::fs::File::create(dst)
                 .with_context(|| format!("创建目标文件失败: {}", dst.display()))?;

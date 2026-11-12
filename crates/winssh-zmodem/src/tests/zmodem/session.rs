@@ -168,10 +168,19 @@
         std::fs::create_dir_all(&dest).expect("建落点目录");
 
         let (mut sender, mut receiver) = linked_pair(vec![source]);
-        for _ in 0..30 {
+        // 推到接收方点头接受落点为止，下一圈就取消 —— 此时最多传了一圈
+        // 的数据，300KB 不可能已经收尾。线上踩过的坑：原来写死"先推三十圈
+        // 不该跑完"，zmodem2 0.7.3 放宽流式窗口后吞吐大涨，三十圈能传完
+        // 300KB，前置断言直接炸 —— 圈数假设盯不住库的吞吐变化，改成盯
+        // "刚接受"这个协议状态。
+        for _ in 0..200 {
             pump_once(&mut sender, &mut receiver, Some(&dest));
+            if receiver.offer().is_none() {
+                break;
+            }
         }
-        assert!(receiver.outcome().is_none(), "三十圈不该已经跑完");
+        assert!(receiver.offer().is_none(), "两百圈还没等到落点被接受");
+        assert!(receiver.outcome().is_none(), "刚接受不该已经跑完");
 
         receiver.cancel();
         for _ in 0..200 {
