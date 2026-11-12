@@ -1,9 +1,9 @@
 # 这份 `gpui-pre-macos` 与上游的差别
 
-`vendor/gpui-pre-macos` 逐字来自 crates.io 的 **gpui-pre-macos 0.3.10**
+`vendor/gpui-pre-macos` 逐字来自 crates.io 的 **gpui-pre-macos 0.3.12**
 （Zed 的 `gpui_macos` 的快照，Apache-2.0，`LICENSE-APACHE` 与
 `Cargo.toml.orig` 原样留着），`Cargo.toml` 里的 `[patch.crates-io]` 指着它。
-版本号必须和 gpui-kit 钉的 `=0.3.10` 一致，patch 才会生效。
+版本号必须和 gpui-kit 钉的 `=0.3.12` 一致，patch 才会生效。
 
 它是 `vendor/gpui-pre` 那份补丁二（**窗口隐藏**）的 macOS 一半。为什么要有
 这件事、接口长什么样，见 `vendor/gpui-pre/PATCHES.md`。
@@ -44,29 +44,17 @@ Cargo 的 patch 是**按包名**顶替的，所以这两个 key 必须写 `gpui-
 | --- | --- |
 | `src/window.rs` | `impl PlatformWindow for MacWindow` 的 `minimize` 之后加 `hide_window`（`orderOut:`）与 `show_window`（`isVisible` 为假才 `orderFront:`）。 |
 | `src/platform.rs` | `impl Platform for MacPlatform` 加 `supports_window_hiding` 返回 `true`。 |
-| `src/gpui_macos.rs` | crate 根加 `#![allow(deprecated)]`，静音 cocoa 0.26 那 698 条 deprecated（理由见下节）。 |
 
-其余文件与 crates.io 上的 0.3.10 逐字节相同（`diff -r` 对照即可）。改动都带
+其余文件与 crates.io 上的 0.3.12 逐字节相同（`diff -r` 对照即可）。改动都带
 `Local patch (see PATCHES.md)` 注释，`grep -rn "Local patch" src/` 能列全。
 
-## 那些 deprecated 警告
+## 那些 deprecated 警告（历史）
 
-`cargo check -p gpui-pre-macos` 在本机（macOS）上会刷 **696 条** warning，全是
-一回事：cocoa 0.26 把 `base::id`、`base::nil`、`foundation::NSRect` / `NSPoint` /
-`NSSize` / `NSString` 这一整套绑定标了 deprecated，提示改用 **objc2**。分布是
-`window.rs` 424 条、`platform.rs` 155 条，其余散在 `display.rs`（33）、
-`pasteboard.rs`（31）、`gpui_macos.rs`（24）、`events.rs`（22）、
-`window_appearance.rs`（7）。其中最多的是 `base::id`（276）与 `base::nil`（107）。
-
-上游的 0.3.10 原样就是这样，不是我们的补丁带进来的。清掉它只有两条路：
-
-1. **迁到 objc2** —— 等于把 macOS platform 层整个重写，脱离这个快照，不干。
-2. **整档静音** —— 现在这条路，crate 根一条 `#![allow(deprecated)]`。
-
-选 2 的理由：这份 crate 的价值就在于"和 Zed 快照逐字一致、只多两个窗口显隐方法"，
-平台层真出问题时 `diff` 一下上游就能定位。真正的迁移是跟着快照换代一起做的，
-不该在这个补丁副本里先开一个头。哪天做迁移，那条 `allow` 要一并去掉 ——
-它只是把噪音按下去，没解决任何问题。
+0.3.10 及以前这份 crate 用 cocoa 0.26，`cargo check -p gpui-pre-macos` 会刷
+近七百条 deprecated（`base::id` / `base::nil` / NSRect 那一整套，提示改用
+objc2），我们曾在 crate 根加一条 `#![allow(deprecated)]` 整档静音。
+**0.3.12 起上游自己把 macOS 平台层迁到了 objc2**，噪音源头没了，那条
+`allow` 在升快照时已一并去掉 —— 现在这份副本不再带任何静音。
 
 ## 测试放在哪
 

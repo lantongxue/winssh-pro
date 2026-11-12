@@ -1,9 +1,9 @@
 # 这份 `gpui-pre` 与上游的差别
 
-`vendor/gpui-pre` 来自 crates.io 的 **gpui-pre 0.3.10**（Zed 的 `gpui` 的
+`vendor/gpui-pre` 来自 crates.io 的 **gpui-pre 0.3.12**（Zed 的 `gpui` 的
 快照，由 gpui-kit 发布，Apache-2.0，`LICENSE-APACHE` 与
 `Cargo.toml.orig` 原样留着），`Cargo.toml` 里的 `[patch.crates-io]` 指着它。
-版本号必须和 gpui-kit 钉的 `=0.3.10` 一致，patch 才会生效。
+版本号必须和 gpui-kit 钉的 `=0.3.12` 一致，patch 才会生效。
 
 改动只有两件事：**让应用可以给一张光标位图，当真正的系统光标用**；
 以及**让应用可以把一扇窗口从屏幕上拿掉而不销毁它**（托盘"关窗缩起来"要它）。
@@ -97,9 +97,11 @@ Windows 侧 vsync 线程也已经在跳过不可见窗口的 frame signal；应�
 | --- | --- |
 | `src/profiler/journal.rs` | `finished()` 里那条 `fetch_update` 前加 `#[allow(deprecated)]`。新版 stable 把它改名成 `try_update` 并标了 deprecated；这份 crate 是 path 依赖，cargo 不替它压 lint，每次编译都刷一条。不直接换成 `try_update`：那会把能编这份 crate 的最低 Rust 版本抬上去，而上游快照本身没这个要求。 |
 
-另外**删掉了 `examples/`**（4.5 MB，主要是示例图片）。作为依赖时 Cargo 不编
+另外**删掉了 `examples/`**（4.5 MB，主要是示例图片）与
+`benches/focus_cleanup.rs`（它用的 `BenchAppContext` 门在 `bench-support`
+特性后，不开特性时 `--all-targets` 编不过）。作为依赖时 Cargo 不编
 示例，`Cargo.toml` 里那些 `[[example]]` 条目只在编示例时才会去找文件。其余文件
-与 crates.io 上的 0.3.10 逐字节相同（`diff -r` 对照即可）。
+与 crates.io 上的 0.3.12 逐字节相同（`diff -r` 对照即可）。
 
 ## 测试放在哪
 

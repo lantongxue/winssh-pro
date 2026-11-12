@@ -1,6 +1,6 @@
 # 这份 `gpui-pre-windows` 与上游的差别
 
-`vendor/gpui-pre-windows` 逐字来自 crates.io 的 **gpui-pre-windows 0.3.10**
+`vendor/gpui-pre-windows` 逐字来自 crates.io 的 **gpui-pre-windows 0.3.12**
 （Zed 的 `gpui_windows` 的快照，Apache-2.0，`LICENSE-APACHE` 与
 `Cargo.toml.orig` 原样留着），`Cargo.toml` 里的 `[patch.crates-io]` 指着它。
 
@@ -37,35 +37,29 @@
 `WM_SETCURSOR` 也是这扇窗口自己定的光标（不是交给系统的缩放边框），光标一变就
 立刻 `SetCursor`。这条对标准样式同样生效：GPUI 自己的样式切换也不再晚一次鼠标移动。
 
-## 补丁二：纯 COLR 字体的 emoji 画不出来（国旗空白）
+## 补丁二：纯 COLR 字体的 emoji 画不出来（国旗空白）——已并入上游
 
 **现象。** 打包一份带全量国旗的彩色 emoji 字体（Twemoji Mozilla，Firefox 在
 Windows 上用的那份），国旗一格空白；系统 Segoe UI Emoji 的彩色 emoji 却一直
 正常。
 
-**根因。** `raster_bounds` 拿的是**单色轮廓**的 alpha 包围盒
+**根因。** 旧版 `raster_bounds` 拿的是**单色轮廓**的 alpha 包围盒
 （`GetAlphaTextureBounds`，基于 `glyf`），而纯 COLR 字体的 emoji 底层轮廓是空
-的（彩色全在 COLR 层里），返回的是**零尺寸**矩形。这里埋着两层坑：
+的（彩色全在 COLR 层里），返回的是**零尺寸**矩形，`Window::paint_emoji` 的
+非零守卫把整个字形跳过不画。Segoe UI Emoji 之所以能画，是它的 emoji glyph
+带黑色轮廓（兼容旧渲染器）。
 
-1. 上游的空矩形判定是 `bounds.right < bounds.left`（假设 DirectWrite 返回
-   倒置矩形），零尺寸（`right == left`）判不出来，落进正常分支算出零包围盒；
-2. `Window::paint_emoji` 画之前有 `if !raster_bounds.is_zero()` 守卫，零包围
-   盒整个字形直接跳过 —— 字体打得再全也只剩空白。
+**历史与现状。** 0.3.10 及以前我们在本地补丁里兜底：空矩形判定收紧为
+`<=`，空了且 `params.is_emoji` 时枚举 COLR 各彩色层取 alpha 包围盒的并集。
+**0.3.12 起上游原生重写了 `raster_bounds`**：emoji 先经 `color_layers` 枚举
+彩色层，包围盒直接取各层 alpha 包围盒的并集 —— 与我们的修法同思路，本地
+补丁本体已撤，只保留全管线回归单测
+`pure_colr_font_flag_rasterizes_to_visible_pixels`（整形 → 判定 → 包围盒 →
+非全透明像素，字体字节引用应用侧 `assets/fonts/Twemoji.Mozilla.ttf`）。
 
-Segoe UI Emoji 之所以能画，是它的 emoji glyph 带黑色轮廓（兼容旧渲染器）。
-
-**修法。** 两处：空矩形判定改成 `right <= left || bottom <= top`；空了且
-`params.is_emoji` 时按 `rasterize_color` 同一套枚举（`TranslateColorGlyphRun`
-→ 逐层 `CreateGlyphRunAnalysis` → `GetAlphaTextureBounds`）把各彩色层包围盒
-**并**起来还回去。两边唯一的差别是 `rasterize_color` 为把位图原点对到包围盒
-左上角加了 `-origin` 反偏移，而包围盒对整体平移不变 —— 所以用零偏移算出的
-并集拿去当 `glyph_bounds`，`rasterize_color` 反偏移后各层恰好落回
-`[0, size]`，与位图严丝合缝，定位零误差。字体没有彩色表示时返回 `None`，
-调用点维持零包围盒的原行为，非 emoji 字形完全不受影响。
-
-补上这个之后，纯 COLR 字体就能打了：国旗、全部彩色 emoji 走 COLR v0 路径，
-应用侧打包 Twemoji Mozilla（`assets/fonts/`，`assets::FLAG_EMOJI_FONT`），
-Windows/Linux 上显式指名，macOS 继续用系统 Apple Color Emoji。
+应用侧的安排不变：打包 Twemoji Mozilla（`assets/fonts/`，
+`assets::FLAG_EMOJI_FONT`），Windows/Linux 上显式指名，macOS 继续用系统
+Apple Color Emoji。
 
 ## 补丁三：窗口隐藏（`SW_HIDE`）
 
@@ -95,9 +89,9 @@ Windows/Linux 上显式指名，macOS 继续用系统 Apple Color Emoji。
 | `src/platform.rs` | `WindowsPlatformState` 多一个 `cursor_images`；原 `set_cursor_style` 的函数体挪进 `apply_cursor`（外加回收），`set_cursor_style` 调它；实现 `set_cursor_image` 与 `supports_cursor_images`。补丁三：实现 `supports_window_hiding`。 |
 | `src/events.rs` | `handle_set_cursor` 记下这次是不是本窗口定的光标；`handle_cursor_changed` 在上面说的条件下立刻 `SetCursor`。 |
 | `src/window.rs` | `WindowsWindowState` 多一个 `cursor_under_pointer`。补丁三：实现 `hide_window` / `show_window`。 |
-| `src/direct_write.rs` | 补丁二：`raster_bounds` 空矩形判定收紧为 `<=`；空包围盒且 `params.is_emoji` 时调新加的 `color_glyph_run_bounds`（COLR 各层 alpha 包围盒的并集）兜底；非 emoji 与无彩色字形行为不变。另加全管线单测 `pure_colr_font_flag_rasterizes_to_visible_pixels`（整形 → 判定 → 包围盒 → 非全透明像素，字体字节引用应用侧 `assets/fonts/Twemoji.Mozilla.ttf`）。 |
+| `src/direct_write.rs` | 补丁二已并入上游（见上节），只留全管线回归单测 `pure_colr_font_flag_rasterizes_to_visible_pixels`。 |
 
-除上述文件外，其余与 crates.io 上的 0.3.10 逐字节相同。单测跑法：
+除上述文件外，其余与 crates.io 上的 0.3.12 逐字节相同。单测跑法：
 
 ```sh
 cargo test -p gpui-pre-windows --lib cursor_image
