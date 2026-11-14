@@ -70,6 +70,7 @@ struct Desktop {
     pointers: PointerDecoder,
     presentation: Presentation,
     tiles: TileCache,
+    prof: Prof,
     tx: FrameSender<RdpOutput>,
     rx: FrameReceiver<RdpOutput>,
 }
@@ -84,6 +85,7 @@ impl Desktop {
             pointers: PointerDecoder::default(),
             presentation: Presentation::default(),
             tiles: TileCache::default(),
+            prof: Prof::default(),
             tx,
             rx,
         }
@@ -104,6 +106,7 @@ impl Desktop {
             (action, packet),
             &self.tx,
             (INITIAL_SHARE_ID, INITIAL_SHARE_ID, 1003),
+            &mut self.prof,
         )
         .unwrap()
     }
@@ -114,8 +117,13 @@ impl Desktop {
 
     fn tick(&mut self) {
         if let Some(deadline) = self.presentation.deadline() {
-            self.presentation
-                .publish_due(deadline, &self.image, &mut self.tiles, &self.tx);
+            self.presentation.publish_due(
+                deadline,
+                &self.image,
+                &mut self.tiles,
+                &self.tx,
+                &mut self.prof,
+            );
         }
     }
 
@@ -411,6 +419,7 @@ fn too_many_damage_rects_collapse_to_a_full_rebuild() {
         &desktop.image,
         &mut desktop.tiles,
         &desktop.tx,
+        &mut desktop.prof,
     );
     let first = desktop.take();
     let corner = InclusiveRectangle {
@@ -428,6 +437,7 @@ fn too_many_damage_rects_collapse_to_a_full_rebuild() {
         &desktop.image,
         &mut desktop.tiles,
         &desktop.tx,
+        &mut desktop.prof,
     );
     let second = desktop.take();
     let DesktopFrame::Tiled(a) = &*first else {
@@ -465,6 +475,7 @@ fn frame_copy_cost() {
                 &packet,
                 INITIAL_SHARE_ID,
                 INITIAL_SHARE_ID,
+                &mut desktop.prof,
             )
             .unwrap()
             {

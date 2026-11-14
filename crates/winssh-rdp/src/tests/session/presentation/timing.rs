@@ -20,22 +20,24 @@ fn unmarked_damage_waits_for_quiet_and_continuous_damage_has_a_deadline() {
     );
     desktop
         .presentation
-        .damage(start + Duration::from_millis(3), rect.clone());
+        .damage(start + Duration::from_millis(1), rect.clone());
     desktop.presentation.publish_due(
-        start + Duration::from_millis(4),
+        start + Duration::from_millis(2),
         &desktop.image,
         &mut desktop.tiles,
         &desktop.tx,
+        &mut desktop.prof,
     );
     assert!(
         desktop.rx.try_recv().is_err(),
         "the old fixed tick is not a frame boundary"
     );
+    // last_damage at 1ms + QUIET(4ms) = 5ms
     assert_eq!(
         desktop.presentation.deadline(),
-        Some(start + Duration::from_millis(7))
+        Some(start + Duration::from_millis(5))
     );
-    for ms in 4..30 {
+    for ms in 2..20 {
         desktop
             .presentation
             .damage(start + Duration::from_millis(ms), rect.clone());
@@ -46,16 +48,17 @@ fn unmarked_damage_waits_for_quiet_and_continuous_damage_has_a_deadline() {
     );
     desktop
         .presentation
-        .postpone(start + Duration::from_millis(30));
+        .postpone(start + Duration::from_millis(20));
     assert_eq!(
         desktop.presentation.deadline(),
-        Some(start + Duration::from_millis(34))
+        Some(start + Duration::from_millis(24))
     );
     desktop.presentation.publish_due(
-        start + Duration::from_millis(34),
+        start + Duration::from_millis(24),
         &desktop.image,
         &mut desktop.tiles,
         &desktop.tx,
+        &mut desktop.prof,
     );
     desktop.take();
     assert!(desktop.presentation.deadline().is_none());

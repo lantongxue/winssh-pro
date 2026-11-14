@@ -14,6 +14,7 @@
 //! 面板把要摆给用户的失败原因都过它一遍，剥掉 ironrdp 详情里构建机的源码路径。
 
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::sync::mpsc::{self, error::SendError};
 
 use gpui_kit::{CursorImage, RenderImage};
@@ -52,18 +53,21 @@ pub const DESKTOP_TILE: u32 = 256;
 
 /// 切成网格的一帧桌面。行优先存放，每格是一张独立的 BGRA 图；
 /// 没变的格子跨帧复用同一 `Arc`，GPUI 图集按 id 命中，不重传纹理。
+///
+/// `tiles` 用 `Arc<Vec>` 共享所有权：`TileCache` 和 `TiledFrame` 持同一份，
+/// 避免每帧 clone 135 个 `Arc<RenderImage>` 产生新 `Vec` 分配。
 #[derive(Debug)]
 pub struct TiledFrame {
     width: u32,
     height: u32,
     cols: u32,
     rows: u32,
-    tiles: Vec<Arc<RenderImage>>,
+    tiles: Arc<Vec<Arc<RenderImage>>>,
 }
 
 impl TiledFrame {
     /// 格子数必须恰好铺满 `width × height` 的网格，否则拒收。
-    pub fn new(width: u32, height: u32, tiles: Vec<Arc<RenderImage>>) -> Option<Self> {
+    pub fn new(width: u32, height: u32, tiles: Arc<Vec<Arc<RenderImage>>>) -> Option<Self> {
         if width == 0 || height == 0 {
             return None;
         }
@@ -143,6 +147,46 @@ impl DesktopFrame {
 impl From<Arc<RenderImage>> for DesktopFrame {
     fn from(image: Arc<RenderImage>) -> Self {
         Self::Whole(image)
+    }
+}
+
+/// 帧率计：数一个窗口里呈现了几帧，窗口结束（[`Self::sample`]）时折算成
+/// "每秒几帧"并开下一个窗口。
+///
+/// 面板每呈现一帧桌面调一次 [`Self::record`]，再按固定节拍（一秒）采样去显示：
+/// 数字一秒翻一次，余光扫着不噪；空闲时没有帧进来，下一拍自然报 0。
+/// 纯计数逻辑，不认识协议与界面，VNC / RDP 共用。
+pub struct FpsMeter {
+    frames: u32,
+    at: Instant,
+}
+
+impl FpsMeter {
+    pub fn new(now: Instant) -> Self {
+        Self { frames: 0, at: now }
+    }
+
+    /// 又呈现了一帧桌面。
+    pub fn record(&mut self) {
+        self.frames = self.frames.saturating_add(1);
+    }
+
+    /// 丢掉手里的计数，从 `now` 重新开窗（连接 / 断开时重置）。
+    pub fn reset(&mut self, now: Instant) {
+        self.frames = 0;
+        self.at = now;
+    }
+
+    /// 上一个窗口到 `now` 这段的平均帧率，四舍五入到整数；同时清零、
+    /// 进入下一个窗口。
+    ///
+    /// 窗口下限挡住 dt 归零时的除法（链路采样器同款理由）：`Instant` 单调，
+    /// `duration_since` 往回走时给 0，落在下限上。
+    pub fn sample(&mut self, now: Instant) -> u32 {
+        let secs = now.duration_since(self.at).as_secs_f64().max(0.01);
+        let fps = (f64::from(self.frames) / secs).round() as u32;
+        self.reset(now);
+        fps
     }
 }
 

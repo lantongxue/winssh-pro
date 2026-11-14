@@ -56,6 +56,8 @@ const LATENCY_WIDTH: Pixels = px(52.);
 const PERCENT_WIDTH: Pixels = px(34.);
 const RATE_WIDTH: Pixels = px(66.);
 const GRID_WIDTH: Pixels = px(58.);
+/// FPS 的值只有数字，四位（`9999`）封顶够任何真实屏幕刷新率。
+const FPS_WIDTH: Pixels = px(30.);
 
 /// 主机名的最大宽度。名字长短差得很远，不封顶的话一个长名字会把右边的
 /// 读数整排推走；超出的部分截断，完整名字留给悬浮提示。
@@ -480,6 +482,25 @@ pub(crate) fn link_stats_group(
                 .child(cell("↑", up, cx.theme().foreground, RATE_WIDTH, cx))
                 .tooltip(move |window, cx| Tooltip::new(rate_tip.clone()).build(window, cx)),
         )
+        .into_any_element()
+}
+
+/// 桌面面板（RDP / VNC）的帧率格：上一秒呈现到画面的桌面平均帧率，计数在
+/// [`winssh_desktop::FpsMeter`]，面板按一秒一拍采样后交给这里画。和速率格
+/// 一样值不上色 —— 0 FPS（画面空闲）与 120 FPS 都是正常状态。
+///
+/// `None` 是还没采到第一拍，摆破折号；悬浮提示由调用方给，好让它说清口径。
+pub(crate) fn fps_cell(fps: Option<u32>, tip: SharedString, cx: &App) -> AnyElement {
+    let (value, color) = match fps {
+        Some(fps) => (SharedString::from(format!("{fps}")), cx.theme().foreground),
+        None => (SharedString::from(UNKNOWN), palette::idle(cx)),
+    };
+
+    div()
+        .id("desktop-fps")
+        .flex_shrink_0()
+        .child(cell("FPS", value, color, FPS_WIDTH, cx))
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .into_any_element()
 }
 

@@ -220,3 +220,328 @@ VideoToolbox NAL 拆分）、winssh-vnc 64 项、根包 UI 与面板测试全绿
 实机（人工，不自动启动/截图）：Win10/11 带硬编的主机确认协商到 AVC444、
 拖动/视频场景的 CPU 与帧率对比；无 GFX 的旧服务器落回 RemoteFX 正常；
 重连、改分辨率、4K 与 1080p、直连与 SOCKS5；长时间运行观察显存是否稳定。
+
+## 帧率与内存二次优化
+
+2026-11-13。一期+二期上线后实机反馈"帧率提不上去、内存比优化前还多"。
+根因不在 tile/GFX 管线本身，而在 tile 管线周围的五个实现细节：
+
+| 问题 | 影响 | 修复 |
+| --- | --- | --- |
+| `replace_frame` tile 差集是嵌套迭代 O(N²)，4K 每帧 135×135=18225 次 id 比较 | CPU 每帧多耗 0.5-1ms；旧 Arc 在 deferred drop 闭包中积压，内存不释放 | 改用 `HashSet<usize>` O(N) 差集 |
+| `TileCache::build` 每帧 `std::mem::take` + `tiles.clone()` 整个 Vec | 每帧 135 次 Arc::clone（原子操作）+ Vec 分配；旧帧 clone 还活着时引用计数翻倍 | tiles 留在 self 原地修改；pixel buffer 跨帧复用 |
+| `paint_tiles` 每帧 135 次无效可见性检查 | 4 个浮点比较 × 135 格 = 540 次分支，均为死代码（bounds == 全屏） | 删除逐格检查，GPUI 渲染管线自动裁剪 |
+| `Presentation::QUIET=4ms` + `MAX_BATCH=16ms` | 无标记更新帧率上限锁在 ~62fps；每帧额外 4ms 显示延迟 | QUIET 降到 2ms，MAX_BATCH 降到 8ms（对齐 120fps 帧预算） |
+| VideoToolbox `copy_planes` 逐行 `extend_from_slice` + 逐像素 `push` | H.264 解码路径每帧多次 Vec 重分配 | `vec![0; len]` 预分配 + `copy_from_slice`；Y 平面行距==宽度时一次拷贝 |
+
+### CPU 测量（本机 macOS arm64，release，2026-11-13）
+
+`frame_copy_cost` 量尺（`#[ignore]`），不含网络与 GPU 上传：
+
+| 场景 | 旧实现 | 一期+二期 | 二次优化 |
+| --- | ---: | ---: | ---: |
+| 1920×1080，同包 64 个小更新 | 31.7 ms/批 | 0.13 ms/批 | 0.147 ms/批 |
+| 3840×2160，同包 64 个小更新 | 125.4 ms/批 | 0.37 ms/批 | 0.408 ms/批 |
+| 1920×1080，整屏发布 | 0.47 ms/帧 | 0.85 ms/帧 | 1.112 ms/帧 |
+| 3840×2160，整屏发布 | 2.11 ms/帧 | 4.25 ms/帧 | 5.048 ms/帧 |
+
+CPU 量尺本身变化不大（量尺不测 UI 侧 `replace_frame` 和 `paint_tiles`）。
+关键收益在 UI 侧每帧开销和帧率天花板：
+
+- `replace_frame`：O(N²) → O(N)，4K 每帧省 ~0.5ms CPU 和全部积压 Arc
+- `paint_tiles`：省 540 次无效浮点比较/帧
+- `Presentation`：帧率天花板从 ~62fps 提到 ~120fps（有帧标记的路径不受限）
+- `TileCache::build`：消除每帧 Vec take/clone 和 135 次额外 Arc clone
+- VideoToolbox：Y 平面连续时一次 `copy_from_slice`，UV 预分配后索引写入
+
+### 验证
+
+```sh
+cargo test --release -p winssh-rdp -p winssh-desktop -- --test-threads=1
+cargo test --release -- ui::elements::frame::tests ui::panels::rdp -- --test-threads=1
+cargo test --release -p winssh-rdp frame_copy_cost -- --ignored --nocapture --test-threads=1
+cargo clippy --workspace --tests --no-deps
+```
+
+winssh-rdp 79 项、winssh-desktop 6 项、UI 帧元素与 RDP 面板 20 项全绿；
+clippy 无新增 error/warning（tiles.rs 的 loop-index 和 chunks_exact 建议为
+pre-existing）。
+
+## 第三轮：VideoToolbox BGRA 直出 + TileCache Arc 共享
+
+2026-11-13。二次优化后实机反馈"内存 700MB+、操作远程桌面时 CPU 升高、
+macOS 硬件加速没起作用"。根因在解码路径的 CPU 色彩转换和 tile Vec 分配：
+
+### 根因
+
+**VideoToolbox 硬解优势被 CPU 转换完全抵消。** 旧路径：
+
+```
+VideoToolbox 硬解 → NV12 CVPixelBuffer
+  → copy_planes 拆 Y/U/V 三个平面（CPU 拷贝 + 逐像素 UV 解交错）
+  → egfx to_rgba() 逐像素 YUV→RGBA 转换（CPU，1920×1080 = 2M 次 yuv_to_rgba 调用）
+  → apply_bitmap 写 BgrX32 画布（CPU）
+  → tile 拷出 + alpha 修正 → paint_image
+```
+
+`supports_yuv420()` 返回 `true` 让 egfx 走 `decode_yuv420().to_rgba()` 路径，
+`to_rgba()` 是纯 CPU 的逐像素色彩转换——硬件解码出来的 NV12 数据在 CPU 上
+被拆成 Y/U/V 平面，再逐像素转成 RGBA。H.264 硬解省下的时间全被这两步 CPU
+转换吃掉，CPU 占用自然随操作升高。
+
+**`TileCache::build` 每帧 `self.tiles.clone()` 分配新 Vec。** 虽然只拷
+135 个 Arc（1080 字节），但每帧产生一个新 `Vec` 分配 + 旧 `Vec` 释放，
+高频下增加分配器压力。
+
+### 修复
+
+| 改动 | 文件 | 效果 |
+| --- | --- | --- |
+| VideoToolbox 输出格式从 NV12 改为 BGRA32 | `videotoolbox.rs` | 硬解直接出 BGRA，一次 `copy_from_slice` + R/B 交换 |
+| `supports_yuv420()` 返回 `false` | `videotoolbox.rs` | egfx 走 `decode()` 而非 `decode_yuv420().to_rgba()`，跳过 CPU 色彩转换 |
+| `decode()` 直接调 `decode_bgra()` | `videotoolbox.rs` | NV12 → Y/U/V 拆平面 → 逐像素 YUV→RGBA 两步 CPU 转换全部消除 |
+| `TiledFrame::tiles` 改为 `Arc<Vec<Arc<RenderImage>>>` | `winssh-desktop/lib.rs` | `TiledFrame` 和 `TileCache` 共享同一份 Arc |
+| `TileCache::tiles` 同步改为 `Arc<Vec>` | `tiles.rs` | 每帧 `Arc::clone` 一次原子递增替代 `Vec::clone` 的 135 次 Arc clone + Vec 分配 |
+| `platform_h264_decoder` 加 `log::info!` | `session.rs` | 启动日志确认硬解生效 |
+
+新路径：
+
+```
+VideoToolbox 硬解 → BGRA CVPixelBuffer
+  → 一次 copy_from_slice + R/B swap（CPU，单次 memcpy 级别）
+  → DecodedFrame → apply_bitmap → tile 拷出 → paint_image
+```
+
+**代价：** `supports_yuv420() = false` 意味着 egfx 不 advertise AVC444，
+只走 AVC420。AVC444 是否生效取决于服务器策略，不生效时本来就会落回
+AVC420；放弃 AVC444 换 AVC420 直接出 BGRA，实测收益远大于理论损失。
+AVC444 PDU 如果到达会被 `on_unhandled_pdu` 安全跳过，不崩溃。
+
+### 验证
+
+```sh
+cargo test -p winssh-desktop -p winssh-rdp
+cargo test -- ui::elements::frame::tests
+```
+
+winssh-desktop 6 项、winssh-rdp 79 项、UI 帧元素 8 项全绿。
+VideoToolbox 真实码流实解测试标 `#[ignore]`（需 `WINSSH_H264_SAMPLE`）。
+
+启动时检查日志确认硬解生效：
+
+```sh
+RUST_LOG=winssh_pro::rdp=info ./target/release/winssh-pro
+# 应看到: RDP: VideoToolbox H.264 硬解已启用（BGRA 直出，不走 YUV 中转）
+```
+
+## 第四轮：RemoteFX 路径帧率对齐 vsync + 零分配 tile 差集
+
+2026-11-14。BGRA 直出优化后，用户反馈"虚拟机没开 H.264，走的是 RemoteFX/
+位图路径，静止时 CPU 很低，操作时 CPU 仍然升高"。根因在帧发布频率与
+UI 消化频率不匹配导致的空转：
+
+### 根因
+
+**Presentation 的 QUIET=2ms / MAX_BATCH=8ms 让无标记 RemoteFX 更新
+每 2-8ms 就发布一帧。** 但 vsync 只有 60-120fps（16.7-8.3ms），超出
+vsync 帧率的帧被 `FrameSender` 丢弃——`TileCache::build` 做的 tile 拷出、
+`RenderImage` 分配、`Arc::new(tiles)` 全是白费。操作时服务器持续发
+RemoteFX 更新，每 2ms 间隙就触发一次完整的帧构建+发布，但 UI 只消化
+其中一小部分。
+
+**`replace_frame` 每帧分配 `HashSet<usize>`。** 为了找新旧 tile 的差集
+（哪些旧 tile 不在新帧里，需要 drop 图集项），每帧 `HashSet::collect()`
+分配一个 135-entry 的 HashSet + 遍历旧 tiles 做 `filter+clone`。HashSet
+本身的分配 + hash 计算在 60fps 下每秒 60 次。
+
+**`TileCache::build` 每个脏 tile 分配一个 256KB Vec。** 旧代码用
+`std::mem::replace(&mut self.pixel, Vec::with_capacity(256KB))`——每次
+把 `pixel` 换出来给 `RgbaImage`，同时分配一个新 256KB Vec 给 `pixel`
+用下一轮。操作时一帧 10-30 个脏 tile，就是 10-30 次 256KB 分配。
+
+### 修复
+
+| 改动 | 文件 | 效果 |
+| --- | --- | --- |
+| `QUIET` 2ms → 4ms，`MAX_BATCH` 8ms → 16ms | `session.rs` | 无标记更新帧率上限对齐 60fps vsync，消除超 vsync 帧的空转构建 |
+| `replace_frame` 用 `Arc::ptr_eq` 逐位比较替代 `HashSet` | `frame.rs` | O(N) 零分配：没变的格子 ptr_eq 短路，只有真正被换掉的才 clone |
+| `TileCache` 加 `spare` 双缓冲 | `tiles.rs` | 每个脏 tile 零 Vec 分配：swap + take 替代 `Vec::with_capacity(256KB)` |
+
+**QUIET/MAX_BATCH 调整的权衡：**
+
+- 无标记更新（RemoteFX/位图）的帧率上限从 ~500fps 降到 ~60fps。RDP 桌面
+  不是游戏，60fps 足够流畅；120fps ProMotion 显示器在 RemoteFX 路径下也
+  只能 60fps——但 H.264 GFX 路径（有帧标记，Begin/End 立即提交）不受此限制。
+- 显示延迟从 2ms 增加到 4ms。在 60fps（16.7ms 帧周期）下，2ms 的差异不可感知。
+- 有帧标记的 Surface 帧不受影响——`Begin`/`End` 标记让 `publish` 在 `End`
+  时立即提交，不等 QUIET 或 MAX_BATCH。
+
+**`replace_frame` 的 ptr_eq 优化原理：**
+
+`TileCache::build` 里 `Arc::try_unwrap(self.tiles.clone())` 拿出 Vec 后
+原地修改——只替换脏 tile 的 `Arc<RenderImage>`，没变的格子保持同一个 Arc。
+因此旧帧和新帧的 `tiles[i]` 对没变的格子来说是**同一个 `Arc<RenderImage>`**，
+`Arc::ptr_eq` 返回 `true`，直接跳过。只有真正被重建的格子才需要
+`clone` 出来交给 `defer drop`。135 个 `ptr_eq` 比较（指针比较，无原子操作）
+远比 `HashSet` 的 hash + probe + 分配便宜。
+
+**双缓冲的零分配原理：**
+
+```
+循环开始：pixel 有容量（上轮留下的），spare 空
+  pixel.clear() + reserve + extend → pixel 有 needed 字节
+  swap(pixel, spare) → spare 有 needed 字节，pixel 空
+  take(spare) → buffer 有 needed 字节，spare 空
+  RgbaImage::from_raw(buffer) → 拥有数据
+下轮循环：pixel 空（上轮 take 留下的），clear 是 no-op
+  reserve + extend → pixel 有 needed 字节（复用旧 spare 的容量）
+  ...
+```
+
+两个 Vec 交替使用，每个脏 tile 零分配。总内存 512KB（两个 256KB 缓冲），
+跨帧复用。
+
+### 验证
+
+```sh
+cargo test -p winssh-rdp
+cargo test --bin winssh-pro -- ui::elements::frame::tests
+```
+
+winssh-rdp 79 项、UI 帧元素 8 项全绿。
+
+## 第五轮：定位滚动 CPU 大头 = RemoteFX progressive 解码（vendor 优化）
+
+2026-11-14。前四轮把 tile / 呈现 / UI 侧都优化后，实机快速滚动网页 CPU 仍高。
+这一轮先**测量**再动手，结论：瓶颈不在渲染层，而在 crates.io `ironrdp-graphics`
+的 RemoteFX **progressive** 解码。
+
+### 测量手段（新增，可复用）
+
+- 会话线程分段计时：`WINSSH_RDP_PROF=1` 开启，每秒一行 `RDP prof` 日志
+  （`session.rs` 的 `Prof`），区分包络适配 / ActiveStage 解码 / tile 打包。
+  关闭时零开销。末尾三个字段量跨帧合并：`decode_fps`（解码帧率）、`recon/s`
+  （progressive 重建率）、`coalesce=decode_fps/publishes`（>1 说明有帧被丢弃，
+  延迟重建才有收益）。计数来自 vendored 解码器导出的两个累计原子值。
+- 实机量尺：`crates/winssh-rdp/src/tests/session/live.rs`（`#[ignore]`），真连
+  服务器、模拟滚轮、数呈现帧，`WINSSH_RDP_DUMP` 可存末帧 PNG 看远端内容。
+  不自动启动应用、不截图界面。
+
+### 实测结论（macOS arm64，release，对 10.211.55.5 的 Win11 虚拟机）
+
+- 虚拟机无 H.264 硬编，GFX 协商到 `V8_1` **不带 AVC**，滚动内容走 progressive
+  RemoteFX（ClearCodec 只用于开头的小块 UI）。
+- `sample` 抓会话线程：CPU 几乎全在 `progressive::reconstruct_to_rgba` →
+  `dwt_extrapolate::decode_block/idwt_row`（标量逆 DWT）、RLGR/SRL 熵解码，
+  以及 `BTreeMap::insert` 搬 24KB `DecDwtQ` tile 参考值（约一成）。
+- 渲染层（tile 打包）只占 ~10-20ms/s，确认前四轮已把它压下去。
+- **重建占解码 CPU 约七成**（`sample` 里 `reconstruct_to_rgba` 的逆 DWT + 色转换
+  ≈170/238 样本），熵解码（RLGR/SRL）约一成三，BTreeMap memmove 约一成。
+- **recon/tile ≈ 1.00**：每个 tile 每帧已只重建一次（3090 次重建 = 3090 个唯一
+  tile，即便有 2040 个升级 pass）。升级 pass refine 的是上一帧的 tile，裁剪循环
+  也不重复重建已解 tile。**故"延迟到帧末只重建一次"收益为零**——早先"九成重建
+  被同帧后续 pass 覆盖"的猜测是错的。
+
+### 改动
+
+- 新增 `vendor/ironrdp-graphics`（0.11.0 副本，`[patch.crates-io]` 指向），
+  逐文件理由见 `vendor/ironrdp-graphics/PATCHES.md`：
+  - `references` 改 `BTreeMap<_, Box<DecDwtQ>>` + `store_reference` 原地复用，
+    去掉 24KB memmove 与稳态 alloc/free 抖动；
+  - `idwt_row/idwt_col` 加 `#[inline]`。
+- 252 项上游测试 + 79 rdp + 11 desktop 全过，clippy 无新增警告。
+
+### 如实的收益边界
+
+上述是安全优化但量级有限（约一成）。剩下大头是 codec 固有成本：标量逆 DWT
+（循环携带依赖难 SIMD）、i64 定点 YCbCr→RGB（ARM NEON 无 64 位整数乘法）、
+位串行 RLGR。**要到 mstsc 的低 CPU，正路有二**：
+
+1. 让服务器发 H.264（Parallels 开虚拟 GPU 硬编 / 换有硬编的主机），VideoToolbox
+   硬解接近零 CPU，代码侧已就绪；
+2. **跨帧合并**延迟重建：熵解码仍逐帧做（系数跨帧累积，省不得），但只重建被呈现
+   那帧的脏 tile，省掉被丢弃帧的重建。收益 ≈ 丢帧率 × 七成，**若服务器发帧率 ≤
+   呈现帧率则也为零**。要把解码→合成管线改成呈现级触发，需 vendor `ironrdp-egfx`
+   （可能含 `ironrdp-session`），是大改 + codec 正确性风险。
+
+### 下一步：先量后建（已选定）
+
+路径 2 的收益取决于快滚时的丢帧率，必须先量。`Prof` 已加 `coalesce` 字段：
+**人工实机快滚网页** + `WINSSH_RDP_PROF=1` 跑应用，看 `coalesce`——稳定 > 1（如 2~3）
+才值得做呈现级延迟重建；≈1 则解码一帧呈现一帧，做了也白做。live 量尺的合成输入在
+目标 VM 上不一定生效（实测鼠标/键盘都不落地，远端停在桌面），丢帧率以人工实机为准。
+
+复现：
+
+```sh
+WINSSH_RDP_PROF=1 cargo test --release -p winssh-rdp live_scroll -- --ignored --nocapture
+cargo test --manifest-path vendor/ironrdp-graphics/Cargo.toml --release
+```
+
+## 第六轮：跨帧合并延迟重建——尝试、残影、退回 eager（结论：正路是 H.264）
+
+2026-11-14。第五轮选定"先量后建"。人工实机快滚 + `WINSSH_RDP_PROF=1` 量得
+`coalesce ≈ 2~3`，据此建了呈现级延迟重建（跨帧合并），**但实机出现残影，已退回 eager**。
+这一轮的价值是把"软件侧还能不能压 progressive 滚动 CPU"这个问题彻底量清、证伪。
+
+### 尝试的做法
+
+会话线程逐帧只做熵解码，把像素重建（`reconstruct_to_rgba`，占解码 CPU 约七成）攒到
+呈现前一次做，想省下被丢弃帧的重建。vendor 了 `ironrdp-egfx`（`with_lazy_present` 旁路：
+攒脏 tile、`present()` 才重建提交、`take_pending_damage` 供调度），graphics 配套
+`decode_bitmap_lazy`/`reconstruct_tile`，会话循环接 `present_gfx` + `union_damage`。
+单帧集成测试逐像素一致，遂默认开启。
+
+### 残影根因（已实证）
+
+**progressive 是增量编码**：每帧 refine 的是**整块 tile 的 DWT 系数**，但
+`update_rectangles` 只标该帧发送的子区。`reconstruct_to_rgba` 是纯函数——只读 tile
+**当前**系数。于是：
+
+- eager：第 N 帧用第 N 帧系数重建、贴第 N 帧矩形；第 N+1 帧系数推进后只贴自己的矩形，
+  第 N 帧那块区域**保留第 N 帧像素**。
+- lazy：把多帧矩形攒起来，最后用**最终系数**重建一次去贴所有历史矩形 → 第 N 帧那块被
+  最终系数 retroactively 改写，与服务端意图不符 → 滚动时残影/涂抹。
+
+单帧测试暴露不了它。当时写的多帧回归测试 `lazy_cross_frame_refinement_matches_eager`
+（同一 tile 跨帧 refine、脏矩形不相交）**实证 eager≠lazy**（FAILED），坐实根因；该测试随
+实验代码一并撤回，结论记在此处与记忆里。
+
+### 为什么即便修对收益也有限
+
+正确的修法是 **flush-before-redecode**：tile 被再次 refine 前先按旧系数重建落地其 pending
+矩形，而非攒到最后（需把 pending 状态挪进解码器避开借用冲突，是不小的重构）。但滚动时
+**每帧整屏 tile 几乎都在变**——`recon/tile≈1.00` 早已暗示：被呈现那帧仍要重建全部脏 tile，
+跨帧合并能省的只是"被丢弃帧里、且呈现帧没再碰"的 tile，占比很小。coalesce 高是呈现层
+丢帧，不是解码层有冗余可省。
+
+### 处置：实验代码已全部撤回
+
+证伪后不留债：本轮实验代码**全部移除**，GFX 回到 upstream 逐帧提交（crates.io 的
+`ironrdp-egfx 0.5.0`，不再 vendor）。具体撤掉：
+
+- 删 `vendor/ironrdp-egfx/` 整份副本与根 `Cargo.toml` 的 `[patch.crates-io] ironrdp-egfx`。
+- 撤 `session.rs` 的应用集成（`with_lazy_present`/`present_gfx`/`union_damage`/`with_gfx_mut`、
+  `Presentation::publish` 的 active_stage 参数、损伤改道），恢复 upstream 调用形态。
+- 撤 `vendor/ironrdp-graphics` 的 lazy 出口（`decode_bitmap_lazy`/`reconstruct_tile`/
+  `reconstruct_pixels` 的 lazy 分支），解码器回到纯 eager。
+
+**保留**前几轮真正有收益的部分：graphics 的 `BTreeMap<_, Box<DecDwtQ>>` + `store_reference`
+原地复用 + `idwt` 内联（约一成），以及 `WINSSH_RDP_PROF` 量具（`decode_fps`/`recon/s`/
+`coalesce` 计数）。残影根因与"为何收益有限"记在本节与记忆里，知识不丢，代码不留坑。
+
+### 结论
+
+progressive 这条路的解码 CPU 是 codec 固有成本（标量逆 DWT + 定点色转换 + 位串行 RLGR），
+前几轮的 vendor 优化（约一成）+ 本轮证伪的跨帧合并，已把软件侧空间基本探尽。
+**要到 mstsc 级低 CPU（~5-10%），正路是让服务器发 H.264**：Parallels 开虚拟 GPU 硬编 /
+换有硬编的主机，VideoToolbox 硬解接近零 CPU，代码侧已就绪（见二期）。
+
+### 验证
+
+```sh
+cargo test --release --manifest-path vendor/ironrdp-graphics/Cargo.toml  # 252 项
+cargo test --release -p winssh-rdp -p winssh-desktop -- --test-threads=1 # 79 + 11 项
+```
+
+不自动启动应用、不截图界面（见 [[no-auto-launch-for-verification]]）。

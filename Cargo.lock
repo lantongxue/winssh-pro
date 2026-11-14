@@ -6076,8 +6076,6 @@ checksum = "97c5b444931aeea5d2967c94d493bcc809de63b491ec96389e643c224ba60849"
 [[package]]
 name = "ironrdp-graphics"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09c38878a0a7ea52a64be174283e67c7e2a6655933437367cec38a5e23129cc6"
 dependencies = [
  "bit_field",
  "bitflags 2.13.2",
@@ -15091,6 +15089,7 @@ dependencies = [
  "winssh-localfs",
  "winssh-netstats",
  "winssh-proxy",
+ "winssh-tls",
 ]
 
 [[package]]

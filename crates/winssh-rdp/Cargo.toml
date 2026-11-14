@@ -48,3 +48,8 @@ objc2-core-foundation = { workspace = true }
 objc2-core-video = { workspace = true }
 objc2-core-media = { workspace = true }
 objc2-video-toolbox = { workspace = true }
+
+[dev-dependencies]
+# 实机量尺（tests/session/live.rs）要真连服务器：rustls 进程级加密后端
+# 由应用启动时装（main.rs），测试里用同一入口补上。
+winssh-tls = { workspace = true }

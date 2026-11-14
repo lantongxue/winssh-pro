@@ -2,6 +2,8 @@
     mod presentation;
     #[path = "gfx.rs"]
     mod gfx;
+    #[path = "session/live.rs"]
+    mod live;
     use super::*;
     use image::{Frame, RgbaImage};
     use ironrdp_core::encode_vec;
@@ -103,6 +105,7 @@
                 &uncompressed_frame(UpdateCode::SurfaceCommands, &markers),
                 INITIAL_SHARE_ID,
                 share_id,
+                &mut Prof::default(),
             )
             .unwrap();
             let mut ids = Vec::new();

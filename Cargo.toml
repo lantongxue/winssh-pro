@@ -715,6 +715,10 @@ flate2 = { workspace = true }
 block = { path = "vendor/block" }
 vnc-rs = { path = "vendor/vnc-rs" }
 ironrdp-connector = { path = "vendor/ironrdp-connector" }
+# RemoteFX progressive 解码是滚动时 CPU 的大头（实测采样：标量 DWT + BTreeMap
+# tile 缓存）。上游 0.11 的解码器是纯标量、tile 状态用 BTreeMap 搬 24KB 值。
+# 这份补丁副本做数据结构和 SIMD 优化，理由与逐文件改动见 vendor/ironrdp-graphics/PATCHES.md。
+ironrdp-graphics = { path = "vendor/ironrdp-graphics" }
 gpui-pre = { path = "vendor/gpui-pre" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 gpui-pre-macos = { path = "vendor/gpui-pre-macos" }

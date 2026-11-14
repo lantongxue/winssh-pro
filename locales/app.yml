@@ -1048,6 +1048,9 @@ desktop.link_latency_tooltip:
 desktop.link_rate_tooltip:
   en: This session's own send / receive throughput on the wire, not the whole remote NIC.
   zh-CN: 此会话自身的线上收发速率，非对端整机网卡吞吐。
+desktop.fps_tooltip:
+  en: Average rate of desktop frames presented to the canvas over the last second.
+  zh-CN: 过去一秒呈现到画面的桌面平均帧率。
 vnc.redraw:
   en: Redraw
   zh-CN: 刷新画面

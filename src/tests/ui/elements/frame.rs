@@ -91,7 +91,7 @@
         let tile = || Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(256, 256))]));
         let tiles: Vec<Arc<RenderImage>> = (0..4).map(|_| tile()).collect();
         let first = Arc::new(DesktopFrame::Tiled(
-            TiledFrame::new(512, 512, tiles.clone()).unwrap().into(),
+            TiledFrame::new(512, 512, Arc::new(tiles.clone())).unwrap().into(),
         ));
         let (view, cx) = cx.add_window_view(|_, _| {
             ScrollHarness::new(first.clone(), Rc::new(Cell::new(None)))
@@ -106,7 +106,7 @@
         let mut next_tiles = tiles.clone();
         next_tiles[0] = tile();
         let second = Arc::new(DesktopFrame::Tiled(
-            TiledFrame::new(512, 512, next_tiles.clone()).unwrap().into(),
+            TiledFrame::new(512, 512, Arc::new(next_tiles.clone())).unwrap().into(),
         ));
         view.update(cx, |view, cx| {
             let mut current = Some(view.frame.clone());

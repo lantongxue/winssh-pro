@@ -1,20 +1,28 @@
-//! macOS VideoToolbox H.264 硬件解码器：实现 `ironrdp-egfx` 的 [`H264Decoder`]，
-//! 给 GFX 管线的 AVC420/AVC444 提供 YUV420 平面（AVC444 的双流拼合与
-//! 色彩转换由 egfx 自己做，这里只出平面）。
+//! macOS VideoToolbox H.264 硬件解码器：实现 `ironrdp-egfx` 的 [`H264Decoder`]。
+//!
+//! 输出 **BGRA32**（`kCVPixelFormatType_32BGRA`），直接交给 egfx 的
+//! `decode()` → `DecodedFrame`，不走 YUV 中转：
+//!
+//! 旧路径（NV12 输出）：VideoToolbox 硬解 → `copy_planes` 拆 Y/U/V（CPU 拷贝）
+//! → egfx `to_rgba()` 逐像素 YUV→RGBA（CPU）→ `apply_bitmap` 写画布。
+//! 硬解的优势被两步 CPU 转换完全抵消。
+//!
+//! 新路径（BGRA 输出）：VideoToolbox 硬解 → BGRA `CVPixelBuffer` → 一次
+//! `copy_from_slice` → `DecodedFrame` → `apply_bitmap`。
+//!
+//! 代价：`supports_yuv420()` 返回 `false`，egfx 不 advertise AVC444，
+//! 只走 AVC420。AVC444 是否生效取决于服务器策略，不生效时本来就会落回
+//! AVC420；放弃 AVC444 换 AVC420 直接出 BGRA，实测收益远大于理论损失。
 //!
 //! 会话是懒建的：码流里第一次凑齐 SPS/PPS 才建 `VTDecompressionSession`，
 //! 参数集变了就重建。解码走同步路径（`decode_frame` 不带异步旗标，回调在
 //! 返回前完成），与 egfx 的同步 trait 契约一致；硬解不可用时 VideoToolbox
 //! 自己落回软解，再不行返回 Err，由能力协商降档，不断会话。
-//!
-//! 输出固定要 NV12 全范围（`kCVPixelFormatType_420YpCbCr8BiPlanarFullRange`），
-//! 对齐 MS-RDPEGFX AVC 流的 BT.709 全范围口径；拷平面时把交错的 UV 拆成
-//! egfx 要的 U、V 两个独立平面。
 
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
 
-use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder, Yuv420Frame};
+use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained};
 use objc2_core_media::{
     CMBlockBuffer, CMFormatDescription, CMSampleBuffer, CMSampleTimingInfo, CMTime,
@@ -22,10 +30,10 @@ use objc2_core_media::{
     kCMBlockBufferAssureMemoryNowFlag, kCMTimeInvalid,
 };
 use objc2_core_video::{
-    CVPixelBuffer, CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane,
-    CVPixelBufferGetHeight, CVPixelBufferGetPlaneCount, CVPixelBufferGetWidth,
-    CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
-    kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    CVPixelBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow,
+    CVPixelBufferGetHeight, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
+    CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelBufferPixelFormatTypeKey,
+    kCVPixelFormatType_32BGRA,
 };
 use objc2_video_toolbox::{
     VTDecompressionOutputCallbackRecord, VTDecompressionSession, VTDecodeFrameFlags,
@@ -135,13 +143,12 @@ impl VideoToolboxDecoder {
             )
         };
 
-        // 硬解开关（不可用时 VideoToolbox 自动落软解）+ NV12 全范围输出。
+        // 硬解开关（不可用时 VideoToolbox 自动落软解）+ BGRA32 输出。
         let spec = CFDictionary::from_slices(
             &[unsafe { kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder }],
             &[CFBoolean::new(true)],
         );
-        let pixel_format =
-            CFNumber::new_i32(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange as i32);
+        let pixel_format = CFNumber::new_i32(kCVPixelFormatType_32BGRA as i32);
         let attribute_values: [&CFNumber; 1] = [&pixel_format];
         let attributes = CFDictionary::from_slices(
             &[unsafe { kCVPixelBufferPixelFormatTypeKey }],
@@ -193,9 +200,10 @@ impl VideoToolboxDecoder {
         Ok(())
     }
 
-    /// 把解码出的 NV12 拷成 egfx 要的 Y/U/V 平面。
-    fn copy_planes(buffer: &CVPixelBuffer) -> DecoderResult<Yuv420Frame> {
-        // SAFETY: 只读锁；所有平面访问都在锁内，返回前解锁。
+    /// 把解码出的 BGRA32 拷成 egfx 要的 `DecodedFrame`（RGBA）。
+    /// BGRA → RGBA 只需交换 R/B 通道，逐 4 字节组就地交换。
+    fn copy_bgra(buffer: &CVPixelBuffer) -> DecoderResult<DecodedFrame> {
+        // SAFETY: 只读锁；所有访问都在锁内，返回前解锁。
         let status =
             unsafe { CVPixelBufferLockBaseAddress(buffer, CVPixelBufferLockFlags::ReadOnly) };
         if status != 0 {
@@ -203,7 +211,7 @@ impl VideoToolboxDecoder {
                 "CVPixelBufferLockBaseAddress failed: {status}"
             )));
         }
-        let result = unsafe { Self::copy_planes_locked(buffer) };
+        let result = unsafe { Self::copy_bgra_locked(buffer) };
         // SAFETY: 与上面的只读锁配对。
         unsafe { CVPixelBufferUnlockBaseAddress(buffer, CVPixelBufferLockFlags::ReadOnly) };
         result
@@ -211,77 +219,49 @@ impl VideoToolboxDecoder {
 
     /// # Safety
     /// 调用方已持有 `buffer` 的只读锁。
-    unsafe fn copy_planes_locked(buffer: &CVPixelBuffer) -> DecoderResult<Yuv420Frame> {
+    unsafe fn copy_bgra_locked(buffer: &CVPixelBuffer) -> DecoderResult<DecodedFrame> {
         // SAFETY: 锁内读取像素缓冲的几何信息。
-        let (width, height, planes) = (
+        let (width, height) = (
             CVPixelBufferGetWidth(buffer),
             CVPixelBufferGetHeight(buffer),
-            CVPixelBufferGetPlaneCount(buffer),
         );
-        if planes != 2 {
-            return Err(DecoderError::msg("expected two-planar NV12 output"));
-        }
         if width == 0 || height == 0 || width > usize::from(u16::MAX) || height > usize::from(u16::MAX)
         {
             return Err(DecoderError::msg("decoded picture size out of range"));
         }
-        // SAFETY: 锁内取平面基址与行距。
-        let (y_ptr, y_stride, uv_ptr, uv_stride) = (
-            CVPixelBufferGetBaseAddressOfPlane(buffer, 0).cast::<u8>(),
-            CVPixelBufferGetBytesPerRowOfPlane(buffer, 0),
-            CVPixelBufferGetBaseAddressOfPlane(buffer, 1).cast::<u8>(),
-            CVPixelBufferGetBytesPerRowOfPlane(buffer, 1),
+        // SAFETY: 锁内取基址与行距。
+        let (ptr, stride) = (
+            CVPixelBufferGetBaseAddress(buffer).cast::<u8>(),
+            CVPixelBufferGetBytesPerRow(buffer),
         );
-        if y_ptr.is_null() || uv_ptr.is_null() {
-            return Err(DecoderError::msg("null pixel buffer plane"));
+        if ptr.is_null() {
+            return Err(DecoderError::msg("null pixel buffer"));
         }
-        let mut y = Vec::with_capacity(width * height);
-        for row in 0..height {
-            // SAFETY: 锁内、行在画面内，行距不小于宽度。
-            y.extend_from_slice(unsafe { std::slice::from_raw_parts(y_ptr.add(row * y_stride), width) });
-        }
-        let chroma_width = width.div_ceil(2);
-        let chroma_height = height.div_ceil(2);
-        let mut u = Vec::with_capacity(chroma_width * chroma_height);
-        let mut v = Vec::with_capacity(chroma_width * chroma_height);
-        for row in 0..chroma_height {
-            // SAFETY: 锁内、行在色度平面内；NV12 的 UV 交错，每行 2×色度宽。
-            let uv_row = unsafe {
-                std::slice::from_raw_parts(uv_ptr.add(row * uv_stride), chroma_width * 2)
-            };
-            for pair in uv_row.as_chunks::<2>().0 {
-                u.push(pair[0]);
-                v.push(pair[1]);
+
+        // BGRA32 → RGBA：逐行拷出，交换 R/B 通道。
+        let rgba_len = width * height * 4;
+        let mut rgba = vec![0u8; rgba_len];
+        if stride == width * 4 {
+            // SAFETY: 锁内、连续 width*height*4 字节可读。
+            rgba.copy_from_slice(unsafe { std::slice::from_raw_parts(ptr, rgba_len) });
+        } else {
+            for row in 0..height {
+                let dst = &mut rgba[row * width * 4..(row + 1) * width * 4];
+                // SAFETY: 锁内、行在画面内，行距不小于 width*4。
+                dst.copy_from_slice(unsafe {
+                    std::slice::from_raw_parts(ptr.add(row * stride), width * 4)
+                });
             }
         }
-        Yuv420Frame::new(
-            width as u16,
-            height as u16,
-            y,
-            width,
-            u,
-            v,
-            chroma_width,
-        )
-    }
-}
-
-impl Drop for VideoToolboxDecoder {
-    fn drop(&mut self) {
-        if let Some(state) = &self.state {
-            // SAFETY: 会话不再使用，显式拆除。
-            unsafe { state.session.invalidate() };
+        // BGRA → RGBA：交换每 4 字节组的 [0] 和 [2]。
+        for pixel in rgba.as_chunks_mut::<4>().0 {
+            pixel.swap(0, 2);
         }
-    }
-}
-
-impl H264Decoder for VideoToolboxDecoder {
-    fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
-        // RGBA 兜底：egfx 在 supports_yuv420 时走 decode_yuv420 自己做色彩转换。
-        Ok(self.decode_yuv420(data)?.to_rgba())
+        Ok(DecodedFrame::new(rgba, width as u32, height as u32))
     }
 
-    fn decode_yuv420(&mut self, data: &[u8]) -> DecoderResult<Yuv420Frame> {
+    /// 解码一帧 H.264 码流，VideoToolbox 输出 BGRA32，拷成 `DecodedFrame`（RGBA）。
+    fn decode_bgra(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
         let mut sets_changed = false;
         let mut has_picture = false;
         self.avcc.clear();
@@ -416,11 +396,31 @@ impl H264Decoder for VideoToolboxDecoder {
         }
         // 回调已 retain，这里直接接管。
         let buffer = output.buffer.expect("checked above");
-        Self::copy_planes(&buffer)
+        Self::copy_bgra(&buffer)
+    }
+}
+
+impl Drop for VideoToolboxDecoder {
+    fn drop(&mut self) {
+        if let Some(state) = &self.state {
+            // SAFETY: 会话不再使用，显式拆除。
+            unsafe { state.session.invalidate() };
+        }
+    }
+}
+
+impl H264Decoder for VideoToolboxDecoder {
+    fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
+        // 直接走 BGRA 路径：VideoToolbox 输出 BGRA32，一次拷贝 + R/B 交换，
+        // 不经 YUV 中转。
+        Ok(self.decode_bgra(data)?)
     }
 
     fn supports_yuv420(&self) -> bool {
-        true
+        // 返回 false：让 egfx 走 decode() 而非 decode_yuv420().to_rgba()，
+        // 避免 NV12 → Y/U/V 拆平面 → 逐像素 YUV→RGBA 的两步 CPU 转换。
+        // 代价：不 advertise AVC444，只走 AVC420。
+        false
     }
 
     fn wait_until_ready(&mut self) -> bool {

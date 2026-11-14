@@ -21,7 +21,7 @@ impl H264Decoder for FakeDecoder {
 
 /// 通道打开时客户端 advertise 出去的能力版本表。
 fn advertised_versions(decoder: Option<Box<dyn H264Decoder>>) -> Vec<u32> {
-    let mut client = GraphicsPipelineClient::new(Box::new(GfxHandler), decoder);
+    let mut client = GraphicsPipelineClient::new(Box::new(GfxHandler::new()), decoder);
     let messages = client.start(1005).expect("start");
     let mut bytes = Vec::new();
     for message in &messages {

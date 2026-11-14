@@ -35,6 +35,7 @@ use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::{
     ActiveTheme as _, ElementExt as _, Icon, IconName, Sizable as _, StyledExt as _,
@@ -60,7 +61,7 @@ use ironrdp_input::{
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    desktop::{DesktopFrame, RemoteCursor, strip_source_locations},
+    desktop::{DesktopFrame, FpsMeter, RemoteCursor, strip_source_locations},
     host::Host,
     netstats::LinkStats,
     rdp::{
@@ -71,7 +72,7 @@ use crate::{
     sftp::human_size,
     ui::{
         Workspace,
-        bars::link_stats_group,
+        bars::{fps_cell, link_stats_group},
         elements::{
             DesktopScale, FrameCursor, FrameElement, PointerOverlay, cursor_overlay,
             native_frame_size, remote_frame_point, replace_frame, replace_image, scrollable_frame,
@@ -104,6 +105,10 @@ const MAX_CLICKS_PER_ROTATION: i16 = 2;
 
 /// 本地剪贴板的查看节奏，毫秒。和 VNC 面板同一条理由：没有回调可等。
 const CLIPBOARD_POLL_MS: u64 = 500;
+
+/// 帧率读数的发布节奏。帧在来时每帧都重画，但 FPS 这个数字一秒翻一次就够；
+/// 空闲时没有帧事件，也靠这一拍把读数归零、把条重画一次。
+const FPS_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 
 /// macOS 会在应用收到事件前把 Control+左键改报成右键。
 const CONTROL_CLICK_IS_RIGHT_CLICK: bool = cfg!(target_os = "macos");
@@ -209,6 +214,10 @@ pub struct RdpPanel {
     keyboard: RdpKeyboard,
     /// 按下时这颗右键是否由 macOS 的 Control+左键转换而来；抬起沿用同一映射。
     control_click: bool,
+    /// 触控板滚动的零头（远端"格"为单位，符号按 [`INVERT_WHEEL`] 翻过，
+    /// 水平轴发送时再反一次）。像素增量折成格后攒在这里，只发整格，
+    /// 零头留给下一条事件；离散滚轮不用它。
+    wheel_carry: Point<f32>,
     /// 两边此刻同步的是哪一份内容，防回声的镜子（和 VNC 同一套，多一档文件）。
     clipboard: Option<ClipboardMirror>,
     /// 文件提示条。没有要说的就是 `None`。
@@ -217,6 +226,10 @@ pub struct RdpPanel {
     alive: bool,
     /// 最近一次链路读数（时延 + 本会话上/下行速率）。没测到是 `None`。
     stats: Option<LinkStats>,
+    /// 上一拍发布的帧率读数。还没采到第一拍是 `None`。
+    fps: Option<u32>,
+    /// 帧率计：`set_frame` 每呈现一帧记一笔，一秒采样一次发布到 `fps`。
+    fps_meter: FpsMeter,
     dock_area: WeakEntity<DockArea>,
     focus_handle: FocusHandle,
     _leaving: Vec<Subscription>,
@@ -250,10 +263,13 @@ impl RdpPanel {
                 pointer_position: (0, 0),
                 keyboard: RdpKeyboard::new(),
                 control_click: false,
+                wheel_carry: Point::default(),
                 clipboard: None,
                 file_strip: None,
                 alive: false,
                 stats: None,
+                fps: None,
+                fps_meter: FpsMeter::new(Instant::now()),
                 dock_area,
                 focus_handle: cx.focus_handle(),
                 _leaving: Vec::new(),
@@ -277,6 +293,7 @@ impl RdpPanel {
             })
             .detach();
             this.watch_clipboard(window, cx);
+            this.watch_fps(window, cx);
             this
         })
     }
@@ -297,9 +314,12 @@ impl RdpPanel {
         self.display.set(None);
         self.keyboard.forget();
         self.control_click = false;
+        self.wheel_carry = Point::default();
         self.clipboard = None;
         self.file_strip = None;
         self.stats = None;
+        self.fps = None;
+        self.fps_meter.reset(Instant::now());
         self.set_alive(false, cx);
         cx.notify();
 
@@ -428,6 +448,32 @@ impl RdpPanel {
             }
         })
         .detach();
+    }
+
+    /// 帧率读数的发布循环：一秒一拍，把 [`FpsMeter`] 手里的窗口计数折算成
+    /// FPS 摆上信息栏。活着才发布 —— 断了之后旧帧率不作数（`fail` 已清掉）。
+    fn watch_fps(&self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(FPS_SAMPLE_INTERVAL).await;
+                if this
+                    .update(cx, |this, cx| this.publish_fps(Instant::now(), cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// 采一拍帧率。不活着就什么都不做，读数留在 `None` / 清掉的状态。
+    fn publish_fps(&mut self, now: Instant, cx: &mut Context<Self>) {
+        if !self.live() {
+            return;
+        }
+        self.fps = Some(self.fps_meter.sample(now));
+        cx.notify();
     }
 
     fn sync_local_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -596,6 +642,7 @@ impl RdpPanel {
         if !matches!(self.phase, RdpPhase::Live) {
             return;
         }
+        self.fps_meter.record();
         let (width, height) = frame.size();
         self.resolution = Some((
             width.min(u32::from(u16::MAX)) as u16,
@@ -626,6 +673,8 @@ impl RdpPanel {
         self.phase = RdpPhase::Failed(strip_source_locations(&reason).into());
         self.inputs = None;
         self.stats = None;
+        self.fps = None;
+        self.fps_meter.reset(Instant::now());
         self.file_strip = None;
         // 最后一帧还留在画布上，远端光标却不该跟着留：远端藏了光标时，
         // 鼠标在断开的画面上会整个消失。
@@ -799,12 +848,8 @@ impl RdpPanel {
         if !self.live() {
             return;
         }
-        let row_height = f32::from(
-            self.display
-                .get()
-                .map_or(px(1.), |bounds| bounds.size.height),
-        ) / self.resolution.map_or(1., |(_, height)| height as f32);
-        self.send_operations(wheel_operations(event.delta, row_height));
+        let operations = wheel_operations(&mut self.wheel_carry, event.delta);
+        self.send_operations(operations);
     }
 
     /// 信息栏右侧那颗按钮：在远端按一次 Ctrl+Alt+Del。
@@ -859,7 +904,7 @@ fn remote_button(button: MouseButton, control_click: bool) -> Option<RdpMouseBut
 /// 所以要按客户端系统决定取不取反。
 const INVERT_WHEEL: bool = !cfg!(windows);
 
-/// gpui 把本地"一格滚几行"先乘进了 delta 幅度：Windows 用的是系统的
+/// gpui 把本地"一格滚几行"先乘进了 delta 幅度：Windows 用系统的
 /// `SPI_GETWHEELSCROLLLINES`（默认 3），Linux 是 gpui 自己的 `SCROLL_LINES = 3`，
 /// macOS 一格就是一行。远端收到一格又会按远端的设置乘一遍，所以这里除回去，
 /// 一格就是一格 —— 不然一格滚轮在远端变成三格。
@@ -869,29 +914,65 @@ const LINES_PER_NOTCH: f32 = 3.;
 #[cfg(not(any(windows, target_os = "linux")))]
 const LINES_PER_NOTCH: f32 = 1.;
 
+/// 触控板（Pixels delta）划多少像素折远端一格。
+///
+/// gpui 在 macOS 上报的触控板 delta 是屏幕像素。远端收到一格还会按它自己
+/// 的"一格几行"再乘一遍（Windows 默认 3 行，一行文字约 20px），一格实际
+/// 滚约 60px。按 60px/格折算，本地划 60px 远端内容也走约 60px，体感才对得上；
+/// 只按行高（20px）折的话，远端会快出三倍。
+const TRACKPAD_PIXELS_PER_NOTCH: f32 = 60.;
+
 /// 滚轮事件 → RDP 的旋转操作。
 ///
 /// 送给远端的符号固定按 Windows 的约定：`WM_MOUSEWHEEL` 正数是"往前推"
 /// （内容往上走，也就是看上面）。本地怎么解读 gpui 的 delta 看客户端系统，
-/// 见 [`wheel_notches`]。`row_height` 只用于把触控板的像素增量折算成"几行"。
-fn wheel_operations(delta: ScrollDelta, row_height: f32) -> Vec<Operation> {
-    let (lines_x, lines_y) = match delta {
-        ScrollDelta::Lines(delta) => (delta.x, delta.y),
-        ScrollDelta::Pixels(delta) => {
-            let height = match row_height > 0. {
-                true => row_height,
-                false => 1.,
-            };
-            (f32::from(delta.x) / height, f32::from(delta.y) / height)
+/// 见 [`INVERT_WHEEL`]。两种 delta 走两条路：
+///
+/// - `Lines`（离散滚轮）：一格就是一格，见 [`wheel_notches`]；顺手清掉
+///   触控板零头，上一挥的零头不该掺进这一格。
+/// - `Pixels`（触控板 / 高分辨率滚轮）：按 [`TRACKPAD_PIXELS_PER_NOTCH`]
+///   折成格攒进 `carry`，只发整格，零头留给下一条事件。**不能每条事件保底
+///   一格**：触控板一挥手是几十条小增量，每条保底一格会把一次轻扫放大成
+///   几十格，远端飞起来（线上踩过的坑）。
+fn wheel_operations(carry: &mut Point<f32>, delta: ScrollDelta) -> Vec<Operation> {
+    let (clicks_x, clicks_y) = match delta {
+        ScrollDelta::Lines(delta) => {
+            *carry = Point::default();
+            (wheel_notches(delta.x), wheel_notches(delta.y))
         }
+        ScrollDelta::Pixels(delta) => (
+            take_whole_notches(&mut carry.x, trackpad_notches(f32::from(delta.x))),
+            take_whole_notches(&mut carry.y, trackpad_notches(f32::from(delta.y))),
+        ),
     };
     let mut operations = Vec::new();
-    push_rotations(&mut operations, true, wheel_notches(lines_y));
-    push_rotations(&mut operations, false, -wheel_notches(lines_x));
+    push_rotations(&mut operations, true, clicks_y);
+    push_rotations(&mut operations, false, -clicks_x);
     operations
 }
 
+/// 触控板像素增量 → 带符号的远端格数（未取整）。只翻符号、折幅度，
+/// 不走 [`LINES_PER_NOTCH`] —— 那是除回 gpui 预乘进 Lines 的"一格几行"，
+/// Pixels 是裸像素，没有被预乘过。
+fn trackpad_notches(pixels: f32) -> f32 {
+    let signed = match INVERT_WHEEL {
+        true => -pixels,
+        false => pixels,
+    };
+    signed / TRACKPAD_PIXELS_PER_NOTCH
+}
+
+/// 把这条事件的格数攒进零头，四舍五入只发整格，零头留在 `carry` 里等下一条。
+/// 攒的总量限在 ±[`MAX_WHEEL_CLICKS`] 当刹车，超出的部分丢弃。
+fn take_whole_notches(carry: &mut f32, notches: f32) -> i16 {
+    *carry = (*carry + notches).clamp(-MAX_WHEEL_CLICKS as f32, MAX_WHEEL_CLICKS as f32);
+    let whole = carry.round();
+    *carry -= whole;
+    whole as i16
+}
+
 /// gpui 的行增量 → 远端该转几格（正数 = 内容往上走，也就是看上面）。
+/// 只给离散滚轮（Lines）用；触控板走 [`take_whole_notches`]，不保底。
 ///
 /// 方向由 [`INVERT_WHEEL`] 决定，幅度按 [`LINES_PER_NOTCH`] 折回"格"。
 /// 半格以上四舍五入，有位移就至少走一格：滚轮一格都滚不动比慢一点更难受。
@@ -1017,6 +1098,10 @@ impl RdpPanel {
                 cx,
             )
         });
+        // 帧率格紧跟链路读数：上一秒呈现到画面的桌面平均帧率，同样活着才摆。
+        let fps = self
+            .live()
+            .then(|| fps_cell(self.fps, SharedString::from(t!("desktop.fps_tooltip")), cx));
 
         h_flex()
             .flex_shrink_0()
@@ -1058,6 +1143,7 @@ impl RdpPanel {
                     ),
             )
             .children(stats)
+            .children(fps)
             // 一块会伸缩的空白把操作按钮推到最右：左侧的身份 / 分辨率 / 链路读数
             // 靠在一起，右侧的菜单与重连固定贴右沿，条子再怎么变宽都只撑这段空白。
             .child(div().flex_1().min_w_0())

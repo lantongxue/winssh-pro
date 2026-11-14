@@ -1,4 +1,5 @@
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn padding_bytes_never_make_desktop_pixels_transparent() {
@@ -75,4 +76,58 @@
     fn an_empty_context_drops_the_brackets_and_their_space() {
         // `Error::new("", …)` 的形态：`[ @ …]` 连后面那格空格一起去掉。
         assert_eq!(strip_source_locations("[ @ /tmp/lib.rs:7] oops"), "oops");
+    }
+
+    #[test]
+    fn fps_meter_converts_the_window_count_to_per_second() {
+        let start = Instant::now();
+        let mut meter = FpsMeter::new(start);
+        for _ in 0..30 {
+            meter.record();
+        }
+        // 半秒 30 帧 → 60fps，不是把窗口计数原样报出去。
+        assert_eq!(meter.sample(start + Duration::from_millis(500)), 60);
+    }
+
+    #[test]
+    fn fps_meter_reports_zero_once_frames_stop() {
+        let start = Instant::now();
+        let mut meter = FpsMeter::new(start);
+        for _ in 0..60 {
+            meter.record();
+        }
+        assert_eq!(meter.sample(start + Duration::from_secs(1)), 60);
+        // 采样即开新窗：下一拍没有帧进来就报 0，空闲桌面不挂着旧数字。
+        assert_eq!(meter.sample(start + Duration::from_secs(2)), 0);
+    }
+
+    #[test]
+    fn fps_meter_rounds_to_the_nearest_whole_frame() {
+        let start = Instant::now();
+        let mut meter = FpsMeter::new(start);
+        for _ in 0..59 {
+            meter.record();
+        }
+        // 状态栏用余光扫，小数位只是噪声。
+        assert_eq!(meter.sample(start + Duration::from_millis(990)), 60);
+    }
+
+    #[test]
+    fn fps_meter_survives_a_zero_length_window() {
+        let start = Instant::now();
+        let mut meter = FpsMeter::new(start);
+        // 同一刻采样：dt 归零落在下限上，不除零、不报天文数字。
+        assert_eq!(meter.sample(start), 0);
+    }
+
+    #[test]
+    fn fps_meter_reset_drops_the_old_window() {
+        let start = Instant::now();
+        let mut meter = FpsMeter::new(start);
+        for _ in 0..60 {
+            meter.record();
+        }
+        // 重连重置：旧连接的帧不算进新连接的第一拍。
+        meter.reset(start + Duration::from_secs(1));
+        assert_eq!(meter.sample(start + Duration::from_secs(2)), 0);
     }

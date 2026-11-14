@@ -51,18 +51,18 @@ fn truncated_avcc_length_stops_without_panicking() {
 /// ffmpeg -f lavfi -i color=black:size=64x64:duration=0.2 -c:v libx264 -f h264 sample.264
 #[test]
 #[ignore = "需要 VideoToolbox 与 WINSSH_H264_SAMPLE 样本，按需手动跑"]
-fn videotoolbox_decodes_a_real_stream_to_yuv420() {
+fn videotoolbox_decodes_a_real_stream_to_bgra() {
     let path = std::env::var("WINSSH_H264_SAMPLE").expect("WINSSH_H264_SAMPLE 指向 .264 样本");
     let data = std::fs::read(path).expect("read sample");
     let mut decoder = VideoToolboxDecoder::new().expect("decoder");
     assert!(decoder.wait_until_ready());
-    assert!(decoder.supports_yuv420());
+    assert!(!decoder.supports_yuv420(), "BGRA 直出，不 advertises YUV420");
     // 整份样本一次喂入：参数集与所有帧都在里面，最后一帧必须解得出来。
-    let frame = decoder.decode_yuv420(&data).expect("decode");
+    let frame = decoder.decode(&data).expect("decode");
     assert_eq!((frame.width(), frame.height()), (64, 64));
-    assert!(!frame.luma_row(0).unwrap().is_empty());
+    assert_eq!(frame.data().len(), 64 * 64 * 4, "RGBA buffer");
     // 复位后再解同一段，验证会话重建。
     decoder.reset();
-    let again = decoder.decode_yuv420(&data).expect("decode after reset");
+    let again = decoder.decode(&data).expect("decode after reset");
     assert_eq!((again.width(), again.height()), (64, 64));
 }

@@ -191,10 +191,13 @@
     /// macOS 与 Linux 的 gpui 报的是自然滚动方向（负）。反方向对称。
     #[test]
     fn the_wheel_direction_follows_the_client_system() {
-        let notch = wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., LINES_PER_NOTCH)), 1.);
+        let notch = wheel_operations(
+            &mut Point::default(),
+            ScrollDelta::Lines(gpui_kit::point(0., LINES_PER_NOTCH)),
+        );
         let back = wheel_operations(
+            &mut Point::default(),
             ScrollDelta::Lines(gpui_kit::point(0., -LINES_PER_NOTCH)),
-            1.,
         );
         let one_notch = vec![(true, WHEEL_SIGN * WHEEL_UNITS_PER_CLICK)];
 
@@ -222,10 +225,14 @@
     /// 翻过去才对得上远端的"正数向右滚"。
     #[test]
     fn the_horizontal_wheel_shares_the_vertical_rules() {
-        let vertical =
-            wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., LINES_PER_NOTCH)), 1.);
-        let horizontal =
-            wheel_operations(ScrollDelta::Lines(gpui_kit::point(LINES_PER_NOTCH, 0.)), 1.);
+        let vertical = wheel_operations(
+            &mut Point::default(),
+            ScrollDelta::Lines(gpui_kit::point(0., LINES_PER_NOTCH)),
+        );
+        let horizontal = wheel_operations(
+            &mut Point::default(),
+            ScrollDelta::Lines(gpui_kit::point(LINES_PER_NOTCH, 0.)),
+        );
         assert_eq!(
             rotations(&vertical),
             vec![(true, WHEEL_SIGN * WHEEL_UNITS_PER_CLICK)]
@@ -236,12 +243,109 @@
         );
     }
 
-    /// 触控板的像素增量按行高折算成行，走的还是垂直滚轮那条路。
+    /// 触控板划一格假设的像素量（60px），远端就是一格 —— 和离散滚轮
+    /// 一格（Lines 的 LINES_PER_NOTCH 行）等价。60 = 远端一行约 20px ×
+    /// 远端默认一格 3 行，本地划多少像素远端内容就走约多少像素。
     #[test]
-    fn pixel_deltas_are_converted_through_the_row_height() {
-        let pixels = wheel_operations(ScrollDelta::Pixels(gpui_kit::point(px(0.), px(60.))), 20.);
-        let rows = wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., 3.)), 1.);
-        assert_eq!(rotations(&pixels), rotations(&rows));
+    fn a_trackpad_notch_worth_of_pixels_matches_one_wheel_click() {
+        let pixels = wheel_operations(
+            &mut Point::default(),
+            ScrollDelta::Pixels(gpui_kit::point(px(0.), px(TRACKPAD_PIXELS_PER_NOTCH))),
+        );
+        let click = wheel_operations(
+            &mut Point::default(),
+            ScrollDelta::Lines(gpui_kit::point(0., LINES_PER_NOTCH)),
+        );
+        assert_eq!(rotations(&pixels), rotations(&click));
+    }
+
+    /// 线上事故：触控板每条小增量都保底一格，一挥手几十条事件就是几十格，
+    /// 远端飞起来。现在小增量只攒零头，攒够半格才发一格：
+    /// 10 条 6px（共 60px = 1 格）总共只发一格，前几条一格都不发。
+    #[test]
+    fn trackpad_small_deltas_accumulate_instead_of_one_notch_each() {
+        let mut carry = Point::default();
+        let mut total = 0;
+        for i in 0..10 {
+            let operations = wheel_operations(
+                &mut carry,
+                ScrollDelta::Pixels(gpui_kit::point(px(0.), px(6.))),
+            );
+            let clicks: i16 = rotations(&operations).iter().map(|(_, units)| units).sum();
+            if i < 4 {
+                assert_eq!(clicks, 0, "第 {i} 条 6px 不该单独凑出一格");
+            }
+            total += clicks;
+        }
+        assert_eq!(total, WHEEL_SIGN * WHEEL_UNITS_PER_CLICK);
+    }
+
+    /// 零头跨事件守恒：3 条 40px（共 120px = 2 格）发出恰好两格，
+    /// 最后零头归零，不吞也不吐。
+    #[test]
+    fn trackpad_carry_conserves_the_total() {
+        let mut carry = Point::default();
+        let mut total = 0;
+        for _ in 0..3 {
+            let operations = wheel_operations(
+                &mut carry,
+                ScrollDelta::Pixels(gpui_kit::point(px(0.), px(40.))),
+            );
+            total += rotations(&operations)
+                .iter()
+                .map(|(_, units)| units)
+                .sum::<i16>();
+        }
+        assert_eq!(total, WHEEL_SIGN * 2 * WHEEL_UNITS_PER_CLICK);
+        // 40/60 在 f32 里不精确，零头允许有浮点毛刺，但不能攒出半格。
+        assert!(carry.x.abs() < 1e-6 && carry.y.abs() < 1e-6);
+    }
+
+    /// 离散滚轮不继承触控板的零头：攒了 0.4 格之后按一格滚轮，
+    /// 发的就是干净的一格，零头清掉，不影响下一条触控板事件。
+    #[test]
+    fn a_discrete_click_drops_the_trackpad_carry() {
+        let mut carry = Point::default();
+        // 24px = 0.4 格，不够半格，什么都不发，只攒着。
+        let warm = wheel_operations(
+            &mut carry,
+            ScrollDelta::Pixels(gpui_kit::point(px(0.), px(24.))),
+        );
+        assert!(rotations(&warm).is_empty());
+
+        let click = wheel_operations(
+            &mut carry,
+            ScrollDelta::Lines(gpui_kit::point(0., LINES_PER_NOTCH)),
+        );
+        assert_eq!(
+            rotations(&click),
+            vec![(true, WHEEL_SIGN * WHEEL_UNITS_PER_CLICK)]
+        );
+
+        // 零头已清：又是 0.4 格，仍不够半格。若没清，这里会凑出 0.8 → 一格。
+        let after = wheel_operations(
+            &mut carry,
+            ScrollDelta::Pixels(gpui_kit::point(px(0.), px(24.))),
+        );
+        assert!(rotations(&after).is_empty());
+    }
+
+    /// 触控板单条事件再大也最多 5 格（刹车），拆分同样留在协议范围内。
+    #[test]
+    fn a_trackpad_fling_is_capped_too() {
+        let operations = wheel_operations(
+            &mut Point::default(),
+            ScrollDelta::Pixels(gpui_kit::point(px(0.), px(6000.))),
+        );
+        let sign = WHEEL_SIGN;
+        assert_eq!(
+            rotations(&operations),
+            vec![
+                (true, sign * 2 * WHEEL_UNITS_PER_CLICK),
+                (true, sign * 2 * WHEEL_UNITS_PER_CLICK),
+                (true, sign * WHEEL_UNITS_PER_CLICK),
+            ]
+        );
     }
 
     /// 一挥手最多 5 格，且拆成的每一条都留在协议能装的范围内。
@@ -252,7 +356,10 @@
         assert_eq!(clicks.abs(), MAX_WHEEL_CLICKS);
 
         let sign = clicks.signum();
-        let operations = wheel_operations(ScrollDelta::Lines(gpui_kit::point(0., many)), 1.);
+        let operations = wheel_operations(
+            &mut Point::default(),
+            ScrollDelta::Lines(gpui_kit::point(0., many)),
+        );
         assert_eq!(
             rotations(&operations),
             vec![
@@ -269,17 +376,28 @@
     /// 越界会让 ironrdp 在编码时 panic、直接断连。
     #[test]
     fn no_rotation_leaves_the_wire_range() {
+        // 零头故意跨事件复用，把攒整格的那条路也压一遍。
+        let mut carry = Point::default();
         for lines in [-50., -3., -1., 0., 1., 3., 50.] {
-            for row_height in [1., 20., 0.] {
-                for (is_vertical, units) in rotations(&wheel_operations(
-                    ScrollDelta::Lines(gpui_kit::point(lines, lines)),
-                    row_height,
-                )) {
-                    assert!(
-                        (-256..=255).contains(&units),
-                        "{is_vertical} {lines} → {units}"
-                    );
-                }
+            for (is_vertical, units) in rotations(&wheel_operations(
+                &mut carry,
+                ScrollDelta::Lines(gpui_kit::point(lines, lines)),
+            )) {
+                assert!(
+                    (-256..=255).contains(&units),
+                    "{is_vertical} {lines} → {units}"
+                );
+            }
+        }
+        for pixels in [-6000., -60., -6., 0., 6., 60., 6000.] {
+            for (is_vertical, units) in rotations(&wheel_operations(
+                &mut carry,
+                ScrollDelta::Pixels(gpui_kit::point(px(pixels), px(pixels))),
+            )) {
+                assert!(
+                    (-256..=255).contains(&units),
+                    "{is_vertical} {pixels} → {units}"
+                );
             }
         }
     }
@@ -384,6 +502,57 @@
             remote_button(MouseButton::Right, false),
             Some(RdpMouseButton::Right)
         );
+    }
+
+    /// FPS 格数的是"呈现到画面的帧"：set_frame 一笔、一秒一拍发布；
+    /// 空闲归零，断开清掉且不再发布。
+    #[gpui_kit::test]
+    fn fps_counts_presented_frames_and_clears_on_disconnect(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::component::dock::DockSkin;
+        use image::{Frame, RgbaImage};
+
+        cx.update(gpui_kit::init);
+        let (inputs, _input_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (harness, cx) = cx.add_window_view(|window, cx| {
+            let (dock, _skin) = DockSkin::dock_area("rdp-fps-test-dock", Some(1), window, cx);
+            let panel = RdpPanel::new(test_host(), dock.downgrade(), window, cx);
+            panel.update(cx, |panel, _| {
+                panel.phase = RdpPhase::Live;
+                panel.inputs = Some(inputs);
+            });
+            ViewportHarness {
+                panel,
+                width: px(900.),
+            }
+        });
+        let panel = harness.read_with(cx, |harness, _| harness.panel.clone());
+        let frame = || {
+            Arc::new(DesktopFrame::Whole(Arc::new(RenderImage::new(vec![
+                Frame::new(RgbaImage::new(64, 48)),
+            ]))))
+        };
+        let start = std::time::Instant::now();
+        panel.update(cx, |panel, cx| {
+            panel.fps_meter.reset(start);
+            for _ in 0..3 {
+                panel.set_frame(frame(), cx);
+            }
+            panel.publish_fps(start + std::time::Duration::from_secs(1), cx);
+        });
+        assert_eq!(panel.read_with(cx, |panel, _| panel.fps), Some(3));
+
+        // 下一拍没有帧：归零，不挂着旧数字。
+        panel.update(cx, |panel, cx| {
+            panel.publish_fps(start + std::time::Duration::from_secs(2), cx);
+        });
+        assert_eq!(panel.read_with(cx, |panel, _| panel.fps), Some(0));
+
+        // 断开：读数清掉，之后的拍不再发布。
+        panel.update(cx, |panel, cx| {
+            panel.fail("gone".into(), cx);
+            panel.publish_fps(start + std::time::Duration::from_secs(3), cx);
+        });
+        assert_eq!(panel.read_with(cx, |panel, _| panel.fps), None);
     }
 
     /// 文件提示条的一整圈：提示 → 保存 → 进度 → 完成（弹通知）→ 再提示 → 撤回。

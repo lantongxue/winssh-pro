@@ -54,6 +54,11 @@ pub fn replace_image(
 /// 替换一帧桌面（[`DesktopFrame`]），回收不再使用的纹理图集项。
 /// tile 帧只释放真正被换掉的格子：复用格子的 id 还在新帧里，图集项保留，
 /// GPU 纹理不重传。整帧与 tile 帧互切、重连、关闭都走这里。
+///
+/// tile 差集先用 `Arc::ptr_eq` 快速过滤（大部分格子跨帧复用同一 Arc，
+/// 指针相等直接跳过），只有指针不同的格子才进一步按 id 比对。
+/// 这样大部分帧零分配（没有 HashSet、没有额外 Vec）——只有真正被换掉的
+/// 格子才 clone 出来交给 defer drop。
 pub fn replace_frame(
     slot: &mut Option<Arc<DesktopFrame>>,
     frame: Option<Arc<DesktopFrame>>,
@@ -69,12 +74,27 @@ pub fn replace_frame(
             return;
         }
         (DesktopFrame::Whole(image), _) => vec![image.clone()],
-        (DesktopFrame::Tiled(old), Some(DesktopFrame::Tiled(new))) => old
-            .tiles()
-            .iter()
-            .filter(|tile| !new.tiles().iter().any(|kept| kept.id == tile.id))
-            .cloned()
-            .collect(),
+        (DesktopFrame::Tiled(old), Some(DesktopFrame::Tiled(new))) => {
+            let old_tiles = old.tiles();
+            let new_tiles = new.tiles();
+            // tiles 是行优先的，同一索引就是同一格位置。
+            // 逐位比较：Arc::ptr_eq 相等说明格子没变（跨帧复用），
+            // 指针不同说明格子被重建了——需要 drop 旧的。
+            // O(N) 零分配：只有真正被换掉的格子才 clone 出来。
+            let mut dropped = Vec::new();
+            for (old_tile, new_tile) in old_tiles.iter().zip(new_tiles.iter()) {
+                if !Arc::ptr_eq(old_tile, new_tile) {
+                    dropped.push(old_tile.clone());
+                }
+            }
+            // 新旧格子数不同（尺寸变化）：多出来的旧格子全 drop。
+            if old_tiles.len() > new_tiles.len() {
+                for old_tile in &old_tiles[new_tiles.len()..] {
+                    dropped.push(old_tile.clone());
+                }
+            }
+            dropped
+        }
         (DesktopFrame::Tiled(old), _) => old.tiles().to_vec(),
     };
     if dropped.is_empty() {
@@ -383,20 +403,18 @@ impl IntoElement for FrameElement {
 }
 
 /// 逐格画 tile 帧。没变的格子复用同一张图，GPUI 图集按 id 命中，
-/// 不重传纹理；滚出视口的格子提前跳过，不白登记绘制命令。
+/// 不重传纹理。
+///
+/// 视口裁剪由 GPUI 的渲染管线自动完成（paint_image 的 image_bounds
+/// 参数即为裁剪矩形）。原来的逐格可见性检查在两种缩放模式下都是
+/// 死代码——自适应时 bounds == 全屏，实际 1:1 时 bounds == 远端原始尺寸，
+/// 所有 tile 都在 bounds 内。去掉它省掉每帧 135 次浮点比较。
 fn paint_tiles(window: &mut Window, bounds: Bounds<Pixels>, tiled: &TiledFrame) {
     let resolution = (tiled.width(), tiled.height());
     for row in 0..tiled.rows() {
         for col in 0..tiled.cols() {
             let destination =
                 tile_destination(bounds, resolution, col, row, tiled.tile_size(col, row));
-            if destination.origin.x >= bounds.origin.x + bounds.size.width
-                || destination.origin.y >= bounds.origin.y + bounds.size.height
-                || destination.origin.x + destination.size.width <= bounds.origin.x
-                || destination.origin.y + destination.size.height <= bounds.origin.y
-            {
-                continue;
-            }
             let _ = window.paint_image(
                 bounds,
                 destination,

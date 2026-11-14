@@ -76,7 +76,7 @@ use ironrdp_core::{ReadCursor, WriteBuf, decode, decode_cursor, encode_vec};
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp_dvc::DrdynvcClient;
-use ironrdp_egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+use ironrdp_egfx::client::{BitmapUpdate, GraphicsPipelineClient, GraphicsPipelineHandler};
 use ironrdp_egfx::decode::H264Decoder;
 use ironrdp_egfx::pdu::CapabilitySet;
 use ironrdp_graphics::image_processing::PixelFormat;
@@ -362,7 +362,7 @@ async fn open(
     let drdynvc = DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
         .with_dynamic_channel(GraphicsPipelineClient::new(
-            Box::new(GfxHandler),
+            Box::new(GfxHandler::new()),
             platform_h264_decoder(),
         ));
     connector = connector.with_static_channel(drdynvc);
@@ -410,12 +410,37 @@ async fn open(
 /// GFX 事件回调：能力确认后记一笔协商到的档（实机排障用），其余全用默认。
 /// 桌面像素不经这里：ActiveStage 每条 PDU 后自动把 GFX 输出合成进画布，
 /// 经 `GraphicsUpdate` 报损伤，走的还是 tile 呈现那条路。
-struct GfxHandler;
+struct GfxHandler {
+    /// 首次 GFX 解码只记一次，确认硬解路径在走。
+    logged_first_decode: std::sync::atomic::AtomicBool,
+}
+
+impl GfxHandler {
+    const fn new() -> Self {
+        Self {
+            logged_first_decode: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
 
 impl GraphicsPipelineHandler for GfxHandler {
-    fn on_capabilities_confirmed(&mut self, caps: &CapabilitySet) {
-        log::info!("RDP: GFX 能力协商完成：{caps:?}");
-    }
+fn on_capabilities_confirmed(&mut self, caps: &CapabilitySet) {
+log::warn!("RDP: GFX 能力协商完成：{caps:?}");
+}
+
+fn on_bitmap_updated(&mut self, update: &BitmapUpdate) {
+if !self
+.logged_first_decode
+.swap(true, std::sync::atomic::Ordering::Relaxed)
+{
+log::warn!(
+"RDP: GFX 首帧解码到达（codec={:?}, {}×{}）——硬解路径已激活",
+update.codec_id,
+update.width,
+update.height
+);
+}
+}
 }
 
 /// 平台的 H.264 解码器：macOS 用 VideoToolbox，Windows 用 Media Foundation，
@@ -425,7 +450,10 @@ fn platform_h264_decoder() -> Option<Box<dyn H264Decoder>> {
     #[cfg(target_os = "macos")]
     {
         match super::videotoolbox::VideoToolboxDecoder::new() {
-            Ok(decoder) => Some(Box::new(decoder)),
+            Ok(decoder) => {
+                log::warn!("RDP: VideoToolbox H.264 硬解已启用（BGRA 直出，不走 YUV 中转）");
+                Some(Box::new(decoder))
+            }
             Err(error) => {
                 log::warn!("RDP: VideoToolbox 解码器不可用，落回非 AVC 编码：{error}");
                 None
@@ -618,6 +646,7 @@ async fn session_loop(
     let mut pointers = PointerDecoder::default();
     let mut presentation = Presentation::default();
     let mut tiles = TileCache::default();
+    let mut prof = Prof::new();
     // 定时到点前先取走已就绪的下一包，不能从可读的网络更新批次中间截帧。
     let mut pending_frame = None;
     let fastpath_share_id = connection_result.share_id;
@@ -651,6 +680,7 @@ async fn session_loop(
     let mut pending_resize = None;
 
     let reason = 'outer: loop {
+        prof.tick();
         // 重激活仍走同一条读包循环。read_by_hint 会丢弃夹在握手里的 FastPath，
         // 既漏帧又丢压缩历史；静态通道消息也不能塞给只认识握手的 Sequence。
         while let Some(sequence) = activation.as_mut() {
@@ -736,7 +766,7 @@ async fn session_loop(
                     process_graphics_frame(
                         &mut active_stage, &mut image, &mut fastpath, &mut pointers,
                         &mut presentation, &mut tiles, (action, &payload), events_tx,
-                        (fastpath_share_id, share_id, io_channel_id),
+                        (fastpath_share_id, share_id, io_channel_id), &mut prof,
                     )?
                 }
             }
@@ -754,7 +784,7 @@ async fn session_loop(
                     presentation.postpone(Instant::now());
                     continue;
                 }
-                presentation.publish_due(Instant::now(), &image, &mut tiles, events_tx);
+                presentation.publish_due(Instant::now(), &image, &mut tiles, events_tx, &mut prof);
                 Vec::new()
             }
             input = input_rx.recv(), if activation.is_none() => {
@@ -875,7 +905,7 @@ async fn session_loop(
         }
     };
 
-    presentation.publish(&image, &mut tiles, events_tx);
+    presentation.publish(&image, &mut tiles, events_tx, &mut prof);
     Ok(reason)
 }
 
@@ -1015,8 +1045,17 @@ struct Presentation {
 
 impl Presentation {
     // 没有协议帧边界时等一小段无像素更新的间隙，避免固定时钟切开同批数据。
+    // 4ms：对齐 60fps vsync 周期（16.7ms）的四分之一——服务器的 RemoteFX
+    // 编码一批 tile 通常要 2-5ms，4ms 间隙足以区分同一批内的小间隔与
+    // 不同批之间的停顿。更短（如 2ms）会在操作时让 Presentation 每隔
+    // 2ms 就发布一帧，但 vsync 只有 60-120fps，超出的帧被 FrameSender
+    // 丢弃，TileCache::build 做的 tile 拷出和 RenderImage 分配全是空转。
+    // 有帧标记（Begin/End）的更新不受此限制，在 End 时立即提交。
     const QUIET: Duration = Duration::from_millis(4);
     // 持续不断的未标记更新不能无限等待；不在半个 PDU/逻辑分片中截帧。
+    // 16ms：对齐 60fps vsync 周期。无标记更新的帧率上限是 ~60fps——
+    // 超出 vsync 的帧全部被 FrameSender 丢弃，TileCache::build 的
+    // tile 拷出 + RenderImage 分配全是浪费。有帧标记的更新不受此限制。
     const MAX_BATCH: Duration = Duration::from_millis(16);
     // 单批损伤矩形上限：超过就折叠成整屏重建，防无界增长。
     const MAX_RECTS: usize = 128;
@@ -1063,9 +1102,10 @@ impl Presentation {
         image: &DecodedImage,
         tiles: &mut TileCache,
         events: &FrameSender<RdpOutput>,
+        prof: &mut Prof,
     ) {
         if self.deadline().is_some_and(|deadline| now >= deadline) {
-            self.publish(image, tiles, events);
+            self.publish(image, tiles, events, prof);
         }
     }
 
@@ -1074,12 +1114,17 @@ impl Presentation {
         image: &DecodedImage,
         tiles: &mut TileCache,
         events: &FrameSender<RdpOutput>,
+        prof: &mut Prof,
     ) {
         if self.dirty && !self.open {
             self.dirty = false;
             self.first_damage = None;
             self.last_damage = None;
             self.retry_after = None;
+            if prof.enabled {
+                prof.publishes += 1;
+                prof.overflows += u64::from(self.rects_overflow);
+            }
             let rects = if self.rects_overflow {
                 vec![InclusiveRectangle {
                     left: 0,
@@ -1091,7 +1136,15 @@ impl Presentation {
                 std::mem::take(&mut self.dirty_rects)
             };
             self.rects_overflow = false;
-            if let Some(frame) = tiles.build(image, &rects) {
+            if prof.enabled {
+                prof.rects += rects.len() as u64;
+            }
+            let start = prof.enabled.then(Instant::now);
+            let frame = tiles.build(image, &rects);
+            if let Some(start) = start {
+                prof.tiles_ns += start.elapsed().as_nanos() as u64;
+            }
+            if let Some(frame) = frame {
                 let _ = events.send(RdpOutput::Frame(frame));
             }
         }
@@ -1102,6 +1155,87 @@ async fn wait_for_presentation(deadline: Option<Instant>) {
     match deadline {
         Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
         None => std::future::pending().await,
+    }
+}
+
+/// 实机排障用的轻量分段计时（`WINSSH_RDP_PROF=1` 开启）。
+///
+/// 会话循环是单线程：包络适配（MPPC/分片/重封装）、ActiveStage 解码、
+/// tile 打包都在这条线程上抢 CPU。操作时 CPU 升高，用它看时间花在哪段。
+/// 关闭时连时钟都不读，零开销；开启时每秒打一行汇总（`log::warn!`，
+/// 不配 RUST_LOG 也看得见）。`graphics` 是图形包处理总时长，`stage` 是
+/// 其中 ActiveStage（解码＋写画布）的部分，两者之差约等于包络适配。
+#[derive(Default)]
+struct Prof {
+    enabled: bool,
+    window: Option<Instant>,
+    pdus: u64,
+    bytes: u64,
+    /// 按 [`UpdateCode`] 判别值计更新条数（最大 0xc）。
+    updates: [u64; 16],
+    graphics_ns: u64,
+    stage_ns: u64,
+    tiles_ns: u64,
+    publishes: u64,
+    rects: u64,
+    overflows: u64,
+    /// 上一窗读到的解码器累计值（跨窗保留，用来算本窗增量）。
+    last_recon: u64,
+    last_frames: u64,
+}
+
+impl Prof {
+    fn new() -> Self {
+        Self {
+            enabled: std::env::var_os("WINSSH_RDP_PROF").is_some(),
+            ..Self::default()
+        }
+    }
+
+    /// 循环每圈调一次；开启且满一秒就打汇总、开下一窗。
+    fn tick(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        let now = Instant::now();
+        let Some(start) = self.window else {
+            self.window = Some(now);
+            return;
+        };
+        if now.duration_since(start) < Duration::from_secs(1) {
+            return;
+        }
+        let ms = |ns: u64| ns as f64 / 1e6;
+        // 解码器累计值 → 本窗增量。decode_fps 是解码帧率，publishes 是呈现帧率；
+        // coalesce=decode_fps/publishes > 1 说明有帧被丢弃，延迟重建才有收益空间。
+        let recon_total = ironrdp_graphics::progressive::progressive_recon_count();
+        let frames_total = ironrdp_graphics::progressive::progressive_frame_count();
+        let recon = recon_total.saturating_sub(self.last_recon);
+        let decode_fps = frames_total.saturating_sub(self.last_frames);
+        let coalesce = decode_fps as f64 / self.publishes.max(1) as f64;
+        log::warn!(
+            "RDP prof: pdus={} bytes={} updates[0..=12]={:?} | graphics={:.1}ms stage={:.1}ms envelope≈{:.1}ms tiles={:.1}ms | publishes={} rects={} overflow={} | decode_fps={} recon/s={} coalesce={:.2}",
+            self.pdus,
+            self.bytes,
+            self.updates,
+            ms(self.graphics_ns),
+            ms(self.stage_ns),
+            ms(self.graphics_ns.saturating_sub(self.stage_ns)),
+            ms(self.tiles_ns),
+            self.publishes,
+            self.rects,
+            self.overflows,
+            decode_fps,
+            recon,
+            coalesce,
+        );
+        *self = Self {
+            enabled: true,
+            window: Some(now),
+            last_recon: recon_total,
+            last_frames: frames_total,
+            ..Self::default()
+        };
     }
 }
 
@@ -1116,9 +1250,41 @@ fn process_graphics_frame(
     packet: (Action, &[u8]),
     events_tx: &FrameSender<RdpOutput>,
     share_ids: (u32, u32, u16),
+    prof: &mut Prof,
+) -> Result<Vec<ActiveStageOutput>> {
+    let start = prof.enabled.then(Instant::now);
+    if prof.enabled {
+        prof.pdus += 1;
+        prof.bytes += packet.1.len() as u64;
+    }
+    let result = process_graphics_frame_inner(
+        active_stage, image, fastpath, pointers, presentation, tiles, packet, events_tx,
+        share_ids, prof,
+    );
+    if let Some(start) = start {
+        prof.graphics_ns += start.elapsed().as_nanos() as u64;
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_graphics_frame_inner(
+    active_stage: &mut ActiveStage,
+    image: &mut DecodedImage,
+    fastpath: &mut FastPathFrames,
+    pointers: &mut PointerDecoder,
+    presentation: &mut Presentation,
+    tiles: &mut TileCache,
+    packet: (Action, &[u8]),
+    events_tx: &FrameSender<RdpOutput>,
+    share_ids: (u32, u32, u16),
+    prof: &mut Prof,
 ) -> Result<Vec<ActiveStageOutput>> {
     let mut outputs = Vec::new();
     let mut emit = |code: UpdateCode, data: &[u8], boundary: Option<FrameAction>| -> Result<()> {
+        if prof.enabled {
+            prof.updates[usize::from(code.as_u8())] += 1;
+        }
         if PointerDecoder::handles(code) {
             // 快路径与慢路径的指针都从这里过，已解压、已拼好分片。
             // 自己解，不交给 ActiveStage（见模块文档）。
@@ -1132,7 +1298,7 @@ fn process_graphics_frame(
         }
         if boundary == Some(FrameAction::Begin) {
             // 切入有标记的帧前提交已经完成的旧式更新。
-            presentation.publish(image, tiles, events_tx);
+            presentation.publish(image, tiles, events_tx, prof);
             presentation.end_only_surfaces = false;
             presentation.open = true;
         }
@@ -1145,7 +1311,7 @@ fn process_graphics_frame(
             presentation.open = true;
         }
         for output in
-            process_complete_update(active_stage, image, code, data, share_ids.0, share_ids.1)?
+            process_complete_update(active_stage, image, code, data, share_ids.0, share_ids.1, prof)?
         {
             match output {
                 ActiveStageOutput::GraphicsUpdate(rect) => {
@@ -1163,7 +1329,7 @@ fn process_graphics_frame(
                 presentation.end_only_surfaces = true;
             }
             presentation.open = false;
-            presentation.publish(image, tiles, events_tx);
+            presentation.publish(image, tiles, events_tx, prof);
         }
         Ok(())
     };
@@ -1178,6 +1344,7 @@ fn process_graphics_frame(
                     packet.1,
                     share_ids.0,
                     share_ids.1,
+                    prof,
                 );
             }
         }
@@ -1194,6 +1361,7 @@ fn process_complete_update(
     data: &[u8],
     fastpath_share_id: u32,
     share_id: u32,
+    prof: &mut Prof,
 ) -> Result<Vec<ActiveStageOutput>> {
     // FastPath 长度字段 15 位（上限 32767），给包头留余量；比 16KB 省一半重封装开销。
     const CHUNK: usize = 30 * 1024;
@@ -1225,6 +1393,7 @@ fn process_complete_update(
             &packet,
             fastpath_share_id,
             share_id,
+            prof,
         )?);
     }
     Ok(outputs)
@@ -1296,9 +1465,14 @@ fn process_server_frame(
     payload: &[u8],
     fastpath_share_id: u32,
     share_id: u32,
+    prof: &mut Prof,
 ) -> Result<Vec<ActiveStageOutput>> {
-    let mut outputs = active_stage
-        .process(image, action, payload, None)
+    let start = prof.enabled.then(Instant::now);
+    let processed = active_stage.process(image, action, payload, None);
+    if let Some(start) = start {
+        prof.stage_ns += start.elapsed().as_nanos() as u64;
+    }
+    let mut outputs = processed
         .map_err(|error| anyhow!("{}", t!("rdp.session_failed", detail => error.report())))?;
 
     // IronRDP 的 set_share_id 只更新 X224 处理器。保留 FastPath 处理器后，
