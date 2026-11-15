@@ -284,6 +284,9 @@ split.rows:
 split.columns:
   en: Split left/right
   zh-CN: 左右分屏
+split.quad:
+  en: Four-pane grid
+  zh-CN: 四宫格分屏
 
 # ── 会话状态栏（终端下沿） ───────────────────────────────────────────────
 session_status.disconnected:

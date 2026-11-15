@@ -1,20 +1,21 @@
-//! 一个标签页里的终端分屏：单屏、上下、左右三档。
+//! 一个标签页里的终端分屏：单屏、上下、左右、四宫格四档。
 //!
 //! 移植自 tty7 的 `src/ui/pane.rs`（<https://github.com/l0ng-ai/tty7>，
 //! Apache-2.0），按这个项目要的东西砍了一刀：
 //!
 //! | tty7 | 这里 |
 //! | --- | --- |
-//! | 任意深度的二叉窗格树（`Pane::Split` 递归嵌套） | **两个窗格封顶**，见下 |
+//! | 任意深度的二叉窗格树（`Pane::Split` 递归嵌套） | **四宫格封顶**，见下 |
 //! | 拖着窗格往别的窗格边上放（`pane_drag`、`move_leaf_where`） | 去掉 |
 //! | 方向键在窗格间跳（`neighbor_in_direction`） | 去掉 |
 //! | 分隔条拖拽改比例 | **照搬** |
 //! | 未聚焦窗格调暗（`INACTIVE_DIM`） | 换成一圈描边，理由见 [`super::TerminalPanel`] |
 //!
-//! 砍到两个窗格是照着需求来的：这一版要的是"单屏 / 上下 / 左右"这三个状态，
-//! 而不是任意布局。三个状态用一个枚举说得清楚，一棵树说不清楚 —— 树能表达
-//! 的形状远多于三种，信息栏上那三颗按钮就没有"我现在是哪一档"的答案。
-//! 真要做任意布局的时候，把 tty7 那棵树整棵搬过来即可，那时这个枚举也就没了。
+//! 四宫格封顶是照着需求来的：这一版要的是"单屏 / 上下 / 左右 / 四宫格"这四个
+//! 状态，而不是任意布局。四个状态用一个枚举说得清楚，一棵树说不清楚 —— 树能
+//! 表达的形状远多于四种，信息栏上那四颗按钮就没有"我现在是哪一档"的答案。
+//! 四宫格本身用两层 [`render_split`] 拼出来；真要做任意布局的时候，把 tty7
+//! 那棵树整棵搬过来即可，那时这个枚举也就没了。
 //!
 //! 比例是 `Rc<Cell<f32>>` 而不是普通的 `f32`：拖分隔条时改它的是**窗口级的
 //! 鼠标回调**（在 `canvas` 的 paint 里挂上去的），那个回调拿不到面板的
@@ -56,24 +57,28 @@ pub enum SplitLayout {
     Rows,
     /// 左右两个。
     Columns,
+    /// 两行两列，四个终端。
+    Quad,
 }
 
 impl SplitLayout {
     /// 信息栏上那一组按钮，从左到右的顺序。
-    pub const ALL: [Self; 3] = [Self::Single, Self::Rows, Self::Columns];
+    pub const ALL: [Self; 4] = [Self::Single, Self::Rows, Self::Columns, Self::Quad];
 
-    /// 这一档要几个终端。
+    /// 选这一档时目标窗格数。四宫格里手动关掉一格后实际会暂时少一格，
+    /// 再选一次同一档就补齐（见 [`super::TerminalPanel`] 的 `set_split`）。
     pub fn panes(self) -> usize {
         match self {
             Self::Single => 1,
             Self::Rows | Self::Columns => 2,
+            Self::Quad => 4,
         }
     }
 
-    /// 分屏的方向。单屏没有方向。
+    /// 两窗格档位的分屏方向。单屏与四宫格没有单一方向。
     pub fn axis(self) -> Option<Axis> {
         match self {
-            Self::Single => None,
+            Self::Single | Self::Quad => None,
             // GPUI 的 `Axis` 说的是**分隔条切开的方向**：`Horizontal` 是左右
             // 并排（竖着切一刀），`Vertical` 是上下叠放。名字容易反着读，
             // 所以这里写死一次，别处都问这个函数。
@@ -87,6 +92,7 @@ impl SplitLayout {
             Self::Single => AppIcon::Square,
             Self::Rows => AppIcon::Rows2,
             Self::Columns => AppIcon::Columns2,
+            Self::Quad => AppIcon::Grid2x2,
         }
     }
 
@@ -95,6 +101,7 @@ impl SplitLayout {
             Self::Single => t!("split.single"),
             Self::Rows => t!("split.rows"),
             Self::Columns => t!("split.columns"),
+            Self::Quad => t!("split.quad"),
         }
         .into()
     }
@@ -105,6 +112,7 @@ impl SplitLayout {
             Self::Single => "session-info-split-single",
             Self::Rows => "session-info-split-rows",
             Self::Columns => "session-info-split-columns",
+            Self::Quad => "session-info-split-quad",
         }
     }
 }
@@ -133,11 +141,24 @@ impl SplitState {
         clamp_ratio(self.ratio.get())
     }
 
-    /// 回到对半分。换分屏方向时用 —— 上下拖成 9:1 之后切到左右，
+    /// 回到对半分。换分屏档位或方向时用 —— 上下拖成 9:1 之后切到左右，
     /// 那个 9:1 是对着另一个方向拖出来的，接着用没有道理。
     pub fn reset(&self) {
         self.ratio.set(0.5);
         self.dragging.set(false);
+    }
+
+    /// 共用同一个比例、但各自记录拖动状态的一份副本。
+    ///
+    /// 四宫格里左右两列的上下分隔条要一起动，光共享比例还不够：两条分隔条
+    /// 都会把窗口级鼠标移动换算成比例，若连 `dragging` 也共享，拖左边那条时
+    /// 右边那条也会拿自己的容器去算一遍，把比例来回打架。各持一个 `dragging`
+    /// 之后，只有真正被按住的那条能改比例，另一条只跟着读数。
+    pub fn shared_ratio(&self) -> Self {
+        Self {
+            ratio: self.ratio.clone(),
+            dragging: Rc::new(Cell::new(false)),
+        }
     }
 }
 

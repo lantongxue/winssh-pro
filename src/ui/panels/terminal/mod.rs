@@ -38,7 +38,7 @@ use gpui_kit::component::{
     h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
 };
 use gpui_kit::{
-    App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    App, AppContext as _, Axis, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
     WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px,
 };
@@ -290,17 +290,25 @@ pub struct TerminalPanel {
     /// 状态栏那几个数字。来自监控面板的采集（[`MonitorEvent::Reading`]），
     /// 第一次采到之前是 `None`，状态栏显示破折号而不是 0。
     telemetry: Option<SessionTelemetry>,
-    /// 这个标签页里的终端。单屏时一个，分屏时两个 —— 长度由
-    /// [`SplitLayout::panes`] 说了算，两者不同步就会画出空的一半。
+    /// 这个标签页里的终端。长度通常由 [`SplitLayout::panes`] 说了算；四宫格
+    /// 里手动关掉一格后会暂时是三格，直到用户再选一档。
     ///
-    /// 第 0 个是这个标签页最初的窗格，只有用户手动关掉它才会从头上消失；
-    /// 分屏、换方向、收回单屏都不换它。
+    /// 四宫格按左上、右上、左下、右下排；三格时首窗格占满左列，另两格在
+    /// 右列上下排。第 0 个是这个标签页最初的窗格，只有用户手动关掉它才会
+    /// 从头上消失；分屏、换方向、收回单屏都不换它。
     panes: Vec<Entity<TerminalPane>>,
     /// 活动窗格的下标。上下两条 chrome 说的是它的事，SFTP 送的命令
     /// 也进它。焦点在哪一半，它就是哪一半（[`Self::sync_active`]）。
     active: usize,
     split: SplitLayout,
+    /// 上下与左右两档的分隔条。
     split_state: SplitState,
+    /// 四宫格左右两列的宽度。列分隔条与三格时的左列宽度都用它。
+    quad_columns: SplitState,
+    /// 四宫格两列各自的行高。两者比例共享（拖任意一条两列都跟着走），
+    /// 拖动状态分开，理由见 [`SplitState::shared_ratio`]。
+    quad_rows: SplitState,
+    quad_rows_right: SplitState,
     /// 面板自己的焦点句柄。**只是个兜底** —— [`Focusable`] 实际交出去的是
     /// 活动窗格的句柄，见那边的说明。
     focus_handle: FocusHandle,
@@ -462,6 +470,8 @@ impl TerminalPanel {
                 Source::Detached => PaneOrigin::Detached,
             };
             let pane = TerminalPane::new(host.clone(), origin, window, cx);
+            let quad_rows = SplitState::default();
+            let quad_rows_right = quad_rows.shared_ratio();
 
             let mut this = Self {
                 telemetry: None,
@@ -470,6 +480,9 @@ impl TerminalPanel {
                 active: 0,
                 split: SplitLayout::Single,
                 split_state: SplitState::default(),
+                quad_columns: SplitState::default(),
+                quad_rows,
+                quad_rows_right,
                 focus_handle: cx.focus_handle(),
                 monitor_open: false,
                 monitor_panel: monitor_panel.clone(),
@@ -617,38 +630,52 @@ impl TerminalPanel {
         }
     }
 
+    /// 把几条分隔条的比例都复位。
+    ///
+    /// 四宫格的两份行高状态共享同一个比例；`quad_rows_right` 也要复位，免得它
+    /// 自己的拖动标志停在旧值上。
+    fn reset_split_states(&self) {
+        self.split_state.reset();
+        self.quad_columns.reset();
+        self.quad_rows.reset();
+        self.quad_rows_right.reset();
+    }
+
     /// 换一档分屏。
     ///
-    /// 三档之间六种走法，归成三件事：加一个窗格、去掉一个窗格、只换方向。
-    /// 换方向时把比例复位 —— 上下拖成 9:1 之后切到左右，那个 9:1 是对着另一个
-    /// 方向拖出来的，接着用没有道理。
+    /// 目标档位要几个窗格，就补齐或截到几个；裁掉时总是保留排在前面的窗格，
+    /// 第 0 个（最初那个会话）只有用户手动关闭才消失。四宫格里关掉一格之后
+    /// 仍是四宫格档，再点一次这一档会把缺的那格补回来，不会因为枚举没变就
+    /// 当成"已经在这一档"。
     fn set_split(&mut self, layout: SplitLayout, window: &mut Window, cx: &mut Context<Self>) {
-        if self.split == layout {
+        let target = layout.panes();
+        if self.split == layout && self.panes.len() == target {
             return;
         }
         let was = self.split;
+        let before = self.panes.len();
         self.split = layout;
-
-        match (was.panes(), layout.panes()) {
-            (1, 2) => {
-                let pane = TerminalPane::new(self.host.clone(), self.pane_origin(), window, cx);
-                self.split_state.reset();
-                self.adopt_pane(pane, window, cx);
-                self.focus_active(window, cx);
-            }
-            (2, 1) => {
-                // 收回单屏时留下**最初那个**窗格，而不是活动的那个：新开的
-                // 第二半从创建起就是活动的（[`Self::adopt_pane`]），照着活动
-                // 窗格留就会把第一半里正在跑的任务连同 shell 一起丢掉。
-                // 最初那个会话只有用户手动关闭才结束。
-                self.panes.truncate(1);
-                self.active = 0;
-                self.split_state.reset();
-                self.focus_active(window, cx);
-            }
-            // 上下 ↔ 左右：窗格不动，只是排法换了。
-            _ => self.split_state.reset(),
+        // 换档位时那几条分隔条的方向都变了，旧比例没有继续使用的道理。
+        // 同一档补回缺格时不动：用户刚拖好的比例要留着。
+        if was != layout {
+            self.reset_split_states();
         }
+
+        if self.panes.len() < target {
+            while self.panes.len() < target {
+                let pane =
+                    TerminalPane::new(self.host.clone(), self.pane_origin(), window, cx);
+                self.adopt_pane(pane, window, cx);
+            }
+        } else if self.panes.len() > target {
+            // 保留前缀，首窗格永远在里面。
+            self.panes.truncate(target);
+            self.active = 0;
+        }
+        if self.panes.len() != before {
+            self.focus_active(window, cx);
+        }
+
         // 窗格数变了，"还有没有活着的"就可能跟着变：收回单屏留下的那一半
         // 已经断了、被丢掉的那一半还连着，就是一次翻面。
         self.sync_liveness(cx);
@@ -673,7 +700,12 @@ impl TerminalPanel {
         }
     }
 
-    /// 关掉一个窗格：分屏时收回单屏，单屏时关掉整个标签页。
+    /// 关掉一个窗格：单屏时关掉整个标签页，其余档位只收掉这一格。
+    ///
+    /// 四宫格关掉一格后还剩三个终端，固定档位里没有三格这一档 —— 此时仍留在
+    /// 四宫格档，按"首窗格占左列、另两格在右列上下"排。再关一格剩两个时，
+    /// 左列那个（`at == 0`）走了就上下排，否则就是左右排。不能为了凑回固定
+    /// 档位顺手把另一个正在跑的终端也关掉。
     fn close_pane(
         &mut self,
         pane: gpui_kit::EntityId,
@@ -689,8 +721,25 @@ impl TerminalPanel {
         };
         self.panes.remove(at);
         self.active = 0;
-        self.split = SplitLayout::Single;
-        self.split_state.reset();
+        match self.panes.len() {
+            3 => {
+                // 三格仍算四宫格档，比例不动；用户再点四宫格会把第四格补回来。
+                self.split = SplitLayout::Quad;
+            }
+            2 => {
+                // 三格布局的第一格（左列）没了，剩下右列上下两格；否则是
+                // 左列那一格加上右列的一格，左右摆。
+                self.split = match at {
+                    0 => SplitLayout::Rows,
+                    _ => SplitLayout::Columns,
+                };
+                self.split_state.reset();
+            }
+            _ => {
+                self.split = SplitLayout::Single;
+                self.split_state.reset();
+            }
+        }
         self.focus_active(window, cx);
         // 关掉的那一半可能是唯一还连着的（见 [`Self::set_split`] 里同一句）。
         self.sync_liveness(cx);
@@ -1365,7 +1414,7 @@ impl TerminalPanel {
 
     // ─── 渲染 ───────────────────────────────────────────────────────────────
 
-    /// 终端那一块：一个窗格，或者两个加一条拖得动的分隔条。
+    /// 终端那一块：一个窗格，或者两条/三条拖得动的分隔条切出来的几格。
     fn render_panes(
         &mut self,
         window: &mut Window,
@@ -1373,16 +1422,54 @@ impl TerminalPanel {
     ) -> gpui_kit::AnyElement {
         // 布局和窗格数对不上是画不出来的（少一半会是空白）。分屏那一步失败时
         // （比如新窗格没建起来）就按实际有几个来画，而不是相信那个枚举。
-        let Some(axis) = self.split.axis().filter(|_| self.panes.len() >= 2) else {
-            return match self.active_pane() {
+        match self.panes.len() {
+            0 => div().size_full().into_any_element(),
+            1 => match self.active_pane() {
                 Some(pane) => pane.clone().into_any_element(),
                 None => div().size_full().into_any_element(),
-            };
-        };
+            },
+            2 => {
+                // 两个窗格时 `split` 一定是上下或左右；万一状态过渡到了
+                // 别的档位，左右排也画得出来，不会只剩空白。
+                let axis = self.split.axis().unwrap_or(Axis::Horizontal);
+                let a = self.render_pane_cell(0, window, cx);
+                let b = self.render_pane_cell(1, window, cx);
+                render_split(axis, &self.split_state, a, b, cx)
+            }
+            _ => self.render_grid(window, cx),
+        }
+    }
 
-        let a = self.render_pane_cell(0, window, cx);
-        let b = self.render_pane_cell(1, window, cx);
-        render_split(axis, &self.split_state, a, b, cx)
+    /// 四宫格与它关掉一格之后的三格排法。
+    ///
+    /// 四格是 `[左上, 右上, 左下, 右下]`：外层左右切一刀，两列各自上下切。
+    /// 三格时首窗格占满左列，另外两格在右列上下排 —— 那正是四宫格关掉
+    /// 任意一格后不用再丢一个终端的排法。
+    fn render_grid(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let tl = self.render_pane_cell(0, window, cx);
+        if self.panes.len() >= 4 {
+            let tr = self.render_pane_cell(1, window, cx);
+            let bl = self.render_pane_cell(2, window, cx);
+            let br = self.render_pane_cell(3, window, cx);
+            let left = render_split(Axis::Vertical, &self.quad_rows, tl, bl, cx);
+            let right = render_split(Axis::Vertical, &self.quad_rows_right, tr, br, cx);
+            return render_split(Axis::Horizontal, &self.quad_columns, left, right, cx);
+        }
+
+        let top_right = self.render_pane_cell(1, window, cx);
+        let bottom_right = self.render_pane_cell(2, window, cx);
+        let right = render_split(
+            Axis::Vertical,
+            &self.quad_rows,
+            top_right,
+            bottom_right,
+            cx,
+        );
+        render_split(Axis::Horizontal, &self.quad_columns, tl, right, cx)
     }
 
     /// 分屏时的一格：窗格外面套一圈描边，标出焦点在哪一半。

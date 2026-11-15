@@ -92,6 +92,10 @@ const OWNED: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/rows-2.svg"),
     ),
     (
+        "icons/grid-2x2.svg",
+        include_bytes!("../assets/icons/grid-2x2.svg"),
+    ),
+    (
         "icons/square.svg",
         include_bytes!("../assets/icons/square.svg"),
     ),

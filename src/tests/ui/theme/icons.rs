@@ -14,6 +14,7 @@
             AppIcon::Cable.path(),
             AppIcon::Columns2.path(),
             AppIcon::Rows2.path(),
+            AppIcon::Grid2x2.path(),
             AppIcon::Square.path(),
             AppIcon::CodeXml.path(),
             AppIcon::Download.path(),

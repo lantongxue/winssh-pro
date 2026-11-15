@@ -30,6 +30,8 @@ pub enum AppIcon {
     Columns2,
     /// 横着一分为二的方框：上下分屏。
     Rows2,
+    /// 横竖各切一刀的方框：四宫格分屏。
+    Grid2x2,
     /// 完整的方框：不分屏，一个终端占满。
     Square,
     /// `</>`：命令片段，也是源码文件的类型图标。
@@ -101,6 +103,7 @@ impl IconNamed for AppIcon {
             Self::Cable => "icons/cable.svg",
             Self::Columns2 => "icons/columns-2.svg",
             Self::Rows2 => "icons/rows-2.svg",
+            Self::Grid2x2 => "icons/grid-2x2.svg",
             Self::Square => "icons/square.svg",
             Self::CodeXml => "icons/code-xml.svg",
             Self::Download => "icons/download.svg",

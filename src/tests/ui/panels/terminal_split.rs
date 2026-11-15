@@ -1,16 +1,17 @@
     use super::*;
 
     #[test]
-    fn only_the_two_split_layouts_have_an_axis() {
+    fn only_the_two_pane_layouts_have_a_single_axis() {
         assert_eq!(SplitLayout::Single.axis(), None);
         assert_eq!(SplitLayout::Rows.axis(), Some(Axis::Vertical));
         assert_eq!(SplitLayout::Columns.axis(), Some(Axis::Horizontal));
+        assert_eq!(SplitLayout::Quad.axis(), None);
     }
 
-    /// 有没有轴，和要几个终端，说的必须是同一件事。分开写的话，某一天加了
-    /// 第四档就会出现"有轴却只开一个终端"这种画不出来的状态。
+    /// 有没有单一方向，和是不是两窗格档，说的必须是同一件事。四宫格同时
+    /// 有横竖两条轴，所以它没有 `axis`，但窗格数是四。
     #[test]
-    fn an_axis_and_a_second_pane_go_together() {
+    fn an_axis_belongs_only_to_the_two_pane_layouts() {
         for layout in SplitLayout::ALL {
             assert_eq!(
                 layout.axis().is_some(),
@@ -18,6 +19,7 @@
                 "{layout:?} 的轴和窗格数对不上"
             );
         }
+        assert_eq!(SplitLayout::Quad.panes(), 4, "四宫格要有四个窗格");
     }
 
     #[test]
@@ -63,4 +65,18 @@
         let state = SplitState::default();
         state.ratio.set(0.3);
         assert!((state.ratio() - 0.3).abs() < f32::EPSILON);
+    }
+
+    /// 四宫格两列的行高共用一个比例，但拖动状态必须各归各的 —— 否则拖
+    /// 左边那条横向分隔条时，右边那条也会拿自己的容器换算一次，比例打架。
+    #[test]
+    fn a_shared_ratio_reads_together_but_drags_apart() {
+        let left = SplitState::default();
+        let right = left.shared_ratio();
+
+        left.ratio.set(0.3);
+        assert!((right.ratio() - 0.3).abs() < f32::EPSILON, "比例没共享");
+
+        left.dragging.set(true);
+        assert!(!right.dragging.get(), "拖动状态不该共享");
     }

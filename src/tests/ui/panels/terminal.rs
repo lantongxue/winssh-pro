@@ -104,7 +104,7 @@
         let (panel, cx) = draw_panel(cx);
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
-                panel.set_split(SplitLayout::Rows, window, cx)
+                panel.set_split(SplitLayout::Quad, window, cx)
             })
         });
         cx.update(|_, cx| {
@@ -114,7 +114,7 @@
         });
 
         panel.read_with(cx, |panel, cx| {
-            assert_eq!(panel.panes.len(), 2, "这一档是上下两半");
+            assert_eq!(panel.panes.len(), 4, "这一档是四宫格");
             assert_eq!(panel.host.terminal_scheme, "dracula");
             for (ix, pane) in panel.panes.iter().enumerate() {
                 assert_eq!(
@@ -133,8 +133,10 @@
         for layout in [
             SplitLayout::Columns,
             SplitLayout::Rows,
+            SplitLayout::Quad,
             SplitLayout::Single,
             SplitLayout::Rows,
+            SplitLayout::Quad,
         ] {
             cx.update(|window, cx| {
                 panel.update(cx, |panel, cx| panel.set_split(layout, window, cx));
@@ -213,6 +215,135 @@
             assert_eq!(panel.panes.len(), 1);
             assert_eq!(panel.panes[0].entity_id(), first, "点第二半的关闭，收错了窗格");
             assert_ne!(panel.panes[0].entity_id(), second);
+        });
+    }
+
+    /// 四宫格里关掉一格，只少这一个终端；剩下三格继续画出来。
+    ///
+    /// 固定档位没有"三格"这一档，不能为了凑回两格或单屏再顺手关掉一个
+    /// 正在跑任务的终端。三格排成"首窗格占左列、另两格在右列上下"。
+    #[gpui_kit::test]
+    fn closing_a_quad_pane_keeps_the_other_three(cx: &mut gpui_kit::TestAppContext) {
+        let (panel, cx) = draw_panel(cx);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_split(SplitLayout::Quad, window, cx)
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let ids = panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.panes.len(), 4);
+            assert_eq!(panel.split, SplitLayout::Quad);
+            panel
+                .panes
+                .iter()
+                .map(|pane| pane.entity_id())
+                .collect::<Vec<_>>()
+        });
+        for (at, probe) in [
+            "terminal-pane-close-0",
+            "terminal-pane-close-1",
+            "terminal-pane-close-2",
+            "terminal-pane-close-3",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(
+                cx.debug_bounds(probe).is_some(),
+                "第 {at} 格没画出关闭按钮"
+            );
+        }
+
+        let close = cx
+            .debug_bounds("terminal-pane-close-3")
+            .expect("右下那一格没画出关闭按钮");
+        cx.simulate_click(close.center(), gpui_kit::Modifiers::none());
+
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.split, SplitLayout::Quad, "三格还应留在四宫格档");
+            assert_eq!(panel.panes.len(), 3, "关一格不该连带收起别的终端");
+            assert_eq!(panel.panes[0].entity_id(), ids[0]);
+            assert_eq!(panel.panes[1].entity_id(), ids[1]);
+            assert_eq!(panel.panes[2].entity_id(), ids[2]);
+        });
+
+        // 再关掉右列上半格，剩左列那格与右列下半格，左右排。
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let close = cx
+            .debug_bounds("terminal-pane-close-1")
+            .expect("三格布局里右列上半格没画出关闭按钮");
+        cx.simulate_click(close.center(), gpui_kit::Modifiers::none());
+
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.split, SplitLayout::Columns);
+            assert_eq!(panel.panes.len(), 2);
+            assert_eq!(panel.panes[0].entity_id(), ids[0]);
+            assert_eq!(panel.panes[1].entity_id(), ids[2]);
+        });
+    }
+
+    /// 四宫格关掉一格后仍是四宫格档，再点这一档要把缺的那格补回来。
+    #[gpui_kit::test]
+    fn choosing_quad_again_refills_the_missing_pane(cx: &mut gpui_kit::TestAppContext) {
+        let (panel, cx) = draw_panel(cx);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_split(SplitLayout::Quad, window, cx)
+            });
+            window.draw(cx).clear(cx);
+        });
+        let ids = panel.read_with(cx, |panel, _| {
+            panel
+                .panes
+                .iter()
+                .map(|pane| pane.entity_id())
+                .collect::<Vec<_>>()
+        });
+
+        let close = cx
+            .debug_bounds("terminal-pane-close-2")
+            .expect("左下那一格没画出关闭按钮");
+        cx.simulate_click(close.center(), gpui_kit::Modifiers::none());
+        panel.read_with(cx, |panel, _| assert_eq!(panel.panes.len(), 3));
+
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_split(SplitLayout::Quad, window, cx)
+            });
+            window.draw(cx).clear(cx);
+        });
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.split, SplitLayout::Quad);
+            assert_eq!(panel.panes.len(), 4, "缺的那格没补回来");
+            assert_eq!(panel.panes[0].entity_id(), ids[0]);
+            assert_eq!(panel.panes[1].entity_id(), ids[1]);
+            assert_eq!(panel.panes[2].entity_id(), ids[3]);
+        });
+    }
+
+    /// 从四宫格直接收回单屏，留下的仍是首窗格。
+    #[gpui_kit::test]
+    fn collapsing_the_quad_keeps_the_first_pane(cx: &mut gpui_kit::TestAppContext) {
+        let (panel, cx) = draw_panel(cx);
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_split(SplitLayout::Quad, window, cx)
+            })
+        });
+        let first = panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.active, 3, "最后补进来的那一格应当是活动的");
+            panel.panes[0].entity_id()
+        });
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_split(SplitLayout::Single, window, cx)
+            })
+        });
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.panes.len(), 1);
+            assert_eq!(panel.panes[0].entity_id(), first, "四宫格收屏换掉了首窗格");
         });
     }
 
