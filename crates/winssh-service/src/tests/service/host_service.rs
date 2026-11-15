@@ -963,6 +963,7 @@
                 color_depth: RdpColorDepth::High16,
                 performance: RdpPerformance::Wan,
                 clipboard: false,
+                audio: false,
                 compression: false,
                 domain: "EXAMPLE".into(),
             };

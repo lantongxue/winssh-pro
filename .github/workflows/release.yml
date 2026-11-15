@@ -275,6 +275,11 @@ jobs:
         shell: bash
         run: ./scripts/set-version.sh "${{ needs.plan.outputs.version }}"
 
+      # `libasound2-dev` 给 RDP 远端声音：`ironrdp-rdpsnd-native` 经 cpal 放音，
+      # Linux 后端是 ALSA（cpal 对 `alsa` crate 的依赖不走 feature 门，关不掉），
+      # 构建期要 libasound 的开发头文件。macOS（CoreAudio）与 Windows（WASAPI）
+      # 走系统框架，不用装。
+      #
       # `protobuf-compiler` 给 EasyTier 组网（`easytier-proto` 的构建脚本用
       # prost-build 现编 protobuf，要 `protoc`）。Windows 上那个构建脚本自己
       # 会下一份 protoc，不用在这里装；macOS 走下面那一步的 brew。
@@ -288,6 +293,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
+            libasound2-dev \
             libfontconfig1-dev \
             libwayland-dev \
             libx11-xcb-dev \

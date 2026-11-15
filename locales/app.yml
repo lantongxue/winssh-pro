@@ -2574,6 +2574,9 @@ host_form.field_rdp_performance:
 host_form.field_rdp_clipboard:
   en: Clipboard sync (text & files)
   zh-CN: 剪贴板同步（含文件）
+host_form.field_rdp_audio:
+  en: Remote audio playback
+  zh-CN: 远程声音
 host_form.field_rdp_compression:
   en: Compression (MPPC)
   zh-CN: 压缩（MPPC）

@@ -64,6 +64,7 @@
         assert_eq!(default.color_depth, RdpColorDepth::True32);
         assert_eq!(default.performance, RdpPerformance::Balanced);
         assert!(default.clipboard);
+        assert!(default.audio);
         assert!(default.compression);
         assert!(default.domain.is_empty());
     }
@@ -75,14 +76,16 @@
             color_depth: RdpColorDepth::High16,
             performance: RdpPerformance::Wan,
             clipboard: false,
+            audio: false,
             compression: false,
             domain: "EXAMPLE".into(),
         };
         assert_eq!(decode(&encode(&settings)), settings);
     }
 
-    /// 这四格都是后补的：库里存着的旧 JSON 没有这些键，读回来得逐个落到
-    /// 出厂档，而不是整行退回。
+    /// 这几格都是后补的：库里存着的旧 JSON 没有这些键，读回来得逐个落到
+    /// 出厂档，而不是整行退回。声音（`audio`）是最新补的一格 —— 老库里没有
+    /// 这个键，读回来必须是"开"，否则升级后老主机的远端声音会突然没了。
     #[test]
     fn an_older_row_without_newer_keys_still_reads() {
         let older = r#"{"security":"tlsonly"}"#;
@@ -91,6 +94,7 @@
         assert_eq!(settings.color_depth, RdpColorDepth::True32);
         assert_eq!(settings.performance, RdpPerformance::Balanced);
         assert!(settings.clipboard);
+        assert!(settings.audio);
         assert!(settings.compression);
         assert!(settings.domain.is_empty());
     }

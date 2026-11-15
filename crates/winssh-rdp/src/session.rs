@@ -50,7 +50,14 @@
 //! [`RdpOutput::Files`]。剪贴板这一路出的错一律只记日志、不断会话 ——
 //! 上游 `ironrdp-client` 在这里一路 `?`，一次不合规的文件请求就断线。
 //!
-//! 不支持的（有意）：声音（RDPSND）、驱动器重定向、智能卡、
+//! 声音：`audio` 那档开着时报 `enable_audio_playback`（不落
+//! `INFO_NOAUDIOPLAYBACK` 旗），并挂三条通道 —— 静态 RDPSND（老服务器的
+//! 回退）与 AUDIO_PLAYBACK_DVC / AUDIO_PLAYBACK_LOSSY_DVC（Windows 8 起
+//! 优先走的动态通道）。三条共享同一个 cpal 播放后端
+//! （[`super::audio::SharedPlayback`]），解码出的音频直接进本地默认输出
+//! 设备，不经 GPUI，会话循环只承担 wave 块的解码（约 10µs/块）。
+//!
+//! 不支持的（有意）：麦克风重定向（MS-RDPEAI）、驱动器重定向、智能卡、
 //! UDP 多传输、Kerberos（NTLM 够用，Kerberos 要 KDC 配置，走不到）。
 
 use std::net::SocketAddr;
@@ -91,6 +98,9 @@ use ironrdp_pdu::rdp::client_info::{CompressionType, TimezoneInfo};
 use ironrdp_pdu::rdp::headers::{ShareControlHeader, ShareControlPdu, ShareDataPdu};
 use ironrdp_pdu::surface_commands::FrameAction;
 use ironrdp_pdu::{Action, PduResult, mcs, x224::X224};
+use ironrdp_rdpsnd::client::{
+    DVC_CHANNEL_NAME, LOSSY_DVC_CHANNEL_NAME, Rdpsnd, RdpsndDvcState,
+};
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{
     ActiveStage, ActiveStageBuilder, ActiveStageOutput, GracefulDisconnectReason,
@@ -105,6 +115,7 @@ use rust_i18n::t;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
+use super::audio::{self, SharedPlayback};
 use super::clipboard::{GpuiClipboard, LocalClipboard};
 use super::file_copy::FileCopyEvent;
 use super::file_copy::outgoing::LocalFileList;
@@ -359,18 +370,37 @@ async fn open(
 
     // 动态通道：DisplayControl 是"改分辨率"那条（窗口拖大拖小时用）；
     // GraphicsPipeline 是 GFX 图形管线（H.264 硬解那条，见模块文档）。
-    let drdynvc = DrdynvcClient::new()
+    let mut drdynvc = DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
         .with_dynamic_channel(GraphicsPipelineClient::new(
             Box::new(GfxHandler::new()),
             platform_h264_decoder(),
         ));
+
+    // 声音输出（MS-RDPEA）：一个 SharedPlayback 后端同时喂静态 RDPSND 通道
+    // 与 AUDIO_PLAYBACK_DVC[_LOSSY] 两条动态通道（Windows 8+ 优先走动态，
+    // 静态是老服务器的回退）。两条动态通道共享一份协商状态，用 factory 注册，
+    // 服务器关掉再开时状态机重建（见 `super::audio` 的模块文档）。
+    let playback = settings.audio.then(SharedPlayback::new);
+    if let Some(playback) = &playback {
+        let state = RdpsndDvcState::new(Box::new(playback.clone())).with_clock(audio::clock());
+        let lossy = state.clone();
+        drdynvc = drdynvc
+            .with_dynamic_channel_factory(DVC_CHANNEL_NAME, move || state.channel())
+            .with_dynamic_channel_factory(LOSSY_DVC_CHANNEL_NAME, move || lossy.lossy_channel());
+    }
     connector = connector.with_static_channel(drdynvc);
 
     if settings.clipboard {
         connector.attach_static_channel(Cliprdr::new(Box::new(GpuiClipboard::new(
             clip_tx, events_tx, local,
         ))));
+    }
+
+    // 静态 RDPSND 通道：和动态通道驱动同一个后端（`with_clock` 让 Wave Confirm
+    // 报得上持有时间，服务器靠它给音频流调速）。
+    if let Some(playback) = playback {
+        connector.attach_static_channel(Rdpsnd::new(Box::new(playback)).with_clock(audio::clock()));
     }
 
     let should_upgrade = connect_begin(&mut framed, &mut connector)
@@ -535,7 +565,10 @@ fn connector_config(
         hardware_id: None,
         request_data: None,
         autologon: false,
-        enable_audio_playback: false,
+        // 声音输出那档开着就不落 `INFO_NOAUDIOPLAYBACK` 旗，服务器才会把
+        // 远端声音经 RDPSND 推过来（通道在 `open()` 里挂）。麦克风重定向没做，
+        // 恒关。
+        enable_audio_playback: settings.audio,
         enable_audio_capture: false,
         performance_flags: settings.performance.flags(),
         license_cache: None,

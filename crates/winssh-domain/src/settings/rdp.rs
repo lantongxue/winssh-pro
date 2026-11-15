@@ -1,4 +1,4 @@
-//! 一台 RDP 主机的连接配置：安全档、色深、性能档、剪贴板与域。
+//! 一台 RDP 主机的连接配置：安全档、色深、性能档、剪贴板、声音、压缩与域。
 //!
 //! 这些全是建会话之前能点开的旋钮，摆到主机表单里由用户自己拧：
 //!
@@ -8,6 +8,7 @@
 //! | [`RdpColorDepth`] | 位图能力的色深 | 带宽紧的链路降到 16 位，画面省一半 |
 //! | [`RdpPerformance`] | `INFO_PERF_FLAGS`（关壁纸/动画/主题那组） | 慢链路点"窄带"；本地点"局域网"把动效留着 |
 //! | `clipboard` | CLIPRDR 静态通道挂不挂（文本与文件复制都走它） | 不想让两边剪贴板互通时关掉 |
+//! | `audio` | RDPSND / AUDIO_PLAYBACK_DVC 声音输出通道挂不挂（配 `enable_audio_playback`） | 不想让远端声音在本地放时关掉 |
 //! | `compression` | `INFO_COMPRESSION`（MPPC 64K） | 对端是古董实现、报压缩错时才关 |
 //! | `domain` | CredSSP/NTLM 的域（`DOMAIN\user`） | 域账号填域；本地账号留空 |
 //!
@@ -16,7 +17,7 @@
 //! 太常见）。我们没有比上游更严的口径，就不摆一个开不动的开关。
 //!
 //! 出厂档：TLS+NLA 都开（自动协商）、真彩 32 位、平衡性能档、剪贴板开、
-//! 压缩开、域为空 —— 也就是 `mstsc` 在一台现代 Windows 上的默认行为。
+//! 声音开、压缩开、域为空 —— 也就是 `mstsc` 在一台现代 Windows 上的默认行为。
 
 use gpui_kit::SharedString;
 use ironrdp_pdu::rdp::client_info::PerformanceFlags;
@@ -198,6 +199,10 @@ pub struct RdpSettings {
     /// 挂不挂 CLIPRDR 静态通道。关掉之后两边剪贴板（文本与文件）互不相干，
     /// 面板也不会去盯本地剪贴板。
     pub clipboard: bool,
+    /// 挂不挂声音输出通道（RDPSND 静态通道 + AUDIO_PLAYBACK_DVC 动态通道），
+    /// 并对应 `enable_audio_playback` 那面旗。关掉之后远端的声音不往本地传，
+    /// 报给服务器的是 `INFO_NOAUDIOPLAYBACK`。
+    pub audio: bool,
     /// 要不要协商 MPPC 64K 快路径压缩（`INFO_COMPRESSION`）。
     ///
     /// 出厂开。关它是排障档：`ironrdp` 的快路径解压是全通了的，但古董/野
@@ -218,6 +223,7 @@ impl Default for RdpSettings {
             color_depth: RdpColorDepth::default(),
             performance: RdpPerformance::default(),
             clipboard: true,
+            audio: true,
             compression: true,
             domain: String::new(),
         }
