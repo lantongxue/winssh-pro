@@ -8,44 +8,36 @@
 //! | 任意深度的二叉窗格树（`Pane::Split` 递归嵌套） | **四宫格封顶**，见下 |
 //! | 拖着窗格往别的窗格边上放（`pane_drag`、`move_leaf_where`） | 去掉 |
 //! | 方向键在窗格间跳（`neighbor_in_direction`） | 去掉 |
-//! | 分隔条拖拽改比例 | **照搬** |
+//! | 分隔条拖拽改比例 | **照搬**（改用 gpui-kit 的 Resizable 组件） |
 //! | 未聚焦窗格调暗（`INACTIVE_DIM`） | 换成一圈描边，理由见 [`super::TerminalPanel`] |
 //!
 //! 四宫格封顶是照着需求来的：这一版要的是"单屏 / 上下 / 左右 / 四宫格"这四个
 //! 状态，而不是任意布局。四个状态用一个枚举说得清楚，一棵树说不清楚 —— 树能
 //! 表达的形状远多于四种，信息栏上那四颗按钮就没有"我现在是哪一档"的答案。
-//! 四宫格本身用两层 [`render_split`] 拼出来；真要做任意布局的时候，把 tty7
-//! 那棵树整棵搬过来即可，那时这个枚举也就没了。
+//! 四宫格本身用两层 `h_resizable` / `v_resizable` 嵌套拼出来；真要做任意布局
+//! 的时候，把 tty7 那棵树整棵搬过来即可，那时这个枚举也就没了。
 //!
-//! 比例是 `Rc<Cell<f32>>` 而不是普通的 `f32`：拖分隔条时改它的是**窗口级的
-//! 鼠标回调**（在 `canvas` 的 paint 里挂上去的），那个回调拿不到面板的
-//! `&mut self`。tty7 也是这么做的，原因一样。
+//! 分隔条用的是 gpui-kit 的 `ResizablePanelGroup`（`h_resizable` / `v_resizable`），
+//! 与监控面板、SFTP 栏那两处用同一套组件，分隔条的样式（idle hairline → hover
+//! pill → drag pill）与交互行为统一。每组分屏各自持一份 `Entity<ResizableState>`，
+//! 拖拽、尺寸管理都由组件自理；四宫格两列的行高同步通过监听
+//! `ResizablePanelEvent::Resized` 把被拖列的比例拷给另一列。
 
-use std::cell::Cell;
-use std::rc::Rc;
-
-use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::{
+    ResizableState, h_resizable, resizable_panel, v_resizable,
+};
 use gpui_kit::{
-    AnyElement, App, Axis, Bounds, InteractiveElement as _, IntoElement, MouseButton,
-    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, SharedString, Styled as _, canvas,
-    div, prelude::FluentBuilder as _, px,
+    AnyElement, App, AppContext as _, Axis, ElementId, Entity, IntoElement, ParentElement as _,
+    Pixels, SharedString, px,
 };
 
 use crate::ui::theme::AppIcon;
 use rust_i18n::t;
 
-/// 一边最少占多少、最多占多少。留 10% 是为了"拖过头"之后还看得见、还拖得回来
-/// —— 拖到 0 的那一半在屏幕上就消失了，用户只会以为窗格被关掉了。
-const MIN_RATIO: f32 = 0.1;
-const MAX_RATIO: f32 = 0.9;
-
-/// 分隔条画多宽。
-const DIVIDER_THICKNESS: f32 = 5.;
-
-/// 能抓住分隔条的范围，比它看着的宽。5px 的线用鼠标去够是很烦的一件事，
-/// 所以判定区域往两边各伸出去一点 —— 伸出的部分落在终端网格自己的内边距上，
-/// 盖不住任何一个字。
-const DIVIDER_GRAB: f32 = 9.;
+/// 每个窗格至少留多少像素。Resizable 的 `size_range` 用它做下限 ——
+/// 拖到 0 的那一半在屏幕上就消失了，用户只会以为窗格被关掉了。
+/// 上限不设（`Pixels::MAX`），由容器尺寸和另一侧的最小值自然夹住。
+const MIN_PANE_SIZE: Pixels = px(40.);
 
 /// 这一个标签页的终端怎么排。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -117,202 +109,39 @@ impl SplitLayout {
     }
 }
 
-/// 分隔条拖到哪儿了，以及此刻是不是正被拖着。
-///
-/// 两个字段都是共享可变的，理由见模块头。
-#[derive(Clone)]
-pub struct SplitState {
-    ratio: Rc<Cell<f32>>,
-    dragging: Rc<Cell<bool>>,
-}
-
-impl Default for SplitState {
-    fn default() -> Self {
-        Self {
-            ratio: Rc::new(Cell::new(0.5)),
-            dragging: Rc::new(Cell::new(false)),
-        }
-    }
-}
-
-impl SplitState {
-    /// 前一半占的比例，已经夹在合法区间里。
-    pub fn ratio(&self) -> f32 {
-        clamp_ratio(self.ratio.get())
-    }
-
-    /// 回到对半分。换分屏档位或方向时用 —— 上下拖成 9:1 之后切到左右，
-    /// 那个 9:1 是对着另一个方向拖出来的，接着用没有道理。
-    pub fn reset(&self) {
-        self.ratio.set(0.5);
-        self.dragging.set(false);
-    }
-
-    /// 共用同一个比例、但各自记录拖动状态的一份副本。
-    ///
-    /// 四宫格里左右两列的上下分隔条要一起动，光共享比例还不够：两条分隔条
-    /// 都会把窗口级鼠标移动换算成比例，若连 `dragging` 也共享，拖左边那条时
-    /// 右边那条也会拿自己的容器去算一遍，把比例来回打架。各持一个 `dragging`
-    /// 之后，只有真正被按住的那条能改比例，另一条只跟着读数。
-    pub fn shared_ratio(&self) -> Self {
-        Self {
-            ratio: self.ratio.clone(),
-            dragging: Rc::new(Cell::new(false)),
-        }
-    }
-}
-
-fn clamp_ratio(r: f32) -> f32 {
-    if r.is_finite() {
-        r.clamp(MIN_RATIO, MAX_RATIO)
-    } else {
-        0.5
-    }
+/// 创建一份新的分屏状态。换档位时 `clear()` 旧的、建新的即可。
+pub fn new_split_state(cx: &mut App) -> Entity<ResizableState> {
+    cx.new(|_| ResizableState::default())
 }
 
 /// 把两个窗格按 `axis` 排好，中间放一条拖得动的分隔条。
 ///
-/// 布局用 `flex_grow` 而不是给死宽高：终端要跟着窗口一起变，写死的像素在
-/// 窗口缩放时就不对了。两边都 `flex_basis(0)` 才让 `flex_grow` 真的等于比例。
+/// 用 gpui-kit 的 `ResizablePanelGroup`（`h_resizable` / `v_resizable`）实现，
+/// 与监控面板、SFTP 栏共用同一套分隔条外观与拖拽行为。两个 panel 都不设
+/// `size`（初始尺寸），让 ResizableState 自己平分；`size_range` 只设下限，
+/// 上限由容器尺寸自然夹住。
 pub fn render_split(
+    id: impl Into<ElementId>,
     axis: Axis,
-    state: &SplitState,
+    state: &Entity<ResizableState>,
     a: AnyElement,
     b: AnyElement,
-    cx: &App,
 ) -> AnyElement {
-    let row = axis == Axis::Horizontal;
-    let ratio = state.ratio.clone();
-    let dragging = state.dragging.clone();
-    let r = state.ratio();
-
-    let idle = cx.theme().border;
-    let active = cx.theme().drag_border;
-
-    // 拖动时要把指针位置换算成比例，就得知道这一整块有多宽/多高。元素自己
-    // 量得出来的只有 paint 之后的 bounds，所以铺一层 `canvas` 把它记下来，
-    // 供同一帧挂上去的鼠标回调读。
-    let container: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::new(Cell::new(None));
-    let backing = canvas(
-        {
-            let container = container.clone();
-            move |bounds, _window, _cx| container.set(Some(bounds))
-        },
-        {
-            let container = container.clone();
-            let ratio = ratio.clone();
-            let dragging = dragging.clone();
-            move |_bounds, _state, window, _cx| {
-                // 挂在窗口上而不是元素上：拖着拖着指针会跑到终端网格上面去，
-                // 挂在元素上的话那一刻就收不到移动了，分隔条会卡住。
-                window.on_mouse_event({
-                    let container = container.clone();
-                    let ratio = ratio.clone();
-                    let dragging = dragging.clone();
-                    move |ev: &MouseMoveEvent, _phase, window, _cx| {
-                        if !dragging.get() {
-                            return;
-                        }
-                        let Some(b) = container.get() else {
-                            return;
-                        };
-                        let span = if row { b.size.width } else { b.size.height };
-                        if span.as_f32() <= 0. {
-                            return;
-                        }
-                        let offset = if row {
-                            ev.position.x - b.origin.x
-                        } else {
-                            ev.position.y - b.origin.y
-                        };
-                        ratio.set(clamp_ratio(offset / span));
-                        window.refresh();
-                    }
-                });
-                window.on_mouse_event({
-                    let dragging = dragging.clone();
-                    move |_ev: &MouseUpEvent, _phase, window, _cx| {
-                        if dragging.get() {
-                            dragging.set(false);
-                            window.refresh();
-                        }
-                    }
-                });
-            }
-        },
-    )
-    .absolute()
-    .size_full();
-
-    let line_color = if dragging.get() { active } else { idle };
-    let overhang = (DIVIDER_GRAB - DIVIDER_THICKNESS).max(0.) / 2.;
-    let grab = div()
-        .occlude()
-        .absolute()
-        .when(row, |d| {
-            d.top_0()
-                .h_full()
-                .left(px(-overhang))
-                .w(px(DIVIDER_THICKNESS + overhang * 2.))
-                .cursor_col_resize()
-        })
-        .when(!row, |d| {
-            d.left_0()
-                .w_full()
-                .top(px(-overhang))
-                .h(px(DIVIDER_THICKNESS + overhang * 2.))
-                .cursor_row_resize()
-        })
-        .on_mouse_down(MouseButton::Left, {
-            let dragging = dragging.clone();
-            move |_ev, window, _cx| {
-                dragging.set(true);
-                window.refresh();
-            }
-        });
-
-    let divider = div()
-        .group("split-divider")
-        .flex_none()
-        .relative()
-        .flex()
-        .items_center()
-        .justify_center()
-        .when(row, |d| d.w(px(DIVIDER_THICKNESS)).h_full())
-        .when(!row, |d| d.h(px(DIVIDER_THICKNESS)).w_full())
+    let group = if axis == Axis::Horizontal {
+        h_resizable(id)
+    } else {
+        v_resizable(id)
+    };
+    group
+        .with_state(state)
         .child(
-            div()
-                .when(row, |d| d.w(px(1.)).h_full())
-                .when(!row, |d| d.h(px(1.)).w_full())
-                .bg(line_color)
-                .group_hover("split-divider", |s| s.bg(active)),
-        )
-        .child(grab);
-
-    div()
-        .size_full()
-        .relative()
-        .flex()
-        .when(row, |d| d.flex_row())
-        .when(!row, |d| d.flex_col())
-        .child(backing)
-        .child(
-            div()
-                .flex_grow(r)
-                .flex_shrink(1.)
-                .flex_basis(px(0.))
-                .min_w_0()
-                .min_h_0()
+            resizable_panel()
+                .size_range(MIN_PANE_SIZE..Pixels::MAX)
                 .child(a),
         )
-        .child(divider)
         .child(
-            div()
-                .flex_grow(1. - r)
-                .flex_shrink(1.)
-                .flex_basis(px(0.))
-                .min_w_0()
-                .min_h_0()
+            resizable_panel()
+                .size_range(MIN_PANE_SIZE..Pixels::MAX)
                 .child(b),
         )
         .into_any_element()

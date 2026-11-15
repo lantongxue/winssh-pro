@@ -30,7 +30,8 @@ pub use pane::{BackTab, CloseSearch, CopySelection, Find, PasteClipboard, Tab};
 pub use split::SplitLayout;
 
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, ResizableState, Sizable as _, WindowExt as _,
+    ActiveTheme as _, IconName, ResizablePanelEvent, ResizableState, Sizable as _,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{
         BasePanel, DockArea, DockPlacement, PaneRef, Panel, PanelEvent, TabGroup, panel_handle,
@@ -47,7 +48,7 @@ use std::sync::Arc;
 
 use self::{
     pane::{PaneOrigin, TerminalPane, TerminalPaneEvent},
-    split::{SplitState, render_split},
+    split::{new_split_state, render_split},
 };
 use super::sftp_editor::SftpEditorPanel;
 use crate::{
@@ -302,13 +303,14 @@ pub struct TerminalPanel {
     active: usize,
     split: SplitLayout,
     /// 上下与左右两档的分隔条。
-    split_state: SplitState,
+    split_state: Entity<ResizableState>,
     /// 四宫格左右两列的宽度。列分隔条与三格时的左列宽度都用它。
-    quad_columns: SplitState,
-    /// 四宫格两列各自的行高。两者比例共享（拖任意一条两列都跟着走），
-    /// 拖动状态分开，理由见 [`SplitState::shared_ratio`]。
-    quad_rows: SplitState,
-    quad_rows_right: SplitState,
+    quad_columns: Entity<ResizableState>,
+    /// 四宫格两列各自的行高。拖左列分隔条时通过 `ResizablePanelEvent::Resized`
+    /// 把比例同步给右列，反之亦然 —— 取代原先 `SplitState::shared_ratio` 的
+    /// 共享比例。
+    quad_rows: Entity<ResizableState>,
+    quad_rows_right: Entity<ResizableState>,
     /// 面板自己的焦点句柄。**只是个兜底** —— [`Focusable`] 实际交出去的是
     /// 活动窗格的句柄，见那边的说明。
     focus_handle: FocusHandle,
@@ -470,8 +472,8 @@ impl TerminalPanel {
                 Source::Detached => PaneOrigin::Detached,
             };
             let pane = TerminalPane::new(host.clone(), origin, window, cx);
-            let quad_rows = SplitState::default();
-            let quad_rows_right = quad_rows.shared_ratio();
+            let quad_rows = new_split_state(cx);
+            let quad_rows_right = new_split_state(cx);
 
             let mut this = Self {
                 telemetry: None,
@@ -479,10 +481,10 @@ impl TerminalPanel {
                 panes: Vec::new(),
                 active: 0,
                 split: SplitLayout::Single,
-                split_state: SplitState::default(),
-                quad_columns: SplitState::default(),
-                quad_rows,
-                quad_rows_right,
+                split_state: new_split_state(cx),
+                quad_columns: new_split_state(cx),
+                quad_rows: quad_rows.clone(),
+                quad_rows_right: quad_rows_right.clone(),
                 focus_handle: cx.focus_handle(),
                 monitor_open: false,
                 monitor_panel: monitor_panel.clone(),
@@ -504,6 +506,7 @@ impl TerminalPanel {
             this.adopt_pane(pane, window, cx);
             Self::subscribe_monitor(&monitor_panel, cx);
             Self::subscribe_sftp(&sftp_panel, window, cx);
+            this.subscribe_quad_row_sync(window, cx);
             this
         })
     }
@@ -632,13 +635,36 @@ impl TerminalPanel {
 
     /// 把几条分隔条的比例都复位。
     ///
-    /// 四宫格的两份行高状态共享同一个比例；`quad_rows_right` 也要复位，免得它
-    /// 自己的拖动标志停在旧值上。
-    fn reset_split_states(&self) {
-        self.split_state.reset();
-        self.quad_columns.reset();
-        self.quad_rows.reset();
-        self.quad_rows_right.reset();
+    /// `clear()` 清掉 `ResizableState` 里的面板尺寸记录，下一帧组件会重新平分
+    /// —— 等价于原来 `SplitState::reset()` 把比例拉回 0.5。四宫格两列各持一份
+    /// 行高状态，都要清。
+    fn reset_split_states(&self, cx: &mut App) {
+        self.split_state.update(cx, |s, _| s.clear());
+        self.quad_columns.update(cx, |s, _| s.clear());
+        self.quad_rows.update(cx, |s, _| s.clear());
+        self.quad_rows_right.update(cx, |s, _| s.clear());
+    }
+
+    /// 四宫格两列的行高同步：拖左列分隔条时把左列的尺寸比例拷给右列，
+    /// 反之亦然。
+    ///
+    /// 原来用 `SplitState::shared_ratio` 共享一个 `Rc<Cell<f32>>`，现在两列
+    /// 各持一份 `ResizableState`，通过监听 `ResizablePanelEvent::Resized`
+    /// 在一方拖完时把它的尺寸比例同步给另一份 state。只在拖拽结束时同步
+    /// （不每帧同步），避免两份 state 在拖拽过程中互相打架。
+    fn subscribe_quad_row_sync(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let left = self.quad_rows.clone();
+        let right = self.quad_rows_right.clone();
+        // 左列拖完 → 同步给右列
+        let right_for_left = right.clone();
+        cx.subscribe_in(&left, window, move |_: &mut Self, left: &Entity<ResizableState>, _: &ResizablePanelEvent, window, cx| {
+            sync_row_sizes(left, &right_for_left, window, cx);
+        }).detach();
+        // 右列拖完 → 同步给左列
+        let left_for_right = left.clone();
+        cx.subscribe_in(&right, window, move |_: &mut Self, right: &Entity<ResizableState>, _: &ResizablePanelEvent, window, cx| {
+            sync_row_sizes(right, &left_for_right, window, cx);
+        }).detach();
     }
 
     /// 换一档分屏。
@@ -658,7 +684,7 @@ impl TerminalPanel {
         // 换档位时那几条分隔条的方向都变了，旧比例没有继续使用的道理。
         // 同一档补回缺格时不动：用户刚拖好的比例要留着。
         if was != layout {
-            self.reset_split_states();
+            self.reset_split_states(cx);
         }
 
         if self.panes.len() < target {
@@ -733,11 +759,11 @@ impl TerminalPanel {
                     0 => SplitLayout::Rows,
                     _ => SplitLayout::Columns,
                 };
-                self.split_state.reset();
+                self.split_state.update(cx, |s, _| s.clear());
             }
             _ => {
                 self.split = SplitLayout::Single;
-                self.split_state.reset();
+                self.split_state.update(cx, |s, _| s.clear());
             }
         }
         self.focus_active(window, cx);
@@ -1434,7 +1460,7 @@ impl TerminalPanel {
                 let axis = self.split.axis().unwrap_or(Axis::Horizontal);
                 let a = self.render_pane_cell(0, window, cx);
                 let b = self.render_pane_cell(1, window, cx);
-                render_split(axis, &self.split_state, a, b, cx)
+                render_split("terminal-split", axis, &self.split_state, a, b)
             }
             _ => self.render_grid(window, cx),
         }
@@ -1455,21 +1481,21 @@ impl TerminalPanel {
             let tr = self.render_pane_cell(1, window, cx);
             let bl = self.render_pane_cell(2, window, cx);
             let br = self.render_pane_cell(3, window, cx);
-            let left = render_split(Axis::Vertical, &self.quad_rows, tl, bl, cx);
-            let right = render_split(Axis::Vertical, &self.quad_rows_right, tr, br, cx);
-            return render_split(Axis::Horizontal, &self.quad_columns, left, right, cx);
+            let left = render_split("quad-rows-left", Axis::Vertical, &self.quad_rows, tl, bl);
+            let right = render_split("quad-rows-right", Axis::Vertical, &self.quad_rows_right, tr, br);
+            return render_split("quad-columns", Axis::Horizontal, &self.quad_columns, left, right);
         }
 
         let top_right = self.render_pane_cell(1, window, cx);
         let bottom_right = self.render_pane_cell(2, window, cx);
         let right = render_split(
+            "quad-rows-left",
             Axis::Vertical,
             &self.quad_rows,
             top_right,
             bottom_right,
-            cx,
         );
-        render_split(Axis::Horizontal, &self.quad_columns, tl, right, cx)
+        render_split("quad-columns", Axis::Horizontal, &self.quad_columns, tl, right)
     }
 
     /// 分屏时的一格：窗格外面套一圈描边，标出焦点在哪一半。
@@ -1539,6 +1565,49 @@ impl TerminalPanel {
             )
             .into_any_element()
     }
+}
+
+/// 把 `from` 这份行高 state 的尺寸比例同步给 `to`。
+///
+/// 四宫格两列的上下分隔条要一起动：拖左边那条时右边那条也该跟着走。
+/// 原来用 `Rc<Cell<f32>>` 共享比例，现在两列各持一份 `ResizableState`，
+/// 在一方拖完（`ResizablePanelEvent::Resized`）时把它的尺寸比例拷给另一方。
+///
+/// 只在拖拽结束时同步一次，不每帧同步：拖拽过程中两份 state 各自管自己的
+/// 面板尺寸，每帧都同步会让两边的 `adjust_to_container_size` 互相打架。
+fn sync_row_sizes(
+    from: &Entity<ResizableState>,
+    to: &Entity<ResizableState>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let from_sizes = from.read(cx).sizes().clone();
+    if from_sizes.len() < 2 {
+        return;
+    }
+    // 按比例同步：`from` 的第一个面板占多少比例，`to` 也照着分。
+    let from_total: f32 = from_sizes.iter().map(|s| s.as_f32()).sum();
+    if from_total <= 0. {
+        return;
+    }
+    let to_sizes = to.read(cx).sizes().clone();
+    if to_sizes.len() < 2 {
+        return;
+    }
+    let to_total: f32 = to_sizes.iter().map(|s| s.as_f32()).sum();
+    if to_total <= 0. {
+        return;
+    }
+    // 只在比例明显不同时才同步，避免微小浮点差异来回触发。
+    let from_ratio = from_sizes[0].as_f32() / from_total;
+    let to_ratio = to_sizes[0].as_f32() / to_total;
+    if (from_ratio - to_ratio).abs() < 0.01 {
+        return;
+    }
+    let new_first = (to_total * from_ratio).into();
+    to.update(cx, |to, cx| {
+        to.resize_panel(0, new_first, window, cx);
+    });
 }
 
 impl EventEmitter<PanelEvent> for TerminalPanel {}
