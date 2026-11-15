@@ -3932,6 +3932,9 @@ terminal.wsl_platform:
 terminal.close_session:
   en: Close session
   zh-CN: 关闭会话
+terminal.close_pane:
+  en: Close this pane
+  zh-CN: 关闭此窗格
 terminal.forwards_failed:
   en: "%{count} port forward(s) did not start — %{reasons}"
   zh-CN: 有 %{count} 条端口转发未启动 —— %{reasons}

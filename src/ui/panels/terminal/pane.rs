@@ -146,6 +146,10 @@ fn drag_scroll_step(overshoot: f32) -> i32 {
 const SEARCH_BAR_TOP: Pixels = px(8.);
 const SEARCH_BAR_HEIGHT: Pixels = px(34.);
 const SEARCH_BAR_WIDTH: Pixels = px(400.);
+/// 搜索栏右边缘与窗格边缘的距离。分屏时同一角还有一颗窗格关闭按钮
+/// （`PANE_CLOSE_INSET + PANE_CLOSE_SIZE` 再加一点间隙，见 `terminal::mod`），
+/// 搜索栏从它左边起，两个关闭控件才不会叠在一起。
+const SEARCH_BAR_RIGHT: Pixels = px(40.);
 
 /// 新开一个窗格时先按这个尺寸请求远端 PTY。
 ///
@@ -1818,7 +1822,7 @@ impl TerminalPane {
             h_flex()
                 .absolute()
                 .top(SEARCH_BAR_TOP)
-                .right_4()
+                .right(SEARCH_BAR_RIGHT)
                 // 挡住底下的网格：在栏上划拉不该变成在终端里拖选。
                 .occlude()
                 .items_center()

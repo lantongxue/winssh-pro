@@ -174,6 +174,48 @@
         });
     }
 
+    /// 分屏的每一半右上角都有一颗关闭按钮，点哪一颗只收掉哪一半。
+    ///
+    /// 线上踩过的坑：终端右键设成"粘贴"档时没有右键菜单，分屏的窗格就没法
+    /// 单独关掉。按钮浮在网格上，单屏时不画 —— 那条路径由标签页自己的关闭
+    /// 按钮负责。
+    #[gpui_kit::test]
+    fn each_split_pane_has_a_close_button(cx: &mut gpui_kit::TestAppContext) {
+        let (panel, cx) = draw_panel(cx);
+        assert!(
+            cx.debug_bounds("terminal-pane-close-0").is_none(),
+            "单屏不该多出一颗窗格关闭按钮"
+        );
+
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_split(SplitLayout::Rows, window, cx)
+            });
+            window.draw(cx).clear(cx);
+        });
+
+        let (first, second) = panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.panes.len(), 2);
+            (panel.panes[0].entity_id(), panel.panes[1].entity_id())
+        });
+        assert!(
+            cx.debug_bounds("terminal-pane-close-0").is_some(),
+            "上半边没画出关闭按钮"
+        );
+        let close = cx
+            .debug_bounds("terminal-pane-close-1")
+            .expect("下半边没画出关闭按钮");
+
+        cx.simulate_click(close.center(), gpui_kit::Modifiers::none());
+
+        panel.read_with(cx, |panel, _| {
+            assert_eq!(panel.split, SplitLayout::Single);
+            assert_eq!(panel.panes.len(), 1);
+            assert_eq!(panel.panes[0].entity_id(), first, "点第二半的关闭，收错了窗格");
+            assert_ne!(panel.panes[0].entity_id(), second);
+        });
+    }
+
     /// 把面板放进真正的 Dock 里画。
     ///
     /// 光把面板当根视图画是不够的：标签条那条路（[`Panel::title`]）、

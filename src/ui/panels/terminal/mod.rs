@@ -115,6 +115,13 @@ pub enum SessionEvent {
 /// 标签页上那个颜色点的直径。
 const TAB_DOT_SIZE: gpui_kit::Pixels = px(6.);
 
+/// 分屏时每个窗格右上角那颗关闭按钮的外边距与整块尺寸。
+///
+/// 搜索栏也贴在同一角，它在 `pane.rs` 里让出了这块位置（见
+/// `SEARCH_BAR_RIGHT`），改这几个数时要一起看。
+const PANE_CLOSE_INSET: gpui_kit::Pixels = px(8.);
+const PANE_CLOSE_SIZE: gpui_kit::Pixels = px(24.);
+
 /// 右侧监控面板的固定宽度。
 const MONITOR_WIDTH: gpui_kit::Pixels = px(360.);
 
@@ -1385,15 +1392,22 @@ impl TerminalPanel {
     /// 我们的 [`crate::ui::elements::TerminalGridElement`] 没有那一层，而给整块
     /// 元素加 `opacity` 会连光标和选区一起变淡，读起来是"这一半坏了"。
     /// 描边只花一像素，还不动任何一个字的颜色。
-    fn render_pane_cell(&self, at: usize, window: &Window, cx: &App) -> gpui_kit::AnyElement {
+    fn render_pane_cell(
+        &self,
+        at: usize,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
         let Some(pane) = self.panes.get(at) else {
             return div().size_full().into_any_element();
         };
         // 两半都描一圈，只是颜色不同 —— 只给聚焦的那半加边框的话，切换焦点会
         // 让两边的终端各差一像素，一屏能放下的行数跟着跳。
         let focused = pane.read(cx).contains_focused(window, cx);
+        let pane_id = pane.entity_id();
         div()
             .size_full()
+            .relative()
             .overflow_hidden()
             .border_1()
             .border_color(match focused {
@@ -1401,6 +1415,41 @@ impl TerminalPanel {
                 false => cx.theme().border,
             })
             .child(pane.clone())
+            // 右键设为"粘贴"时窗格没有右键菜单可关，分屏的每一半因此各留一颗
+            // 关闭按钮。浮在网格上而不是占一行，终端行数不会因为多这颗按钮变。
+            .child(
+                div()
+                    .absolute()
+                    .top(PANE_CLOSE_INSET)
+                    .right(PANE_CLOSE_INSET)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(PANE_CLOSE_SIZE)
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().popover)
+                    .shadow_sm()
+                    // 盖住的那一小块不漏给终端：点关闭不能顺带在底下起一个选区。
+                    .occlude()
+                    .debug_selector(move || format!("terminal-pane-close-{at}"))
+                    .child(
+                        Button::new(("terminal-pane-close", pane_id))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Close)
+                            .tooltip(t!("terminal.close_pane"))
+                            .accessibility_id(t!("terminal.close_pane"))
+                            .accessibility_label(t!("terminal.close_pane"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                // 按钮吞掉这一下：不然点关闭会顺带激活它所在的
+                                // 那一半，而它下一刻就不存在了。
+                                cx.stop_propagation();
+                                this.close_pane(pane_id, window, cx);
+                            })),
+                    ),
+            )
             .into_any_element()
     }
 }
