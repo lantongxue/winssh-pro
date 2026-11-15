@@ -145,18 +145,22 @@
         }
     }
 
-    /// 收回单屏时留下的必须是**活动的**那一半，而不是排在前面的那一半。
+    /// 收回单屏时留下的必须是**最初那个**窗格，而不是刚变得活动的第二半。
+    ///
+    /// 线上踩过的坑：分屏后在其中一半跑着任务，再收回单屏，那一半连同 shell
+    /// 一起被丢掉，变成了一个重新登录的新终端。分屏新开的窗格从创建起就是
+    /// 活动的，按活动窗格保留正好会丢掉最初那个正在干活的会话。
     #[gpui_kit::test]
-    fn collapsing_keeps_the_active_pane(cx: &mut gpui_kit::TestAppContext) {
+    fn collapsing_keeps_the_first_pane(cx: &mut gpui_kit::TestAppContext) {
         let (panel, cx) = draw_panel(cx);
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
                 panel.set_split(SplitLayout::Rows, window, cx)
             })
         });
-        let second = panel.read_with(cx, |panel, _| {
+        let first = panel.read_with(cx, |panel, _| {
             assert_eq!(panel.active, 1, "新开的那一半应当是活动的");
-            panel.panes[1].entity_id()
+            panel.panes[0].entity_id()
         });
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
@@ -165,7 +169,8 @@
         });
         panel.read_with(cx, |panel, _| {
             assert_eq!(panel.panes.len(), 1);
-            assert_eq!(panel.panes[0].entity_id(), second, "留错了那一半");
+            assert_eq!(panel.active, 0);
+            assert_eq!(panel.panes[0].entity_id(), first, "最初那个窗格被换掉了");
         });
     }
 

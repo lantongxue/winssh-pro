@@ -285,6 +285,9 @@ pub struct TerminalPanel {
     telemetry: Option<SessionTelemetry>,
     /// 这个标签页里的终端。单屏时一个，分屏时两个 —— 长度由
     /// [`SplitLayout::panes`] 说了算，两者不同步就会画出空的一半。
+    ///
+    /// 第 0 个是这个标签页最初的窗格，只有用户手动关掉它才会从头上消失；
+    /// 分屏、换方向、收回单屏都不换它。
     panes: Vec<Entity<TerminalPane>>,
     /// 活动窗格的下标。上下两条 chrome 说的是它的事，SFTP 送的命令
     /// 也进它。焦点在哪一半，它就是哪一半（[`Self::sync_active`]）。
@@ -627,9 +630,11 @@ impl TerminalPanel {
                 self.focus_active(window, cx);
             }
             (2, 1) => {
-                // 收回单屏时留下的是**活动的**那一半：用户正看着它。
-                let keep = self.active.min(self.panes.len().saturating_sub(1));
-                self.panes = self.panes.drain(keep..=keep).collect();
+                // 收回单屏时留下**最初那个**窗格，而不是活动的那个：新开的
+                // 第二半从创建起就是活动的（[`Self::adopt_pane`]），照着活动
+                // 窗格留就会把第一半里正在跑的任务连同 shell 一起丢掉。
+                // 最初那个会话只有用户手动关闭才结束。
+                self.panes.truncate(1);
                 self.active = 0;
                 self.split_state.reset();
                 self.focus_active(window, cx);
