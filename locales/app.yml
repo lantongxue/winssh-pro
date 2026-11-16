@@ -3685,6 +3685,9 @@ sftp_editor.loading:
 sftp_editor.encoding_tooltip:
   en: File encoding — click to switch
   zh-CN: 文件编码，点开可以换一档
+sftp_editor.goto_placeholder:
+  en: "Go to line (e.g. 125 or 125:7)"
+  zh-CN: 跳到行（如 125 或 125:7）
 sftp_editor.encoding_locked:
   en: Save or discard the changes before switching encoding
   zh-CN: 有未保存的更改，保存后才能切换编码

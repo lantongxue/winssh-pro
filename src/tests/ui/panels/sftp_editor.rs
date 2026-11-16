@@ -1,4 +1,6 @@
-    use super::{SftpEditorPanel, language_for, language_for_shebang, open_after_host};
+    use super::{
+        SftpEditorPanel, language_for, language_for_shebang, open_after_host, parse_goto,
+    };
 
     /// 编辑页开在打开它的那个会话标签页后面，关掉它要落回那一页。
     ///
@@ -158,6 +160,34 @@
         assert_eq!(language_for("archive.tar.gz"), None);
         // 无扩展名、无特例：交给 shebang 兜底，不硬猜。
         assert_eq!(language_for("run"), None);
+    }
+
+    /// 行跳转框认 VSCode 那几种写法；行、列都是人读的 1 起数，换成编辑器要的
+    /// 0 起数时不能差一位。
+    #[test]
+    fn parse_goto_accepts_vscode_forms() {
+        use gpui_kit::component::input::Position;
+
+        assert_eq!(parse_goto("125", 1000), Some(Position::new(124, 0)));
+        assert_eq!(parse_goto("125:7", 1000), Some(Position::new(124, 6)));
+        assert_eq!(parse_goto(":125", 1000), Some(Position::new(124, 0)));
+        assert_eq!(parse_goto("  125  ", 1000), Some(Position::new(124, 0)));
+        assert_eq!(parse_goto("1", 1), Some(Position::new(0, 0)));
+    }
+
+    /// 越界的行号夹到末行（`9999` 想去的是文件结尾），解析不动的留给人改，
+    /// 不跳也不关框 —— 静悄悄关掉像是"跳了但没动"。
+    #[test]
+    fn parse_goto_clamps_out_of_range_lines_and_rejects_non_numbers() {
+        use gpui_kit::component::input::Position;
+
+        assert_eq!(parse_goto("9999", 10), Some(Position::new(9, 0)));
+        assert_eq!(parse_goto("0", 10), Some(Position::new(0, 0)));
+        assert_eq!(parse_goto("", 10), None);
+        assert_eq!(parse_goto("   ", 10), None);
+        assert_eq!(parse_goto("abc", 10), None);
+        assert_eq!(parse_goto("12:abc", 10), None);
+        assert_eq!(parse_goto("-3", 10), None);
     }
 
     #[test]

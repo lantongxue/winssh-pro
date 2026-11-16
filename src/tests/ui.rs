@@ -84,6 +84,22 @@
         }
     }
 
+    /// 文件编辑页的行跳转绑在 `SftpEditor` 上下文：焦点在编辑器里（`Input`）
+    /// 时命中，出了编辑页不沾。Esc 也先过 `CloseGoToLine` —— 跳转框没开着时
+    /// 它自己 `propagate()` 放行，不会把别处的 Esc 吃掉。
+    #[test]
+    fn editor_go_to_line_only_binds_in_the_sftp_editor() {
+        assert_eq!(
+            dispatch(&["Root", "SftpEditor", "Input"], CMD_G).as_deref(),
+            Some(GoToLine.name())
+        );
+        assert_eq!(
+            dispatch(&["Root", "SftpEditor", "Input"], "escape").as_deref(),
+            Some(CloseGoToLine.name())
+        );
+        assert_eq!(dispatch(&["Root", "Terminal"], CMD_G), None);
+    }
+
     /// SFTP 面板那几个文件列表键只认表格里的焦点。绑在 `SftpPanel` 整层时，
     /// 路径栏输入框里敲回车：输入框处理完那一轮还放行（单行框的
     /// `InputBaseState::enter` 显式 `propagate()`），派发按深度逐条继续，

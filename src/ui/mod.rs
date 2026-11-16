@@ -46,9 +46,9 @@ use gpui_kit::component::dock::{ClosePanel, ToggleZoom};
 use gpui_kit::{App, KeyBinding, NoAction};
 
 use panels::{
-    BackTab, CloseSearch, CopySelection, ExtendSelectionDown, ExtendSelectionUp, Find,
-    OpenSelection, PasteClipboard, SaveFile, SelectAllEntries, Tab, ToggleForwards, ToggleHistory,
-    ToggleMonitor, ToggleSftp,
+    BackTab, CloseGoToLine, CloseSearch, CopySelection, ExtendSelectionDown, ExtendSelectionUp,
+    Find, GoToLine, OpenSelection, PasteClipboard, SaveFile, SelectAllEntries, Tab, ToggleForwards,
+    ToggleHistory, ToggleMonitor, ToggleSftp,
 };
 use workspace::{
     OpenSettingsWindow, OpenTrustedHosts, OpenVaultWindow, ToggleCommandPalette, ToggleSidebar,
@@ -70,6 +70,7 @@ command_key!(CMD_COMMA, ",");
 command_key!(CMD_W, "w");
 command_key!(CMD_S, "s");
 command_key!(CMD_A, "a");
+command_key!(CMD_G, "g");
 command_key!(CMD_C, "c");
 
 /// VNC 面板的按键上下文，和 [`VncPanel`](panels::VncPanel) 里那句
@@ -110,6 +111,10 @@ fn bindings() -> Vec<KeyBinding> {
         // （它是那个面板的孩子）里时冒泡上来命中；别处（终端、表格）的 cmd-s 不受影响。
         // 编辑器内层是 `Input` 上下文、不绑 cmd-s，所以让得开。
         KeyBinding::new(CMD_S, SaveFile, Some("SftpEditor")),
+        // 远端文件编辑标签页里的行跳转（VSCode 同款）。同样只在 `SftpEditor`
+        // 上下文里生效；输入的 Esc 只在跳转框开着时被消费，关着时放行。
+        KeyBinding::new(CMD_G, GoToLine, Some("SftpEditor")),
+        KeyBinding::new("escape", CloseGoToLine, Some("SftpEditor")),
         // 终端内的 Tab / Shift-Tab：必须在 `Terminal` 上下文中显式绑定并消费，
         // 否则会被 `Root` 的 `Tab`（焦点切换）抢走，终端永远收不到 `\x09` / `\x1b[Z`。
         KeyBinding::new("tab", Tab, Some("Terminal")),

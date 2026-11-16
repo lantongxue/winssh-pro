@@ -35,15 +35,15 @@ use gpui_kit::component::{
         TabGroup, panel_handle,
     },
     h_flex,
-    input::{Editor, EditorState, InputEvent},
+    input::{Editor, EditorState, Input, InputEvent, InputState, Position, RopeExt as _},
     tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::{
     App, AppContext as _, ClipboardItem, Context, CursorStyle, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px, relative,
+    Focusable, Half as _, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window,
+    div, prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::assistant::SessionTarget;
@@ -56,6 +56,10 @@ gpui_kit::actions!(
     [
         /// 在编辑标签页里按 `cmd-s` / `ctrl-s`：保存这份远端文件。
         SaveFile,
+        /// 按 `cmd-g` / `ctrl-g`：打开行跳转框。
+        GoToLine,
+        /// 行跳转框开着时按 Esc：收起它，回到编辑器。
+        CloseGoToLine,
     ]
 );
 
@@ -93,6 +97,14 @@ pub struct SftpEditorPanel {
     language: Option<SharedString>,
     /// 读成功之后才建：这样初始内容走 `default_value` 塞进去，不触发一次"已修改"。
     editor: Option<Entity<EditorState>>,
+    /// 行跳转框（Ctrl+G / Cmd+G）。第一次打开时建，之后一直留着复用 ——
+    /// 收起只翻 [`Self::goto_open`]：在框子自己的回车事件里把它丢掉，等于在
+    /// 派事件的当口拆掉事件源。
+    goto: Option<Entity<InputState>>,
+    /// 跳转框此刻是不是露在正文上面。
+    goto_open: bool,
+    /// 盯着跳转框的回车。订阅要留住，掉了回车就不跳了。
+    _goto: Option<Subscription>,
     /// 最近一次从远端读到（或刚写回）的原始字节。换编码时拿它重解，不用再跑
     /// 一趟远端；解不出来时也留着 —— 换一档再解正是它存在的理由。
     bytes: Option<Vec<u8>>,
@@ -199,6 +211,9 @@ impl SftpEditorPanel {
             name,
             language,
             editor: None,
+            goto: None,
+            goto_open: false,
+            _goto: None,
             bytes: None,
             encoding: TextEncoding::Utf8,
             read: Read::Pending,
@@ -229,6 +244,9 @@ impl SftpEditorPanel {
             name: "detached.conf".into(),
             language: None,
             editor: None,
+            goto: None,
+            goto_open: false,
+            _goto: None,
             bytes: None,
             encoding: TextEncoding::Utf8,
             read: Read::Failed(SharedString::from("测试空壳不读文件")),
@@ -296,6 +314,8 @@ impl SftpEditorPanel {
             None => {
                 self.editor = None;
                 self._change = None;
+                // 编辑器都没了，跳转框也别再露着。
+                self.goto_open = false;
                 self.dirty = false;
                 self.read = Read::Failed(SharedString::from(t!(
                     "sftp_editor.decode_failed",
@@ -379,6 +399,151 @@ impl SftpEditorPanel {
             // 上次连"字节"都没读到（网络、超限那一类）：换档顺手重试一次。
             self.start_read(window, cx);
         }
+    }
+
+    // ─── 行跳转（Ctrl+G / Cmd+G） ────────────────────────────────────────────
+    //
+    // 和 VSCode 一样：按一下，正文顶上浮出一个小输入框；敲行号（可以带 `:列`）
+    // 回车跳过去，Esc 收起。动作绑在 `SftpEditor` 上下文（见 `crate::ui::init`），
+    // 焦点在编辑器里时冒泡上来命中 —— 编辑器内层是 `Input` 上下文、不绑 cmd-g，
+    // 让得开（道理同 ⌘S）。
+
+    /// 打开行跳转框。已经开着就把它收回焦点、全选，方便直接重输。
+    fn open_goto_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.read, Read::Ready) || self.editor.is_none() {
+            return;
+        }
+        let input = match self.goto.clone() {
+            Some(input) => input,
+            None => {
+                let input = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .placeholder(t!("sftp_editor.goto_placeholder"))
+                        .submit_on_enter(true)
+                });
+                self._goto = Some(cx.subscribe_in(&input, window, Self::on_goto_event));
+                self.goto = Some(input.clone());
+                input
+            }
+        };
+        self.goto_open = true;
+        input.update(cx, |state, cx| {
+            state.focus(window, cx);
+            state.select_all(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn on_goto_event(
+        &mut self,
+        _: &Entity<InputState>,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // 单行框里的 Shift+回车和回车是一回事，不分开处理。
+        if matches!(event, InputEvent::PressEnter { .. }) {
+            self.jump_to_line(window, cx);
+        }
+    }
+
+    /// 回车：把框里的行号（`125`，或者 VSCode 那种 `125:7`）变成光标位置。
+    ///
+    /// 跳成功、或者框里本来就是空的，收起输入框回到编辑器；敲进去的东西解析
+    /// 不出行号时留着框子让人改 —— 静悄悄关掉像是"跳了但没动"。
+    fn jump_to_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.goto.clone() else {
+            return;
+        };
+        let Some(editor) = self.editor.clone() else {
+            return;
+        };
+        let query = input.read(cx).value().to_string();
+        let line_count = editor.read(cx).text().lines_len();
+        let position = parse_goto(&query, line_count);
+        if position.is_none() && !query.trim().is_empty() {
+            return;
+        }
+        self.hide_goto_line(window, cx);
+        if let Some(position) = position {
+            // `set_cursor_position` 自己会把光标滚进视野并接过焦点；滚动量按
+            // 编辑器当前的排版算，折叠过的地方也不会跳歪。
+            editor.update(cx, |state, cx| {
+                state.set_cursor_position(position, window, cx)
+            });
+        }
+    }
+
+    /// 收起行跳转框，焦点还给编辑器。框子本身留着下次复用。
+    fn hide_goto_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.goto_open {
+            return;
+        }
+        self.goto_open = false;
+        if let Some(editor) = self.editor.clone() {
+            editor.update(cx, |state, cx| state.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// Esc：跳转框开着时才消费，关着时放行（编辑器和别处可能还有自己的 Esc）。
+    fn on_close_goto(&mut self, _: &CloseGoToLine, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.goto_open {
+            cx.propagate();
+            return;
+        }
+        self.hide_goto_line(window, cx);
+        cx.stop_propagation();
+    }
+
+    /// 行跳转框：正文顶上一条通栏，和编辑器自带的搜索栏（`gpui-kit` 的
+    /// `SearchPanel`）同一套版式 —— 整宽、`py_2 px_3`、弹层底色、一条下边线、
+    /// 圆角只有主题的一半；输入框是默认外观、`focus_bordered(false)`、无投影，
+    /// 右端一颗收起按钮。
+    ///
+    /// 它占布局、把正文往下推一截，和搜索栏开出来时一样。
+    fn render_goto_bar(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
+        if !self.goto_open {
+            return None;
+        }
+        let input = self.goto.as_ref()?;
+        Some(
+            v_flex()
+                .occlude()
+                .items_center()
+                .py_2()
+                .px_3()
+                .w_full()
+                .gap_1()
+                .bg(cx.theme().popover)
+                .border_b_1()
+                .rounded(cx.theme().radius.half())
+                .border_color(cx.theme().border)
+                .child(
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(
+                            div().flex().flex_1().gap_1().child(
+                                Input::new(input)
+                                    .focus_bordered(false)
+                                    .small()
+                                    .w_full()
+                                    .shadow_none(),
+                            ),
+                        )
+                        .child(
+                            Button::new("sftp-editor-goto-close")
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::Close)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.hide_goto_line(window, cx)
+                                })),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     /// 覆盖保存这份远端文件。
@@ -665,6 +830,12 @@ impl Render for SftpEditorPanel {
             .track_focus(&self.focus_handle)
             .key_context("SftpEditor")
             .on_action(cx.listener(|this, _: &SaveFile, window, cx| this.save(false, window, cx)))
+            .on_action(
+                cx.listener(|this, _: &GoToLine, window, cx| this.open_goto_line(window, cx)),
+            )
+            .on_action(cx.listener(|this, action: &CloseGoToLine, window, cx| {
+                this.on_close_goto(action, window, cx)
+            }))
             // 工具栏：铅笔 + 远端路径 + 语言标签 + 保存按钮。和终端会话的信息栏同一套
             // chrome —— 固定 26 高、凹陷底色、一道下边线、`text_xs` 的安静前景，让编辑
             // 标签页和终端标签页并排时读起来是同一条上沿。
@@ -789,17 +960,50 @@ impl Render for SftpEditorPanel {
                 // `ready` 蕴含 `editor` 是 `Some`（[`Self::install_text`] 里同时置的）。
                 let editor = self.editor.as_ref().expect("ready 时编辑器一定在");
                 this.child(
-                    div().flex_1().min_h_0().w_full().child(
-                        // 存盘那一下不让人接着改：内容是在点下保存的那一刻取走的。
-                        Editor::new(editor)
-                            .w_full()
-                            .h(relative(1.))
-                            .bordered(false)
-                            .readonly(saving),
-                    ),
+                    v_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .w_full()
+                        // 行跳转框占布局，开出来时把正文往下推一截 —— 和编辑器
+                        // 自己的搜索栏一样。
+                        .children(self.render_goto_bar(cx))
+                        .child(
+                            div().flex_1().min_h_0().w_full().child(
+                                // 存盘那一下不让人接着改：内容是在点下保存的那一刻取走的。
+                                Editor::new(editor)
+                                    .w_full()
+                                    .h(relative(1.))
+                                    .bordered(false)
+                                    .readonly(saving),
+                            ),
+                        ),
                 )
             })
     }
+}
+
+/// 把行跳转框里的字解析成 0 起数的 [`Position`]。
+///
+/// 认这几种写法（行、列都按人读的 1 起数；`position_to_offset` 自己会把列夹进
+/// 行宽）：`125`、`125:7`、`:125`。行号超出文档就夹到末行 —— 敲 `9999` 想去的
+/// 是文件结尾，不是让跳转失败。空串和解析不出数字的返回 `None`。
+fn parse_goto(query: &str, line_count: usize) -> Option<Position> {
+    let query = query.trim();
+    let query = query.strip_prefix(':').unwrap_or(query);
+    if query.is_empty() {
+        return None;
+    }
+    let (line, column) = match query.split_once(':') {
+        Some((line, column)) => (line, column),
+        None => (query, ""),
+    };
+    let line = line.trim().parse::<usize>().ok()?;
+    let column = match column.trim() {
+        "" => 0,
+        column => column.parse::<usize>().ok()?,
+    };
+    let row = line.max(1).min(line_count.max(1)) - 1;
+    Some(Position::new(row as u32, column.saturating_sub(1) as u32))
 }
 
 /// 从文件名猜它是什么语言，返回一个 `gpui-kit` 编辑器认得的语法名（喂给 `.language(..)`）。
