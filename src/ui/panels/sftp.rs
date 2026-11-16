@@ -2801,6 +2801,23 @@ impl SftpPanel {
         self.set_copied(path, label, cx);
     }
 
+    /// 把终端跳到这一栏此刻所在的目录：往终端里打一行 `cd <当前远端路径>`。
+    ///
+    /// 发的是 `remote_path`，不是输入框里那串字：输入框可能停在半截（`..`、
+    /// `~/logs`），终端按它自己的当前目录去解析会落到别处；`remote_path` 是对端
+    /// realpath 过的落点，绝对且唯一。路径的转义交给 [`shell_quote_path`]，
+    /// 和把条目拖进终端时是同一套。
+    fn cd_here_in_terminal(&mut self, cx: &mut Context<Self>) {
+        let path = self.remote_path.trim();
+        if path.is_empty() {
+            return;
+        }
+        cx.emit(SftpPanelEvent::SendCommand(SharedString::from(format!(
+            "cd {}",
+            shell_quote_path(path)
+        ))));
+    }
+
     /// ⭐ 与下拉里"加当前目录"背后的同一个开关：已收藏就移除，未收藏就追加。
     ///
     /// 写库先乐观地改内存（按钮立刻换色），写完再对齐：`HostService::update_favorites`
@@ -3622,6 +3639,18 @@ impl SftpPanel {
                         this.navigate_remote(raw, window, cx);
                     }),
                 ),
+            )
+            // "终端跳转"：和"前往"挨着，但动的不是这一栏 —— 把终端 cd 到这一栏
+            // 正在看的目录。没有连上（没有远端路径）时没东西可跳。
+            .child(
+                nav_button(
+                    "sftp-panel-cd-terminal",
+                    Icon::new(AppIcon::Terminal).with_size(px(12.)),
+                    t!("sftp.cd_current_path").into(),
+                    cx,
+                )
+                .disabled(self.remote_path.trim().is_empty())
+                .on_click(cx.listener(|this, _, _, cx| this.cd_here_in_terminal(cx))),
             )
             .child(
                 nav_button(

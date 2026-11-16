@@ -4314,6 +4314,9 @@ sftp.follow_cwd_tooltip:
 sftp.go:
   en: Go
   zh-CN: 前往
+sftp.cd_current_path:
+  en: cd to the current directory in the terminal
+  zh-CN: 在终端中 cd 到当前目录
 sftp.copy_current_path:
   en: Copy the current path
   zh-CN: 复制当前路径
