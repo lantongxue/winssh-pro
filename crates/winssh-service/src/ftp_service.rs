@@ -228,38 +228,47 @@ impl FtpService {
         }
     }
 
-    /// 读一个远端文本文件，交给编辑器。超出 `MAX_TEXT_BYTES` 不读进内存。
-    pub async fn read_text(&self, target: &str) -> Result<String> {
+    /// 读一个远端文件的原始字节，交给编辑器。超出 `MAX_TEXT_BYTES` 不读进内存；
+    /// 文本编码由编辑页那一层决定。
+    pub async fn read_bytes(&self, target: &str) -> Result<Vec<u8>> {
         let target = path::normalize(target);
-        let label = target.clone();
         let action = t!("ftp_err.action_read_file", path => target.clone()).to_string();
-        let bytes = self
-            .on_browse(action, move |stream, caps| {
-                Box::pin(async move {
-                    let size = stat(stream, caps, &target)
-                        .await?
-                        .map(|entry| entry.size)
-                        .unwrap_or(0);
-                    if size > MAX_TEXT_BYTES {
-                        return Err(too_large(size));
-                    }
-                    get_bytes(stream, &target, MAX_TEXT_BYTES).await
-                })
+        self.on_browse(action, move |stream, caps| {
+            Box::pin(async move {
+                let size = stat(stream, caps, &target)
+                    .await?
+                    .map(|entry| entry.size)
+                    .unwrap_or(0);
+                if size > MAX_TEXT_BYTES {
+                    return Err(too_large(size));
+                }
+                get_bytes(stream, &target, MAX_TEXT_BYTES).await
             })
-            .await?;
-        String::from_utf8(bytes).map_err(|_| anyhow!(t!("sftp_err.not_utf8", path => label)))
+        })
+        .await
     }
 
-    /// 整篇覆盖写回。FTP 没有"先 .part 再落定"的原子写 —— 传输被砍断对端看到的
-    /// 就是一份不完整文件；编辑器存的是小文本，这个窗口很小。
-    pub async fn write_text(&self, target: &str, content: &str) -> Result<()> {
+    /// 读一个远端文本文件（按 UTF-8）。编辑页改走 [`Self::read_bytes`]。
+    pub async fn read_text(&self, target: &str) -> Result<String> {
+        let bytes = self.read_bytes(target).await?;
+        String::from_utf8(bytes)
+            .map_err(|_| anyhow!(t!("sftp_err.not_utf8", path => path::normalize(target))))
+    }
+
+    /// 整篇覆盖写回已经编好的字节。FTP 没有"先 .part 再落定"的原子写 —— 传输
+    /// 被砍断对端看到的就是一份不完整文件；编辑器存的是小文本，这个窗口很小。
+    pub async fn write_bytes(&self, target: &str, bytes: Vec<u8>) -> Result<()> {
         let target = path::normalize(target);
         let action = t!("ftp_err.action_save_file", path => target.clone()).to_string();
-        let bytes = content.as_bytes().to_vec();
         self.on_browse(action, move |stream, _| {
             Box::pin(async move { put_bytes(stream, &target, &bytes).await })
         })
         .await
+    }
+
+    /// 整篇覆盖写回文本（按 UTF-8）。
+    pub async fn write_text(&self, target: &str, content: &str) -> Result<()> {
+        self.write_bytes(target, content.as_bytes().to_vec()).await
     }
 
     /// 派一个下载到本地的任务。

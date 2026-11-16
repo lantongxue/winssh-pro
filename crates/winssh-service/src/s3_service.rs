@@ -365,13 +365,13 @@ impl S3Service {
         Err(anyhow!(t!("s3_err.chmod_unsupported")))
     }
 
-    /// 读一个远端文本文件，交给编辑器。超出 `MAX_TEXT_BYTES` 也不要读进内存 ——
-    /// 先 HEAD 看大小，过线就不 GET。
-    pub async fn read_text(&self, target: &str) -> Result<String> {
+    /// 读一个远端文件的原始字节，交给编辑器。超出 `MAX_TEXT_BYTES` 也不要读进
+    /// 内存 —— 先 HEAD 看大小，过线就不 GET。文本编码由编辑页那一层决定。
+    pub async fn read_bytes(&self, target: &str) -> Result<Vec<u8>> {
         let target = path::normalize(target);
         let resolver = self.resolver.clone();
         let label = target.clone();
-        let bytes = crate::db::run(async move {
+        crate::db::run(async move {
             let (bucket, key) = resolver.locate_object(&label)?;
             let action = t!("s3_err.action_read_file", path => label.clone());
             let (head, _) = bucket
@@ -388,15 +388,20 @@ impl S3Service {
                 .map(|data| data.to_vec())
                 .map_err(|error| remote(&action, error))
         })
-        .await?;
-        String::from_utf8(bytes).map_err(|_| anyhow!(t!("sftp_err.not_utf8", path => target)))
+        .await
     }
 
-    /// 整篇覆盖写回。
-    pub async fn write_text(&self, target: &str, content: &str) -> Result<()> {
+    /// 读一个远端文本文件（按 UTF-8）。编辑页改走 [`Self::read_bytes`]。
+    pub async fn read_text(&self, target: &str) -> Result<String> {
+        let bytes = self.read_bytes(target).await?;
+        String::from_utf8(bytes)
+            .map_err(|_| anyhow!(t!("sftp_err.not_utf8", path => path::normalize(target))))
+    }
+
+    /// 整篇覆盖写回已经编好的字节。
+    pub async fn write_bytes(&self, target: &str, bytes: Vec<u8>) -> Result<()> {
         let target = path::normalize(target);
         let resolver = self.resolver.clone();
-        let bytes = content.as_bytes().to_vec();
         crate::db::run(async move {
             let (bucket, key) = resolver.locate_object(&target)?;
             bucket
@@ -406,6 +411,11 @@ impl S3Service {
                 .map_err(|error| remote(&t!("s3_err.action_save_file", path => target), error))
         })
         .await
+    }
+
+    /// 整篇覆盖写回文本（按 UTF-8）。
+    pub async fn write_text(&self, target: &str, content: &str) -> Result<()> {
+        self.write_bytes(target, content.as_bytes().to_vec()).await
     }
 
     /// 派一个下载到本地的任务。

@@ -437,13 +437,14 @@ impl SftpService {
         .map_err(|error| remote(&t!("sftp_err.action_chmod", path => label), error))
     }
 
-    /// 读一个远端文本文件，交给编辑对话框。
-    pub async fn read_text(&self, target: &str) -> Result<String> {
+    /// 读一个远端文件的原始字节，交给编辑对话框。文本编码由调用方决定
+    /// （编辑页按用户选的那一档解），这一层只搬字节。
+    pub async fn read_bytes(&self, target: &str) -> Result<Vec<u8>> {
         let target = path::normalize(target);
         let session = self.session.clone();
         let limit = MAX_TEXT_BYTES;
         let label = target.clone();
-        let bytes = crate::db::run(async move {
+        crate::db::run(async move {
             let attrs = session.metadata(target.clone()).await?;
             if attrs.size.unwrap_or(0) > limit {
                 return Err(SftpError::UnexpectedBehavior(
@@ -457,15 +458,20 @@ impl SftpService {
             session.read(target).await
         })
         .await
-        .map_err(|error| remote(&t!("sftp_err.action_read_file", path => label), error))?;
-
-        String::from_utf8(bytes).map_err(|_| anyhow!("{}", t!("sftp_err.not_utf8", path => label)))
+        .map_err(|error| remote(&t!("sftp_err.action_read_file", path => label), error))
     }
 
-    /// 保存远端文本文件（整篇覆盖）。
-    pub async fn write_text(&self, target: &str, content: &str) -> Result<()> {
+    /// 读一个远端文本文件（按 UTF-8）。编辑页改走 [`Self::read_bytes`]，
+    /// 自己按选中的编码解 —— 留着这条给按 UTF-8 收发的调用方。
+    pub async fn read_text(&self, target: &str) -> Result<String> {
+        let bytes = self.read_bytes(target).await?;
+        String::from_utf8(bytes)
+            .map_err(|_| anyhow!("{}", t!("sftp_err.not_utf8", path => path::normalize(target))))
+    }
+
+    /// 保存远端文件（整篇覆盖）。`bytes` 已经由调用方按目标编码编好。
+    pub async fn write_bytes(&self, target: &str, bytes: Vec<u8>) -> Result<()> {
         let target = path::normalize(target);
-        let bytes = content.as_bytes().to_vec();
         let session = self.session.clone();
         let label = target.clone();
         crate::db::run(async move {
@@ -478,6 +484,11 @@ impl SftpService {
         })
         .await
         .map_err(|error| remote(&t!("sftp_err.action_save_file", path => label), error))
+    }
+
+    /// 保存远端文本文件（按 UTF-8，整篇覆盖）。
+    pub async fn write_text(&self, target: &str, content: &str) -> Result<()> {
+        self.write_bytes(target, content.as_bytes().to_vec()).await
     }
 
     /// 派一个下载到本地的任务。

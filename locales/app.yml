@@ -3682,6 +3682,18 @@ sftp_editor.save_failed:
 sftp_editor.loading:
   en: Reading from the remote…
   zh-CN: 正在从远端读取…
+sftp_editor.encoding_tooltip:
+  en: File encoding — click to switch
+  zh-CN: 文件编码，点开可以换一档
+sftp_editor.encoding_locked:
+  en: Save or discard the changes before switching encoding
+  zh-CN: 有未保存的更改，保存后才能切换编码
+sftp_editor.decode_failed:
+  en: "Cannot read this file as %{encoding}. Pick another encoding on the toolbar."
+  zh-CN: 按 %{encoding} 读不出这个文件，可以在工具栏换一档编码。
+sftp_editor.encode_failed:
+  en: "%{encoding} cannot represent some characters, so nothing was saved. Switch the encoding or remove them."
+  zh-CN: "%{encoding} 编不下某些字符，本次未保存；请换一档编码或删掉这些字符。"
 sftp_editor.close_tab:
   en: Close editor
   zh-CN: 关闭编辑器

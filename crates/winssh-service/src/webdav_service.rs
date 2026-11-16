@@ -229,15 +229,15 @@ impl WebdavService {
         Err(anyhow!(t!("webdav_err.chmod_unsupported")))
     }
 
-    /// 读一个远端文本文件，交给编辑器。超出 `MAX_TEXT_BYTES` 不读进内存。
+    /// 读一个远端文件的原始字节，交给编辑器。超出 `MAX_TEXT_BYTES` 不读进内存。
     ///
-    /// `PROPFIND` 深度 0 只看大小，过线就不 `GET`。
-    pub async fn read_text(&self, target: &str) -> Result<String> {
+    /// `PROPFIND` 深度 0 只看大小，过线就不 `GET`。文本编码由编辑页那一层决定。
+    pub async fn read_bytes(&self, target: &str) -> Result<Vec<u8>> {
         let target = path::normalize(target);
         let client = self.client.clone();
         let label = target.clone();
         let action = t!("webdav_err.action_read_file", path => target.clone());
-        let bytes = crate::db::run(async move {
+        crate::db::run(async move {
             let size = match probe(&client, &label).await? {
                 Some(Probe::File(size)) => size,
                 Some(Probe::Dir) => bail!("{}", t!("webdav_err.is_directory", path => label)),
@@ -251,15 +251,20 @@ impl WebdavService {
                 .await
                 .map_err(|error| remote(&action, error))
         })
-        .await?;
-        String::from_utf8(bytes).map_err(|_| anyhow!(t!("sftp_err.not_utf8", path => target)))
+        .await
     }
 
-    /// 整篇覆盖写回。为什么不走 `.part` 再落定，见模块文档。
-    pub async fn write_text(&self, target: &str, content: &str) -> Result<()> {
+    /// 读一个远端文本文件（按 UTF-8）。编辑页改走 [`Self::read_bytes`]。
+    pub async fn read_text(&self, target: &str) -> Result<String> {
+        let bytes = self.read_bytes(target).await?;
+        String::from_utf8(bytes)
+            .map_err(|_| anyhow!(t!("sftp_err.not_utf8", path => path::normalize(target))))
+    }
+
+    /// 整篇覆盖写回已经编好的字节。为什么不走 `.part` 再落定，见模块文档。
+    pub async fn write_bytes(&self, target: &str, bytes: Vec<u8>) -> Result<()> {
         let target = path::normalize(target);
         let action = t!("webdav_err.action_save_file", path => target.clone());
-        let bytes = content.as_bytes().to_vec();
         let client = self.client.clone();
         crate::db::run(async move {
             client
@@ -268,6 +273,11 @@ impl WebdavService {
                 .map_err(|error| remote(&action, error))
         })
         .await
+    }
+
+    /// 整篇覆盖写回文本（按 UTF-8）。
+    pub async fn write_text(&self, target: &str, content: &str) -> Result<()> {
+        self.write_bytes(target, content.as_bytes().to_vec()).await
     }
 
     /// 派一个下载到本地的任务。

@@ -128,23 +128,24 @@ impl FileService {
         }
     }
 
-    /// 读远端文本文件交给编辑器。
-    pub async fn read_text(&self, target: &str) -> Result<String> {
+    /// 读远端文件的原始字节交给编辑器。文本编码是编辑器那一层的事，这一档
+    /// 只搬字节 —— 编辑器按用户选中的编码自己解。
+    pub async fn read_bytes(&self, target: &str) -> Result<Vec<u8>> {
         match self {
-            Self::Sftp(service) => service.read_text(target).await,
-            Self::Ftp(service) => service.read_text(target).await,
-            Self::S3(service) => service.read_text(target).await,
-            Self::Webdav(service) => service.read_text(target).await,
+            Self::Sftp(service) => service.read_bytes(target).await,
+            Self::Ftp(service) => service.read_bytes(target).await,
+            Self::S3(service) => service.read_bytes(target).await,
+            Self::Webdav(service) => service.read_bytes(target).await,
         }
     }
 
-    /// 整篇覆盖写回。
-    pub async fn write_text(&self, target: &str, content: &str) -> Result<()> {
+    /// 整篇覆盖写回已经按目标编码编好的字节。
+    pub async fn write_bytes(&self, target: &str, bytes: Vec<u8>) -> Result<()> {
         match self {
-            Self::Sftp(service) => service.write_text(target, content).await,
-            Self::Ftp(service) => service.write_text(target, content).await,
-            Self::S3(service) => service.write_text(target, content).await,
-            Self::Webdav(service) => service.write_text(target, content).await,
+            Self::Sftp(service) => service.write_bytes(target, bytes).await,
+            Self::Ftp(service) => service.write_bytes(target, bytes).await,
+            Self::S3(service) => service.write_bytes(target, bytes).await,
+            Self::Webdav(service) => service.write_bytes(target, bytes).await,
         }
     }
 

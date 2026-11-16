@@ -8,9 +8,12 @@
 //!
 //! 读写口径和以前一样，不是副本：
 //!
-//! - **读**走 [`SftpService::read_text`]（一次 `GET`，超过 2 MiB / 不是 UTF-8 就说清原因，
-//!   不开一个空框让人以为文件是空的）。读不出来就停在失败态，不建编辑器。
-//! - **写**走 [`SftpService::write_text`]（整篇覆盖）。**保存失败不关标签页**：内容还在
+//! - **读**走 [`crate::service::FileService::read_bytes`]（一次 `GET`，超过 2 MiB 就说清原因，不开
+//!   一个空框让人以为文件是空的），再按工具栏上选的编码解（见
+//!   [`crate::ui::menus::TextEncoding`]）。解不动就停在失败态、不建编辑器，并在
+//!   工具栏上留着编码键让人换一档。读到的原始字节会留一份，换编码不用再跑一趟远端。
+//! - **写**走 [`crate::service::FileService::write_bytes`]（整篇覆盖），按同一档编码编回字节；
+//!   有编不下的字符就让保存失败，不写替换字符。**保存失败不关标签页**：内容还在
 //!   编辑器里，改完再存一次。保存成功也不关 —— 标签页是常驻的，存完接着编是常态。
 //! - **保存是整篇覆盖**。远端 SFTP 没有"局部改"，所以同一份文件开两个标签页各自保存会
 //!   互相覆盖（后存者赢）；这一点和以前"取消即丢弃"的对话框同级，先不做去重。
@@ -44,6 +47,7 @@ use gpui_kit::{
 };
 
 use crate::assistant::SessionTarget;
+use crate::ui::menus::{EditorEncodingMenu, TextEncoding};
 use crate::ui::theme::{AppIcon, palette};
 use rust_i18n::t;
 
@@ -73,7 +77,7 @@ enum Read {
     Pending,
     /// 读到了，编辑器已经建好、内容在里面。
     Ready,
-    /// 读不出来，这里是对端或本地文件系统给的原因。
+    /// 读不出来：对端 / 本地文件系统给的原因，或者按当前编码解不动。
     Failed(SharedString),
 }
 
@@ -89,6 +93,12 @@ pub struct SftpEditorPanel {
     language: Option<SharedString>,
     /// 读成功之后才建：这样初始内容走 `default_value` 塞进去，不触发一次"已修改"。
     editor: Option<Entity<EditorState>>,
+    /// 最近一次从远端读到（或刚写回）的原始字节。换编码时拿它重解，不用再跑
+    /// 一趟远端；解不出来时也留着 —— 换一档再解正是它存在的理由。
+    bytes: Option<Vec<u8>>,
+    /// 按哪一档解字节、编回字节。默认 UTF-8；文件带 BOM 时切到 UTF-8 BOM。
+    /// 解不动可以换档重解，写回去用的也是这一档。
+    encoding: TextEncoding,
     read: Read,
     saving: bool,
     /// 编辑器里的内容相对上一次保存有没有动过。标题栏那颗点靠它。
@@ -137,7 +147,13 @@ pub(super) fn open_after_host(
     let editor_id = PanelId::from(editor.entity_id());
     editor.update(cx, |editor, _| editor.host_tab = Some(host));
     area.update(cx, |area, cx| {
-        area.add_panel_view(panel_handle(editor), DockPlacement::Center, None, window, cx);
+        area.add_panel_view(
+            panel_handle(editor),
+            DockPlacement::Center,
+            None,
+            window,
+            cx,
+        );
 
         // 挂进去之后再找宿主的落点：新面板落在第一个标签组的末尾，宿主的那个组
         // 与它在组内的下标都不受影响。
@@ -177,27 +193,14 @@ impl SftpEditorPanel {
         let (path, name) = (path.into(), name.into());
         let language = language_for(&name);
 
-        // 立刻去读。读不出来要在标签页里说清楚原因，只弹一条通知的话用户会以为文件是空的。
-        let read_service = service.clone();
-        let read_path = path.clone();
-        cx.spawn_in(window, async move |this, cx| {
-            let outcome = read_service.read_text(&read_path).await;
-            _ = this.update_in(cx, |this, window, cx| match outcome {
-                Ok(text) => this.on_read(text, window, cx),
-                Err(error) => {
-                    this.read = Read::Failed(SharedString::from(format!("{error:#}")));
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-
-        Self {
+        let mut this = Self {
             service: Some(service),
             path,
             name,
             language,
             editor: None,
+            bytes: None,
+            encoding: TextEncoding::Utf8,
             read: Read::Pending,
             saving: false,
             dirty: false,
@@ -208,7 +211,10 @@ impl SftpEditorPanel {
             host_tab: None,
             focus_handle: cx.focus_handle(),
             _change: None,
-        }
+        };
+        // 立刻去读。读不出来要在标签页里说清楚原因，只弹一条通知的话用户会以为文件是空的。
+        this.start_read(window, cx);
+        this
     }
 
     /// 只在测试里用：不读也不写的一具空壳，只带着"这份文件属于哪台机器"。
@@ -223,6 +229,8 @@ impl SftpEditorPanel {
             name: "detached.conf".into(),
             language: None,
             editor: None,
+            bytes: None,
+            encoding: TextEncoding::Utf8,
             read: Read::Failed(SharedString::from("测试空壳不读文件")),
             saving: false,
             dirty: false,
@@ -242,42 +250,135 @@ impl SftpEditorPanel {
         self.session.clone()
     }
 
-    /// 读到内容了：建编辑器（带上语法与初始文本）、盯住它的改动、把焦点移进去。
-    fn on_read(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+    /// 从远端把这份文件的原始字节读回来。首次打开与"换编码时手上还没有字节"
+    /// 都走这里；读到的字节留给 [`Self::decode_cached`]。
+    fn start_read(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 空壳（`new_detached`）没有服务，本来就不读。
+        let Some(service) = self.service.clone() else {
+            return;
+        };
+        let path = self.path.clone();
+        self.read = Read::Pending;
+        self.save_error = None;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let outcome = service.read_bytes(&path).await;
+            _ = this.update_in(cx, |this, window, cx| match outcome {
+                Ok(bytes) => {
+                    // 带 BOM 的 UTF-8 显示成、也存回 UTF-8 BOM。只替默认的 UTF-8
+                    // 做这个判断：别的档是用户手选的，不替他改。
+                    if TextEncoding::has_utf8_bom(&bytes) && this.encoding == TextEncoding::Utf8 {
+                        this.encoding = TextEncoding::Utf8Bom;
+                    }
+                    this.bytes = Some(bytes);
+                    this.decode_cached(window, cx);
+                }
+                Err(error) => {
+                    this.bytes = None;
+                    this.read = Read::Failed(SharedString::from(format!("{error:#}")));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// 用手上那份原始字节按当前编码重解一遍。首次读到与换编码都走这里；
+    /// 解不动就收掉编辑器、停在失败态 —— 不能把上一档的正文留在屏幕上冒充成功。
+    fn decode_cached(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(bytes) = self.bytes.take() else {
+            return;
+        };
+        let decoded = self.encoding.decode(&bytes);
+        self.bytes = Some(bytes);
+        match decoded {
+            Some(text) => self.install_text(text, window, cx),
+            None => {
+                self.editor = None;
+                self._change = None;
+                self.dirty = false;
+                self.read = Read::Failed(SharedString::from(t!(
+                    "sftp_editor.decode_failed",
+                    encoding => self.encoding.label(),
+                )));
+                cx.notify();
+            }
+        }
+    }
+
+    /// 解出来的正文交给编辑器：首次读到就建一个（带上语法与初始文本、盯住改动、
+    /// 把焦点移进去），换编码/重读时整篇换掉。
+    fn install_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
         // 文件名认不出语言时（无扩展名的脚本 `deploy`、`run` 那种），用第一行 shebang 兜底。
         // 内容已经在手上，顺手认一下；认出来也让工具栏的语言标签跟着显示。
         if self.language.is_none() {
             self.language = text.lines().next().and_then(language_for_shebang);
         }
-        let language = self.language.clone();
-        let editor = cx.new(|cx| {
-            let state = EditorState::new(window, cx)
-                .line_number(true)
-                .default_value(text);
-            match language {
-                Some(lang) => state.language(lang),
-                None => state,
-            }
-        });
 
-        // 用 `default_value` 塞的初始内容不发 `Change`，所以订阅放在这之后，第一次改才标脏。
-        let subscription = cx.subscribe(&editor, |this, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) && !this.dirty {
-                this.dirty = true;
-                cx.notify();
-            }
-        });
+        if let Some(editor) = self.editor.clone() {
+            // 已经有一个编辑器：整篇换内容。`set_value` 不发 `Change`、也不留撤销栈 ——
+            // 换编码是"把同一份字节重新读一遍"，不是用户敲的改动。
+            editor.update(cx, |editor, cx| editor.set_value(text, window, cx));
+            self.dirty = false;
+        } else {
+            let language = self.language.clone();
+            let editor = cx.new(|cx| {
+                let state = EditorState::new(window, cx)
+                    .line_number(true)
+                    .default_value(text);
+                match language {
+                    Some(lang) => state.language(lang),
+                    None => state,
+                }
+            });
 
-        // 读好后把焦点移进编辑器 —— 但只在本面板此刻仍持有焦点时。用户可能在加载期间点去了
-        // 别的标签页，硬把焦点拽回来是打断他。
-        if self.focus_handle.contains_focused(window, cx) {
-            window.focus(&editor.read(cx).focus_handle(cx), cx);
+            // 用 `default_value` 塞的初始内容不发 `Change`，所以订阅放在这之后，第一次改才标脏。
+            let subscription = cx.subscribe(&editor, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) && !this.dirty {
+                    this.dirty = true;
+                    cx.notify();
+                }
+            });
+
+            // 读好后把焦点移进编辑器 —— 但只在本面板此刻仍持有焦点时。用户可能在加载期间点去了
+            // 别的标签页，硬把焦点拽回来是打断他。
+            if self.focus_handle.contains_focused(window, cx) {
+                window.focus(&editor.read(cx).focus_handle(cx), cx);
+            }
+
+            self._change = Some(subscription);
+            self.editor = Some(editor);
         }
 
-        self._change = Some(subscription);
-        self.editor = Some(editor);
+        self.save_error = None;
         self.read = Read::Ready;
         cx.notify();
+    }
+
+    /// 工具栏上换了一档编码：拿手上的字节按新档重解，不再跑一趟远端。
+    ///
+    /// 有未保存的改动时不换 —— 重解会把编辑器里的内容整篇顶掉。
+    fn set_encoding(
+        &mut self,
+        encoding: TextEncoding,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if encoding == self.encoding || self.saving {
+            return;
+        }
+        if self.dirty {
+            window.push_notification(t!("sftp_editor.encoding_locked"), cx);
+            return;
+        }
+        self.encoding = encoding;
+        self.save_error = None;
+        if self.bytes.is_some() {
+            self.decode_cached(window, cx);
+        } else {
+            // 上次连"字节"都没读到（网络、超限那一类）：换档顺手重试一次。
+            self.start_read(window, cx);
+        }
     }
 
     /// 覆盖保存这份远端文件。
@@ -295,21 +396,36 @@ impl SftpEditorPanel {
         let Some(service) = self.service.clone() else {
             return;
         };
+
+        let content = editor.read(cx).value().to_string();
+        // 按当前编码编回字节。有编不下的字符就不发出去 —— 往远端文件里写一串
+        // 替换字符比保存失败更糟。
+        let Some(bytes) = self.encoding.encode(&content) else {
+            self.save_error = Some(SharedString::from(t!(
+                "sftp_editor.encode_failed",
+                encoding => self.encoding.label(),
+            )));
+            cx.notify();
+            return;
+        };
+
         self.saving = true;
         self.save_error = None;
         cx.notify();
 
-        let content = editor.read(cx).value().to_string();
         let path = self.path.to_string();
         let name = self.name.to_string();
+        // 存成功之后手上这份字节就是远端的那份；换编码时拿它重解。
+        let cached = bytes.clone();
 
         cx.spawn_in(window, async move |this, cx| {
-            let outcome = service.write_text(&path, &content).await;
+            let outcome = service.write_bytes(&path, bytes).await;
             _ = this.update_in(cx, |this, window, cx| {
                 this.saving = false;
                 match outcome {
                     Ok(()) => {
                         this.dirty = false;
+                        this.bytes = Some(cached);
                         window.push_notification(t!("sftp_editor.saved", name => name), cx);
                         // 存完让 SFTP 面板重列目录，把新大小与时间画对。
                         let handler = this.on_saved.clone();
@@ -474,7 +590,7 @@ impl BasePanel for SftpEditorPanel {
     ) {
         self.group = Some(group);
         // 新开的标签页直接获得焦点。此刻编辑器多半还没建好，聚的是兜底句柄；读好之后
-        // [`Self::on_read`] 再把焦点移进编辑器。
+        // [`Self::install_text`] 再把焦点移进编辑器。
         cx.focus_self(window);
         cx.notify();
     }
@@ -611,7 +727,14 @@ impl Render for SftpEditorPanel {
                                         .text_color(cx.theme().secondary_foreground)
                                         .child(lang),
                                 )
-                            }),
+                            })
+                            // 编码一直露在外面：读失败时也看得见，点开就能换一档重解。
+                            .child(
+                                EditorEncodingMenu::new("sftp-editor-encoding", self.encoding)
+                                    .on_change(cx.listener(|this, encoding, window, cx| {
+                                        this.set_encoding(*encoding, window, cx)
+                                    })),
+                            ),
                     )
                     .child(
                         // 和信息栏右端那几颗动作同尺寸（`xsmall`），压在 26 高的条里不顶格。
@@ -663,7 +786,7 @@ impl Render for SftpEditorPanel {
                 )
             })
             .when(ready, |this| {
-                // `ready` 蕴含 `editor` 是 `Some`（[`Self::on_read`] 里同时置的）。
+                // `ready` 蕴含 `editor` 是 `Some`（[`Self::install_text`] 里同时置的）。
                 let editor = self.editor.as_ref().expect("ready 时编辑器一定在");
                 this.child(
                     div().flex_1().min_h_0().w_full().child(
