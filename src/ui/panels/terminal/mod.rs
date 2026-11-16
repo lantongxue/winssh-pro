@@ -33,9 +33,7 @@ use gpui_kit::component::{
     ActiveTheme as _, IconName, ResizablePanelEvent, ResizableState, Sizable as _,
     WindowExt as _,
     button::{Button, ButtonVariants as _},
-    dock::{
-        BasePanel, DockArea, DockPlacement, PaneRef, Panel, PanelEvent, TabGroup, panel_handle,
-    },
+    dock::{BasePanel, DockArea, DockPlacement, PaneRef, Panel, PanelEvent, PanelId, TabGroup},
     h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
 };
 use gpui_kit::{
@@ -50,7 +48,7 @@ use self::{
     pane::{PaneOrigin, TerminalPane, TerminalPaneEvent},
     split::{new_split_state, render_split},
 };
-use super::sftp_editor::SftpEditorPanel;
+use super::sftp_editor::{SftpEditorPanel, open_after_host};
 use crate::{
     assistant::SessionTarget,
     command_history::CommandRun,
@@ -925,22 +923,18 @@ impl TerminalPanel {
                     }),
                 },
                 SftpPanelEvent::OpenEditor(editor) => {
-                    // 把 SFTP 面板建好的编辑器面板挂进中心区，开成新标签页（`add_panel_view`
-                    // 会把它选到最前）。从这个订阅回调里调它是安全的：它引起的
-                    // `set_active(false)`（让本终端标签页失活）是 Dock 延后派发的，不会同步
-                    // 重入这个面板。够不到 Dock（弱句柄断了）就什么都不做。
-                    if let Some(area) = this.dock_area.upgrade() {
-                        let editor = editor.clone();
-                        area.update(cx, |area, cx| {
-                            area.add_panel_view(
-                                panel_handle(editor),
-                                DockPlacement::Center,
-                                None,
-                                window,
-                                cx,
-                            );
-                        });
-                    }
+                    // 把 SFTP 面板建好的编辑器面板挂进中心区，紧跟在**本标签页**
+                    // 后面，而不是所有标签页的末尾（见 [`open_after_host`]）。
+                    // 从这个订阅回调里调它是安全的：它引起的 `set_active(false)`
+                    // （让本终端标签页失活）是 Dock 延后派发的，不会同步重入这个面板。
+                    // 够不到 Dock（弱句柄断了）就什么都不做。
+                    open_after_host(
+                        &this.dock_area,
+                        PanelId::from(cx.entity_id()),
+                        editor.clone(),
+                        window,
+                        cx,
+                    );
                 }
                 SftpPanelEvent::HostChanged(host) => {
                     // 换快照：收藏夹已经落库，这个标签页手上的 `Host` 是下一次

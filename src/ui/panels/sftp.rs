@@ -145,7 +145,9 @@ pub enum SftpPanelEvent {
     /// （`Sudo` 是提权，`Subsystem` 是退回普通权限）。宿主握着连接，开好了
     /// 交回 [`SftpPanel::finish_elevate`]；面板只管按钮与换通道。
     Elevate(SftpLaunchMode),
-    /// 编辑一个远端文件：请宿主把这个编辑器面板挂进中心区，开成一个新标签页。
+    /// 编辑一个远端文件：请宿主把这个编辑器面板挂进中心区，开成一个新标签页，
+    /// **紧跟在宿主自己那一页后面**（见 `sftp_editor::open_after_host`）——
+    /// 关掉编辑页时才能落回打开文件的那台服务器。
     ///
     /// 面板自己够不到 `DockArea`（它嵌在终端标签页里），而中心区的标签页由宿主管，
     /// 所以把建好的编辑器面板发上去，由宿主 [`crate::ui::panels::TerminalPanel`] 挂。

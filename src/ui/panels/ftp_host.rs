@@ -18,7 +18,7 @@
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
-    dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, TabGroup, panel_handle},
+    dock::{BasePanel, DockArea, Panel, PanelEvent, PanelId, TabGroup},
     h_flex, v_flex,
 };
 use gpui_kit::{
@@ -28,6 +28,7 @@ use gpui_kit::{
 };
 use rust_i18n::t;
 
+use super::sftp_editor::open_after_host;
 use super::{SessionEvent, SftpPanel, SftpPanelEvent};
 use crate::{
     ftp::tls::{CertInfo, CertTrust},
@@ -247,18 +248,15 @@ impl DockedFtpPanel {
                     this.connect(window, cx);
                 }
                 SftpPanelEvent::OpenEditor(editor) => {
-                    if let Some(area) = this.dock_area.upgrade() {
-                        let editor = editor.clone();
-                        area.update(cx, |area, cx| {
-                            area.add_panel_view(
-                                panel_handle(editor),
-                                DockPlacement::Center,
-                                None,
-                                window,
-                                cx,
-                            );
-                        });
-                    }
+                    // 编辑页开在**本标签页**后面，而不是所有标签页的末尾
+                    // （见 [`open_after_host`]）。
+                    open_after_host(
+                        &this.dock_area,
+                        PanelId::from(cx.entity_id()),
+                        editor.clone(),
+                        window,
+                        cx,
+                    );
                 }
                 // 独立面板没有自己的 `Host` 快照可更新，也没有终端可发命令：
                 // 收藏夹写在库里的那一份才是真相，下一次开面板时重读就有了。

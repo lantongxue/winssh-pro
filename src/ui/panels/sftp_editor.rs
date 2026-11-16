@@ -27,7 +27,10 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::DialogFooter,
-    dock::{BasePanel, Panel, PanelEvent, PanelId, TabGroup},
+    dock::{
+        BasePanel, DockArea, DockPlacement, InsertTarget, PaneRef, Panel, PanelEvent, PanelId,
+        TabGroup, panel_handle,
+    },
     h_flex,
     input::{Editor, EditorState, InputEvent},
     tooltip::Tooltip,
@@ -99,11 +102,62 @@ pub struct SftpEditorPanel {
     on_saved: SavedHandler,
     /// 所在标签组。关闭按钮要通过它把自己摘掉 —— 面板不知道自己在布局树哪儿，只有标签组知道。
     group: Option<WeakEntity<TabGroup>>,
+    /// 打开这份文件的那个标签页（终端、独立 SFTP / FTP / S3 / WebDAV 之一）。
+    ///
+    /// 编辑页就插在它后面（见 [`open_after_host`]），关编辑页之前先把它翻到前面：
+    /// Dock 摘掉当前标签页时激活的是右边那一页，不先翻的话关完看到的是下一台
+    /// 服务器，而不是打开文件的那一台。
+    host_tab: Option<PanelId>,
     /// 面板自己的焦点句柄。**只是加载期间的兜底** —— 读好之后 [`Focusable`] 交出去的是
     /// 编辑器的句柄。
     focus_handle: FocusHandle,
     /// 盯着编辑器的改动。订阅要留住，掉了就不再收 [`InputEvent::Change`]。
     _change: Option<Subscription>,
+}
+
+/// 把建好的编辑页挂进中心区，**紧跟在打开它的那个标签页后面**。
+///
+/// 宿主可能是终端标签页（底部 SFTP 栏），也可能是独立 SFTP / FTP / S3 / WebDAV
+/// 标签页；`host` 是它自己的 [`PanelId`]。Dock 的 `add_panel_view` 只会把新面板
+/// 追加到中心区第一个标签组的末尾 —— 从第二条会话里打开文件时，编辑页会跑到所有
+/// 服务器标签页后面，关掉它落回的就是另一台服务器。所以挂进去之后再把它挪到
+/// `host` 后面（宿主在别的标签组里，比如中心区分过屏，就整个搬过去）。
+///
+/// 顺带把宿主记进 [`SftpEditorPanel::host_tab`]，关闭时好在同一个组里找它。
+pub(super) fn open_after_host(
+    dock_area: &WeakEntity<DockArea>,
+    host: PanelId,
+    editor: Entity<SftpEditorPanel>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(area) = dock_area.upgrade() else {
+        return;
+    };
+    let editor_id = PanelId::from(editor.entity_id());
+    editor.update(cx, |editor, _| editor.host_tab = Some(host));
+    area.update(cx, |area, cx| {
+        area.add_panel_view(panel_handle(editor), DockPlacement::Center, None, window, cx);
+
+        // 挂进去之后再找宿主的落点：新面板落在第一个标签组的末尾，宿主的那个组
+        // 与它在组内的下标都不受影响。
+        let target = area.layout(DockPlacement::Center).and_then(|tree| {
+            let node = tree.find_panel_node(host)?;
+            let PaneRef::Tabs { panels, .. } = tree.find_node(node)?.kind() else {
+                return None;
+            };
+            let ix = panels.iter().position(|held| *held == host)?;
+            Some(InsertTarget::Tabs {
+                node,
+                ix: Some(ix + 1),
+                activate: true,
+            })
+        });
+        // 宿主已经不在中心区（被关掉了之类）就按 Dock 自己的落点来，不再挪。
+        if let Some(target) = target {
+            area.move_panel(editor_id, target, window, cx);
+        }
+    });
 }
 
 impl SftpEditorPanel {
@@ -151,6 +205,7 @@ impl SftpEditorPanel {
             session,
             on_saved,
             group: None,
+            host_tab: None,
             focus_handle: cx.focus_handle(),
             _change: None,
         }
@@ -175,6 +230,7 @@ impl SftpEditorPanel {
             session,
             on_saved: Rc::new(|_, _| {}),
             group: None,
+            host_tab: None,
             focus_handle: cx.focus_handle(),
             _change: None,
         }
@@ -362,11 +418,32 @@ impl SftpEditorPanel {
     /// 这和 [`crate::ui::panels::TerminalPanel`] 的关闭是同一套。
     fn close_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let panel = PanelId::from(cx.entity_id());
+        let host = self.host_tab;
         let Some(group) = self.group.clone() else {
             return;
         };
-        window.defer(cx, move |_, cx| {
-            _ = group.update(cx, |group, cx| group.close_panel(panel, cx));
+        window.defer(cx, move |window, cx| {
+            _ = group.update(cx, |group, cx| {
+                // 先把宿主标签翻到前面再关自己：Dock 摘掉当前标签页时激活的是它
+                // 右边那一页，而编辑页紧挨着宿主（见 [`open_after_host`]），不先翻
+                // 的话关完落回的是下一台服务器。宿主不在这个组里（被关掉了，或者
+                // 用户把编辑页拖去了别的组），或者编辑页此刻已经不是显示中的那一页，
+                // 就按 Dock 自己的规则来。
+                if let Some(host) = host
+                    && group
+                        .active_panel(cx)
+                        .is_some_and(|active| active.panel_id(cx) == panel)
+                {
+                    let ix = group
+                        .panels()
+                        .iter()
+                        .position(|held| held.panel_id(cx) == host);
+                    if let Some(ix) = ix {
+                        group.select_tab(ix, window, cx);
+                    }
+                }
+                group.close_panel(panel, cx);
+            });
         });
     }
 }
