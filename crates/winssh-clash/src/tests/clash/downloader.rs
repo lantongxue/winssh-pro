@@ -51,6 +51,46 @@
     }
 
     #[test]
+    fn tag_input_gets_a_v_prefix() {
+        assert_eq!(normalize_tag("1.19.34").unwrap(), "v1.19.34");
+        assert_eq!(normalize_tag(" v1.19.34 ").unwrap(), "v1.19.34");
+        // 非数字开头的 tag 原样保留（mihomo 也发 Prerelease-Alpha 这种）。
+        assert_eq!(normalize_tag("Prerelease-Alpha").unwrap(), "Prerelease-Alpha");
+    }
+
+    #[test]
+    fn tag_input_rejects_path_escapes() {
+        // tag 会拼进临时文件名；`../` 爬出目录过一次，这里不能放行。
+        assert!(normalize_tag("").is_err());
+        assert!(normalize_tag("../evil").is_err());
+        assert!(normalize_tag("v1.19.34/../../x").is_err());
+        assert!(normalize_tag(".hidden").is_err());
+        assert!(normalize_tag("v1 19 34").is_err());
+    }
+
+    #[test]
+    fn auto_source_tries_mirrors_then_direct() {
+        let original = "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.34/a.zip";
+        let urls = candidate_urls(original, DownloadSource::Auto);
+        assert_eq!(urls.len(), MIRRORS.len() + 1);
+        assert_eq!(urls[0], format!("{}{original}", MIRRORS[0]));
+        assert_eq!(urls.last().unwrap(), original);
+    }
+
+    #[test]
+    fn direct_source_skips_mirrors() {
+        let original = "https://github.com/x/y";
+        assert_eq!(candidate_urls(original, DownloadSource::Direct), vec![original.to_string()]);
+    }
+
+    #[test]
+    fn mirror_source_uses_only_that_mirror() {
+        let original = "https://github.com/x/y";
+        let urls = candidate_urls(original, DownloadSource::Mirror(2));
+        assert_eq!(urls, vec![format!("{}{original}", MIRRORS[2])]);
+    }
+
+    #[test]
     fn test_unpack_gz() {
         use std::io::Write;
         let temp_dir = std::env::temp_dir().join("winssh_test_gz");
@@ -103,9 +143,19 @@
     }
 
     #[tokio::test]
+    #[ignore] // 走真网络（含镜像 API），按需手跑
+    async fn test_resolve_latest_tag() {
+        let tag = resolve_latest_tag(DownloadSource::Auto)
+            .await
+            .expect("latest tag should resolve");
+        assert!(!tag.is_empty());
+        assert!(!tag.contains('/'));
+    }
+
+    #[tokio::test]
     #[ignore]
     async fn test_real_download_mihomo() {
-        let res = download_mihomo(|event| {
+        let res = download_mihomo(DownloadRequest::default(), |event| {
             println!("Download event: {event:?}");
         })
         .await;

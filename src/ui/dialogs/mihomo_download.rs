@@ -1,29 +1,36 @@
 //! mihomo 内核下载确认与进度弹窗。
 //!
 //! 在检测到本地缺少 mihomo 内核文件时弹出，向用户展示内核版本、
-//! 目标系统架构、下载资源文件名及保存路径，待用户点击"立即下载"
+//! 下载源、目标系统架构、下载资源文件名及保存路径，待用户点击"立即下载"
 //! 后启动下载，并在弹窗内实时展示下载进度、下载速率、解压与就绪状态。
+//!
+//! 版本默认是"最新版"（下载时问 GitHub API 解析）；用户也可以自己填一个 tag。
+//! 下载源默认按 [`downloader::MIRRORS`] 依次试加速站，全部失败再直连 GitHub；
+//! 也可以在弹窗里指定直连或某一面加速站。
+//!
 //! 下载成功后自动关闭弹窗并触发代理启动回调。
 
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, Sizable as _,
+    ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _,
     StyledExt as _, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
+    input::{Input, InputEvent, InputState},
     progress::Progress,
+    select::{Select, SelectEvent, SelectState},
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, IntoElement, ParentElement as _, Render, SharedString,
+    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
     Styled as _, Window, div, px,
 };
 use rust_i18n::t;
 
 use crate::clash::downloader::{
-    self, DownloadPhase, DownloadState, MIHOMO_TAG, Plan, format_bytes,
+    self, DownloadPhase, DownloadRequest, DownloadSource, DownloadState, format_bytes,
 };
 use crate::ui::theme::{AppIcon, palette};
 
@@ -32,29 +39,196 @@ pub type MihomoReadyHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
 /// 下载确认与进度弹窗的正文实体。
 struct MihomoDownloadBody {
-    plan: Option<Plan>,
-    plan_error: Option<SharedString>,
     state: Arc<DownloadState>,
     on_ready: Option<MihomoReadyHandler>,
+    /// 版本号输入框。留空 = 最新版。
+    version: Entity<InputState>,
+    /// 下载源下拉。
+    source: Entity<SelectState<Vec<SharedString>>>,
+    /// 安装路径（`clash/bin/mihomo`）。建目录失败时是 `None`。
+    target: Option<SharedString>,
+    /// 后台解析到的"最新版" tag，只用来在确认页上把"最新版"说具体。
+    latest_tag: Option<SharedString>,
+    /// 这台机器的系统 / 架构能不能下载。
+    plan_error: Option<SharedString>,
+    /// 版本号写错了之类，点下载时才发现的那种。
+    form_error: Option<SharedString>,
+    /// 上一次真正开始的请求；失败页的"重试"用它。
+    last_request: Option<DownloadRequest>,
 }
 
 impl MihomoDownloadBody {
-    fn new(on_ready: Option<MihomoReadyHandler>) -> Self {
-        let (plan, plan_error) = match downloader::plan() {
-            Ok(p) => (Some(p), None),
-            Err(e) => (None, Some(SharedString::from(format!("{e:#}")))),
+    fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        on_ready: Option<MihomoReadyHandler>,
+    ) -> Self {
+        let version = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("clash.download.version_placeholder").to_string())
+        });
+        let source =
+            cx.new(|cx| SelectState::new(source_options(), Some(IndexPath::new(0)), window, cx));
+
+        // 输入框和下拉自己不会让这层重画：订阅它们的变化，确认页上的
+        // 资源预览与"下载源"说明才会跟着动。
+        cx.subscribe(&version, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
+        cx.subscribe(
+            &source,
+            |_, _, event: &SelectEvent<Vec<SharedString>>, cx| {
+                if matches!(event, SelectEvent::Confirm(_)) {
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
+
+        let target_path = downloader::default_binary_path();
+        let target = target_path
+            .as_ref()
+            .ok()
+            .map(|path| SharedString::from(path.display().to_string()));
+        let plan_error = match (
+            downloader::detect_os().and_then(|_| downloader::detect_arch()),
+            &target_path,
+        ) {
+            (Ok(_), Ok(_)) => None,
+            (Err(error), _) => Some(SharedString::from(format!("{error:#}"))),
+            (_, Err(error)) => Some(SharedString::from(format!("{error:#}"))),
         };
+
         Self {
-            plan,
-            plan_error,
             state: downloader::state(),
             on_ready,
+            version,
+            source,
+            target,
+            latest_tag: None,
+            plan_error,
+            form_error: None,
+            last_request: None,
         }
+    }
+
+    /// 后台解析一次最新版 tag，把确认页上那行"最新版"说具体。
+    fn resolve_latest_hint(&mut self, cx: &mut Context<Self>) {
+        let source = self.selected_source(cx);
+        cx.spawn(async move |this, cx| {
+            let result = crate::db::runtime()
+                .spawn(async move { downloader::resolve_latest_tag(source).await })
+                .await;
+            let Ok(Ok(tag)) = result else {
+                return;
+            };
+            this.update(cx, |state, cx| {
+                state.latest_tag = Some(SharedString::from(tag));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// 下拉里选中的下载源。
+    fn selected_source(&self, cx: &Context<Self>) -> DownloadSource {
+        let row = self
+            .source
+            .read(cx)
+            .selected_index(cx)
+            .map(|index| index.row)
+            .unwrap_or_default();
+        match row {
+            0 => DownloadSource::Auto,
+            1 => DownloadSource::Direct,
+            row => DownloadSource::Mirror(row - 2),
+        }
+    }
+
+    /// 确认页里"下载源"下面那句解释。
+    fn source_hint(&self, cx: &Context<Self>) -> SharedString {
+        match self.selected_source(cx) {
+            DownloadSource::Auto => {
+                SharedString::from(t!("clash.download.source_auto_hint").to_string())
+            }
+            DownloadSource::Direct => {
+                SharedString::from(t!("clash.download.source_direct_hint").to_string())
+            }
+            DownloadSource::Mirror(index) => SharedString::from(
+                t!(
+                    "clash.download.source_mirror_hint",
+                    mirror => downloader::MIRRORS
+                        .get(index)
+                        .map(|mirror| mirror_host(mirror))
+                        .unwrap_or_default(),
+                )
+                .to_string(),
+            ),
+        }
+    }
+
+    /// 版本输入框下面那句提示。
+    fn version_hint(&self, cx: &Context<Self>) -> SharedString {
+        if !self.version.read(cx).value().trim().is_empty() {
+            return SharedString::from(t!("clash.download.version_hint").to_string());
+        }
+        match &self.latest_tag {
+            Some(tag) => SharedString::from(
+                t!("clash.download.version_latest_known", tag => tag.to_string()).to_string(),
+            ),
+            None => SharedString::from(t!("clash.download.version_hint").to_string()),
+        }
+    }
+
+    /// 确认页上预览用的 tag：输入了就用输入（合法时），留空就用已解析到的最新版。
+    fn preview_tag(&self, cx: &Context<Self>) -> Option<String> {
+        let raw = self.version.read(cx).value();
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            self.latest_tag.as_ref().map(|tag| tag.to_string())
+        } else {
+            downloader::normalize_tag(trimmed).ok()
+        }
+    }
+
+    /// 把表单读成一个下载请求。版本号不合法或平台不支持时给一句人话。
+    fn read_request(&self, cx: &Context<Self>) -> Result<DownloadRequest, SharedString> {
+        if let Some(message) = &self.plan_error {
+            return Err(message.clone());
+        }
+        let raw = self.version.read(cx).value();
+        let trimmed = raw.trim();
+        let tag = if trimmed.is_empty() {
+            None
+        } else {
+            Some(
+                downloader::normalize_tag(trimmed)
+                    .map_err(|error| SharedString::from(format!("{error:#}")))?,
+            )
+        };
+        Ok(DownloadRequest {
+            tag,
+            source: self.selected_source(cx),
+        })
     }
 
     /// 开始下载。
     fn start_download(&mut self, cx: &mut Context<Self>) {
-        downloader::begin();
+        let request = match self.read_request(cx) {
+            Ok(request) => request,
+            Err(message) => {
+                self.form_error = Some(message);
+                cx.notify();
+                return;
+            }
+        };
+        self.form_error = None;
+        self.last_request = Some(request.clone());
+        downloader::begin(request);
         self.state = downloader::state();
         cx.notify();
     }
@@ -70,10 +244,19 @@ impl MihomoDownloadBody {
         window.close_dialog(cx);
     }
 
-    /// 重试下载。
+    /// 重试下载：沿用上一次的版本与下载源。
     fn retry(&mut self, cx: &mut Context<Self>) {
+        let request = self.last_request.clone().unwrap_or_default();
         downloader::reset();
-        downloader::begin();
+        downloader::begin(request);
+        self.state = downloader::state();
+        cx.notify();
+    }
+
+    /// 从失败页回到确认页，保留已填的版本与下载源，好换一个源再试。
+    fn back_to_confirm(&mut self, cx: &mut Context<Self>) {
+        downloader::reset();
+        self.form_error = None;
         self.state = downloader::state();
         cx.notify();
     }
@@ -112,6 +295,12 @@ impl MihomoDownloadBody {
     /// 阶段 1：确认下载信息展示
     fn render_confirm(&self, cx: &Context<Self>) -> impl IntoElement {
         let mono_font = cx.theme().mono_font_family.clone();
+        // 资源文件名里带着 tag：用户填了版本就当场算得出来；留空又还没解析到
+        // 最新版时这一行先不摆。
+        let asset = self
+            .preview_tag(cx)
+            .and_then(|tag| downloader::release_asset_name(&tag).ok());
+
         v_flex()
             .gap_3()
             .child(
@@ -129,43 +318,70 @@ impl MihomoDownloadBody {
                     .border_color(cx.theme().border)
                     .child(
                         v_flex()
-                            .gap_2()
-                            .child(info_row(
-                                t!("clash.download.version").to_string(),
-                                MIHOMO_TAG.to_string(),
-                                mono_font.clone(),
-                                cx,
-                            ))
-                            .child(info_row(
-                                t!("clash.download.platform").to_string(),
-                                format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
-                                mono_font.clone(),
-                                cx,
-                            ))
-                            .children(self.plan.as_ref().map(|p| {
-                                info_row(
-                                    t!("clash.download.asset").to_string(),
-                                    p.asset.clone(),
-                                    mono_font.clone(),
-                                    cx,
-                                )
-                            }))
-                            .children(self.plan.as_ref().map(|p| {
-                                info_row(
-                                    t!("clash.download.target_dir").to_string(),
-                                    p.target.display().to_string(),
-                                    mono_font.clone(),
-                                    cx,
-                                )
-                            })),
+                            .gap_3()
+                            // 版本：留空 = 最新版，也可以自己填 tag。
+                            .child(
+                                v_flex()
+                                    .gap_1p5()
+                                    .child(field_label(
+                                        t!("clash.download.version").to_string(),
+                                        cx,
+                                    ))
+                                    .child(Input::new(&self.version).w_full().cleanable(true))
+                                    .child(caption(self.version_hint(cx), cx)),
+                            )
+                            // 下载源：自动 / 直连 / 某一面加速站。
+                            .child(
+                                v_flex()
+                                    .gap_1p5()
+                                    .child(field_label(t!("clash.download.source").to_string(), cx))
+                                    .child(Select::new(&self.source).w_full())
+                                    .child(caption(self.source_hint(cx), cx)),
+                            )
+                            // 这台机器上会下到什么、放到哪。
+                            .child(
+                                v_flex()
+                                    .gap_2()
+                                    .pt_1()
+                                    .child(info_row(
+                                        t!("clash.download.platform").to_string(),
+                                        format!(
+                                            "{}-{}",
+                                            std::env::consts::OS,
+                                            std::env::consts::ARCH
+                                        ),
+                                        mono_font.clone(),
+                                        cx,
+                                    ))
+                                    .children(asset.map(|asset| {
+                                        info_row(
+                                            t!("clash.download.asset").to_string(),
+                                            asset,
+                                            mono_font.clone(),
+                                            cx,
+                                        )
+                                    }))
+                                    .children(self.target.clone().map(|target| {
+                                        info_row(
+                                            t!("clash.download.target_dir").to_string(),
+                                            target.to_string(),
+                                            mono_font.clone(),
+                                            cx,
+                                        )
+                                    })),
+                            ),
                     ),
             )
-            .children(self.plan_error.as_ref().map(|err| {
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().danger)
-                    .child(err.clone())
-            }))
+            .children(
+                self.form_error
+                    .clone()
+                    .map(|message| error_text(message, cx)),
+            )
+            .children(
+                self.plan_error
+                    .clone()
+                    .map(|message| error_text(message, cx)),
+            )
     }
 
     /// 阶段 2：实时下载进度展示
@@ -185,10 +401,17 @@ impl MihomoDownloadBody {
 
         let status_desc = if is_unpacking {
             SharedString::from(t!("clash.download.unpacking"))
-        } else if downloaded == 0 && total.is_none() {
+        } else if self.state.tag.is_empty() {
+            // 版本还没解析出来（"最新版"要走一趟 API），连接中的那一格。
             SharedString::from(t!("clash.download.connecting"))
         } else {
-            SharedString::from(t!("clash.download.downloading_subtitle"))
+            SharedString::from(
+                t!(
+                    "clash.download.downloading_version",
+                    tag => self.state.tag.to_string(),
+                )
+                .to_string(),
+            )
         };
 
         v_flex()
@@ -261,8 +484,10 @@ impl MihomoDownloadBody {
                             ),
                     ),
             )
-            // 文件提示条
-            .children(self.plan.as_ref().map(|p| {
+            // 文件与来路提示条：换源时地址跟着变，用户能看见在从哪一面下。
+            .children((!self.state.asset.is_empty()).then(|| {
+                let asset = self.state.asset.clone();
+                let url = self.state.url.clone();
                 h_flex()
                     .gap_1p5()
                     .items_center()
@@ -275,14 +500,26 @@ impl MihomoDownloadBody {
                             .text_color(cx.theme().muted_foreground),
                     )
                     .child(
-                        div()
+                        v_flex()
                             .flex_1()
                             .min_w_0()
-                            .truncate()
-                            .text_xs()
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .text_color(cx.theme().muted_foreground)
-                            .child(SharedString::from(p.asset.clone())),
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_color(cx.theme().foreground)
+                                    .child(asset),
+                            )
+                            .children((!url.is_empty()).then(|| {
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(url)
+                            })),
                     )
             }))
     }
@@ -352,9 +589,54 @@ impl MihomoDownloadBody {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("请检查网络连接或代理设置后重试。"),
+                    .child(SharedString::from(t!("clash.download.failed_hint"))),
             )
     }
+}
+
+/// 下载源下拉的选项：自动、直连，然后每一面加速站各占一项。
+fn source_options() -> Vec<SharedString> {
+    let mut options = vec![
+        SharedString::from(t!("clash.download.source_auto").to_string()),
+        SharedString::from(t!("clash.download.source_direct").to_string()),
+    ];
+    options.extend(
+        downloader::MIRRORS
+            .iter()
+            .map(|mirror| SharedString::from(mirror_host(mirror))),
+    );
+    options
+}
+
+/// 加速站前缀 → 显示用的主机名（`https://gh-proxy.org/` → `gh-proxy.org`）。
+fn mirror_host(mirror: &str) -> String {
+    mirror
+        .trim_end_matches('/')
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .to_string()
+}
+
+/// 表单项的字段名。
+fn field_label(label: String, cx: &App) -> impl IntoElement {
+    div()
+        .text_xs()
+        .font_semibold()
+        .text_color(cx.theme().muted_foreground)
+        .child(SharedString::from(label))
+}
+
+/// 字段下面一句灰字说明。
+fn caption(text: SharedString, cx: &App) -> impl IntoElement {
+    div()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child(text)
+}
+
+/// 表单校验错误那一行红字。
+fn error_text(message: SharedString, cx: &App) -> impl IntoElement {
+    div().text_xs().text_color(cx.theme().danger).child(message)
 }
 
 /// 一行"标签 + 等宽值"说明。
@@ -397,7 +679,10 @@ impl MihomoDownloadDialog {
             return;
         }
 
-        let body = cx.new(|_| MihomoDownloadBody::new(on_ready));
+        let body = cx.new(|cx| MihomoDownloadBody::new(window, cx, on_ready));
+        // 确认页上的"最新版"先解析一次，把具体 tag 说出来；解析失败就只说"最新版"，
+        // 真正开始下载时还会再解析一次。
+        body.update(cx, |this, cx| this.resolve_latest_hint(cx));
 
         // 监听下载器进度通道并通知视图更新
         let mut changes = downloader::subscribe();
@@ -424,11 +709,13 @@ impl MihomoDownloadDialog {
             let cancel_body = body.clone();
             let start_body = body.clone();
             let retry_body = body.clone();
+            let back_body = body.clone();
             let launch_body = body.clone();
 
             let current_body = body.read(app);
             let phase = current_body.state.phase.clone();
             let is_unpacking = phase == DownloadPhase::Unpacking;
+            let plan_error = current_body.plan_error.is_some();
 
             let download_variant = ButtonCustomVariant::new(app)
                 .color(teal)
@@ -463,6 +750,7 @@ impl MihomoDownloadDialog {
                                     .custom(download_variant)
                                     .bg(teal)
                                     .rounded(app.theme().radius)
+                                    .disabled(plan_error)
                                     .label(t!("clash.download.btn_download"))
                                     .on_click(move |_, _, cx| {
                                         start_body.update(cx, |this, cx| {
@@ -514,6 +802,15 @@ impl MihomoDownloadDialog {
                                     .on_click(move |_, window, cx| {
                                         cancel_body.update(cx, |this, cx| {
                                             this.cancel(window, cx);
+                                        });
+                                    })
+                                    .into_any_element(),
+                                Button::new("mihomo-download-back")
+                                    .ghost()
+                                    .label(t!("clash.download.btn_back"))
+                                    .on_click(move |_, _, cx| {
+                                        back_body.update(cx, |this, cx| {
+                                            this.back_to_confirm(cx);
                                         });
                                     })
                                     .into_any_element(),

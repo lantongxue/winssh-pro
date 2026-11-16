@@ -1702,11 +1702,38 @@ clash.download.subtitle:
   en: "Proxy requires the mihomo core executable"
   zh-CN: 代理启动依赖 mihomo 内核可执行程序
 clash.download.confirm_desc:
-  en: "The mihomo executable was not found locally. Would you like to automatically download it from GitHub Releases?"
-  zh-CN: "本地未找到 mihomo 内核。启动代理需要该程序，是否从 GitHub Releases 自动下载？"
+  en: "The mihomo executable was not found locally. Pick a version and a download source below."
+  zh-CN: "本地未找到 mihomo 内核。请选择要下载的版本与下载源。"
 clash.download.version:
   en: "Core Version"
   zh-CN: "内核版本"
+clash.download.version_placeholder:
+  en: "Latest (leave empty)"
+  zh-CN: "最新版（留空）"
+clash.download.version_hint:
+  en: "Leave empty for the latest release, or enter a tag such as v1.19.34."
+  zh-CN: "留空使用最新版；也可以输入版本号，如 v1.19.34。"
+clash.download.version_latest_known:
+  en: "Leave empty for the latest release (currently %{tag})."
+  zh-CN: "留空使用最新版（当前为 %{tag}）。"
+clash.download.source:
+  en: "Download Source"
+  zh-CN: "下载源"
+clash.download.source_auto:
+  en: "Auto (mirrors first)"
+  zh-CN: "自动（加速站优先）"
+clash.download.source_direct:
+  en: "GitHub direct"
+  zh-CN: "直连 GitHub"
+clash.download.source_auto_hint:
+  en: "Tries each acceleration mirror in order, then falls back to GitHub directly."
+  zh-CN: "依次尝试各加速站，全部失败后直连 GitHub。"
+clash.download.source_direct_hint:
+  en: "Connects to GitHub directly; may be slow or unreachable on some networks."
+  zh-CN: "直连 GitHub，部分网络下可能较慢或无法访问。"
+clash.download.source_mirror_hint:
+  en: "Downloads only through %{mirror}."
+  zh-CN: "只通过 %{mirror} 下载。"
 clash.download.platform:
   en: "Platform"
   zh-CN: "目标平台"
@@ -1725,6 +1752,9 @@ clash.download.btn_cancel:
 clash.download.btn_retry:
   en: "Retry"
   zh-CN: "重试"
+clash.download.btn_back:
+  en: "Back"
+  zh-CN: "返回"
 clash.download.btn_start:
   en: "Start Proxy"
   zh-CN: "启动代理"
@@ -1737,9 +1767,12 @@ clash.download.downloading_title:
 clash.download.downloading_subtitle:
   en: "Downloading core archive..."
   zh-CN: "正在下载内核压缩包并准备解压..."
+clash.download.downloading_version:
+  en: "Downloading mihomo %{tag}..."
+  zh-CN: "正在下载 mihomo %{tag}..."
 clash.download.connecting:
-  en: "Connecting to GitHub Releases..."
-  zh-CN: "正在连接 GitHub Releases..."
+  en: "Resolving the version and connecting to the download source..."
+  zh-CN: "正在获取版本并连接下载源..."
 clash.download.unpacking:
   en: "Unpacking and configuring binary permissions..."
   zh-CN: 正在解压并设置可执行权限...
@@ -1752,6 +1785,9 @@ clash.download.done_desc:
 clash.download.failed_title:
   en: "Download Failed"
   zh-CN: "下载 mihomo 内核失败"
+clash.download.failed_hint:
+  en: "Check the network or try another download source, then retry."
+  zh-CN: "请检查网络连接，或换一个下载源后重试。"
 clash.runtime.not_meta:
   en: "This is not the Meta (mihomo) core: rules and the virtual NIC are unavailable."
   zh-CN: "非 Meta（mihomo）内核：分流规则与虚拟网卡不可用。"

@@ -1,10 +1,15 @@
 //! 自动检查与下载 mihomo（Clash.Meta）内核。
 //!
 //! 在启动 Clash 代理时，若本地尚未找到 mihomo 可执行文件，
-//! 本模块会自动根据当前运行的操作系统及 CPU 指令集架构，
-//! 从官方 GitHub Releases 下载匹配版本的二进制压缩包并解压安装。
+//! 本模块会根据当前运行的操作系统及 CPU 指令集架构，从官方 GitHub Releases
+//! 下载匹配版本的二进制压缩包并解压安装。
 //!
-//! - Release 基准地址：<https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.32>
+//! - Release 基准地址：<https://github.com/MetaCubeX/mihomo/releases>
+//! - 版本：默认解析最新正式版（GitHub API 的 `releases/latest`）；用户也可以
+//!   在下载弹窗里自己填一个 tag（如 `v1.19.34`，`v` 可省）。
+//! - 下载源：[`MIRRORS`] 里那几面前缀式加速站（`{镜像}{原始 GitHub URL}`）。
+//!   选 [`DownloadSource::Auto`] 时依次试各镜像，全部失败再直连 GitHub；
+//!   也可以让用户指定直连或某一面镜像。
 //! - 架构匹配：
 //!   - Darwin (macOS): `darwin-arm64` / `darwin-amd64` (格式形如 `mihomo-darwin-arm64-v1.19.32.gz`)
 //!   - Linux: `linux-amd64` / `linux-arm64` / `linux-386` / `linux-armv7` 等 (.gz)
@@ -14,11 +19,11 @@
 //! ## 谁来决定下载
 //!
 //! 下载是个**要用户点头**的动作（几十 MB 的外网流量，还会往数据目录写一个
-//! 可执行文件），所以 [`crate::clash::runtime`] 起实例时找不到内核**不会**
+//! 可执行文件），所以 [`crate::runtime`] 起实例时找不到内核**不会**
 //! 自己去下，而是报"没找到"；界面在点启动之前先问一遍
-//! （见 `crate::ui::dialogs::MihomoDownloadDialog`），用户确认后调 [`begin`]，
+//! （见 `src/ui/dialogs/mihomo_download.rs`），用户确认后调 [`begin`]，
 //! 进度走 [`subscribe`] 那条进程级的 [`watch`] 通道 —— 和
-//! [`crate::clash::runtime`] 的状态通道同一种做法：谁想看谁订阅，随时订阅都先
+//! [`crate::runtime`] 的状态通道同一种做法：谁想看谁订阅，随时订阅都先
 //! 拿到**此刻**那一份。
 
 use std::path::{Path, PathBuf};
@@ -27,10 +32,43 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, bail};
 use gpui_kit::SharedString;
+use serde::Deserialize;
 use tokio::sync::watch;
 
-/// 当前指定的 mihomo 版本 Tag。
-pub const MIHOMO_TAG: &str = "v1.19.32";
+/// mihomo 的 GitHub 仓库。
+pub const GITHUB_REPO: &str = "MetaCubeX/mihomo";
+
+/// 默认的 GitHub 加速站。前缀式反代：把原始 GitHub URL 原样接在后面。
+///
+/// 加速站只是转发，哪一面都可能临时失灵；`Auto` 会按顺序挨个试，
+/// 所以这里多摆几面比只摆一面稳。
+pub const MIRRORS: [&str; 4] = [
+    "https://gh-proxy.org/",
+    "https://v4.gh-proxy.org/",
+    "https://cdn.gh-proxy.org/",
+    "https://axisnow.gh-proxy.org/",
+];
+
+/// 走哪条路下载。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DownloadSource {
+    /// 依次试 [`MIRRORS`]，都失败后直连 GitHub。
+    #[default]
+    Auto,
+    /// 直连 GitHub。
+    Direct,
+    /// 只走某一面加速站（[`MIRRORS`] 的下标）。
+    Mirror(usize),
+}
+
+/// 一次下载请求：要哪个版本、走哪条路。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DownloadRequest {
+    /// 具体 tag；`None` 表示最新版，下载开始时再解析。
+    pub tag: Option<String>,
+    /// 下载源。
+    pub source: DownloadSource,
+}
 
 /// 建立连接最多等多久。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -44,10 +82,14 @@ const REPORT_INTERVAL: Duration = Duration::from_millis(120);
 
 /// 下载进度或状态事件。
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub enum DownloadEvent {
-    /// 开始下载某个 release 资源。
-    Start { asset: String, url: String },
+    /// 开始从某个地址下载某个 release 资源。
+    Start {
+        /// 解析好的版本 tag（"最新版"到这一步才知道具体是哪个）。
+        tag: String,
+        asset: String,
+        url: String,
+    },
     /// 下载进度。
     Progress {
         downloaded: u64,
@@ -100,6 +142,34 @@ pub fn detect_extension() -> &'static str {
     }
 }
 
+/// 把用户输入的版本号规范成 release tag。
+///
+/// 接受 `v1.19.34` / `1.19.34` / `Prerelease-Alpha` 这几种写法；以数字开头的
+/// 补上 `v` 前缀。tag 会被拼进文件名与 URL，所以只放行字母、数字、`.`、`-`、
+/// `_`，并挡掉 `..` 这类会爬出目录的写法。
+pub fn normalize_tag(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("版本号不能为空");
+    }
+    if trimmed.len() > 64 {
+        bail!("版本号过长：{trimmed}");
+    }
+    if !trimmed
+        .chars()
+        .all(|letter| letter.is_ascii_alphanumeric() || matches!(letter, '.' | '-' | '_'))
+        || trimmed.contains("..")
+        || trimmed.starts_with('.')
+    {
+        bail!("版本号不合法：{trimmed}");
+    }
+    if trimmed.as_bytes()[0].is_ascii_digit() {
+        Ok(format!("v{trimmed}"))
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
 /// 根据系统和架构自动计算 release 资源文件名。
 /// 例如：`mihomo-darwin-arm64-v1.19.32.gz` 或 `mihomo-windows-amd64-v1.19.32.zip`。
 pub fn release_asset_name(tag: &str) -> Result<String> {
@@ -109,12 +179,34 @@ pub fn release_asset_name(tag: &str) -> Result<String> {
     Ok(format!("mihomo-{os}-{arch}-{tag}.{ext}"))
 }
 
-/// 计算 GitHub release 的直接下载 URL。
+/// 计算 GitHub release 的直接下载 URL（不经加速站）。
 pub fn download_url(tag: &str) -> Result<String> {
     let asset = release_asset_name(tag)?;
     Ok(format!(
-        "https://github.com/MetaCubeX/mihomo/releases/download/{tag}/{asset}"
+        "https://github.com/{GITHUB_REPO}/releases/download/{tag}/{asset}"
     ))
+}
+
+/// GitHub API：最新正式版 release。
+pub fn latest_release_api_url() -> String {
+    format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest")
+}
+
+/// 把一个原始 GitHub URL 按下载源展开成候选地址，靠前的先试。
+pub fn candidate_urls(original: &str, source: DownloadSource) -> Vec<String> {
+    match source {
+        DownloadSource::Direct => vec![original.to_string()],
+        DownloadSource::Mirror(index) => match MIRRORS.get(index) {
+            Some(mirror) => vec![format!("{mirror}{original}")],
+            // 下标越界（界面上不该发生）退回直连，别把下载卡死。
+            None => vec![original.to_string()],
+        },
+        DownloadSource::Auto => MIRRORS
+            .iter()
+            .map(|mirror| format!("{mirror}{original}"))
+            .chain(std::iter::once(original.to_string()))
+            .collect(),
+    }
 }
 
 /// mihomo 二进制默认保存目录：`db::db_dir()/clash/bin`。
@@ -146,35 +238,110 @@ where
     if let Ok(existing) = super::runtime::binary_path() {
         return Ok(existing);
     }
-    download_mihomo(on_progress).await
+    download_mihomo(DownloadRequest::default(), on_progress).await
 }
 
-/// 执行下载并解压安装 mihomo。
-pub async fn download_mihomo<F>(on_progress: F) -> Result<PathBuf>
+/// 解析"最新版"的 tag。按下载源依次问 GitHub API，谁先答话算谁。
+///
+/// API 也走加速站：`{镜像}https://api.github.com/...` —— [`MIRRORS`] 那几面
+/// 都支持这种前缀转发，国内网络下比直连 `api.github.com` 稳。
+pub async fn resolve_latest_tag(source: DownloadSource) -> Result<String> {
+    let api = latest_release_api_url();
+    let client = http_client()?;
+    let mut failures = Vec::new();
+    for url in candidate_urls(&api, source) {
+        match fetch_release_tag(&client, &url).await {
+            Ok(tag) => return Ok(tag),
+            Err(error) => {
+                log::warn!("从 {url} 解析 mihomo 最新版本失败：{error:#}");
+                failures.push(format!("{}: {error:#}", url_host(&url)));
+            }
+        }
+    }
+    bail!("获取 mihomo 最新版本失败：{}", failures.join("；"))
+}
+
+/// GitHub API 返回里只要 `tag_name` 一项。
+#[derive(Deserialize)]
+struct LatestRelease {
+    tag_name: String,
+}
+
+/// 问一次 GitHub API，把 `tag_name` 规范成 tag。
+async fn fetch_release_tag(client: &reqwest::Client, url: &str) -> Result<String> {
+    let response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .with_context(|| format!("请求 {url} 失败"))?;
+    if !response.status().is_success() {
+        bail!("HTTP 状态码: {}", response.status());
+    }
+    let release: LatestRelease = response.json().await.context("解析 GitHub API 返回失败")?;
+    normalize_tag(&release.tag_name)
+}
+
+/// 下载并解压安装 mihomo。
+///
+/// `request.source` 展开出的候选地址按顺序试：某个镜像连不上、回了非 2xx、
+/// 或者下到的内容解不开，都换下一面。全部失败才把各家的原因合起来报出去。
+pub async fn download_mihomo<F>(request: DownloadRequest, on_progress: F) -> Result<PathBuf>
 where
     F: Fn(DownloadEvent) + Send + Sync + 'static,
 {
-    let tag = MIHOMO_TAG;
-    let asset = release_asset_name(tag)?;
-    let url = download_url(tag)?;
+    let tag = match request.tag.as_deref() {
+        Some(raw) => normalize_tag(raw)?,
+        None => resolve_latest_tag(request.source).await?,
+    };
+    let asset = release_asset_name(&tag)?;
+    let original_url = download_url(&tag)?;
     let target_dir = default_binary_dir()?;
     let final_bin = target_dir.join(super::runtime::MIHOMO_EXE);
+    let client = http_client()?;
 
-    on_progress(DownloadEvent::Start {
-        asset: asset.clone(),
-        url: url.clone(),
-    });
+    let candidates = candidate_urls(&original_url, request.source);
+    let mut failures = Vec::new();
+    for url in candidates {
+        on_progress(DownloadEvent::Start {
+            tag: tag.clone(),
+            asset: asset.clone(),
+            url: url.clone(),
+        });
+        match download_from(&client, &url, &asset, &target_dir, &final_bin, &on_progress).await {
+            Ok(()) => {
+                // Windows 平台：如果旁边有 wintun.dll，同步拷贝到 bin 目录下
+                copy_wintun_if_needed(&target_dir);
+                on_progress(DownloadEvent::Done(final_bin.clone()));
+                log::info!("mihomo 内核下载解压完成：{}", final_bin.display());
+                return Ok(final_bin);
+            }
+            Err(error) => {
+                log::warn!("从 {url} 下载 mihomo 失败：{error:#}");
+                // 这一轮可能留下半个压缩包，别让下一面从头拼到尾。
+                let _ = std::fs::remove_file(temp_archive_path(&target_dir, &asset));
+                failures.push(format!("{}: {error:#}", url_host(&url)));
+            }
+        }
+    }
+    bail!("所有下载源都失败了：{}", failures.join("；"))
+}
 
-    let client = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(READ_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent("winssh-pro")
-        .build()
-        .context("构建 HTTP 客户端失败")?;
-
+/// 从单个地址走完"下载 → 解压 → 就位"。
+async fn download_from<F>(
+    client: &reqwest::Client,
+    url: &str,
+    asset: &str,
+    target_dir: &Path,
+    final_bin: &Path,
+    on_progress: &F,
+) -> Result<()>
+where
+    F: Fn(DownloadEvent) + Send + Sync + 'static,
+{
     let response = client
-        .get(&url)
+        .get(url)
         .send()
         .await
         .with_context(|| format!("请求下载地址失败: {url}"))?;
@@ -184,7 +351,7 @@ where
     }
 
     let total_size = response.content_length();
-    let temp_archive = temp_archive_path(&target_dir, &asset);
+    let temp_archive = temp_archive_path(target_dir, asset);
 
     // 流式下载到临时压缩文件
     {
@@ -249,9 +416,13 @@ where
         Ok(())
     })();
 
-    // 无论解压成功与否，清理临时压缩包
+    // 无论解压成功与否，清理临时压缩包；解压失败时半截的可执行文件也收掉，
+    // 别让它在下一次换源时假装还在。
     let _ = std::fs::remove_file(&temp_archive);
-    unpack_result?;
+    if let Err(error) = unpack_result {
+        let _ = std::fs::remove_file(&temp_bin);
+        return Err(error);
+    }
 
     // Unix 平台赋予可执行权限 0o755
     #[cfg(unix)]
@@ -267,19 +438,33 @@ where
     // Windows 平台如果存在已有的目标文件，需先清理再移动
     #[cfg(windows)]
     if final_bin.exists() {
-        let _ = std::fs::remove_file(&final_bin);
+        let _ = std::fs::remove_file(final_bin);
     }
 
     // 原子置换为最终目标文件
-    std::fs::rename(&temp_bin, &final_bin)
+    std::fs::rename(&temp_bin, final_bin)
         .with_context(|| format!("移动二进制文件到最终路径失败: {}", final_bin.display()))?;
 
-    // Windows 平台：如果旁边有 wintun.dll，同步拷贝到 bin 目录下
-    copy_wintun_if_needed(&target_dir);
+    Ok(())
+}
 
-    on_progress(DownloadEvent::Done(final_bin.clone()));
-    log::info!("mihomo 内核下载解压完成：{}", final_bin.display());
-    Ok(final_bin)
+/// 建一条下载 / 查询共用的 HTTP 客户端。
+fn http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .user_agent("winssh-pro")
+        .build()
+        .context("构建 HTTP 客户端失败")
+}
+
+/// 从 URL 里剥出主机名，失败信息里用来指认是哪一面。
+fn url_host(url: &str) -> &str {
+    url.split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or(url)
 }
 
 /// 解压 .gz 文件（解压后内容直接为单个可执行二进制）。
@@ -364,6 +549,10 @@ pub struct DownloadState {
     pub phase: DownloadPhase,
     /// 在下的那个文件名。
     pub asset: SharedString,
+    /// 解析好的版本 tag。"最新版"在解析出来之前是空的。
+    pub tag: SharedString,
+    /// 当前实际在用的下载地址（自动换源时会跟着变）。
+    pub url: SharedString,
     pub downloaded: u64,
     /// 服务器没报大小时是 `None`，进度条退回\"不定长\"那一档。
     pub total: Option<u64>,
@@ -376,6 +565,8 @@ impl Default for DownloadState {
         Self {
             phase: DownloadPhase::Idle,
             asset: SharedString::default(),
+            tag: SharedString::default(),
+            url: SharedString::default(),
             downloaded: 0,
             total: None,
             speed: 0,
@@ -424,47 +615,49 @@ pub fn is_installed() -> bool {
     super::runtime::binary_path().is_ok()
 }
 
-/// 将要下载的是哪个文件、从哪来、存到哪去。确认弹窗把这三样摆给用户看。
-#[derive(Clone, Debug, PartialEq)]
-pub struct Plan {
-    pub asset: String,
-    pub url: String,
-    pub target: PathBuf,
-}
-
 /// 重置下载状态为初始空闲。
 pub fn reset() {
     publish(|state| *state = DownloadState::default());
 }
 
-/// 算出这台机器上的下载计划。系统或架构不在 mihomo 的发布清单里时报错。
-pub fn plan() -> Result<Plan> {
-    Ok(Plan {
-        asset: release_asset_name(MIHOMO_TAG)?,
-        url: download_url(MIHOMO_TAG)?,
-        target: default_binary_dir()?.join(super::runtime::MIHOMO_EXE),
-    })
-}
-
 /// 开始下载。已经在下了就什么也不做。进度走 [`subscribe`]。
 ///
-/// 任务跑在应用级 runtime 上：弹窗关掉（比如用户点了\"后台\"之类）不该把它
+/// 任务跑在应用级 runtime 上：弹窗关掉（比如用户点了"后台"之类）不该把它
 /// 连带掐断；真要停就明着调 [`cancel`]。
-pub fn begin() {
+pub fn begin(request: DownloadRequest) {
     if state().phase.is_busy() {
         return;
     }
-    let asset = release_asset_name(MIHOMO_TAG).unwrap_or_default();
+    // 指定了版本就先把文件名摆出来；"最新版"要等 API 解析完，
+    // 那份 asset 由第一条 Start 事件填进来。
+    let tag = request
+        .tag
+        .as_deref()
+        .and_then(|raw| normalize_tag(raw).ok());
+    let asset = tag
+        .as_deref()
+        .and_then(|tag| release_asset_name(tag).ok())
+        .unwrap_or_default();
     publish(|state| {
         *state = DownloadState {
             phase: DownloadPhase::Downloading,
-            asset: asset.clone().into(),
+            asset: asset.into(),
+            tag: tag.unwrap_or_default().into(),
             ..DownloadState::default()
         };
     });
     let handle = winssh_db::runtime().spawn(async move {
-        let outcome = download_mihomo(|event| match event {
-            DownloadEvent::Start { .. } => {}
+        let outcome = download_mihomo(request, |event| match event {
+            DownloadEvent::Start { tag, asset, url } => publish(|state| {
+                // 自动换源时这已经是下一面地址了：进度从零重新算。
+                state.phase = DownloadPhase::Downloading;
+                state.tag = tag.into();
+                state.asset = asset.into();
+                state.url = url.into();
+                state.downloaded = 0;
+                state.total = None;
+                state.speed = 0;
+            }),
             DownloadEvent::Progress {
                 downloaded,
                 total,
@@ -483,7 +676,7 @@ pub fn begin() {
             Ok(_) => publish(|state| state.phase = DownloadPhase::Done),
             Err(error) => {
                 log::warn!("下载 mihomo 失败：{error:#}");
-                remove_partial(&asset);
+                remove_partial(&state().asset);
                 publish(|state| state.phase = DownloadPhase::Failed(format!("{error:#}").into()));
             }
         }
