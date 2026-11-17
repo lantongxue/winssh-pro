@@ -7,10 +7,15 @@
 //! 搜索框下面是一排可横向滚动的协议筛选片：“全部”之后只列主机表里真有的
 //! 那几种协议，选中哪一片，列表就只留那种协议的主机，第一层仍然是分组本身。
 //!
-//! 列表是一个按行记尺寸的虚拟列表：分组头是一行 36 的普通行，展开后的主机是
-//! 一张 [`HostCard`]，两者高度不同，所以用不了 [`gpui_kit::component::tree`] 那种
-//! 等高列表（它底层是 `uniform_list`，所有行共用第一行量出来的高度）。
-//! 换来的是虚拟滚动仍然在，代价是树自带的键盘上下左右没有了。
+//! 列表是一个按行记尺寸的虚拟列表：分组头是一行 28 的普通行，展开后的主机是
+//! 一条 48 的平铺行（[`HostCard`]），两者高度不同，所以用不了
+//! [`gpui_kit::component::tree`] 那种等高列表（它底层是 `uniform_list`，
+//! 所有行共用第一行量出来的高度）。换来的是虚拟滚动仍然在，代价是树自带的
+//! 键盘上下左右没有了。
+//!
+//! 面板内搜索绑在 `HostExplorer` 上下文的 ⌘F / Ctrl+F 上（[`FocusSearch`]），
+//! 搜索框右缘那枚键位牌就是从 keymap 反查出来的。⌘K 不在这儿抢 —— 它是
+//! 全局命令面板的键位，那边也能搜主机。
 //!
 //! 卡片可以拖：拖到别的卡片上是排序（一条蓝线画出它会落在哪儿），拖到分组头上
 //! 是移动到那个分组的末尾。顺序就是 [`HostGroup::hosts`] 的顺序，所以拖动改的是
@@ -26,6 +31,7 @@ use gpui_kit::component::{
     dock::{DockArea, DockPlacement, PanelId, panel_handle},
     h_flex,
     input::{Input, InputEvent, InputState},
+    kbd::Kbd,
     list::ListItem,
     scroll::{ScrollableElement as _, ScrollbarAxis},
     separator::Separator,
@@ -35,7 +41,7 @@ use gpui_kit::{
     App, AppContext as _, ClickEvent, Context, DragMoveEvent, Entity, EntityId, EventEmitter,
     FocusHandle, Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
     Point, Render, SharedString, Size, StatefulInteractiveElement as _, Styled as _, WeakEntity,
-    Window, div, prelude::FluentBuilder as _, px, size,
+    Window, actions, div, prelude::FluentBuilder as _, px, size,
 };
 
 use super::{GUTTER, ICON_SIZE, SidebarView, collapse_button, view_header};
@@ -56,15 +62,28 @@ use crate::{
 };
 use rust_i18n::t;
 
+actions!(
+    host_explorer,
+    [
+        /// 把焦点落到面板顶部的搜索框上。绑在 `HostExplorer` 上下文里，
+        /// 键位见 [`crate::ui::bindings`]。
+        FocusSearch,
+    ]
+);
+
+/// 这个视图的按键上下文。焦点落在面板里（含搜索框）时，⌘F / Ctrl+F
+/// 命中 [`FocusSearch`]；焦点在别处（终端、表格）时不沾。
+pub(crate) const KEY_CONTEXT: &str = "HostExplorer";
+
 /// 分组头那一行的高度，也就是它悬停底色的高度。
-const GROUP_ROW_HEIGHT: Pixels = px(36.);
+const GROUP_ROW_HEIGHT: Pixels = px(28.);
 
-/// 分组头下面留给第一张卡片的缝。比卡片之间的缝宽：分组头悬停时整行会亮起来，
-/// 那块底色贴着卡片的边框，看上去像把卡片压住了。
-const GROUP_ROW_GAP: Pixels = px(8.);
+/// 分组头下面留给第一条主机行的缝。主机行现在是平铺的、没有边框，
+/// 这道缝只需要把悬停底色和下一行隔开一点。
+const GROUP_ROW_GAP: Pixels = px(4.);
 
-/// 一张主机卡片下面留给下一张的缝。
-const HOST_ROW_GAP: Pixels = px(4.);
+/// 一条主机行下面留给下一条的缝。
+const HOST_ROW_GAP: Pixels = px(2.);
 
 /// 分组头那一行的高度：悬停底色，加下面那道缝。
 fn group_row_height() -> Pixels {
@@ -80,8 +99,9 @@ fn host_row_height() -> Pixels {
 /// 展开箭头占位宽度：叶子节点也留出同样的宽度，图标才会排成一列。
 const CHEVRON_WIDTH: Pixels = px(16.);
 
-/// 缩进导轨的位置，以及导轨到卡片的距离。导轨落在分组头箭头那一列的正下方，
-/// 一眼就能看出这些卡片挂在上面那个分组下面。
+/// 主机行相对分组头的缩进单位。行缩进两个单位，落点那条蓝线从一个单位处起画。
+/// 早先这儿还有一条竖直的缩进导轨，平铺行自带协议徽标那一列节奏之后，
+/// 导轨只剩噪音，去掉了。
 const GUIDE_OFFSET: Pixels = px(8.);
 
 /// 相邻筛选片之间的缝。
@@ -225,7 +245,7 @@ enum DropTarget {
 
 /// 拖拽时跟着鼠标走的那一小块。
 ///
-/// 只留身份那一行（名字 + 地址）：整张 88 高的卡片跟着鼠标飞，会把底下的
+/// 只留身份那一行（名字 + 地址）：整条主机行跟着鼠标飞，会把底下的
 /// 插入线和分组头一起盖住，而那两样正是这时候要看的东西。
 struct HostDragPreview {
     host: Host,
@@ -1137,27 +1157,20 @@ impl HostExplorerView {
         cx.notify();
     }
 
-    /// 标题行：视图图标 + 名称 + 新建 + 收起。前两段是所有视图共用的 chrome，
-    /// 由 [`view_header`] 提供，这里只补上主机视图自己的两个按钮。
+    /// 标题行：视图图标 + 名称 + 收起。前两段是所有视图共用的 chrome，
+    /// 由 [`view_header`] 提供。新建主机只留底部那一个主操作入口 ——
+    /// 早先这儿还有一枚「＋」，和底部按钮是同一个动作的两个入口，去掉了。
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        view_header(SidebarView::Hosts, cx)
-            .child(
-                Button::new("host-explorer-add")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Plus)
-                    .tooltip(t!("host_explorer.new_host"))
-                    .accessibility_id(t!("host_explorer.new_host"))
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(HostExplorerEvent::NewHost))),
-            )
-            .child(
-                collapse_button()
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(HostExplorerEvent::Collapse))),
-            )
+        view_header(SidebarView::Hosts, cx).child(
+            collapse_button()
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(HostExplorerEvent::Collapse))),
+        )
     }
 
     /// 搜索框 + 协议筛选片。两者一起决定列表里出现什么，所以合成一段。
-    fn render_filters(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// 搜索框右缘那枚键位牌从 keymap 反查（[`Kbd::binding_for_action`]），
+    /// 改键位时它跟着变，不用两处维护。
+    fn render_filters(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 先把片渲染出来再交给 `children`：闭包借了 `cx`，惰性迭代器会把这个
         // 借用带出闭包体，borrow checker 不放行。
         let chips: Vec<_> = self
@@ -1179,6 +1192,10 @@ impl HostExplorerView {
                         Icon::new(IconName::Search)
                             .with_size(ICON_SIZE)
                             .text_color(palette::idle(cx)),
+                    )
+                    .when_some(
+                        Kbd::binding_for_action(&FocusSearch, Some(KEY_CONTEXT), window),
+                        |this, kbd| this.suffix(kbd.text_xs()),
                     )
                     .w_full()
                     .bg(palette::surface(cx)),
@@ -1235,6 +1252,7 @@ impl HostExplorerView {
         Button::new(("host-explorer-filter", ix))
             .custom(variant)
             .small()
+            .compact()
             .rounded(cx.theme().radius)
             .label(label)
             .when(selected, |this| {
@@ -1302,13 +1320,10 @@ impl HostExplorerView {
                             .child(name),
                     )
                     .child(
-                        // 计数落回 chrome 那一档的底色，读起来是嵌在列表里的，
-                        // 而不是又一个可以点的东西。
+                        // 计数是一段安静的纯文字，不再装进角标盒子里 ——
+                        // 分组头本来就只有 28px，盒子比字还高。
                         div()
                             .flex_shrink_0()
-                            .px_1p5()
-                            .rounded(cx.theme().radius)
-                            .bg(palette::recessed(cx))
                             .text_xs()
                             .text_color(palette::idle(cx))
                             .child(SharedString::from(count.to_string())),
@@ -1354,8 +1369,8 @@ impl HostExplorerView {
         }))
     }
 
-    /// 一台主机：卡片本身由 [`HostCard`] 负责，这里只管它在列表里的位置 ——
-    /// 缩进、缩进导轨，下面留给下一张的缝，以及拖拽。
+    /// 一台主机：行本身由 [`HostCard`] 负责，这里只管它在列表里的位置 ——
+    /// 缩进、下面留给下一条的缝，以及拖拽。
     ///
     /// 拖拽挂在这一层而不是卡片上：卡片不知道自己在哪个列表的第几位，
     /// 排到哪儿去只有这个视图算得出来。筛着某种协议时照样能拖 —— 落点
@@ -1380,18 +1395,9 @@ impl HostExplorerView {
             .h(host_row_height())
             .pb(HOST_ROW_GAP)
             // 缩进只走内边距，不走外边距：`w_full()` 的宽度是父级内容宽，
-            // 再叠一个 `ml` 会让整行比列表内容宽出那一截，卡片的右缘正好
-            // 顶到侧边栏边上。导轨自己绝对定位在缩进线上。
+            // 再叠一个 `ml` 会让整行比列表内容宽出那一截，行的右缘正好
+            // 顶到侧边栏边上。
             .pl(GUIDE_OFFSET + GUIDE_OFFSET)
-            .child(
-                div()
-                    .absolute()
-                    .left(GUIDE_OFFSET)
-                    .top_0()
-                    .bottom_0()
-                    .w(px(1.))
-                    .bg(cx.theme().sidebar_border),
-            )
             .on_drag(
                 DraggedHost { host: dragged },
                 |dragged, click_offset, _, cx| {
@@ -1557,13 +1563,22 @@ impl Focusable for HostExplorerView {
 }
 
 impl Render for HostExplorerView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
+            .id("host-explorer")
+            .key_context(KEY_CONTEXT)
+            .track_focus(&self.focus_handle)
+            // ⌘F / Ctrl+F：焦点落到搜索框上。绑在面板自己的上下文里，
+            // 终端里的 ⌘F（终端内搜索）不受影响。
+            .on_action(cx.listener(|this, _: &FocusSearch, window, cx| {
+                let handle = this.search.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+            }))
             .size_full()
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
             .child(self.render_header(cx))
-            .child(self.render_filters(cx))
+            .child(self.render_filters(window, cx))
             .child(Separator::horizontal().color(cx.theme().sidebar_border))
             .child(self.render_list(cx))
             .child(Separator::horizontal().color(cx.theme().sidebar_border))

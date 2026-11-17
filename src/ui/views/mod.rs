@@ -17,7 +17,7 @@ mod snippet_vault;
 
 pub use clash::{ClashView, ClashViewEvent};
 pub use credential_vault::{CredentialVaultEvent, CredentialVaultView, VaultFilter};
-pub use host_explorer::{HostExplorerEvent, HostExplorerView};
+pub use host_explorer::{FocusSearch, HostExplorerEvent, HostExplorerView};
 pub use snippet_vault::{SnippetVaultEvent, SnippetVaultView};
 
 use gpui_kit::component::{

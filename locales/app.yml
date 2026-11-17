@@ -939,8 +939,8 @@ palette.toggle_right_dock:
 
 # ── 主机浏览器（侧边栏主机列表） ─────────────────────────────────────────
 host_explorer.search_placeholder:
-  en: Search hosts by name, address, tag or group
-  zh-CN: 按名称、地址、标签或分组搜索主机
+  en: Search hosts
+  zh-CN: 搜索主机
 host_explorer.load_failed:
   en: "Could not read the host configuration: %{error}"
   zh-CN: 读取主机配置失败：%{error}
@@ -975,8 +975,8 @@ host_explorer.new_host:
   en: New host
   zh-CN: 新建主机
 host_explorer.filter_all:
-  en: All (%{count})
-  zh-CN: 全部（%{count}）
+  en: All %{count}
+  zh-CN: 全部 %{count}
 host_explorer.delete_group:
   en: Delete group
   zh-CN: 删除分组
@@ -986,6 +986,11 @@ host_explorer.group_empty:
 host_explorer.no_match:
   en: No matching host.
   zh-CN: 暂无匹配的主机。
+
+# ── 主机卡片（列表里那条 48px 的平铺行，见 src/ui/cards/host_card.rs） ────
+host_card.connect:
+  en: Connect
+  zh-CN: 连接
 
 # ── VNC 会话（协议层与中心区那块远端桌面，见 src/vnc/） ──────────────────
 vnc.connecting:

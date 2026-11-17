@@ -44,6 +44,7 @@ pub use workspace::Workspace;
 
 use gpui_kit::component::dock::{ClosePanel, ToggleZoom};
 use gpui_kit::{App, KeyBinding, NoAction};
+use views::FocusSearch;
 
 use panels::{
     BackTab, CloseGoToLine, CloseSearch, CopySelection, ExtendSelectionDown, ExtendSelectionUp,
@@ -72,6 +73,7 @@ command_key!(CMD_S, "s");
 command_key!(CMD_A, "a");
 command_key!(CMD_G, "g");
 command_key!(CMD_C, "c");
+command_key!(CMD_F, "f");
 
 /// VNC 面板的按键上下文，和 [`VncPanel`](panels::VncPanel) 里那句
 /// `key_context` 同一个名字。
@@ -107,6 +109,9 @@ fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("alt-4", OpenTrustedHosts, None),
         KeyBinding::new(CMD_W, ClosePanel, None),
         KeyBinding::new("shift-escape", ToggleZoom, None),
+        // 主机面板内的搜索聚焦。⌘K 已经是全局命令面板的键位，不在面板里抢；
+        // 面板内搜索用 ⌘F，和终端内搜索同一个键、各认各的上下文。
+        KeyBinding::new(CMD_F, FocusSearch, Some("HostExplorer")),
         // 远端文件编辑标签页里的保存。绑在 `SftpEditor` 上下文而不是全局：焦点落在编辑器
         // （它是那个面板的孩子）里时冒泡上来命中；别处（终端、表格）的 cmd-s 不受影响。
         // 编辑器内层是 `Input` 上下文、不绑 cmd-s，所以让得开。

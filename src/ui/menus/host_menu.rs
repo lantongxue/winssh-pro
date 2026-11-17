@@ -19,13 +19,13 @@ use std::rc::Rc;
 
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonCustomVariant, ButtonVariants as _},
     h_flex,
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
 };
 use gpui_kit::{
     Anchor, App, Context, ElementId, Hsla, IntoElement, ParentElement as _, Pixels, RenderOnce,
-    SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px,
+    SharedString, Styled as _, Window, div, prelude::FluentBuilder as _, px, transparent_black,
 };
 
 use crate::ui::theme::{AppIcon, palette};
@@ -134,6 +134,7 @@ pub type HostActionHandler = Rc<dyn Fn(&HostAction, &mut Window, &mut App)>;
 pub struct HostMenu {
     id: ElementId,
     on_action: Option<HostActionHandler>,
+    transparent: bool,
 }
 
 impl HostMenu {
@@ -165,7 +166,16 @@ impl HostMenu {
         Self {
             id: id.into(),
             on_action: None,
+            transparent: false,
         }
+    }
+
+    /// 触发按钮不画自己的底（常态 / 悬停 / 按下全透明）。挂在主机行悬停
+    /// 换出的那一格里时用：按钮要融进行悬停底色，而不是在它上面再顶一个
+    /// 小方块。默认仍是 ghost，别处单挂时照旧有自己的悬停反馈。
+    pub fn transparent(mut self) -> Self {
+        self.transparent = true;
+        self
     }
 
     /// 用户选了菜单里的某一项。
@@ -179,15 +189,21 @@ impl HostMenu {
 }
 
 impl RenderOnce for HostMenu {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let on_action = self.on_action;
+        let blend = ButtonCustomVariant::new(cx)
+            .color(transparent_black())
+            .foreground(palette::idle(cx))
+            .hover(transparent_black())
+            .active(transparent_black());
 
         Button::new(self.id)
-            .ghost()
             .xsmall()
             .icon(IconName::EllipsisVertical)
             .tooltip(t!("menu.more"))
             .accessibility_id(t!("menu.more"))
+            .when(self.transparent, |this| this.custom(blend))
+            .when(!self.transparent, |this| this.ghost())
             // 菜单从按钮的右上角往左下展开：卡片贴着侧边栏右边缘，
             // 从左上角展开的话整个菜单会盖到工作区上去。
             .dropdown_menu_with_anchor(Anchor::TopRight, Self::items(on_action))

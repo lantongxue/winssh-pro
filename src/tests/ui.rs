@@ -119,3 +119,27 @@
             None
         );
     }
+
+    /// 主机面板内搜索聚焦绑在 `HostExplorer` 上下文：焦点在面板里（含搜索框
+    /// 自己）时 ⌘F / Ctrl+F 命中 `FocusSearch`；终端里的同一个键仍是终端内
+    /// 搜索，别处不沾。⌘K 不被面板抢走 —— 它始终是全局命令面板。
+    #[test]
+    fn host_explorer_search_focus_only_binds_inside_the_panel() {
+        assert_eq!(
+            dispatch(&["Root", "HostExplorer"], CMD_F).as_deref(),
+            Some(FocusSearch.name())
+        );
+        assert_eq!(
+            dispatch(&["Root", "HostExplorer", "Input"], CMD_F).as_deref(),
+            Some(FocusSearch.name())
+        );
+        assert_eq!(
+            dispatch(&["Root", "Terminal"], CMD_F).as_deref(),
+            Some(Find.name())
+        );
+        assert_eq!(dispatch(&["Root"], CMD_F), None);
+        assert_eq!(
+            dispatch(&["Root", "HostExplorer"], CMD_K).as_deref(),
+            Some(ToggleCommandPalette.name())
+        );
+    }
