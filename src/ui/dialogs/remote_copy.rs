@@ -10,8 +10,10 @@
 //! 列表里；目标会话的 SFTP 通道还没开时，选中它才现开一条（可能要等 sudo
 //! 密码框），开不出来就地把原因显示在这一页，不关框。
 //!
-//! 目标目录默认填目标会话当前停的那一格（没翻过就是它的家目录），提交前让对端
-//! `realpath` 一次并确认它真是个目录 —— 不替用户建不存在的目录，也不猜。
+//! 目标目录默认和**源**同目录 —— 复制文件夹 `/opt/www/kafka` 时填 `/opt/www`，
+//! 复制文件 `/opt/www/kafka/kafka.yml` 时填 `/opt/www/kafka`，也就是选中条目
+//! 所在的那一层。提交前让对端 `realpath` 一次并确认它真是个目录 —— 不替用户建
+//! 不存在的目录，也不猜。
 
 use std::rc::Rc;
 
@@ -51,8 +53,6 @@ pub struct RemoteCopyTarget {
     pub server: SharedString,
     /// 目标文件的通道：已经开着就直接用；还没开就现开（见 [`RemoteCopyChannel`]）。
     pub channel: RemoteCopyChannel,
-    /// 目标会话当前停在的远端目录。没翻过目录时是 `None`，用它的家目录补。
-    pub current_dir: Option<String>,
     /// 目标会话的 SFTP 栏。复制完成后请它重列一次，不然 B 那边看到的是旧目录。
     pub panel: WeakEntity<SftpPanel>,
 }
@@ -92,6 +92,8 @@ pub struct RemoteCopyDialog {
     source: SharedString,
     /// 选中的条目概况（一个名字，或者"N 项"）。
     scope: SharedString,
+    /// 目标目录的默认值：选中条目所在的那一层（见模块文档）。
+    source_dir: SharedString,
     targets: Vec<RemoteCopyTarget>,
     /// 下拉里的显示名，和 `targets` 一一对应。同名会话带序号，保证选项值唯一。
     labels: Vec<SharedString>,
@@ -112,17 +114,27 @@ pub struct RemoteCopyDialog {
 }
 
 impl RemoteCopyDialog {
-    /// 弹出对话框。`targets` 为空时只画一句"没有其他已连接的会话"。
+    /// 弹出对话框。`source_dir` 是目标目录的默认值（选中条目的父目录），
+    /// `targets` 为空时只画一句"没有其他已连接的会话"。
     pub fn open(
         source: impl Into<SharedString>,
         scope: impl Into<SharedString>,
+        source_dir: impl Into<SharedString>,
         targets: Vec<RemoteCopyTarget>,
         on_submit: RemoteCopyHandler,
         window: &mut Window,
         cx: &mut App,
     ) {
         let form = cx.new(|cx| {
-            Self::new(source.into(), scope.into(), targets, on_submit, window, cx)
+            Self::new(
+                source.into(),
+                scope.into(),
+                source_dir.into(),
+                targets,
+                on_submit,
+                window,
+                cx,
+            )
         });
         // 落点选择要等实体建好再做：`select_target` 会取 `cx.entity()` 去接异步
         // 结果，而在 `cx.new` 的构造闭包里实体还没插进 App（upgrade 会 panic）。
@@ -182,6 +194,7 @@ impl RemoteCopyDialog {
     fn new(
         source: SharedString,
         scope: SharedString,
+        source_dir: SharedString,
         targets: Vec<RemoteCopyTarget>,
         on_submit: RemoteCopyHandler,
         window: &mut Window,
@@ -197,7 +210,9 @@ impl RemoteCopyDialog {
             SelectState::new(labels.clone(), initial, window, cx)
         });
         let path = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(t!("remote_copy.path_placeholder"))
+            InputState::new(window, cx)
+                .placeholder(t!("remote_copy.path_placeholder"))
+                .default_value(source_dir.to_string())
         });
 
         cx.subscribe_in(
@@ -222,6 +237,7 @@ impl RemoteCopyDialog {
         Self {
             source,
             scope,
+            source_dir,
             targets,
             labels,
             select,
@@ -255,14 +271,15 @@ impl RemoteCopyDialog {
         self.service = None;
         self.connecting = true;
         self.error = None;
+        // 默认目录和源一致，与落点是哪台会话无关：换目标时把用户改过的路径
+        // 收回默认值，和以前"清空再按目标重填"是同一种手感（见模块文档）。
+        let dir = self.source_dir.clone();
         self.path
-            .update(cx, |input, cx| input.set_value("", window, cx));
+            .update(cx, |input, cx| input.set_value(dir, window, cx));
         cx.notify();
 
         match target.channel.clone() {
-            RemoteCopyChannel::Ready(service) => {
-                self.adopt_service(index, target, service, window, cx)
-            }
+            RemoteCopyChannel::Ready(service) => self.adopt_service(target, service, window, cx),
             RemoteCopyChannel::Connect { handle, launch } => {
                 let panel = cx.entity().downgrade();
                 cx.spawn_in(window, async move |_, cx| {
@@ -272,7 +289,7 @@ impl RemoteCopyDialog {
                             return;
                         }
                         match outcome {
-                            Ok(service) => this.adopt_service(index, target, service, window, cx),
+                            Ok(service) => this.adopt_service(target, service, window, cx),
                             Err(error) => {
                                 this.connecting = false;
                                 this.error = Some(SharedString::from(format!("{error:#}")));
@@ -286,10 +303,12 @@ impl RemoteCopyDialog {
         }
     }
 
-    /// 通道到手：默认目录填目标会话当前那一格，没翻过就问它的家目录。
+    /// 通道到手：把目标会话的 SFTP 栏接上，之后按钮就能按了。
+    ///
+    /// 默认目录在 [`Self::select_target`] 里已经按源填好，这一步不再碰路径 ——
+    /// 目标会话还等着开通道时人可能已经开始改框里的字，晚到的结论不该覆盖它。
     fn adopt_service(
         &mut self,
-        index: usize,
         target: RemoteCopyTarget,
         service: SftpService,
         window: &mut Window,
@@ -321,38 +340,6 @@ impl RemoteCopyDialog {
             });
         }
 
-        if let Some(dir) = target.current_dir.clone() {
-            if self.path.read(cx).value().trim().is_empty() {
-                self.path
-                    .update(cx, |input, cx| input.set_value(dir, window, cx));
-            }
-            cx.notify();
-            return;
-        }
-
-        let panel = cx.entity().downgrade();
-        let generation = self.generation;
-        cx.spawn_in(window, async move |_, cx| {
-            let home = service.home().await;
-            _ = panel.update_in(cx, |this, window, cx| {
-                if this.selected != Some(index) || this.generation != generation {
-                    return;
-                }
-                match home {
-                    // 家目录回来得慢时用户可能已经开始敲路径了：只在框还空着时
-                    // 才填默认值，晚到的答案不该覆盖人家的输入。
-                    Ok(home) => {
-                        if this.path.read(cx).value().trim().is_empty() {
-                            this.path
-                                .update(cx, |input, cx| input.set_value(home, window, cx));
-                        }
-                    }
-                    Err(error) => this.error = Some(SharedString::from(format!("{error:#}"))),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
         cx.notify();
     }
 

@@ -35,6 +35,34 @@
     }
 
     #[test]
+    fn copy_default_dir_for_folder_is_its_parent() {
+        // 复制 A 上的 /opt/www/kafka 到 B：默认落点与源同目录，即它的父目录。
+        // 别写成"文件夹就进到它自己里面一层" —— 那是复制到自身子树。
+        let folder = FileEntry {
+            path: SharedString::from("/opt/www/kafka"),
+            kind: FileKind::Dir,
+            ..entry("kafka")
+        };
+        assert_eq!(
+            copy_source_dir(&[folder]),
+            SharedString::from("/opt/www")
+        );
+    }
+
+    #[test]
+    fn copy_default_dir_for_file_is_the_file_s_parent() {
+        // 复制 /opt/www/kafka/kafka.yml：默认落在文件所在的那一层。
+        let file = FileEntry {
+            path: SharedString::from("/opt/www/kafka/kafka.yml"),
+            ..entry("kafka.yml")
+        };
+        assert_eq!(
+            copy_source_dir(&[file]),
+            SharedString::from("/opt/www/kafka")
+        );
+    }
+
+    #[test]
     fn test_special_local_directories() {
         let list = special_local_directories();
         // 主目录在大多数支持的操作系统环境中都应该存在

@@ -1636,12 +1636,6 @@ impl SftpPanel {
         }
     }
 
-    /// 右栏眼下停在哪一格。目标会话的默认落点用它 —— 对方翻到哪儿，复制就默认
-    /// 落在哪儿。
-    pub(crate) fn remote_dir(&self) -> &str {
-        &self.remote_path
-    }
-
     /// 复制任务落定后，目标面板若正停在这个目录就重列一次。停在别处的不动：
     /// 把别人的目录翻走不是复制该做的事。
     pub(crate) fn reload_if_current(
@@ -2566,6 +2560,9 @@ impl SftpPanel {
             [entry] => entry.name.clone(),
             entries => SharedString::from(t!("sftp.total_items", count => entries.len())),
         };
+        // 默认落点和源同目录（见 [`copy_source_dir`]）。要在 `entries` 被挪进
+        // 下面那个回调之前算好。
+        let source_dir = copy_source_dir(&entries);
         let panel = cx.entity().downgrade();
         let handler: RemoteCopyHandler = Rc::new(move |request, window, app| {
             let Some(entity) = panel.upgrade() else {
@@ -2578,6 +2575,7 @@ impl SftpPanel {
         RemoteCopyDialog::open(
             self.host.name.clone(),
             scope,
+            source_dir,
             targets,
             handler,
             window,
@@ -3541,6 +3539,17 @@ fn target_row(cursor: Option<usize>, delta: isize, last: isize) -> usize {
         None => last + 1,
     };
     (from + delta).clamp(0, last) as usize
+}
+
+/// 跨会话复制的默认落点：和源同目录。选中的条目都来自同一层列目录，取第一条的
+/// 父目录就够 —— 复制文件夹 `/opt/www/kafka` 落在 `/opt/www`，复制文件
+/// `/opt/www/kafka/kafka.yml` 落在 `/opt/www/kafka`。两种都是 `parent()` 的结果，
+/// 不按"文件夹就再进一层"另算。
+fn copy_source_dir(entries: &[FileEntry]) -> SharedString {
+    entries
+        .first()
+        .map(|entry| SharedString::from(parent(&entry.path)))
+        .unwrap_or_default()
 }
 
 /// 删除确认框里那句"删的是谁"。名字多了只报前两个再加总数 —— 十几个名字堆在

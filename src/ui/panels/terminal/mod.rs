@@ -352,13 +352,11 @@ pub(crate) fn remote_copy_target_for(
             launch: panel.launch(),
         },
     };
-    let dir = panel.remote_dir();
     Some(RemoteCopyTarget {
         name: host.name.clone(),
         login: format!("{}@{}", host.user, host.hostname).into(),
         server: format!("{}:{}", host.hostname, host.port).into(),
         channel,
-        current_dir: (!dir.is_empty()).then(|| dir.to_owned()),
         panel: sftp_panel.downgrade(),
     })
 }
