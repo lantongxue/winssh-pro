@@ -82,7 +82,7 @@ pub use monitor_service::MonitorService;
 pub use s3_service::S3Service;
 pub use serial_service::SerialService;
 pub use setting_service::SettingService;
-pub use sftp_service::{SftpService, TransferEvent, TransferHandle, TransferJob};
+pub use sftp_service::{RemoteCopyJob, SftpService, TransferEvent, TransferHandle, TransferJob};
 pub use snippet_service::SnippetService;
 pub use sudo_auth::{SudoAsk, SudoPrompt, sftp_launch};
 pub use ssh_service::SshService;

@@ -50,7 +50,7 @@ use crate::{
     service::{SftpService, SshService, TrustedHostService},
     trusted_host::{HostKeyInfo, TrustPolicy},
     ui::{
-        dialogs::{HostTrustDialog, TrustDecision, TrustDecisionHandler},
+        dialogs::{HostTrustDialog, RemoteCopyTarget, TrustDecision, TrustDecisionHandler},
         theme::palette,
     },
 };
@@ -96,6 +96,7 @@ impl DockedSftpPanel {
     ) -> Entity<Self> {
         cx.new(|cx| {
             let sftp_panel = SftpPanel::new(host.clone(), window, cx);
+            sftp_panel.update(cx, |panel, _| panel.bind_dock_area(dock_area.clone()));
             let mut this = Self {
                 host,
                 ssh: None,
@@ -116,6 +117,25 @@ impl DockedSftpPanel {
     /// 这条会话还活着吗：SFTP 通道开起来了就算连着。
     pub fn alive(&self, _cx: &App) -> bool {
         self.alive
+    }
+
+    /// 给别的会话当跨服务器复制的落点。与终端那一档共用
+    /// [`super::terminal::remote_copy_target_for`]；这里只交出本宿主的存活 /
+    /// 开通道状态（`connecting` 覆盖首次开通道与重连两种在途）。
+    pub(crate) fn remote_copy_target(
+        &self,
+        source: gpui_kit::EntityId,
+        cx: &App,
+    ) -> Option<RemoteCopyTarget> {
+        super::terminal::remote_copy_target_for(
+            &self.host,
+            &self.sftp_panel,
+            self.ssh.as_ref(),
+            self.alive,
+            self.connecting,
+            source,
+            cx,
+        )
     }
 
     // ─── 拨号 ──────────────────────────────────────────────────────────────

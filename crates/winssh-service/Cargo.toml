@@ -51,6 +51,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }
 log = { workspace = true }
+rand = { workspace = true }
 ssh-key = { workspace = true }
 # 各文件后端服务直用其客户端类型：S3(`s3`)、WebDAV(reqwest_dav/reqwest/bytes/
 # percent-encoding)、串口(serialport)，备份解包用 zip。

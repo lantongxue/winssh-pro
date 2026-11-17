@@ -32,6 +32,9 @@ pub const CANCELED: &str = "sftp:canceled";
 pub enum TransferDirection {
     Upload,
     Download,
+    /// 远端 A → 远端 B：两台服务器之间复制，字节从本机中转，两端都不落本地盘。
+    /// 只有 SFTP 那一档有这一条（两条 SFTP 通道各端一头）。
+    RemoteCopy,
 }
 
 /// 一次传输的状态。

@@ -21,6 +21,7 @@ mod key_generator;
 mod mihomo_download;
 mod password_generator;
 mod port_forward;
+mod remote_copy;
 mod sftp_chmod;
 mod sftp_form;
 mod snippet_form;
@@ -43,6 +44,9 @@ pub use key_generator::KeyGeneratorDialog;
 pub use mihomo_download::MihomoDownloadDialog;
 pub use password_generator::PasswordGeneratorDialog;
 pub use port_forward::{ForwardsHandler, PortForwardDialog};
+pub use remote_copy::{
+    RemoteCopyChannel, RemoteCopyDialog, RemoteCopyHandler, RemoteCopyRequest, RemoteCopyTarget,
+};
 pub use sftp_chmod::{ChmodHandler, SftpChmodDialog};
 pub use sftp_form::{SftpFormDialog, SftpFormKind, SftpNameHandler};
 pub use snippet_form::{SnippetFormDialog, SnippetSavedHandler};

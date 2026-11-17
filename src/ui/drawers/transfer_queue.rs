@@ -59,7 +59,7 @@ const CHILD_INDENT: Pixels = px(40.);
 /// 列宽：名称吃掉剩下的，其余定死 —— 一列数字左右挪动就没法比了。
 /// 宽度按内容的最坏情况给足（如 `24.5 MB / 61.2 MB` 十七个等宽字符）：
 /// 单元格不裁切内容，亏一格就会画到隔壁列上，看着像数据重叠。
-const DIRECTION_WIDTH: Pixels = px(84.);
+const DIRECTION_WIDTH: Pixels = px(100.);
 const SIZE_WIDTH: Pixels = px(140.);
 const PROGRESS_WIDTH: Pixels = px(124.);
 const SPEED_WIDTH: Pixels = px(90.);
@@ -285,6 +285,9 @@ impl TransferQueueDrawer {
                 match item.direction {
                     TransferDirection::Upload => active_uploads += 1,
                     TransferDirection::Download => active_downloads += 1,
+                    // 复制在图标那一档不单立第三类：只有复制在跑时落到默认的
+                    // 双向文件夹图标，和"混合传输"同一张脸。
+                    TransferDirection::RemoteCopy => {}
                 }
                 if item.status == TransferStatus::Transferring {
                     transferring_count += 1;
@@ -1190,12 +1193,14 @@ fn direction_badge(direction: TransferDirection, cx: &App) -> impl IntoElement {
             Icon::new(match direction {
                 TransferDirection::Upload => AppIcon::Upload,
                 TransferDirection::Download => AppIcon::Download,
+                TransferDirection::RemoteCopy => AppIcon::FolderSync,
             })
             .with_size(px(10.)),
         )
         .child(SharedString::from(match direction {
             TransferDirection::Upload => t!("queue.direction_upload"),
             TransferDirection::Download => t!("queue.direction_download"),
+            TransferDirection::RemoteCopy => t!("queue.direction_remote_copy"),
         }))
 }
 

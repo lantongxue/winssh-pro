@@ -111,6 +111,37 @@
     }
 
     #[test]
+    fn a_remote_copy_lands_under_the_target_directory_by_basename() {
+        assert_eq!(
+            remote_copy_target_path("/srv/uploads", "/home/me/pkg"),
+            "/srv/uploads/pkg"
+        );
+        assert_eq!(
+            remote_copy_target_path("/srv/uploads", "/home/me/pkg/"),
+            "/srv/uploads/pkg",
+            "源路径末尾的分隔符不该变成一个空名字"
+        );
+        assert_eq!(
+            remote_copy_target_path("/", "/home/me/pkg"),
+            "/pkg",
+            "目标是根目录时也只是接一段"
+        );
+    }
+
+    #[test]
+    fn copy_temp_names_do_not_collide_across_panels_with_equal_ids() {
+        // id 是每个面板自己的传输序号：两个面板各自的第一条复制都拿 1，往同一
+        // 目录搬同名文件时，只按 id 命名的 .part 会撞成同一个文件互相覆盖。
+        // 随机段必须让同样的 (目标, id) 也给出不同的临时名。
+        let a = copy_part_path("/srv/incoming/data.csv", 1);
+        let b = copy_part_path("/srv/incoming/data.csv", 1);
+        assert_ne!(a, b);
+        assert!(a.starts_with("/srv/incoming/.data.csv.1."), "{a}");
+        assert!(a.ends_with(".part"), "{a}");
+        assert_eq!(path::parent(&a), "/srv/incoming");
+    }
+
+    #[test]
     fn child_local_names_are_relative_to_the_target_directory() {
         assert_eq!(
             relative_local(

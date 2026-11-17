@@ -837,6 +837,9 @@ sftp_menu.edit:
 sftp_menu.download:
   en: Download
   zh-CN: 下载到本地
+sftp_menu.copy_to_session:
+  en: Copy to Another Session…
+  zh-CN: 复制到其他会话…
 sftp_menu.open_folder:
   en: Open Folder
   zh-CN: 打开目录
@@ -3577,6 +3580,53 @@ key_generator.cancel:
   en: Cancel
   zh-CN: 取消
 
+# ── SFTP 跨会话复制对话框 ───────────────────────────────────────────────
+remote_copy.title:
+  en: Copy to another session
+  zh-CN: 复制到其他会话
+remote_copy.header_note:
+  en: The bytes pass through this machine; both sessions must stay connected.
+  zh-CN: 字节经由本机中转，两端会话需保持连接。
+remote_copy.source:
+  en: Copy from
+  zh-CN: 复制来源
+remote_copy.target:
+  en: Destination session
+  zh-CN: 目标会话
+remote_copy.path:
+  en: Destination folder
+  zh-CN: 目标目录
+remote_copy.path_placeholder:
+  en: /path/on/the/target
+  zh-CN: 目标机上的目录路径
+remote_copy.no_sessions:
+  en: No other connected session. Open another SSH session first.
+  zh-CN: 没有其他已连接的会话；请先打开另一条 SSH 会话。
+remote_copy.waiting:
+  en: Connecting the destination file channel…
+  zh-CN: 正在连接目标文件通道…
+remote_copy.validating:
+  en: Validating the destination folder…
+  zh-CN: 正在校验目标目录…
+remote_copy.not_ready:
+  en: The destination channel is still connecting.
+  zh-CN: 目标文件通道还在连接，请稍候。
+remote_copy.path_required:
+  en: Enter the destination folder.
+  zh-CN: 请填写目标目录。
+remote_copy.dir_missing:
+  en: "The destination folder does not exist on the target server: %{path}"
+  zh-CN: 目标服务器上没有这个目录：%{path}
+remote_copy.not_a_dir:
+  en: "The destination path is not a folder: %{path}"
+  zh-CN: 目标路径不是目录：%{path}
+remote_copy.copy:
+  en: Start copying
+  zh-CN: 开始复制
+remote_copy.cancel:
+  en: Cancel
+  zh-CN: 取消
+
 # ── SFTP 新建 / 重命名对话框 ─────────────────────────────────────────────
 sftp_form.title_new_file:
   en: New remote file
@@ -4323,12 +4373,21 @@ sftp.upload_failed:
 sftp.download_failed:
   en: "Download of “%{name}” failed: %{error}"
   zh-CN: 下载“%{name}”失败：%{error}
+sftp.remote_copy_failed:
+  en: "Copy of “%{name}” failed: %{error}"
+  zh-CN: 复制“%{name}”失败：%{error}
+sftp.copy_overlap:
+  en: "Cannot copy “%{name}” onto itself or into its own subtree on the same server"
+  zh-CN: 同一台服务器上，不能把“%{name}”复制到它自己或它的子目录里
 sftp.uploaded:
   en: Uploaded %{name}
   zh-CN: 已上传 %{name}
 sftp.downloaded:
   en: Downloaded %{name}
   zh-CN: 已下载 %{name}
+sftp.remote_copied:
+  en: Copied %{name}
+  zh-CN: 已复制 %{name}
 sftp.copied_paths:
   en: "%{count} paths"
   zh-CN: "%{count} 条路径"
@@ -4592,6 +4651,9 @@ queue.direction_upload:
 queue.direction_download:
   en: Download
   zh-CN: 下载
+queue.direction_remote_copy:
+  en: Remote copy
+  zh-CN: 远程复制
 queue.child_progress:
   en: "%{done}/%{total} items"
   zh-CN: "%{done}/%{total} 项"
@@ -4689,6 +4751,12 @@ sftp_err.download_incomplete:
 sftp_err.upload_incomplete:
   en: "Upload incomplete: %{moved} / %{total} bytes"
   zh-CN: 上传未完成：%{moved} / %{total} 字节
+sftp_err.copy_incomplete:
+  en: "Copy incomplete: %{moved} / %{total} bytes"
+  zh-CN: 复制未完成：%{moved} / %{total} 字节
+sftp_err.copy_root:
+  en: The filesystem root cannot be copied
+  zh-CN: 不能复制文件系统根目录
 sftp_err.create_local_dir:
   en: Could not create local directory %{path}
   zh-CN: 创建本地目录 %{path} 失败

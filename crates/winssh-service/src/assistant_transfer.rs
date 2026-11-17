@@ -74,12 +74,19 @@ async fn transfer(
     } = match request.direction {
         TransferDirection::Upload => plan_upload(&sftp, &request).await?,
         TransferDirection::Download => plan_download(&sftp, &request).await?,
+        // 助手只搬本机与当前会话之间；跨服务器复制没有本机那一头。
+        TransferDirection::RemoteCopy => {
+            unreachable!("助手不搬远端到远端的复制")
+        }
     };
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let task = match request.direction {
         TransferDirection::Upload => sftp.spawn_upload(job, tx),
         TransferDirection::Download => sftp.spawn_download(job, tx),
+        TransferDirection::RemoteCopy => {
+            unreachable!("助手不搬远端到远端的复制")
+        }
     };
 
     // 单个文件不报子项清单，就是一个；目录以清单为准（空目录是 0）。

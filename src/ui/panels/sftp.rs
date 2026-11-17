@@ -40,6 +40,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Colorize as _, Disableable as _, Icon, IconName, ResizableState,
     Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonCustomVariant, ButtonVariants as _},
+    dock::DockArea,
     h_flex, h_resizable,
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu as _, PopupMenu, PopupMenuItem},
@@ -61,7 +62,10 @@ use winssh_domain::settings::sftp::SftpLaunchMode;
 
 use super::sftp_editor::{SavedHandler as SftpSavedHandler, SftpEditorPanel};
 use crate::ui::{
-    dialogs::{ChmodHandler, SftpChmodDialog, SftpFormDialog, SudoPasswordDialog},
+    dialogs::{
+        ChmodHandler, RemoteCopyDialog, RemoteCopyHandler, RemoteCopyRequest, SftpChmodDialog,
+        SftpFormDialog, SudoPasswordDialog,
+    },
     drawers::{TransferQueueDrawer, TransferQueueEvent},
     menus::{LocalEntryAction, LocalEntryActionHandler, LocalEntryMenu},
     menus::{SftpEntryAction, SftpEntryActionHandler, SftpEntryMenu},
@@ -71,8 +75,8 @@ use crate::{
     assistant::SessionTarget,
     host::Host,
     service::{
-        FileService, HostService, LocalFileService, SftpService, SudoAsk, TransferEvent,
-        TransferHandle, TransferJob, sftp_launch, unique_local_path,
+        FileService, HostService, LocalFileService, RemoteCopyJob, SftpService, SudoAsk,
+        TransferEvent, TransferHandle, TransferJob, sftp_launch, unique_local_path,
     },
     sftp::{
         FileEntry, FileKind, TransferDirection, TransferItem, TransferStatus, breadcrumbs,
@@ -116,10 +120,12 @@ const HEIGHT_SPLIT: Pixels = px(350.);
 const LOCAL_PANE_MIN: Pixels = px(260.);
 const REMOTE_PANE_MIN: Pixels = px(380.);
 
-/// 同时进行的传输数。上传与下载各算各的坑，互不占用：一边占满不影响另一边继续开，
-/// 这样批量上传时顺手下的文件不必排在同一份预算后面干等。
+/// 同时进行的传输数。上传、下载各算各的坑，互不占用：一边占满不影响另一边继续开，
+/// 这样批量上传时顺手下的文件不必排在同一份预算后面干等。跨会话复制也单独一份，
+/// 它同时压着两条 SFTP 通道，开太多条只会让两边一起等。
 const MAX_ACTIVE_UPLOADS: usize = 10;
 const MAX_ACTIVE_DOWNLOADS: usize = 10;
+const MAX_ACTIVE_COPIES: usize = 6;
 
 /// 一格里最多画这么多条目。远端目录动辄几万项，全搬进内存只为"看得见几个"不划算；
 /// 到顶了就在栏里说明截断了，而不是让人以为目录只有这些。
@@ -777,6 +783,9 @@ pub struct RemoteTableDelegate {
     pub sort_dir: ColumnSort,
     pub menu_handler: Option<SftpEntryActionHandler>,
     pub service_active: bool,
+    /// 这一栏是不是 SFTP 且宿主把 Dock 交给了面板（跨会话复制的前提）。
+    /// FTP / S3 / WebDAV 没有第二条 SFTP 通道可落，菜单里不出现那一项。
+    pub remote_copy_enabled: bool,
     /// 选中的那些条目，按路径记。同 [`LocalTableDelegate::selected`]：面板推过来的副本，
     /// 只经 [`Self::set_selection`] 改。
     selected: HashSet<SharedString>,
@@ -823,6 +832,7 @@ impl RemoteTableDelegate {
             sort_dir: ColumnSort::Default,
             menu_handler: None,
             service_active: false,
+            remote_copy_enabled: false,
             selected: HashSet::new(),
             selection_targets: Rc::new(Vec::new()),
             row_handler: None,
@@ -1067,7 +1077,13 @@ impl TableDelegate for RemoteTableDelegate {
         let Some(handler) = self.menu_handler.clone() else {
             return menu;
         };
-        SftpEntryMenu::build(menu, &self.targets(row_ix), &handler, cx)
+        SftpEntryMenu::build(
+            menu,
+            &self.targets(row_ix),
+            &handler,
+            self.remote_copy_enabled,
+            cx,
+        )
     }
 
     fn render_empty(
@@ -1108,6 +1124,10 @@ pub struct SftpPanel {
     /// （见 [`SftpEditorPanel::new`]）。FTP / S3 / WebDAV 没有一条 SSH 连接
     /// 可借，一直是 `None`。
     ssh: Option<Arc<Handle<SshHandler>>>,
+    /// 宿主所在的 Dock。跨会话复制要从这里数出**其它**已连接的会话；面板自己
+    /// 嵌在宿主标签页里，够不到 Dock，只能由宿主建好后经 [`Self::bind_dock_area`]
+    /// 交进来。FTP / S3 / WebDAV 的宿主没有这条可给，那一档也就没有复制入口。
+    dock_area: Option<WeakEntity<DockArea>>,
     /// 开不出通道时的那句话（对端没配 `Subsystem sftp` 之类）。
     connect_error: Option<SharedString>,
 
@@ -1160,9 +1180,12 @@ pub struct SftpPanel {
     transfer_seq: u64,
     queue_drawer: bool,
     /// 待跑的任务：按方向各有一份额度，坑满了就在这里排队。
-    pending: VecDeque<TransferJob>,
-    /// 在跑的任务：id → (方向, 把手)。方向记在这里，放行时才能分别数上传 / 下载各占了几个坑。
+    pending: VecDeque<PendingTransfer>,
+    /// 在跑的任务：id → (方向, 把手)。方向记在这里，放行时才能分别数上传 / 下载 / 复制各占了几个坑。
     running: HashMap<u64, (TransferDirection, TransferHandle)>,
+    /// 跨会话复制的落点：job id → (目标会话的 SFTP 栏, 目标目录)。复制落定（成功、
+    /// 失败、取消都算）时请对方重列一次 —— 不请的话 B 那一栏还是复制前的目录。
+    copy_targets: HashMap<u64, (WeakEntity<SftpPanel>, String)>,
     /// 进度事件从 tokio 那一侧回来的管子。
     progress: UnboundedSender<TransferEvent>,
 
@@ -1226,6 +1249,29 @@ impl Default for Pane {
 /// 行序归表格 delegate —— 点过表头排序之后，它和 `Pane::view` 就不是同一个顺序了，
 /// 所以连选、全选这些跟顺序有关的事都从这一份算（见 [`SftpPanel::row_paths`]）。
 type RowPaths = Vec<Option<SharedString>>;
+
+/// 排队中的一次搬运。上 / 下载共用 [`TransferJob`]（本地那一端是路径），跨会话
+/// 复制是另一份形状（本地没有落点，两端各一条 SFTP 通道），所以分开带。
+enum PendingTransfer {
+    Local(TransferJob),
+    Copy(RemoteCopyJob),
+}
+
+impl PendingTransfer {
+    fn id(&self) -> u64 {
+        match self {
+            Self::Local(job) => job.id,
+            Self::Copy(job) => job.id,
+        }
+    }
+
+    fn direction(&self) -> TransferDirection {
+        match self {
+            Self::Local(job) => job.direction,
+            Self::Copy(_) => TransferDirection::RemoteCopy,
+        }
+    }
+}
 
 /// 把画出来的那些行折成 [`RowPaths`]。
 fn row_paths(entries: &[FileEntry]) -> RowPaths {
@@ -1378,10 +1424,11 @@ impl SftpPanel {
                     this.rebuild_view(cx)
                 }),
                 // 抽屉上的动作（取消 / 暂停 / 清除已完成 / 收起）以事件过来。
-                cx.subscribe(
+                cx.subscribe_in(
                     &queue,
-                    |this: &mut Self, _, event: &TransferQueueEvent, cx| match event {
-                        TransferQueueEvent::Cancel(id) => this.cancel_or_remove(*id, cx),
+                    window,
+                    |this: &mut Self, _, event: &TransferQueueEvent, window, cx| match event {
+                        TransferQueueEvent::Cancel(id) => this.cancel_or_remove(*id, window, cx),
                         TransferQueueEvent::TogglePause(id) => this.toggle_pause(*id, cx),
                         TransferQueueEvent::TogglePauseAll => this.toggle_pause_all(cx),
                         TransferQueueEvent::ClearFinished => this.clear_finished(cx),
@@ -1453,6 +1500,7 @@ impl SftpPanel {
                 host,
                 service: None,
                 ssh: None,
+                dock_area: None,
                 connect_error: None,
                 open: false,
                 height: HEIGHT_COMPACT,
@@ -1477,6 +1525,7 @@ impl SftpPanel {
                 queue_drawer: false,
                 pending: VecDeque::new(),
                 running: HashMap::new(),
+                copy_targets: HashMap::new(),
                 progress,
                 copied: None,
                 copied_task: Task::ready(()),
@@ -1570,6 +1619,41 @@ impl SftpPanel {
     /// "当前会话"仍停在这台上（见 [`Self::session_target`]）。
     pub fn bind_session(&mut self, handle: Arc<Handle<SshHandler>>) {
         self.ssh = Some(handle);
+    }
+
+    /// 宿主把自己所在的 Dock 交给面板。跨会话复制要从这里数出其它已连接的会话
+    /// （见 [`super::terminal::remote_copy_targets`]）。
+    pub(crate) fn bind_dock_area(&mut self, dock_area: WeakEntity<DockArea>) {
+        self.dock_area = Some(dock_area);
+    }
+
+    /// 这一栏的数据入口是不是 SFTP。跨会话复制只认这一档：FTP / S3 / WebDAV
+    /// 没有一条 SSH 连接可以再开第二条通道。
+    pub(crate) fn sftp_service(&self) -> Option<SftpService> {
+        match self.service.as_ref() {
+            Some(FileService::Sftp(service)) => Some(service.clone()),
+            _ => None,
+        }
+    }
+
+    /// 右栏眼下停在哪一格。目标会话的默认落点用它 —— 对方翻到哪儿，复制就默认
+    /// 落在哪儿。
+    pub(crate) fn remote_dir(&self) -> &str {
+        &self.remote_path
+    }
+
+    /// 复制任务落定后，目标面板若正停在这个目录就重列一次。停在别处的不动：
+    /// 把别人的目录翻走不是复制该做的事。
+    pub(crate) fn reload_if_current(
+        &mut self,
+        dir: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.remote_path.is_empty() || normalize(&self.remote_path) != normalize(dir) {
+            return;
+        }
+        self.reload_in_place(dir, window, cx);
     }
 
     /// 这一栏手上那台机器，够给文件编辑标签页当"服务器标识"。
@@ -1879,6 +1963,8 @@ impl SftpPanel {
         let local_rows = self.row_handler(true, cx);
         let remote_rows = self.row_handler(false, cx);
         let service_active = self.service.is_some();
+        let remote_copy_enabled =
+            matches!(self.service.as_ref(), Some(FileService::Sftp(_))) && self.dock_area.is_some();
 
         self.local_table.update(cx, |table, cx| {
             table.delegate_mut().menu_handler = Some(local_menu);
@@ -1891,6 +1977,7 @@ impl SftpPanel {
             table.delegate_mut().menu_handler = Some(remote_menu);
             table.delegate_mut().row_handler = Some(remote_rows);
             table.delegate_mut().service_active = service_active;
+            table.delegate_mut().remote_copy_enabled = remote_copy_enabled;
             table.delegate_mut().set_entries(remote_entries);
             table.delegate_mut().set_selection(remote_selected);
             table.refresh(cx);
@@ -2450,6 +2537,129 @@ impl SftpPanel {
 
     // ------------------------------------------------------------------ 传输
 
+    /// 把选中的远端条目复制到另一条已连接的会话。
+    ///
+    /// 候选会话是从宿主那个 Dock 里数出来的（终端标签页与独立 SFTP 标签页，包含
+    /// 藏在别的标签页后面的那些）；这一栏自己由 [`super::terminal::remote_copy_targets`]
+    /// 按 SFTP 面板实体 id 剔掉。没有候选也不拦着弹框 —— 框里会说明"没有其他
+    /// 已连接的会话"，比菜单项悄悄消失清楚。
+    fn open_remote_copy(
+        &mut self,
+        entries: &[FileEntry],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entries: Vec<FileEntry> = entries
+            .iter()
+            .filter(|entry| entry.is_downloadable() && !entry.is_parent())
+            .cloned()
+            .collect();
+        if entries.is_empty() || !matches!(self.service.as_ref(), Some(FileService::Sftp(_))) {
+            return;
+        }
+        let Some(dock_area) = self.dock_area.as_ref().and_then(|dock| dock.upgrade()) else {
+            return;
+        };
+        let targets = super::terminal::remote_copy_targets(&dock_area, cx.entity_id(), cx);
+
+        let scope = match entries.as_slice() {
+            [entry] => entry.name.clone(),
+            entries => SharedString::from(t!("sftp.total_items", count => entries.len())),
+        };
+        let panel = cx.entity().downgrade();
+        let handler: RemoteCopyHandler = Rc::new(move |request, window, app| {
+            let Some(entity) = panel.upgrade() else {
+                return;
+            };
+            entity.update(app, |this, cx| {
+                this.enqueue_remote_copy(&entries, request, window, cx)
+            });
+        });
+        RemoteCopyDialog::open(
+            self.host.name.clone(),
+            scope,
+            targets,
+            handler,
+            window,
+            cx,
+        );
+    }
+
+    /// 把对话框选好的落点排成任务：一个顶层条目一行，和下载那边同一条口径。
+    ///
+    /// 目录的实际大小要 worker 读完树才知道，这里给 0；第一个进度事件会把分母
+    /// 填上。目标面板记进 `copy_targets`，落定时请它重列。
+    fn enqueue_remote_copy(
+        &mut self,
+        entries: &[FileEntry],
+        request: RemoteCopyRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source) = self.sftp_service() else {
+            return;
+        };
+        // 两条会话落在同一台机器上时，"复制"可能正好落在源条目自己身上：
+        // 改名顶掉旧文件那一步会先删原件，中途断了文件就没了；目录落进自己
+        // 的子树还会把源树弄脏。这里按 hostname:port 认出同机，拦下重叠落点。
+        let same_server = request.server
+            == SharedString::from(format!("{}:{}", self.host.hostname, self.host.port));
+        // 条目在 open_remote_copy 里已经按同一条件筛过，这里不再重复筛。
+        for entry in entries {
+            if same_server {
+                let source_path = normalize(&entry.path);
+                let landing = normalize(&join(&request.directory, &entry.name));
+                if landing == source_path
+                    || (entry.kind.is_dir() && landing.starts_with(&format!("{source_path}/")))
+                {
+                    window.push_notification(t!("sftp.copy_overlap", name => entry.name.clone()), cx);
+                    continue;
+                }
+            }
+            let id = self.next_id();
+            let name = SharedString::from(format!("{} → {}", entry.name, request.label));
+            let job = RemoteCopyJob {
+                id,
+                source: entry.path.to_string(),
+                destination: request.directory.clone(),
+                source_service: source.clone(),
+                target_service: request.service.clone(),
+            };
+            let total = match entry.kind.is_dir() {
+                true => 0,
+                false => entry.size,
+            };
+            self.copy_targets
+                .insert(id, (request.panel.clone(), request.directory.clone()));
+            self.enqueue(PendingTransfer::Copy(job), name, total, cx);
+        }
+    }
+
+    /// 一次复制落定（结束事件到了，或排队的被撤下）：收掉它的落点记录。
+    /// 还有别的任务冲着同一个目标目录去就先不重列 —— 等最后一个落定的那次
+    /// 一并列，N 个任务不该触发 N 次整目录 listing。
+    fn settle_copy_target(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((target, dir)) = self.copy_targets.remove(&id) else {
+            return;
+        };
+        let Some(target) = target.upgrade() else {
+            return;
+        };
+        let target_id = target.entity_id();
+        let more_coming = self.copy_targets.values().any(|(panel, other_dir)| {
+            *other_dir == dir
+                && panel
+                    .upgrade()
+                    .is_some_and(|panel| panel.entity_id() == target_id)
+        });
+        if more_coming {
+            return;
+        }
+        target.update(cx, |target, cx| {
+            target.reload_if_current(&dir, window, cx)
+        });
+    }
+
     /// 把一批远端条目下载到当前本地目录。落点只问一次 —— 一批文件不该被问 N 次
     /// "那个目录还能不能写"，何况答案对整批都是同一个。
     fn download_entries(
@@ -2486,7 +2696,7 @@ impl SftpPanel {
                 local: target,
                 remote: entry.path.to_string(),
             };
-            self.enqueue(job, filename, entry.size, cx);
+            self.enqueue(PendingTransfer::Local(job), filename, entry.size, cx);
         }
     }
 
@@ -2515,7 +2725,7 @@ impl SftpPanel {
             // 目录的总大小要数完树才知道，那是 worker 的活；这里从 0 开始，
             // 第一个进度事件会把它填上。
             self.enqueue(
-                job,
+                PendingTransfer::Local(job),
                 SharedString::from(name.to_string_lossy().into_owned()),
                 0,
                 cx,
@@ -2543,18 +2753,19 @@ impl SftpPanel {
     /// 排一次传输：坑没满就立刻开，满了就排队。
     fn enqueue(
         &mut self,
-        job: TransferJob,
+        job: PendingTransfer,
         filename: SharedString,
         total: u64,
         cx: &mut Context<Self>,
     ) {
-        let id = job.id;
+        let id = job.id();
+        let direction = job.direction();
         self.queue.update(cx, |drawer, cx| {
             drawer.push(
                 TransferItem {
                     id,
                     filename,
-                    direction: job.direction,
+                    direction,
                     total,
                     transferred: 0,
                     status: TransferStatus::Queued,
@@ -2572,43 +2783,70 @@ impl SftpPanel {
         self.start_queued(cx);
     }
 
-    /// 有空坑就把队列里的下一个开出去。上传、下载各数各的：一条排队任务只要它那个
-    /// 方向还有富余就能开跑，另一个方向挤满了也不挡它。
+    /// 有空坑就把队列里的下一个开出去。上传、下载、跨会话复制各数各的：一条排队
+    /// 任务只要它那个方向还有富余就能开跑，另一个方向挤满了也不挡它。
     fn start_queued(&mut self, cx: &mut Context<Self>) {
-        let Some(service) = self.service.clone() else {
-            return;
-        };
         loop {
             let mut uploading = 0;
             let mut downloading = 0;
+            let mut copying = 0;
             for (direction, _) in self.running.values() {
                 match direction {
                     TransferDirection::Upload => uploading += 1,
                     TransferDirection::Download => downloading += 1,
+                    TransferDirection::RemoteCopy => copying += 1,
                 }
             }
-            // 取队列里头一个"它那个方向还有坑"的任务，保持 FIFO。
-            let Some(index) = self.pending.iter().position(|job| match job.direction {
-                TransferDirection::Upload => uploading < MAX_ACTIVE_UPLOADS,
-                TransferDirection::Download => downloading < MAX_ACTIVE_DOWNLOADS,
+            // 取队列里头一个"它那个方向还有坑"的任务，保持 FIFO。本地那一档
+            // 还要有数据入口；入口暂时没了（比如提权重开通道那一下）就跳过它，
+            // 后面排着的复制任务不受牵连。
+            let Some(index) = self.pending.iter().position(|job| match job {
+                PendingTransfer::Local(job) => {
+                    self.service.is_some()
+                        && match job.direction {
+                            TransferDirection::Upload => uploading < MAX_ACTIVE_UPLOADS,
+                            TransferDirection::Download => downloading < MAX_ACTIVE_DOWNLOADS,
+                            // 本地任务不会是这一档；留个保守的假。
+                            TransferDirection::RemoteCopy => false,
+                        }
+                }
+                PendingTransfer::Copy(_) => copying < MAX_ACTIVE_COPIES,
             }) else {
                 break;
             };
             let Some(next) = self.pending.remove(index) else {
                 break;
             };
-            let handle = match next.direction {
-                TransferDirection::Upload => {
-                    service.spawn_upload(next.clone(), self.progress.clone())
+            let id = next.id();
+            let direction = next.direction();
+            let handle = match next {
+                PendingTransfer::Local(job) => {
+                    // 谓词刚同步确认过入口在，中间没有任何能改它的代码；
+                    // 真没了是逻辑错，不该把任务悄悄挪到队尾。
+                    let Some(service) = self.service.clone() else {
+                        unreachable!("队列谓词已确认数据入口在");
+                    };
+                    match job.direction {
+                        TransferDirection::Upload => {
+                            service.spawn_upload(job, self.progress.clone())
+                        }
+                        TransferDirection::Download => {
+                            service.spawn_download(job, self.progress.clone())
+                        }
+                        // `direction()` 已经把本地任务限制在上 / 下载两档。
+                        TransferDirection::RemoteCopy => {
+                            unreachable!("本地任务没有跨会话复制这一档")
+                        }
+                    }
                 }
-                TransferDirection::Download => {
-                    service.spawn_download(next.clone(), self.progress.clone())
+                PendingTransfer::Copy(job) => {
+                    SftpService::spawn_remote_copy(job, self.progress.clone())
                 }
             };
             self.queue.update(cx, |drawer, cx| {
-                drawer.set_status(next.id, TransferStatus::Transferring, cx)
+                drawer.set_status(id, TransferStatus::Transferring, cx)
             });
-            self.running.insert(next.id, (next.direction, handle));
+            self.running.insert(id, (direction, handle));
         }
         cx.notify();
     }
@@ -2630,6 +2868,10 @@ impl SftpPanel {
 
         // 丢掉把手：任务本身已经结束，这里只是把坑腾出来。
         self.running.remove(&id);
+        // 复制的落点记录不管队列行还在不在都要收：行上的 × 可能赶在结束事件
+        // 之前把行删了，若只在行还存在时才收，记录会一直漏到面板销毁，目标栏
+        // 也永远等不到那次重列。
+        self.settle_copy_target(id, window, cx);
         let item_info = self
             .queue
             .read(cx)
@@ -2648,6 +2890,9 @@ impl SftpPanel {
                         TransferDirection::Download => {
                             t!("sftp.download_failed", name => name, error => err)
                         }
+                        TransferDirection::RemoteCopy => {
+                            t!("sftp.remote_copy_failed", name => name, error => err)
+                        }
                     };
                     window.push_notification(message, cx);
                 }
@@ -2655,6 +2900,7 @@ impl SftpPanel {
                 let message = match direction {
                     TransferDirection::Upload => t!("sftp.uploaded", name => name),
                     TransferDirection::Download => t!("sftp.downloaded", name => name),
+                    TransferDirection::RemoteCopy => t!("sftp.remote_copied", name => name),
                 };
                 window.push_notification(message, cx);
             }
@@ -2670,6 +2916,8 @@ impl SftpPanel {
                         let dir = self.local_dir.clone();
                         self.list_local(dir, window, cx);
                     }
+                    // 目标那一栏上面已经重列过了；源这一栏一个字节都没变。
+                    TransferDirection::RemoteCopy => {}
                 }
             }
         }
@@ -2726,7 +2974,7 @@ impl SftpPanel {
     }
 
     /// 行尾那个 ×：在跑的取消它，排队的撤下来，已经完事的从列表里去掉。
-    fn cancel_or_remove(&mut self, id: u64, cx: &mut Context<Self>) {
+    fn cancel_or_remove(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((_, handle)) = self.running.remove(&id) {
             // 已经跑完的那一个再 cancel 一次没意义：结束事件早就把这一行落成别的状态
             // 了，这里只是不再等它。
@@ -2735,8 +2983,11 @@ impl SftpPanel {
                 return; // 结束事件会把这一行落成"已取消"
             }
         }
-        if let Some(index) = self.pending.iter().position(|job| job.id == id) {
+        if let Some(index) = self.pending.iter().position(|job| job.id() == id) {
             self.pending.remove(index);
+            // 排队的复制撤下也算落定：它是最后一个冲着那目录去的任务时，
+            // 之前落定的同伴可能正等着它收尾重列。
+            self.settle_copy_target(id, window, cx);
         }
         self.queue
             .update(cx, |drawer, cx| drawer.retain(|item| item.id != id, cx));
@@ -3072,6 +3323,7 @@ impl SftpPanel {
         match action {
             SftpEntryAction::Edit => self.open_editor(&entry, window, cx),
             SftpEntryAction::Download => self.download_entries(entries, window, cx),
+            SftpEntryAction::CopyToSession => self.open_remote_copy(entries, window, cx),
             // ".." 那一行的 path 是字面的 ".."，得由 `open_entry` 换成上级目录。
             SftpEntryAction::OpenFolder => self.open_entry(&entry, false, window, cx),
             SftpEntryAction::CdHere => {
@@ -3370,6 +3622,7 @@ impl Drop for SftpPanel {
             handle.cancel();
         }
         self.pending.clear();
+        self.copy_targets.clear();
     }
 }
 

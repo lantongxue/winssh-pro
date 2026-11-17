@@ -1770,6 +1770,10 @@ impl AssistantPanel {
                     TransferDirection::Download => {
                         t!("assistant.transfer_approval_download", session => session)
                     }
+                    // 助手的两个工具只搬本机与当前会话之间，审查卡片不会有这一档。
+                    TransferDirection::RemoteCopy => {
+                        unreachable!("助手不搬远端到远端的复制")
+                    }
                 }
                 .into(),
                 div()
@@ -2620,6 +2624,10 @@ fn render_transfer_card(
         TransferDirection::Upload => (AppIcon::Upload, t!("assistant.transfer_upload").into()),
         TransferDirection::Download => {
             (AppIcon::Download, t!("assistant.transfer_download").into())
+        }
+        // 同上：助手产不出跨服务器复制的那一张卡片。
+        TransferDirection::RemoteCopy => {
+            unreachable!("助手不搬远端到远端的复制")
         }
     };
 

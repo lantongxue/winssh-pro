@@ -51,6 +51,11 @@ impl TransferRequest {
         match self.direction {
             TransferDirection::Upload => self.local.display().to_string(),
             TransferDirection::Download => self.remote.clone(),
+            // 助手的两个工具只搬本机与当前会话之间，两端都在 `TransferRequest`
+            // 的两个路径字段里；跨服务器复制没有本机那一头，构造不出来。
+            TransferDirection::RemoteCopy => {
+                unreachable!("助手不搬远端到远端的复制")
+            }
         }
     }
 
@@ -59,6 +64,9 @@ impl TransferRequest {
         match self.direction {
             TransferDirection::Upload => self.remote.clone(),
             TransferDirection::Download => self.local.display().to_string(),
+            TransferDirection::RemoteCopy => {
+                unreachable!("助手不搬远端到远端的复制")
+            }
         }
     }
 }
@@ -134,6 +142,9 @@ pub fn direction_str(direction: TransferDirection) -> &'static str {
     match direction {
         TransferDirection::Upload => "upload",
         TransferDirection::Download => "download",
+        // 助手不产生这一档（见 `TransferRequest::source` 的说明），落库词表里
+        // 也就不留它 —— 真走到这里说明有人绕过了两个工具。
+        TransferDirection::RemoteCopy => unreachable!("助手不记录远端到远端的复制"),
     }
 }
 

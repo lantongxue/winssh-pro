@@ -37,9 +37,9 @@ use gpui_kit::component::{
     h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
 };
 use gpui_kit::{
-    App, AppContext as _, Axis, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
-    WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px,
+    App, AppContext as _, Axis, ClickEvent, Context, Entity, EntityId, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    Styled as _, WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 use std::rc::Rc;
 use std::sync::Arc;
@@ -62,7 +62,7 @@ use crate::{
         bars::{SessionInfoBar, SessionStatusBar},
         dialogs::{
             CommandHistoryDialog, ForwardsHandler, HistoryRunHandler, PortForwardDialog,
-            ShellIntegrationHandler, ZmodemTransferDialog,
+            RemoteCopyChannel, RemoteCopyTarget, ShellIntegrationHandler, ZmodemTransferDialog,
         },
         panels::{MonitorEvent, MonitorPanel, SftpPanel, SftpPanelEvent},
         pickers::scheme_picker::{SchemePicker, SchemePickerOptions},
@@ -283,6 +283,86 @@ impl ActiveCenterPanel {
     }
 }
 
+/// 本窗口里能当跨会话复制落点的**已连接**会话：中心区每个标签组里的每一条终端
+/// 与独立 SFTP 标签页，不只是当前活动的那一条 —— 目标会话可以藏在别的标签页后面。
+///
+/// `source` 是发起方 SFTP 面板的实体 id，自己那一栏要剔掉。本机 Shell / WSL
+/// 没有 SSH 连接，`TerminalPanel::remote_copy_target` 自己会给 `None`。
+pub(crate) fn remote_copy_targets(
+    dock_area: &Entity<DockArea>,
+    source: EntityId,
+    cx: &App,
+) -> Vec<RemoteCopyTarget> {
+    let area = dock_area.read(cx);
+    let Some(tree) = area.layout(DockPlacement::Center) else {
+        return Vec::new();
+    };
+    let mut targets = Vec::new();
+    for panel_id in tree.panels() {
+        let Some(panel) = area.panel(panel_id) else {
+            continue;
+        };
+        let view = panel.view();
+        let target = if let Ok(terminal) = view.clone().downcast::<TerminalPanel>() {
+            terminal.read(cx).remote_copy_target(source, cx)
+        } else if let Ok(sftp) = view.downcast::<super::DockedSftpPanel>() {
+            sftp.read(cx).remote_copy_target(source, cx)
+        } else {
+            None
+        };
+        if let Some(target) = target {
+            targets.push(target);
+        }
+    }
+    targets
+}
+
+/// 两种宿主（终端标签页、独立 SFTP 标签页）"把自己报成复制落点"的共用本体。
+///
+/// 只有**还活着**且 SSH 连接没被对端关掉的会话能当：本机 / WSL 没有第二条通道。
+/// 宿主自己正在开 SFTP 通道（`opening`）时也先不报 —— 对话框会另开一条，两边
+/// 撞出两条渠道、两个 sudo 密码框，后落定的还会把先落定的状态顶掉。
+///
+/// `source` 是发起方 SFTP 面板的实体 id，自己那一栏要在这里就剔掉 —— 调用方
+/// 可能正处在发起方 SFTP 面板的 `update` 里，晚一步去 `read` 它会撞上
+/// "already being updated"。
+pub(crate) fn remote_copy_target_for(
+    host: &Host,
+    sftp_panel: &Entity<SftpPanel>,
+    ssh: Option<&SshSession>,
+    alive: bool,
+    opening: bool,
+    source: EntityId,
+    cx: &App,
+) -> Option<RemoteCopyTarget> {
+    if sftp_panel.entity_id() == source {
+        return None;
+    }
+    if !alive || opening {
+        return None;
+    }
+    // `alive` 说的是"会话还在"，本机回落的窗格也算；复制要的是那条 SSH
+    // 连接本身还在，所以还得看句柄有没有被对端关掉。
+    let ssh = ssh.filter(|ssh| !ssh.handle.is_closed())?;
+    let panel = sftp_panel.read(cx);
+    let channel = match panel.sftp_service() {
+        Some(service) => RemoteCopyChannel::Ready(service),
+        None => RemoteCopyChannel::Connect {
+            handle: ssh.handle.clone(),
+            launch: panel.launch(),
+        },
+    };
+    let dir = panel.remote_dir();
+    Some(RemoteCopyTarget {
+        name: host.name.clone(),
+        login: format!("{}@{}", host.user, host.hostname).into(),
+        server: format!("{}:{}", host.hostname, host.port).into(),
+        channel,
+        current_dir: (!dir.is_empty()).then(|| dir.to_owned()),
+        panel: sftp_panel.downgrade(),
+    })
+}
+
 pub struct TerminalPanel {
     host: Host,
     source: Source,
@@ -460,6 +540,8 @@ impl TerminalPanel {
         cx.new(|cx| {
             let monitor_panel = MonitorPanel::new(host.clone(), hosts.clone(), window, cx);
             let sftp_panel = SftpPanel::new(host.clone(), window, cx);
+            // 跨会话复制要从 Dock 里数出别的会话：宿主有这个弱句柄，面板没有。
+            sftp_panel.update(cx, |panel, _| panel.bind_dock_area(dock_area.clone()));
             // 第一个窗格没有连接可借，SSH 那一档只能自己拨号；本机与 WSL
             // 那两档在 [`PaneOrigin`] 里各自带话。
             let origin = match &source {
@@ -852,6 +934,24 @@ impl TerminalPanel {
             // 借那一栏的，同一台主机输一次大家共用。
             sftp: self.sftp_panel.read(cx).host_launch(),
         })
+    }
+
+    /// 给别的会话当跨服务器复制的落点。资格判断与构造都在
+    /// [`remote_copy_target_for`]；这里只交出本宿主的存活 / 开通道状态。
+    pub(crate) fn remote_copy_target(
+        &self,
+        source: EntityId,
+        cx: &App,
+    ) -> Option<RemoteCopyTarget> {
+        remote_copy_target_for(
+            &self.host,
+            &self.sftp_panel,
+            self.ssh.as_ref(),
+            self.alive(cx),
+            self.sftp_opening,
+            source,
+            cx,
+        )
     }
 
     /// 活动窗格终端上最后 `lines` 行的文本（回卷区也算），智能助手的

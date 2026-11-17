@@ -4,7 +4,7 @@
 //! （与终端、监控采集共用同一条 SSH 连接）。界面因此不知道 `russh-sftp`、
 //! SFTP 包与 `FileAttributes` 的存在，只会要 [`FileEntry`]、丢传输任务。
 //!
-//! 四条口径值得写下来：
+//! 五条口径值得写下来：
 //!
 //! - **只报对端说过的话**。列目录缺什么字段（多数服务器不在 `readdir` 里给属主名）
 //!   就留 `None`，由领域层显示成 `—` 或数字 uid，不猜。
@@ -13,6 +13,8 @@
 //! - **进度是分块报的**，一次一个事件；界面按事件更新那一行，不需要自己掐时间。
 //! - **错误是一句人话，并且带上对端的原话**。`Permission denied` 是 sshd 说的，
 //!   比我们能写的任何转述都准。
+//! - **跨服务器复制从本机中转**。源与目标各一条 SFTP 通道，A 读、B 写，字节
+//!   不落本地盘 —— 两台服务器不需要能互相看见。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -82,6 +84,23 @@ pub struct TransferJob {
     pub local: PathBuf,
     /// 远端目标：上传时是目标目录（名字取本地的 basename），下载时是那个文件本身。
     pub remote: String,
+}
+
+/// 一次跨会话复制：从一条 SFTP 通道上的文件或目录，搬到另一条通道上的目标目录。
+///
+/// 两条通道都由调用方准备好（源面板开着的那条 A、目标会话的 B）；字节在这台机器
+/// 上过一遍，不落本地盘 —— 两台服务器不需要能互相看见。目标目录必须已经存在，
+/// 复制出的条目落在它下面，名字取源条目的 basename（同一次上传的口径）。
+#[derive(Clone)]
+pub struct RemoteCopyJob {
+    /// 队列里的那一行用它对齐进度事件。
+    pub id: u64,
+    /// 源条目在 A 上的绝对路径（文件或目录）。
+    pub source: String,
+    /// B 上的目标目录。
+    pub destination: String,
+    pub source_service: SftpService,
+    pub target_service: SftpService,
 }
 
 /// 传输任务发回界面的事件。
@@ -557,6 +576,40 @@ impl SftpService {
             join,
         }
     }
+
+    /// 派一个"远端 A → 远端 B"的复制任务。
+    ///
+    /// 和上 / 下载共用同一个搬运循环（[`pump`]）：源是 A 上的一条读句柄，目标是
+    /// B 上的一条写句柄，字节在本进程里过一遍就交出去。两端各走各的会话，任何
+    /// 一端断了都只影响这一条任务。
+    pub fn spawn_remote_copy(
+        job: RemoteCopyJob,
+        progress: UnboundedSender<TransferEvent>,
+    ) -> TransferHandle {
+        let cancel = CancellationToken::new();
+        let pause = Arc::new(PauseState::default());
+        let task_cancel = cancel.clone();
+        let task_pause = pause.clone();
+        let task_progress = progress.clone();
+        let id = job.id;
+
+        let join = crate::db::runtime().spawn(async move {
+            let ctx = PumpCtx {
+                id,
+                cancel: &task_cancel,
+                pause: &task_pause,
+                progress: &task_progress,
+            };
+            let outcome = remote_copy(&job, &ctx).await;
+            report_done(&progress, id, outcome, task_cancel.is_cancelled());
+        });
+
+        TransferHandle {
+            cancel,
+            pause,
+            join,
+        }
+    }
 }
 
 /// 搬运循环共用的那捆东西：任务身份、取消令牌、暂停开关与进度管子。
@@ -938,6 +991,344 @@ async fn upload_file_to(
             .send(TransferEvent::ChildDone { id: ctx.id, index });
     }
     Ok(())
+}
+
+// ─── 远端 A → 远端 B ───────────────────────────────────────────────────────
+
+/// 跨会话复制的入口：源是文件就直接搬，是目录就摊平成计划、建骨架、并发搬。
+///
+/// 两条通道都来自 [`RemoteCopyJob`]，这一层不看界面 —— 源面板关掉也不影响已经
+/// 开跑的任务，它握着的是 [`SftpSession`] 的克隆。
+async fn remote_copy(job: &RemoteCopyJob, ctx: &PumpCtx<'_>) -> Result<()> {
+    let source_path = path::normalize(&job.source);
+    let destination = path::normalize(&job.destination);
+    let source = job.source_service.session.clone();
+    let target = job.target_service.session.clone();
+
+    let root_attrs = source.metadata(&source_path).await.map_err(|error| {
+        remote(
+            &t!("sftp_err.action_stat_remote", path => source_path),
+            error,
+        )
+    })?;
+
+    // 文件系统根目录没有 basename，复制它等于把整个盘塞进目标目录 —— 不做。
+    let name = path::file_name(&source_path);
+    if name.is_empty() {
+        bail!("{}", t!("sftp_err.copy_root"));
+    }
+
+    match root_attrs.file_type() {
+        FileType::Dir => {
+            remote_copy_folder(&source, &target, &source_path, &destination, ctx).await
+        }
+        _ => {
+            let target_path = path::join(&destination, name);
+            let file = RemoteCopyFile {
+                source: source_path,
+                target: target_path,
+                size: root_attrs.size.unwrap_or(0),
+                mode: root_attrs.permissions,
+            };
+            let agg = AtomicU64::new(0);
+            let size = file.size;
+            remote_copy_file(&source, &target, file, None, size, &agg, ctx).await
+        }
+    }
+}
+
+/// 远端目录树 → 另一台远端目录树：先规划（读源树，但一个字节不搬），把目标骨架
+/// 建好，再按 [`FOLDER_CONCURRENCY`] 并发搬文件。
+///
+/// 规划和上传那边同一条口径：计划里的字节数就是进度条的分母，所以不会停在 99%。
+/// 目标目录已存在就当是并进去，同名的旧文件由 [`rename_into_place`] 顶掉。
+async fn remote_copy_folder(
+    source: &Arc<SftpSession>,
+    target: &Arc<SftpSession>,
+    source_dir: &str,
+    destination_dir: &str,
+    ctx: &PumpCtx<'_>,
+) -> Result<()> {
+    let plan = plan_remote_copy(source, source_dir, destination_dir, ctx).await?;
+    let total = plan.total_bytes();
+
+    for dir in &plan.dirs {
+        // 建骨架也是网络往返（高延迟对端上一棵树能建很久），取消要在这里就生效，
+        // 不能等第一个文件开跑才发现。
+        if ctx.cancel.is_cancelled() {
+            bail!("{}", crate::sftp::CANCELED);
+        }
+        ensure_dir(target, dir).await?;
+    }
+
+    // 子项名带着复制目录自己的名字（`pkg/a/one`），和上传 / 下载同一条口径 ——
+    // 从**目标**路径剥目标目录，源路径剥源目录会把根目录名剥掉。
+    let items = plan
+        .files
+        .iter()
+        .map(|file| {
+            TransferChild::new(relative_remote(&file.target, destination_dir).into(), file.size)
+        })
+        .collect();
+    let _ = ctx.progress.send(TransferEvent::Children {
+        id: ctx.id,
+        items,
+    });
+
+    if plan.files.is_empty() {
+        let _ = ctx.progress.send(TransferEvent::Progress {
+            id: ctx.id,
+            transferred: 0,
+            total: 0,
+        });
+        return Ok(());
+    }
+
+    // 先把分母报出去：界面那一行在第一个文件开跑之前就有进度条刻度。
+    let _ = ctx.progress.send(TransferEvent::Progress {
+        id: ctx.id,
+        transferred: 0,
+        total,
+    });
+
+    let agg = AtomicU64::new(0);
+    stream::iter(plan.files.into_iter().enumerate())
+        .map(|(index, file)| remote_copy_file(source, target, file, Some(index), total, &agg, ctx))
+        .buffer_unordered(FOLDER_CONCURRENCY)
+        .try_collect::<()>()
+        .await
+}
+
+/// 搬一个文件：A 上开读句柄，B 上先写 `.<name>.<id>.<随机段>.part`，`pump` 过去，
+/// 最后改名落到最终名字上。中途任何一步失败都把半截临时文件清掉 —— 失败的复制
+/// 不该给目标目录留下一个看着完整的半成品；被中途丢弃（目录复制里别的文件先失败，
+/// `try_collect` 收摊）时由 [`TempFileGuard`] 兜底清掉。
+async fn remote_copy_file(
+    source: &Arc<SftpSession>,
+    target: &Arc<SftpSession>,
+    file: RemoteCopyFile,
+    child: Option<usize>,
+    total: u64,
+    agg: &AtomicU64,
+    ctx: &PumpCtx<'_>,
+) -> Result<()> {
+    if ctx.cancel.is_cancelled() {
+        bail!("{}", crate::sftp::CANCELED);
+    }
+
+    let mut reader = source.open(&file.source).await.map_err(|error| {
+        remote(
+            &t!("sftp_err.action_open_remote", path => file.source),
+            error,
+        )
+    })?;
+    let temp = copy_part_path(&file.target, ctx.id);
+    let mut writer = target.create(&temp).await.map_err(|error| {
+        remote(
+            &t!("sftp_err.action_create_remote_temp", path => temp),
+            error,
+        )
+    })?;
+    let mut temp_guard = TempFileGuard {
+        session: target.clone(),
+        path: temp.clone(),
+        armed: true,
+    };
+
+    let pump_res = pump(
+        &mut reader,
+        &mut writer,
+        total,
+        agg,
+        child.map(|index| (index, file.size)),
+        ctx,
+    )
+    .await;
+
+    let _ = writer.close().await;
+    let _ = reader.close().await;
+
+    let moved = match pump_res {
+        Ok(moved) => moved,
+        Err(err) => {
+            let _ = target.remove_file(&temp).await;
+            temp_guard.armed = false;
+            return Err(err);
+        }
+    };
+
+    // 完整性校验：非空文件少了字节就是半截，宁可失败也不落成最终名字。
+    if file.size > 0 && moved < file.size {
+        let _ = target.remove_file(&temp).await;
+        temp_guard.armed = false;
+        bail!(
+            "{}",
+            t!(
+                "sftp_err.copy_incomplete",
+                moved => moved,
+                total => file.size,
+            )
+        );
+    }
+
+    if let Err(error) = rename_into_place(target, &temp, &file.target).await {
+        let _ = target.remove_file(&temp).await;
+        temp_guard.armed = false;
+        return Err(remote(
+            &t!("sftp_err.action_finalize_remote", path => file.target),
+            error,
+        ));
+    }
+    // 临时文件已经落成最终名字，守卫不再清它。
+    temp_guard.armed = false;
+
+    // 源上的权限位顺手带到目标：复制一个脚本，可执行位不该在搬运路上丢了。
+    // 对端不让改（chmod 不支持的服务器）不算这次复制失败 —— 文件已经到齐了。
+    if let Some(mode) = file.mode {
+        let attrs = FileAttributes {
+            permissions: Some(mode & 0o7777),
+            ..Default::default()
+        };
+        let _ = target.set_metadata(&file.target, attrs).await;
+    }
+
+    if let Some(index) = child {
+        let _ = ctx.progress.send(TransferEvent::ChildDone {
+            id: ctx.id,
+            index,
+        });
+    }
+    Ok(())
+}
+
+/// 半截临时文件的兜底守卫：目录复制里一个文件先失败时，`try_collect` 会把其余
+/// 还在跑的文件任务直接丢弃，它们 Err 路径上的清理没机会跑 —— 只有 Drop 接得住。
+/// 丢弃时派一个脱管任务去删临时文件；改名落定后解除，别把真文件删了。
+struct TempFileGuard {
+    session: Arc<SftpSession>,
+    path: String,
+    armed: bool,
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let session = self.session.clone();
+        let path = std::mem::take(&mut self.path);
+        crate::db::runtime().spawn(async move {
+            let _ = session.remove_file(&path).await;
+        });
+    }
+}
+
+/// 一次跨会话复制摊平出来的计划。目录与文件都按源树的走法排好顺序。
+#[derive(Default)]
+struct RemoteCopyPlan {
+    /// 要在目标上建的目录，外层在前。
+    dirs: Vec<String>,
+    files: Vec<RemoteCopyFile>,
+}
+
+struct RemoteCopyFile {
+    source: String,
+    target: String,
+    size: u64,
+    mode: Option<u32>,
+}
+
+impl RemoteCopyPlan {
+    /// 进度条的分母：和目标上真正会写下去的字节数一致。
+    fn total_bytes(&self) -> u64 {
+        self.files.iter().map(|file| file.size).sum()
+    }
+}
+
+/// 把一棵源远端树摊平成目标上的落点计划。`source_dir` 是用户选中的那个目录，
+/// 复制出来的根目录挂在 `destination_dir` 下面，名字取源目录自己的 basename。
+///
+/// 走法与 [`plan_download`] 一致：显式队列、文件在目录之前、软链接只在指向普通
+/// 文件时按内容搬（指向目录的跳过，避免死循环或把整棵树再走一遍）。
+async fn plan_remote_copy(
+    source: &Arc<SftpSession>,
+    source_dir: &str,
+    destination_dir: &str,
+    ctx: &PumpCtx<'_>,
+) -> Result<RemoteCopyPlan> {
+    let mut plan = RemoteCopyPlan::default();
+    let root_target = remote_copy_target_path(destination_dir, source_dir);
+    plan.dirs.push(root_target.clone());
+
+    let mut pending =
+        std::collections::VecDeque::from([(source_dir.to_string(), root_target)]);
+
+    while let Some((current_source, current_target)) = pending.pop_front() {
+        if ctx.cancel.is_cancelled() {
+            bail!("{}", crate::sftp::CANCELED);
+        }
+
+        let entries = source.read_dir(&current_source).await.map_err(|error| {
+            remote(
+                &t!("sftp_err.action_read_remote_dir", path => current_source),
+                error,
+            )
+        })?;
+
+        let mut sorted_entries: Vec<_> = entries.into_iter().collect();
+        // file_name() 每次调用都克隆一个 String；sort_by 的比较次数是 n·log n 量级，
+        // 缓存键让它每个条目只分配一次。
+        sorted_entries
+            .sort_by_cached_key(|entry| (entry.file_type() == FileType::Dir, entry.file_name()));
+
+        for entry in sorted_entries {
+            let name = entry.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let child_source = path::join(&current_source, &name);
+            let child_target = path::join(&current_target, &name);
+            match entry.file_type() {
+                FileType::Dir => {
+                    plan.dirs.push(child_target.clone());
+                    pending.push_back((child_source, child_target));
+                }
+                FileType::File => {
+                    let attrs = entry.metadata();
+                    plan.files.push(RemoteCopyFile {
+                        source: child_source,
+                        target: child_target,
+                        size: attrs.size.unwrap_or(0),
+                        mode: attrs.permissions,
+                    });
+                }
+                FileType::Symlink => {
+                    if let Ok(target_attrs) = source.metadata(&child_source).await {
+                        if target_attrs.file_type() == FileType::Dir {
+                            log::warn!("跳过远端目录软链接：{child_source}");
+                        } else if target_attrs.file_type() == FileType::File {
+                            plan.files.push(RemoteCopyFile {
+                                source: child_source,
+                                target: child_target,
+                                size: target_attrs.size.unwrap_or(0),
+                                mode: target_attrs.permissions,
+                            });
+                        }
+                    } else {
+                        log::warn!("跳过失效远端软链接：{child_source}");
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(plan)
+}
+
+/// 复制出来的条目在目标目录下的落点：目标目录 + 源条目的 basename。
+fn remote_copy_target_path(destination_dir: &str, source_path: &str) -> String {
+    path::join(destination_dir, path::file_name(source_path))
 }
 
 /// 让 `from` 变成 `to`，把同名的旧文件顶掉。
@@ -1353,6 +1744,19 @@ fn part_path_str(remote: &str, id: Option<u64>) -> String {
         Some(id) => format!(".{name}.{id}.part"),
         None => format!(".{name}.part"),
     };
+    match directory.as_str() {
+        "" | "." => part_name,
+        directory => path::join(directory, &part_name),
+    }
+}
+
+/// 跨会话复制的临时落点：比 [`part_path_str`] 多一段随机数。id 是**每个面板**
+/// 自己的传输序号，两个面板往同一台服务器的同一个目录复制同名文件时序号会撞
+/// （都是各自的第一条任务），不带随机段两边就写进同一个 .part，互相覆盖。
+fn copy_part_path(remote: &str, id: u64) -> String {
+    let name = path::file_name(remote);
+    let part_name = format!(".{name}.{id}.{:016x}.part", rand::random::<u64>());
+    let directory = path::parent(remote);
     match directory.as_str() {
         "" | "." => part_name,
         directory => path::join(directory, &part_name),
