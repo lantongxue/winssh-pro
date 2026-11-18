@@ -38,7 +38,7 @@ pub mod sftp;
 pub use bridge::{SshBridge, SshOutputReceiver, spawn_bridge};
 pub use client::SshHandler;
 pub use connection::{SshConnection, SshSession, WindowSize, decode_private_key};
-pub use exec::exec_script;
+pub use exec::{exec_script, exec_script_cancellable};
 pub use forward::{ForwardMeter, LocalMode, RemoteTarget};
 pub use keygen::{
     GeneratedKey, KeyFacts, generate as generate_key, inspect as inspect_private_key,

@@ -1,19 +1,24 @@
-//! 跨会话复制对话框：把 A 服务器上选中的条目复制到 B 服务器。
+//! 远端复制对话框，两种用法：
 //!
-//! 这里只问两件事：**落到哪条会话**、**落到那个会话的哪个目录**。条目本身由
-//! 发起的 [`SftpPanel`] 带过来（右键那一刻的选中集），字节怎么搬归服务层的
-//! [`crate::service::RemoteCopyJob`] —— 它握住两条 SFTP 通道，从 A 读、往 B 写，
-//! 不经过本地磁盘。
+//! - **跨会话**：把 A 服务器上选中的条目复制到 B 服务器。这里只问两件事：
+//!   **落到哪条会话**、**落到那个会话的哪个目录**。
+//! - **同会话换目录**：把条目复制到当前服务器上的另一个目录（右键"复制到其他
+//!   目录…"）。没有会话可选，只问目标目录；源与落点是同一条 SFTP 通道。
+//!
+//! 条目本身由发起的 [`SftpPanel`] 带过来（右键那一刻的选中集），字节怎么搬归
+//! 服务层的 [`crate::service::RemoteCopyJob`] —— 它握住两条 SFTP 通道（同会话
+//! 时是同一条的两个克隆），从源读、往目标写，不经过本地磁盘。
 //!
 //! 目标会话是**发起那一刻从 Dock 里数出来的**已连接会话（终端标签页与独立
 //! SFTP 标签页），不含发起方自己。两个前提都在这里体现：会话没连上就不会出现在
 //! 列表里；目标会话的 SFTP 通道还没开时，选中它才现开一条（可能要等 sudo
 //! 密码框），开不出来就地把原因显示在这一页，不关框。
 //!
-//! 目标目录默认和**源**同目录 —— 复制文件夹 `/opt/www/kafka` 时填 `/opt/www`，
-//! 复制文件 `/opt/www/kafka/kafka.yml` 时填 `/opt/www/kafka`，也就是选中条目
-//! 所在的那一层。提交前让对端 `realpath` 一次并确认它真是个目录 —— 不替用户建
-//! 不存在的目录，也不猜。
+//! 跨会话时目标目录默认和**源**同目录 —— 复制文件夹 `/opt/www/kafka` 时填
+//! `/opt/www`，复制文件 `/opt/www/kafka/kafka.yml` 时填 `/opt/www/kafka`，也就是
+//! 选中条目所在的那一层。同会话换目录则从空开始：默认填源目录等于默认一个
+//! 重叠落点，所以干脆让用户自己敲。提交前让对端 `realpath` 一次并确认它真是个
+//! 目录 —— 不替用户建不存在的目录，也不猜。
 
 use std::rc::Rc;
 
@@ -35,6 +40,7 @@ use gpui_kit::{
 
 use crate::{
     service::{FileService, SftpService},
+    sftp::normalize,
     ssh::{SftpLaunch, SshHandler},
     ui::{panels::SftpPanel, theme::{AppIcon, palette}},
 };
@@ -70,9 +76,19 @@ pub enum RemoteCopyChannel {
     },
 }
 
+/// 这次复制的落点属于哪一档。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteCopyMode {
+    /// 另一条已连接的会话（跨会话 / 跨服务器）。
+    Session,
+    /// 同一条会话里的另一个目录（同一台服务器内部复制）。
+    Directory,
+}
+
 /// 对话框收壳后交给面板的东西：往哪条通道、哪个目录复制。
 pub struct RemoteCopyRequest {
-    /// 列表上那一行字（主机名，重名时带序号），复制队列与通知里用它标识落点。
+    /// 落点的显示名：跨会话时是主机名（重名时带序号），同会话换目录时就是
+    /// 目标目录本身。复制队列那一行用它标识落点。
     pub label: SharedString,
     /// 落点那台机器的 `hostname:port`，同源同机时面板要拦自复制。
     pub server: SharedString,
@@ -86,8 +102,9 @@ pub struct RemoteCopyRequest {
 /// 用户按下"开始复制"之后的回调。参数是校验过的那一份落点。
 pub type RemoteCopyHandler = Rc<dyn Fn(RemoteCopyRequest, &mut Window, &mut App)>;
 
-/// 跨会话复制对话框的正文。
+/// 远端复制对话框的正文。
 pub struct RemoteCopyDialog {
+    mode: RemoteCopyMode,
     /// 发起方主机名，只用于说明"从哪儿复制"。
     source: SharedString,
     /// 选中的条目概况（一个名字，或者"N 项"）。
@@ -114,7 +131,7 @@ pub struct RemoteCopyDialog {
 }
 
 impl RemoteCopyDialog {
-    /// 弹出对话框。`source_dir` 是目标目录的默认值（选中条目的父目录），
+    /// 弹出跨会话复制对话框。`source_dir` 是目标目录的默认值（选中条目的父目录），
     /// `targets` 为空时只画一句"没有其他已连接的会话"。
     pub fn open(
         source: impl Into<SharedString>,
@@ -127,6 +144,7 @@ impl RemoteCopyDialog {
     ) {
         let form = cx.new(|cx| {
             Self::new(
+                RemoteCopyMode::Session,
                 source.into(),
                 scope.into(),
                 source_dir.into(),
@@ -143,6 +161,52 @@ impl RemoteCopyDialog {
                 this.select_target(0, window, cx);
             }
         });
+        Self::present(form, window, cx);
+    }
+
+    /// 弹出"复制到其他目录"对话框：落点就是这条会话自己，只问目标目录。
+    ///
+    /// `source_dir` 是选中条目的父目录，只用来拦"目标就是源目录"；`server` 是
+    /// 这台机器的 `hostname:port`，面板拿它拦"落到源条目自己或它的子树里"的重叠
+    /// 落点（见 `SftpPanel::enqueue_remote_copy`）。
+    pub fn open_directory(
+        source: impl Into<SharedString>,
+        scope: impl Into<SharedString>,
+        source_dir: impl Into<SharedString>,
+        server: impl Into<SharedString>,
+        service: SftpService,
+        panel: WeakEntity<SftpPanel>,
+        on_submit: RemoteCopyHandler,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let source = source.into();
+        // 没有下拉可选，但仍把这一条摆进 `targets`：提交、校验与回调都走和
+        // 跨会话那条完全相同的路径，不另养一套并行状态。
+        let targets = vec![RemoteCopyTarget {
+            name: source.clone(),
+            login: SharedString::default(),
+            server: server.into(),
+            channel: RemoteCopyChannel::Ready(service),
+            panel,
+        }];
+        let form = cx.new(|cx| {
+            Self::new(
+                RemoteCopyMode::Directory,
+                source,
+                scope.into(),
+                source_dir.into(),
+                targets,
+                on_submit,
+                window,
+                cx,
+            )
+        });
+        Self::present(form, window, cx);
+    }
+
+    /// 把建好的正文挂进弹窗。两种用法共用同一副标题栏、按钮与配色。
+    fn present(form: Entity<Self>, window: &mut Window, cx: &mut App) {
         let submit_form = form.clone();
         let blue = palette::blue();
 
@@ -160,7 +224,7 @@ impl RemoteCopyDialog {
 
             dialog
                 .w(px(500.))
-                .title(render_header(cx))
+                .title(render_header(body.mode, cx))
                 .child(form.clone())
                 .footer(
                     h_flex()
@@ -192,6 +256,7 @@ impl RemoteCopyDialog {
     }
 
     fn new(
+        mode: RemoteCopyMode,
         source: SharedString,
         scope: SharedString,
         source_dir: SharedString,
@@ -209,11 +274,27 @@ impl RemoteCopyDialog {
             let initial = (!labels.is_empty()).then(|| IndexPath::new(0));
             SelectState::new(labels.clone(), initial, window, cx)
         });
+        // 同会话换目录时落点已经定死，路径框从空开始 —— 拿源目录当默认值会当场
+        // 撞上"复制到源目录"的校验，等于逼用户先把错的字删掉。跨会话仍按源填。
+        let initial_path = match mode {
+            RemoteCopyMode::Session => source_dir.to_string(),
+            RemoteCopyMode::Directory => String::new(),
+        };
         let path = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(t!("remote_copy.path_placeholder"))
-                .default_value(source_dir.to_string())
+                .default_value(initial_path)
         });
+        let (selected, service) = match mode {
+            RemoteCopyMode::Session => (None, None),
+            RemoteCopyMode::Directory => {
+                let service = targets.first().and_then(|target| match &target.channel {
+                    RemoteCopyChannel::Ready(service) => Some(service.clone()),
+                    RemoteCopyChannel::Connect { .. } => None,
+                });
+                (Some(0), service)
+            }
+        };
 
         cx.subscribe_in(
             &select,
@@ -235,15 +316,16 @@ impl RemoteCopyDialog {
         .detach();
 
         Self {
+            mode,
             source,
             scope,
             source_dir,
             targets,
             labels,
             select,
-            selected: None,
+            selected,
             generation: 0,
-            service: None,
+            service,
             connecting: false,
             path,
             error: None,
@@ -365,8 +447,6 @@ impl RemoteCopyDialog {
             cx.notify();
             return;
         }
-        // labels 与 targets 一一对应且从不增删，下标必然在。
-        let label = self.labels[index].clone();
         let handler = self.on_submit.clone();
         self.connecting = true;
         self.generation = self.generation.wrapping_add(1);
@@ -387,6 +467,19 @@ impl RemoteCopyDialog {
                 this.connecting = false;
                 match outcome {
                     Ok(directory) => {
+                        // 同会话时目标目录就是源目录的话，落点必然压在源条目自己
+                        // 身上（改名那一步先删原件），当场拦下比关框之后再弹通知清楚。
+                        if this.mode == RemoteCopyMode::Directory
+                            && normalize(&directory) == normalize(this.source_dir.as_str())
+                        {
+                            this.error = Some(SharedString::from(t!("remote_copy.same_dir")));
+                            cx.notify();
+                            return;
+                        }
+                        let label = match this.mode {
+                            RemoteCopyMode::Session => this.labels[index].clone(),
+                            RemoteCopyMode::Directory => SharedString::from(directory.clone()),
+                        };
                         let request = RemoteCopyRequest {
                             label,
                             server: target.server.clone(),
@@ -453,6 +546,7 @@ fn unique_target_labels(targets: &[(SharedString, SharedString)]) -> Vec<SharedS
 impl Render for RemoteCopyDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let no_targets = self.targets.is_empty();
+        let directory_mode = self.mode == RemoteCopyMode::Directory;
         let connecting = self.connecting;
 
         v_flex()
@@ -478,22 +572,24 @@ impl Render for RemoteCopyDialog {
                             .child(self.scope.clone()),
                     ),
             )
-            .child(
-                v_flex()
-                    .gap_1p5()
-                    .child(field_label(t!("remote_copy.target").into(), cx))
-                    .when(no_targets, |this| {
-                        this.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().danger)
-                                .child(SharedString::from(t!("remote_copy.no_sessions"))),
-                        )
-                    })
-                    .when(!no_targets, |this| {
-                        this.child(Select::new(&self.select).w_full())
-                    }),
-            )
+            .when(!directory_mode, |this| {
+                this.child(
+                    v_flex()
+                        .gap_1p5()
+                        .child(field_label(t!("remote_copy.target").into(), cx))
+                        .when(no_targets, |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().danger)
+                                    .child(SharedString::from(t!("remote_copy.no_sessions"))),
+                            )
+                        })
+                        .when(!no_targets, |this| {
+                            this.child(Select::new(&self.select).w_full())
+                        }),
+                )
+            })
             .child(
                 v_flex()
                     .gap_1p5()
@@ -546,8 +642,18 @@ fn field_label(label: SharedString, cx: &App) -> impl IntoElement {
         .child(label)
 }
 
-/// 标题行：青色的双向文件夹图标，说明这次复制是两台服务器之间的事。
-fn render_header(cx: &App) -> impl IntoElement {
+/// 标题行：青色的双向文件夹图标，说明这次复制把字节从源搬到落点。
+fn render_header(mode: RemoteCopyMode, cx: &App) -> impl IntoElement {
+    let (title, note) = match mode {
+        RemoteCopyMode::Session => (
+            t!("remote_copy.title"),
+            t!("remote_copy.header_note"),
+        ),
+        RemoteCopyMode::Directory => (
+            t!("remote_copy.title_directory"),
+            t!("remote_copy.header_note_directory"),
+        ),
+    };
     h_flex()
         .items_center()
         .gap(px(10.))
@@ -571,13 +677,13 @@ fn render_header(cx: &App) -> impl IntoElement {
                     div()
                         .text_sm()
                         .font_semibold()
-                        .child(SharedString::from(t!("remote_copy.title"))),
+                        .child(SharedString::from(title)),
                 )
                 .child(
                     div()
                         .text_xs()
                         .text_color(palette::idle(cx))
-                        .child(SharedString::from(t!("remote_copy.header_note"))),
+                        .child(SharedString::from(note)),
                 ),
         )
 }

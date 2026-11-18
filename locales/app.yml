@@ -849,6 +849,9 @@ sftp_menu.download:
 sftp_menu.copy_to_session:
   en: Copy to Another Session…
   zh-CN: 复制到其他会话…
+sftp_menu.copy_to_directory:
+  en: Copy to Another Folder…
+  zh-CN: 复制到其他目录…
 sftp_menu.open_folder:
   en: Open Folder
   zh-CN: 打开目录
@@ -3601,6 +3604,12 @@ remote_copy.title:
 remote_copy.header_note:
   en: The bytes pass through this machine; both sessions must stay connected.
   zh-CN: 字节经由本机中转，两端会话需保持连接。
+remote_copy.title_directory:
+  en: Copy to another folder
+  zh-CN: 复制到其他目录
+remote_copy.header_note_directory:
+  en: Copies to another folder on this server; the destination must already exist.
+  zh-CN: 复制到这台服务器上的另一个目录，目标目录需已存在。
 remote_copy.source:
   en: Copy from
   zh-CN: 复制来源
@@ -3634,6 +3643,9 @@ remote_copy.dir_missing:
 remote_copy.not_a_dir:
   en: "The destination path is not a folder: %{path}"
   zh-CN: 目标路径不是目录：%{path}
+remote_copy.same_dir:
+  en: The destination is the source folder. Pick a different folder.
+  zh-CN: 目标目录就是源目录，请换一个目录。
 remote_copy.copy:
   en: Start copying
   zh-CN: 开始复制
@@ -4768,6 +4780,9 @@ sftp_err.upload_incomplete:
 sftp_err.copy_incomplete:
   en: "Copy incomplete: %{moved} / %{total} bytes"
   zh-CN: 复制未完成：%{moved} / %{total} 字节
+sftp_err.server_copy_conflict:
+  en: "A folder with the same name already exists: %{path}"
+  zh-CN: 目标位置已有同名目录：%{path}
 sftp_err.copy_root:
   en: The filesystem root cannot be copied
   zh-CN: 不能复制文件系统根目录
@@ -5125,6 +5140,9 @@ ssh_exec.send_script_failed:
 ssh_exec.close_write_failed:
   en: Closing the write end of the sampling channel failed
   zh-CN: 关闭采集通道的写端失败
+ssh_exec.canceled:
+  en: The remote command was canceled
+  zh-CN: 远端命令已取消
 
 # ── 终端里那几行方括号提示 ───────────────────────────────────────────────
 bridge.send_failed:

@@ -94,6 +94,8 @@ pub struct TransferItem {
     /// 目录传输摊平出来的子项，顺序就是任务里逐个搬运的顺序。
     /// 单文件传输为空，那一行没有展开箭头。
     pub children: Vec<TransferChild>,
+    /// 这一条能不能暂停。服务端复制是一条远端 `cp`，停不下来，队列不画暂停键。
+    pub pausable: bool,
 }
 
 impl TransferItem {

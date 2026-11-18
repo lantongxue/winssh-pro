@@ -14,7 +14,9 @@
 //! - **错误是一句人话，并且带上对端的原话**。`Permission denied` 是 sshd 说的，
 //!   比我们能写的任何转述都准。
 //! - **跨服务器复制从本机中转**。源与目标各一条 SFTP 通道，A 读、B 写，字节
-//!   不落本地盘 —— 两台服务器不需要能互相看见。
+//!   不落本地盘 —— 两台服务器不需要能互相看见。**同一台服务器换目录不走中转**：
+//!   在既有 SSH 连接上另开一条 exec 通道跑 `cp -a`（[`ServerCopyJob`]），字节
+//!   根本不进本进程。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -68,6 +70,9 @@ pub const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 #[derive(Clone)]
 pub struct SftpService {
     session: Arc<SftpSession>,
+    /// 开这条 SFTP 通道的那条 SSH 连接。同会话的服务端复制在它上面另开一条
+    /// `exec` 通道跑 `cp`，字节不经过本机（见 [`ServerCopyJob`]）。
+    handle: Arc<Handle<SshHandler>>,
     /// 远端家目录，第一次要的时候问一次就存下来（`realpath .`）。
     home: Arc<Mutex<Option<String>>>,
     /// 换了谁的身份开的，见 [`Self::identity`]。
@@ -103,6 +108,23 @@ pub struct RemoteCopyJob {
     pub target_service: SftpService,
 }
 
+/// 一次服务端复制：在同一台服务器上用 `cp -a` 搬，字节不过本机。
+///
+/// 只有源与目标是**同一条 SFTP 通道**（同会话换目录）、通道是标准子系统，
+/// 且对端不是 Windows 时才走这一档；跨会话、跨服务器以及 `sudo` / 自定义命令
+/// 开的通道仍走 [`RemoteCopyJob`] 的本机中转。
+#[derive(Clone)]
+pub struct ServerCopyJob {
+    /// 队列里的那一行用它对齐进度事件。
+    pub id: u64,
+    /// 源条目的绝对路径（文件或目录）。
+    pub source: String,
+    /// 目标目录（调用方已确认它存在且是目录）。
+    pub destination: String,
+    /// 握着那条 SSH 连接的入口，`cp` 在它的连接上另开一条 exec 通道跑。
+    pub service: SftpService,
+}
+
 /// 传输任务发回界面的事件。
 #[derive(Debug)]
 pub enum TransferEvent {
@@ -134,6 +156,9 @@ pub struct TransferHandle {
     cancel: CancellationToken,
     pause: Arc<PauseState>,
     join: JoinHandle<()>,
+    /// 这一档传输能不能暂停。服务端 `cp` 是一条远端子进程，本地没法在块之间
+    /// 停住，队列上就不画暂停键；上 / 下载与本机中转的复制都能暂停。
+    pausable: bool,
 }
 
 impl TransferHandle {
@@ -148,6 +173,7 @@ impl TransferHandle {
             cancel,
             pause,
             join,
+            pausable: true,
         }
     }
 
@@ -168,6 +194,11 @@ impl TransferHandle {
 
     pub fn is_paused(&self) -> bool {
         self.pause.is_paused()
+    }
+
+    /// 这一条能不能暂停。服务端复制不能 —— 队列据此决定画不画暂停键。
+    pub fn is_pausable(&self) -> bool {
+        self.pausable
     }
 
     pub fn is_finished(&self) -> bool {
@@ -227,14 +258,29 @@ impl SftpService {
     /// 去问（见 [`crate::sudo_auth`]），这一趟可能等人很久。
     pub async fn connect(handle: Arc<Handle<SshHandler>>, launch: SftpLaunch) -> Result<Self> {
         let identity = launch.identity().map(Arc::from);
-        let session = crate::db::run(async move { open_sftp_session(&handle, &launch).await })
+        let opener = handle.clone();
+        let session = crate::db::run(async move { open_sftp_session(&opener, &launch).await })
             .await
             .with_context(|| t!("sftp_err.action_open_session").to_string())?;
         Ok(Self {
             session,
+            handle,
             home: Arc::new(Mutex::new(None)),
             identity,
         })
+    }
+
+    /// 服务端复制能不能走 `cp`：只有标准子系统这一档可以 —— `sudo` / 自定义
+    /// 命令开的通道权限与普通 `exec` 不一致，`cp` 会以登录账号的身份跑，读不
+    /// 动提权后才看得见的文件。那一档退回本机中转。
+    pub fn can_server_copy(&self) -> bool {
+        self.identity.is_none()
+    }
+
+    /// 两个入口是不是同一条 SFTP 通道。同会话换目录时源与目标是同一个服务的
+    /// 克隆，服务端复制要在这种情况下才成立。
+    pub fn same_channel(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.session, &other.session)
     }
 
     /// 这条通道换了谁的身份开的（`sudo`、`sudo -u www-data` 或那条自定义命令）。
@@ -542,6 +588,7 @@ impl SftpService {
             cancel,
             pause,
             join,
+            pausable: true,
         }
     }
 
@@ -574,6 +621,7 @@ impl SftpService {
             cancel,
             pause,
             join,
+            pausable: true,
         }
     }
 
@@ -608,6 +656,43 @@ impl SftpService {
             cancel,
             pause,
             join,
+            pausable: true,
+        }
+    }
+
+    /// 派一个"同一台服务器内换目录"的服务端复制任务。
+    ///
+    /// 在既有 SSH 连接上另开一条 exec 通道跑 `cp -a`，字节不经过本机；`cp`
+    /// 不报字节，队列那一条按未知总数画成滑动的进度条。取消会关掉那条通道，
+    /// 远端 `cp` 随之被挂断 —— 不会在后台接着把目录写完。
+    pub fn spawn_server_copy(
+        job: ServerCopyJob,
+        progress: UnboundedSender<TransferEvent>,
+    ) -> TransferHandle {
+        let cancel = CancellationToken::new();
+        let pause = Arc::new(PauseState::default());
+        let task_cancel = cancel.clone();
+        let task_pause = pause.clone();
+        let task_progress = progress.clone();
+        let id = job.id;
+
+        let join = crate::db::runtime().spawn(async move {
+            let ctx = PumpCtx {
+                id,
+                cancel: &task_cancel,
+                pause: &task_pause,
+                progress: &task_progress,
+            };
+            let outcome = server_copy(&job, &ctx).await;
+            report_done(&progress, id, outcome, task_cancel.is_cancelled());
+        });
+
+        TransferHandle {
+            cancel,
+            pause,
+            join,
+            // `cp` 是一条远端子进程，本地没法在块与块之间停住它。
+            pausable: false,
         }
     }
 }
@@ -1329,6 +1414,67 @@ async fn plan_remote_copy(
 /// 复制出来的条目在目标目录下的落点：目标目录 + 源条目的 basename。
 fn remote_copy_target_path(destination_dir: &str, source_path: &str) -> String {
     path::join(destination_dir, path::file_name(source_path))
+}
+
+// ─── 同一台服务器上 cp ─────────────────────────────────────────────────────
+
+/// 一次服务端复制的上限。`cp` 可能搬一棵很大的树，这里只防对端彻底卡死，
+/// 不拿它当正常时限 —— 一整天还没复制完，肯定是出事了。
+const SERVER_COPY_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// 服务端复制的入口：在既有 SSH 连接上另开一条 exec 通道，把一段 POSIX sh
+/// 交给 `/bin/sh` 跑 `cp -a`。字节不进本进程，也不落本地盘。
+async fn server_copy(job: &ServerCopyJob, ctx: &PumpCtx<'_>) -> Result<()> {
+    let source = path::normalize(&job.source);
+    if path::file_name(&source).is_empty() {
+        bail!("{}", t!("sftp_err.copy_root"));
+    }
+    let destination = path::normalize(&job.destination);
+    let target = remote_copy_target_path(&destination, &source);
+    let script = server_copy_script(&source, &target);
+
+    let output = crate::ssh::exec_script_cancellable(
+        &job.service.handle,
+        &script,
+        SERVER_COPY_TIMEOUT,
+        ctx.cancel,
+    )
+    .await?;
+    if !output.success() {
+        bail!("{}", output.failure_reason());
+    }
+    Ok(())
+}
+
+/// 拼一次服务端复制的 sh 脚本。`target` 是最终落点（目标目录 + 源条目名）。
+///
+/// 目标已有同名目录时按合并处理（`cp -a "$src/." "$dst/"`），与中转那条路径
+/// "同名旧文件由改名顶掉"是同一层意思；同名目录挡着一个文件时明确失败，
+/// 不让 `cp` 悄悄在它里面再套一层同名文件。
+fn server_copy_script(source: &str, target: &str) -> String {
+    let src = sh_quote(source);
+    let dst = sh_quote(target);
+    let conflict = sh_quote(t!("sftp_err.server_copy_conflict", path => target).as_ref());
+    format!(
+        "src={src}\n\
+dst={dst}\n\
+if [ -d \"$dst\" ]; then\n\
+  if [ -d \"$src\" ]; then\n\
+    cp -a \"$src/.\" \"$dst/\"\n\
+  else\n\
+    printf '%s\\n' {conflict} >&2\n\
+    exit 1\n\
+  fi\n\
+else\n\
+  cp -a \"$src\" \"$dst\"\n\
+fi\n"
+    )
+}
+
+/// POSIX sh 单引号转义。远端路径里空格、`$`、引号都合法，一律加引号：
+/// 单引号本身拆成 `'\''`，其余字符原样进引号。
+fn sh_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 /// 让 `from` 变成 `to`，把同名的旧文件顶掉。

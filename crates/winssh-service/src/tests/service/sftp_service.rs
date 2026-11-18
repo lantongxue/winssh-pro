@@ -354,6 +354,148 @@
         std::fs::remove_dir_all(&root).ok();
     }
 
+    #[test]
+    fn server_copy_script_merges_an_existing_folder_and_overwrites_a_file() {
+        let script = server_copy_script("/opt/www/kafka", "/opt/www/backup/kafka");
+        assert!(script.contains("src='/opt/www/kafka'"));
+        assert!(script.contains("dst='/opt/www/backup/kafka'"));
+        // 目标已是同名目录：把源目录的**内容**并进去，而不是套出 kafka/kafka。
+        assert!(script.contains("cp -a \"$src/.\" \"$dst/\""));
+        // 目标不存在或是个文件：直接落到最终名字上。
+        assert!(script.contains("cp -a \"$src\" \"$dst\""));
+    }
+
+    #[test]
+    fn server_copy_script_survives_quotes_in_paths() {
+        // 远端路径里单引号合法；漏转义会让整段脚本变成另一个命令。
+        let script = server_copy_script("/opt/it's here", "/opt/backup/it's here");
+        assert!(script.contains(r"src='/opt/it'\''s here'"));
+        assert!(script.contains(r"dst='/opt/backup/it'\''s here'"));
+    }
+
+    /// 服务端复制的脚本要**真的**能递归复制一棵多级目录，而不是只拼对了字面。
+    ///
+    /// 用本机 POSIX `sh` + `cp` 跑生成的同一份脚本：Unix 天然有；Windows 需要
+    /// Git Bash 的 `sh` 在 PATH 上（从 Git Bash 里跑 cargo test 即可）。环境不齐
+    /// 时不静默通过 —— 这条带 `#[ignore]`，就是给手动验证用的：
+    ///
+    /// ```text
+    /// cargo test -p winssh-service -- --ignored server_copy_script_copies_a_nested_tree
+    /// ```
+    #[test]
+    #[ignore = "需要本机 POSIX sh/cp（Windows 走 Git Bash 的 PATH）"]
+    fn server_copy_script_copies_a_nested_tree() {
+        let root = temp_dir("server-copy-tree");
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("kafka");
+        let dst = root.join("backup").join("kafka");
+        std::fs::create_dir_all(src.join("logs").join("2026")).unwrap();
+        // 目标已有同名目录：脚本应当把内容并进去，而不是套出 kafka/kafka。
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("app.yml"), b"new").unwrap();
+        std::fs::write(src.join("logs").join("2026").join("run.log"), b"log").unwrap();
+        std::fs::write(src.join(".env"), b"env").unwrap();
+        std::fs::write(dst.join("app.yml"), b"old").unwrap();
+        std::fs::write(dst.join("stale.txt"), b"stale").unwrap();
+
+        // MSYS 的 sh/cp 认 `C:/...`，把 Windows 路径转成它习惯的写法。
+        let posix = |path: &Path| path.to_string_lossy().replace('\\', "/");
+        let script = server_copy_script(&posix(&src), &posix(&dst));
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .expect("本机没有 POSIX sh（Windows 请从 Git Bash 里跑）");
+        assert!(
+            output.status.success(),
+            "脚本失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        assert_eq!(std::fs::read(dst.join("app.yml")).unwrap(), b"new", "同名文件要覆盖");
+        assert_eq!(
+            std::fs::read(dst.join("logs").join("2026").join("run.log")).unwrap(),
+            b"log",
+            "多级子目录要整棵复制过来"
+        );
+        assert_eq!(std::fs::read(dst.join(".env")).unwrap(), b"env", "隐藏文件不能漏");
+        assert_eq!(
+            std::fs::read(dst.join("stale.txt")).unwrap(),
+            b"stale",
+            "合并时目标原有文件不该被清掉"
+        );
+        assert!(
+            !dst.join("kafka").exists(),
+            "同名目录已存在时不该再套一层 kafka/kafka"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 目标位置还没有同名条目：直接落成目标目录本身，多级子目录整棵带过去。
+    #[test]
+    #[ignore = "需要本机 POSIX sh/cp（Windows 走 Git Bash 的 PATH）"]
+    fn server_copy_script_creates_the_target_folder() {
+        let root = temp_dir("server-copy-new");
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("kafka");
+        let backup = root.join("backup");
+        std::fs::create_dir_all(src.join("logs").join("2026")).unwrap();
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(src.join("logs").join("2026").join("run.log"), b"log").unwrap();
+
+        let posix = |path: &Path| path.to_string_lossy().replace('\\', "/");
+        let target = backup.join("kafka");
+        let script = server_copy_script(&posix(&src), &posix(&target));
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .expect("本机没有 POSIX sh（Windows 请从 Git Bash 里跑）");
+        assert!(
+            output.status.success(),
+            "脚本失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            std::fs::read(target.join("logs").join("2026").join("run.log")).unwrap(),
+            b"log",
+            "目标原不存在时也要把多级目录整棵复制过去"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 目标位置被同名目录挡着、源却是个文件：明确失败，不往目录里再套一层。
+    #[test]
+    #[ignore = "需要本机 POSIX sh/cp（Windows 走 Git Bash 的 PATH）"]
+    fn server_copy_script_refuses_a_folder_blocking_a_file() {
+        let root = temp_dir("server-copy-conflict");
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("thing");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&src, b"file").unwrap();
+        // 目标目录里已经有一个叫 thing 的**目录**。
+        let dst = root.join("backup");
+        std::fs::create_dir_all(dst.join("thing")).unwrap();
+
+        let posix = |path: &Path| path.to_string_lossy().replace('\\', "/");
+        let script = server_copy_script(&posix(&src), &posix(&dst.join("thing")));
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .expect("本机没有 POSIX sh（Windows 请从 Git Bash 里跑）");
+        assert!(!output.status.success(), "同名目录挡着文件时必须失败");
+        assert!(
+            !dst.join("thing").join("thing").exists(),
+            "不能让 cp 在目录里再套一个同名文件"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("thing"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     fn temp_dir(tag: &str) -> PathBuf {
         let raw_name = std::thread::current().name().unwrap_or("t").to_owned();
         let safe_name = raw_name.replace(':', "_");

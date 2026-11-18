@@ -63,6 +63,42 @@
     }
 
     #[test]
+    fn copying_into_the_source_folder_lands_on_the_entry_itself() {
+        // 同会话复制到源目录 = 落点压在源文件自己身上，改名那一步会先删原件。
+        let file = FileEntry {
+            path: SharedString::from("/opt/www/kafka/kafka.yml"),
+            ..entry("kafka.yml")
+        };
+        assert!(copy_lands_on_source(&file, "/opt/www/kafka"));
+        assert!(copy_lands_on_source(&file, "/opt/www/kafka/"));
+        assert!(!copy_lands_on_source(&file, "/opt/www/backup"));
+    }
+
+    #[test]
+    fn copying_a_folder_into_its_own_subtree_is_blocked() {
+        let folder = FileEntry {
+            path: SharedString::from("/opt/www/kafka"),
+            kind: FileKind::Dir,
+            ..entry("kafka")
+        };
+        // 落点 /opt/www/kafka/sub/kafka 在源树里面：边读边写会把源树弄脏。
+        assert!(copy_lands_on_source(&folder, "/opt/www/kafka/sub"));
+        // 前缀相同的兄弟目录不是子树，别误伤。
+        assert!(!copy_lands_on_source(&folder, "/opt/www/kafka-old"));
+        assert!(!copy_lands_on_source(&folder, "/opt/www/backup"));
+    }
+
+    #[test]
+    fn windows_hosts_fall_back_to_relay_instead_of_cp() {
+        // Windows OpenSSH 的登录 shell 是 cmd，没有 /bin/sh 与 cp。
+        assert!(is_windows_platform("Windows OpenSSH"));
+        assert!(is_windows_platform("windows"));
+        assert!(!is_windows_platform("Ubuntu"));
+        assert!(!is_windows_platform("macOS"));
+        assert!(!is_windows_platform(""));
+    }
+
+    #[test]
     fn test_special_local_directories() {
         let list = special_local_directories();
         // 主目录在大多数支持的操作系统环境中都应该存在

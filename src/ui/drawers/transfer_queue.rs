@@ -535,6 +535,12 @@ impl TransferQueueDrawer {
         let total = self.items.len();
         let active = self.active_count();
         let done = total - active;
+        // 服务端复制停不下来，只有它活跃时"暂停全部"不该亮。
+        let pausable = self
+            .items
+            .iter()
+            .filter(|item| item.status.is_active() && item.pausable)
+            .count();
         h_flex()
             .h(QUEUE_HEADER_HEIGHT)
             .flex_shrink_0()
@@ -591,7 +597,7 @@ impl TransferQueueDrawer {
                         true => t!("queue.resume_all_tooltip"),
                         false => t!("queue.pause_all_tooltip"),
                     })
-                    .disabled(active == 0)
+                    .disabled(pausable == 0)
                     .on_click(cx.listener(|_, _, _, cx| {
                         cx.emit(TransferQueueEvent::TogglePauseAll);
                     })),
@@ -749,10 +755,11 @@ impl TransferQueueDrawer {
         let id = item.id;
         let expanded = self.expanded.contains(&id);
         let tone = status_tone(item.status, cx);
-        let pausable = matches!(
-            item.status,
-            TransferStatus::Transferring | TransferStatus::Paused
-        );
+        let pausable = item.pausable
+            && matches!(
+                item.status,
+                TransferStatus::Transferring | TransferStatus::Paused
+            );
         let direction = item.direction;
         let filename = item.filename.clone();
         let progress = item.progress();

@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow};
 use russh::{ChannelMsg, client::Handle};
+use tokio_util::sync::CancellationToken;
 
 use super::client::SshHandler;
 use rust_i18n::t;
@@ -61,7 +62,7 @@ pub async fn exec_script(
     script: &str,
     timeout: Duration,
 ) -> Result<ExecOutput> {
-    match tokio::time::timeout(timeout, run_script(handle, script)).await {
+    match tokio::time::timeout(timeout, run_script(handle, script, None)).await {
         Ok(result) => result,
         Err(_) => Err(anyhow!(
             "{}",
@@ -70,7 +71,36 @@ pub async fn exec_script(
     }
 }
 
-async fn run_script(handle: &Handle<SshHandler>, script: &str) -> Result<ExecOutput> {
+/// 与 [`exec_script`] 相同，但能被 `cancel` 提前打断：取消时关闭通道 ——
+/// 远端命令收到挂断，不会在后台接着跑完。取消本身按错误返回，调用方按自己的
+/// 取消语义处理（传输层会把它落成"已取消"，不是一条给用户看的失败）。
+///
+/// 服务端复制（`cp`）用它：一次大目录的复制可能跑很久，面板关掉或用户点取消
+/// 时得真把远端那条命令停下来。
+pub async fn exec_script_cancellable(
+    handle: &Handle<SshHandler>,
+    script: &str,
+    timeout: Duration,
+    cancel: &CancellationToken,
+) -> Result<ExecOutput> {
+    match tokio::time::timeout(timeout, run_script(handle, script, Some(cancel))).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!(
+            "{}",
+            t!("ssh_exec.timeout", seconds => timeout.as_secs())
+        )),
+    }
+}
+
+async fn run_script(
+    handle: &Handle<SshHandler>,
+    script: &str,
+    cancel: Option<&CancellationToken>,
+) -> Result<ExecOutput> {
+    if cancel.is_some_and(CancellationToken::is_cancelled) {
+        return Err(canceled());
+    }
+
     let mut channel = handle
         .channel_open_session()
         .await
@@ -94,7 +124,31 @@ async fn run_script(handle: &Handle<SshHandler>, script: &str) -> Result<ExecOut
     let mut stderr = Vec::new();
     let mut exit_status = None;
 
-    while let Some(message) = channel.wait().await {
+    loop {
+        let message = match cancel {
+            // `biased`：取消优先于这一轮收到的数据检查，点下取消就能立刻收手。
+            Some(cancel) => {
+                let mut aborted = false;
+                let message = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        aborted = true;
+                        None
+                    }
+                    message = channel.wait() => message,
+                };
+                if aborted {
+                    // 关通道就是挂断远端命令；不关的话它会继续把整个目录写完。
+                    let _ = channel.close().await;
+                    return Err(canceled());
+                }
+                message
+            }
+            None => channel.wait().await,
+        };
+        let Some(message) = message else {
+            break;
+        };
         match message {
             ChannelMsg::Data { data } => append(&mut stdout, &data),
             ChannelMsg::ExtendedData { data, .. } => append(&mut stderr, &data),
@@ -113,6 +167,11 @@ async fn run_script(handle: &Handle<SshHandler>, script: &str) -> Result<ExecOut
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
         exit_status,
     })
+}
+
+/// 取消时返回的错误。文案只是给日志看的，传输层知道这是取消，不会当失败弹。
+fn canceled() -> anyhow::Error {
+    anyhow!("{}", t!("ssh_exec.canceled"))
 }
 
 /// 追加一段输出，到上限就不再收 —— 已经收到的那部分仍然可用。
@@ -344,6 +403,26 @@ pub mod fake {
                 "脚本要交给 /bin/sh，不能让登录 shell 去解释"
             );
             assert_eq!(seen.script(), script, "脚本要一字不差地进 stdin");
+        });
+    }
+
+    /// 取消要真把那次执行收掉，不能等对端开口。服务端复制关面板时走这条路。
+    #[test]
+    fn canceling_stops_the_script_run() {
+        winssh_db::runtime().block_on(async {
+            let (handle, _) = connect("", "", false).await;
+            let cancel = CancellationToken::new();
+            cancel.cancel();
+            let error = exec_script_cancellable(
+                &handle,
+                "sleep 100
+",
+                Duration::from_secs(10),
+                &cancel,
+            )
+            .await
+            .expect_err("取消必须报错");
+            assert_eq!(format!("{error}"), t!("ssh_exec.canceled"));
         });
     }
 

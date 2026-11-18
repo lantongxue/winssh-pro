@@ -14,6 +14,7 @@
             last_speed_at: None,
             speed_window_bytes: 0.0,
             children: Vec::new(),
+            pausable: true,
         }
     }
 
