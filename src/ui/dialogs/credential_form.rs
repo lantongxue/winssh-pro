@@ -619,7 +619,7 @@ impl CredentialFormDialog {
         two_field_row(
             field(
                 t!("credential_form.field_username").into(),
-                Input::new(&self.username).font_family("monospace").w_full(),
+                Input::new(&self.username).font_family(cx.theme().mono_font_family.clone()).w_full(),
                 cx,
             ),
             1.,
@@ -647,7 +647,7 @@ impl CredentialFormDialog {
                     // 尾部那只眼睛来自 `mask_toggle()`：密码默认打码，点一下
                     // 明文看一眼，再点回去。明文只是这一次的显示状态。
                     Input::new(&self.password)
-                        .font_family("monospace")
+                        .font_family(cx.theme().mono_font_family.clone())
                         .content_type(InputContentType::Password)
                         .mask_toggle()
                         .w_full(),
@@ -674,7 +674,7 @@ impl CredentialFormDialog {
                 field(
                     t!("credential_form.field_passphrase").into(),
                     Input::new(&self.passphrase)
-                        .font_family("monospace")
+                        .font_family(cx.theme().mono_font_family.clone())
                         .content_type(InputContentType::Password)
                         .mask_toggle()
                         .w_full(),
@@ -711,7 +711,7 @@ impl CredentialFormDialog {
                     .child(
                         Textarea::new(&self.private_key)
                             .h(KEY_BOX_HEIGHT)
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .text_size(px(11.))
                             .w_full(),
                     ),
@@ -719,7 +719,7 @@ impl CredentialFormDialog {
             .child(field(
                 t!("credential_form.field_public_key").into(),
                 Input::new(&self.public_key)
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .w_full(),
                 cx,
             ))
@@ -730,7 +730,7 @@ impl CredentialFormDialog {
             t!("credential_form.field_token").into(),
             Textarea::new(&self.token)
                 .h(TOKEN_BOX_HEIGHT)
-                .font_family("monospace")
+                .font_family(cx.theme().mono_font_family.clone())
                 .text_size(px(11.))
                 .w_full(),
             cx,
@@ -751,7 +751,7 @@ impl CredentialFormDialog {
             .rounded_full()
             .bg(palette::surface(cx))
             .text_xs()
-            .font_family("monospace")
+            .font_family(cx.theme().mono_font_family.clone())
             .text_color(palette::idle(cx))
             .child(format!("#{tag}"))
             .child(

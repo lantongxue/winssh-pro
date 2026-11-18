@@ -334,7 +334,7 @@ impl Render for KeyGeneratorDialog {
             .pb_1()
             .child(field(
                 t!("key_generator.field_name").into(),
-                Input::new(&self.name).font_family("monospace").w_full(),
+                Input::new(&self.name).font_family(cx.theme().mono_font_family.clone()).w_full(),
                 cx,
             ))
             .child(field(
@@ -348,14 +348,14 @@ impl Render for KeyGeneratorDialog {
                     .gap_3()
                     .child(div().flex_1().min_w_0().child(field(
                         t!("key_generator.field_comment").into(),
-                        Input::new(&self.comment).font_family("monospace").w_full(),
+                        Input::new(&self.comment).font_family(cx.theme().mono_font_family.clone()).w_full(),
                         cx,
                     )))
                     .child(
                         div().flex_1().min_w_0().child(field(
                             t!("key_generator.field_passphrase").into(),
                             Input::new(&self.passphrase)
-                                .font_family("monospace")
+                                .font_family(cx.theme().mono_font_family.clone())
                                 .content_type(InputContentType::Password)
                                 .mask_toggle()
                                 .w_full(),

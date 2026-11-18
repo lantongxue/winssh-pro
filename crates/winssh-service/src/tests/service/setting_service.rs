@@ -73,6 +73,29 @@
         });
     }
 
+    /// 界面字体走的是又一行、又一份缓存 —— 与终端字体互不相干，
+    /// 读写与出厂档都要各自成立。
+    #[test]
+    fn the_ui_font_round_trips_into_its_own_row() {
+        let _guard = ui_font::exclusive_for_test();
+        db::runtime().block_on(async {
+            let service = SettingService::in_memory().await.unwrap();
+            assert_eq!(
+                service.load_ui_font().await.unwrap(),
+                UiFont::default(),
+                "没写过就是跟随平台默认"
+            );
+
+            let picked = UiFont {
+                family: "Microsoft YaHei".into(),
+                size: 18.,
+            };
+            service.save_ui_font(picked.clone()).await.unwrap();
+            assert_eq!(service.load_ui_font().await.unwrap(), picked);
+            assert_eq!(ui_font::global(), picked, "缓存也一起换了");
+        });
+    }
+
     /// 配色存的是 id 那一个词。认不出来的存进去也要规范化成空串，
     /// 不然下次启动还要再认一次、再记一行日志。
     #[test]

@@ -820,7 +820,7 @@ impl Render for ClashFormDialog {
                     Input::new(&self.source_url)
                         .w_full()
                         .cleanable(true)
-                        .font_family("monospace"),
+                        .font_family(cx.theme().mono_font_family.clone()),
                     cx,
                 ))
             })
@@ -849,7 +849,7 @@ impl Render for ClashFormDialog {
                         Input::new(&self.user_agent)
                             .w_full()
                             .cleanable(true)
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .into_any_element(),
                         cx,
                     )

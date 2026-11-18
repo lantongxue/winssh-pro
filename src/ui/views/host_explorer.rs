@@ -269,12 +269,13 @@ impl Render for HostDragPreview {
                     .border_color(palette::blue())
                     .shadow_md()
                     .text_sm()
-                    .font_semibold()
+                    // 跟卡片里的名字同一档字重（见 HostCard::render_body）。
+                    .font_medium()
                     .text_color(cx.theme().sidebar_foreground)
                     .child(self.host.name.clone())
                     .child(
                         div()
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .text_xs()
                             .font_normal()
                             .text_color(palette::idle(cx))

@@ -219,7 +219,7 @@ impl PasswordGeneratorDialog {
                     .min_w_0()
                     // 长密码要折行看全，不能截断 —— 这一格的全部意义就是
                     // 把它完整地摆出来。
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .text_sm()
                     .font_semibold()
                     .text_color(palette::teal())

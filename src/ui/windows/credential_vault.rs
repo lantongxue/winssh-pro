@@ -258,7 +258,7 @@ impl CredentialVaultWindow {
                                     .font_semibold()
                                     .child(SharedString::from(t!("vault_window.title"))),
                             )
-                            .child(self.render_storage_badge()),
+                            .child(self.render_storage_badge(cx)),
                     )
                     .child(
                         div()
@@ -277,7 +277,7 @@ impl CredentialVaultWindow {
     /// 原型上印的是"AES-256 加密保护"，这里印的是实话：库文件里存的是明文
     /// （见 `vault.storage_note`）。一颗说谎的安全徽章比没有徽章坏得多 ——
     /// 用户会照着它决定要不要把生产 root 密码放进来。
-    fn render_storage_badge(&self) -> impl IntoElement {
+    fn render_storage_badge(&self, cx: &App) -> impl IntoElement {
         let tone = palette::amber();
         div()
             .flex_shrink_0()
@@ -286,7 +286,7 @@ impl CredentialVaultWindow {
             .bg(tone.opacity(0.12))
             .border_1()
             .border_color(tone.opacity(0.35))
-            .font_family("monospace")
+            .font_family(cx.theme().mono_font_family.clone())
             .text_xs()
             .text_color(tone)
             .child(SharedString::from(t!("vault_window.badge")))
@@ -810,7 +810,7 @@ fn count_badge(count: usize, cx: &App) -> impl IntoElement {
         .px_1()
         .rounded_sm()
         .bg(palette::surface_strong(cx))
-        .font_family("monospace")
+        .font_family(cx.theme().mono_font_family.clone())
         .text_xs()
         .text_color(palette::idle(cx))
         .child(SharedString::from(count.to_string()))

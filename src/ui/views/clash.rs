@@ -587,7 +587,7 @@ impl ClashView {
                     .bg(palette::surface_strong(cx))
                     .text_xs()
                     .text_color(palette::idle(cx))
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .child(SharedString::from(self.subscriptions.len().to_string())),
             )
             .child(
@@ -1141,7 +1141,7 @@ impl ClashView {
                                             .py_0p5()
                                             .rounded(px(4.))
                                             .bg(palette::surface_strong(cx))
-                                            .font_family("monospace")
+                                            .font_family(cx.theme().mono_font_family.clone())
                                             .text_xs()
                                             .text_color(palette::sky())
                                             .child(SharedString::from(version)),

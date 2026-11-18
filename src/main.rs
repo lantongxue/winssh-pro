@@ -147,6 +147,9 @@ fn main() {
         // 全局代理要在第一条会话建起来之前就位：开窗之后主机面板上点一下就
         // 可能开始拨号，那时候再去读库已经晚了（见 `SettingService::prime`）。
         service::SettingService::open().prime();
+        // 界面字体的用户偏好这会儿才灌进缓存：赶在第一扇窗之前经主题写下去，
+        // 没挑过就留着 ui::init 挑的平台默认（见 ui::theme::font）。
+        ui::apply_font_preference(cx);
         service::BackupService::start_scheduler();
         // Clash 那一档动的是**用户的机器**（系统代理是整台机器一份的设置），
         // 所以上一次要是没来得及收，得在开窗之前先收拾掉：上一次改的那份还

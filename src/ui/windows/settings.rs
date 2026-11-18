@@ -45,7 +45,11 @@ use crate::assistant::{
 use crate::backup::{self, BackupConfig, BackupProtocol, S3Config, S3Preset, WebdavConfig};
 use crate::i18n;
 use crate::proxy::{self, GlobalProxy, ProxyConfig};
-use crate::service::{BackupService, SettingService, UpdateService, update as update_prefs};
+use crate::service::{
+    BackupService, SettingService, UpdateService,
+    ui_font::{self, UiFont},
+    update as update_prefs,
+};
 use crate::terminal::cursor;
 use crate::terminal::font::{self, TerminalFont};
 use crate::terminal::right_click::{self, RightClickMode};
@@ -54,7 +58,7 @@ use crate::ui::cards::ProviderCard;
 use crate::ui::dialogs::{BackupRestoreDialog, UpdateDialog};
 use crate::ui::forms::{ModelCancelHandler, ModelForm, ModelSavedHandler};
 use crate::ui::pickers::scheme_picker::{SchemePicker, SchemePickerOptions, scheme_trigger};
-use crate::ui::theme::{AppIcon, appearance, palette};
+use crate::ui::theme::{AppIcon, appearance, font as theme_font, palette};
 use crate::zmodem::config as zmodem_config;
 use rust_i18n::t;
 
@@ -119,6 +123,23 @@ fn persist_terminal_font(value: TerminalFont, cx: &mut App) {
     cx.background_spawn(async move {
         if let Err(error) = SettingService::open().save_terminal_font(value).await {
             log::error!("终端字体存不下去：{error:#}");
+        }
+    })
+    .detach();
+}
+
+/// 换掉全局界面字体／字号：进程里那份缓存立刻生效，经主题写进整棵界面树，
+/// 落库派到后台。
+///
+/// 不用手动重画窗口 —— [`theme_font::apply_saved`] 走的 `Theme::update`
+/// 自己把主题同步进底层 token 并刷新所有窗口。落库与失败处理同
+/// [`persist_proxy`]。
+fn persist_ui_font(value: UiFont, cx: &mut App) {
+    ui_font::set_global(value.clone());
+    theme_font::apply_saved(cx);
+    cx.background_spawn(async move {
+        if let Err(error) = SettingService::open().save_ui_font(value).await {
+            log::error!("界面字体存不下去：{error:#}");
         }
     })
     .detach();
@@ -997,6 +1018,36 @@ impl SettingsWindow {
     }
 
     fn general_page(&self, cx: &App) -> SettingPage {
+        // 字体下拉的第一档是"跟随平台默认"（空串），其余是本机装着的族名。
+        // 挑过的那个如今没装了也要补进去 —— 不然按钮上写着它，展开却没
+        // 这一项、一个勾都不打（同终端页那一条的理由）。
+        let picked = ui_font::global().family;
+        let installed = theme_font::families(cx);
+        let mut font_options = vec![(
+            SharedString::default(),
+            t!("settings.ui_font_default").to_string().into(),
+        )];
+        font_options.extend(installed.iter().map(|family| (family.clone(), family.clone())));
+        if !picked.is_empty() && !installed.contains(&picked) {
+            font_options.push((picked.clone(), picked));
+        }
+
+        // 字号同理：库里那个数不一定正好落在选单的档位上（手改过、或者是
+        // 早先版本存下来的），补进去那一列里才有它、才打得上勾。
+        let picked_size = ui_font::global().size;
+        let mut steps = ui_font::SIZES.to_vec();
+        if !steps.contains(&picked_size) {
+            steps.push(picked_size);
+            steps.sort_by(f32::total_cmp);
+        }
+        let size_options: Vec<(SharedString, SharedString)> = steps
+            .into_iter()
+            .map(|size| {
+                let label = ui_font::size_label(size);
+                (label.clone(), label)
+            })
+            .collect();
+
         SettingPage::new(t!("settings.tab_general"))
             .icon(IconName::Settings)
             .default_open(true)
@@ -1038,6 +1089,40 @@ impl SettingsWindow {
                                         _ = handle.update(cx, |_, window, _| window.refresh());
                                     }
                                 }
+                            },
+                        ),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.ui_font"),
+                        // 可滚动的那一档：装了几百个字体族的机器不少，
+                        // 不滚的话后面那些会被顶到屏幕外面去。
+                        SettingField::scrollable_dropdown(
+                            font_options,
+                            |_cx: &App| ui_font::global().family,
+                            |family: SharedString, cx: &mut App| {
+                                persist_ui_font(
+                                    UiFont {
+                                        family,
+                                        ..ui_font::global()
+                                    },
+                                    cx,
+                                );
+                            },
+                        ),
+                    ))
+                    .item(SettingItem::new(
+                        t!("settings.ui_font_size"),
+                        SettingField::dropdown(
+                            size_options,
+                            |_cx: &App| ui_font::size_label(ui_font::global().size),
+                            |label: SharedString, cx: &mut App| {
+                                persist_ui_font(
+                                    UiFont {
+                                        size: ui_font::parse_size(&label),
+                                        ..ui_font::global()
+                                    },
+                                    cx,
+                                );
                             },
                         ),
                     )),
@@ -1392,9 +1477,9 @@ impl SettingsWindow {
     /// [`AssistantInputs`]），写回走那几条输入订阅。
     fn text_input(&self, input: &Entity<InputState>, masked: bool) -> SettingField<SharedString> {
         let input = input.clone();
-        SettingField::render(move |_options: &RenderOptions, _window, _cx| {
+        SettingField::render(move |_options: &RenderOptions, _window, cx| {
             Input::new(&input)
-                .font_family("monospace")
+                .font_family(cx.theme().mono_font_family.clone())
                 .when(masked, |this| {
                     this.content_type(InputContentType::Password).mask_toggle()
                 })

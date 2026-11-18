@@ -583,7 +583,7 @@ impl RenderOnce for ClashNodeCard {
                             .border_color(border_color)
                             .bg(bg_color)
                             .text_color(fg_color)
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .text_xs()
                             .font_semibold()
                             .child(self.kind.to_uppercase()),
@@ -594,7 +594,7 @@ impl RenderOnce for ClashNodeCard {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .font_family("monospace")
+                                .font_family(cx.theme().mono_font_family.clone())
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(server_display),
@@ -609,7 +609,7 @@ impl RenderOnce for ClashNodeCard {
                         this.child(
                             div()
                                 .flex_shrink_0()
-                                .font_family("monospace")
+                                .font_family(cx.theme().mono_font_family.clone())
                                 .text_xs()
                                 .text_color(transport_color)
                                 .child(transport),
@@ -637,7 +637,7 @@ impl RenderOnce for ClashNodeCard {
                                 .bg(udp_bg)
                                 .border_1()
                                 .border_color(udp_border)
-                                .font_family("monospace")
+                                .font_family(cx.theme().mono_font_family.clone())
                                 .text_xs()
                                 .font_semibold()
                                 .text_color(udp_fg)
@@ -667,7 +667,7 @@ impl RenderOnce for ClashNodeCard {
                             .child(div().size(px(6.)).rounded_full().bg(dot_color))
                             .child(
                                 div()
-                                    .font_family("monospace")
+                                    .font_family(cx.theme().mono_font_family.clone())
                                     .text_xs()
                                     .font_medium()
                                     .text_color(text_color)

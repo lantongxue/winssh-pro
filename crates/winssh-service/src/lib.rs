@@ -9,7 +9,8 @@
 // 等旧路径无需逐文件改写就能解析到新的 crate。（用 `pub use`：既作 crate 内路径
 // 别名，又不触发 unused_imports。）
 pub use winssh_domain::{
-    command_history, credential, forward, host, session, snippet, tray, trusted_host, update,
+    command_history, credential, forward, host, session, snippet, tray, trusted_host, ui_font,
+    update,
 };
 // `crate::vnc` / `crate::rdp` 在服务层只用作连接设置的编解码（都在领域的 settings 里）。
 pub use winssh_domain::settings::{rdp, vnc};

@@ -221,7 +221,7 @@ impl Render for ModelForm {
                 v_flex()
                     .gap_1()
                     .child(field_label(t!("model_form.name").into(), cx))
-                    .child(Input::new(&self.name).font_family("monospace").w_full())
+                    .child(Input::new(&self.name).font_family(cx.theme().mono_font_family.clone()).w_full())
                     .child(
                         div()
                             .text_xs()
@@ -327,7 +327,7 @@ impl ModelForm {
                     .child(
                         div()
                             .flex_1()
-                            .child(Input::new(&self.max_tokens).font_family("monospace")),
+                            .child(Input::new(&self.max_tokens).font_family(cx.theme().mono_font_family.clone())),
                     )
                     .children(MAX_TOKENS_PRESETS.map(|(label, value)| {
                         Button::new(SharedString::from(format!("model-form-max-tokens-{label}")))

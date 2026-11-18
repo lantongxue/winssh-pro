@@ -379,6 +379,15 @@ settings.dark_theme:
 settings.language:
   en: Language
   zh-CN: 界面语言
+settings.ui_font:
+  en: UI font
+  zh-CN: 界面字体
+settings.ui_font_default:
+  en: Default (follow platform)
+  zh-CN: 默认（跟随平台）
+settings.ui_font_size:
+  en: UI font size
+  zh-CN: 界面字号
 settings.performance:
   en: Performance
   zh-CN: 性能

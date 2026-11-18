@@ -283,7 +283,7 @@ fn host_commands(groups: &[HostGroup]) -> Vec<PaletteCommand> {
                                 .child(
                                     div()
                                         .flex_shrink_0()
-                                        .font_family("monospace")
+                                        .font_family(cx.theme().mono_font_family.clone())
                                         .text_xs()
                                         .text_color(palette::idle(cx))
                                         .child(row_address.clone()),

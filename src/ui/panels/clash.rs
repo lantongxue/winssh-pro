@@ -1079,7 +1079,7 @@ impl ClashPanel {
                                     )
                                     .child(
                                         div()
-                                            .font_family("monospace")
+                                            .font_family(cx.theme().mono_font_family.clone())
                                             .text_xs()
                                             .text_color(if sys_proxy_active {
                                                 if is_dark {
@@ -1189,7 +1189,7 @@ impl ClashPanel {
                                     )
                                     .child(
                                         div()
-                                            .font_family("monospace")
+                                            .font_family(cx.theme().mono_font_family.clone())
                                             .text_xs()
                                             .text_color(if tun_active {
                                                 if is_dark {
@@ -1262,7 +1262,7 @@ impl ClashPanel {
                                         h_flex()
                                             .gap_1p5()
                                             .items_center()
-                                            .font_family("monospace")
+                                            .font_family(cx.theme().mono_font_family.clone())
                                             .text_xs()
                                             .child(
                                                 h_flex()
@@ -1344,7 +1344,7 @@ impl ClashPanel {
                                         h_flex()
                                             .gap_1p5()
                                             .items_center()
-                                            .font_family("monospace")
+                                            .font_family(cx.theme().mono_font_family.clone())
                                             .text_xs()
                                             .child(
                                                 h_flex()
@@ -1597,7 +1597,7 @@ impl ClashPanel {
                                         .px_1p5()
                                         .py_0p5()
                                         .rounded_full()
-                                        .font_family("monospace")
+                                        .font_family(cx.theme().mono_font_family.clone())
                                         .text_xs()
                                         .when(is_active, |badge| {
                                             if is_dark {
@@ -1641,7 +1641,7 @@ impl ClashPanel {
                     .gap_2()
                     .items_center()
                     .text_xs()
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .text_color(if is_dark {
                         palette::idle(cx)
                     } else {
@@ -1709,7 +1709,7 @@ impl ClashPanel {
             .iter()
             .map(|line| {
                 div()
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .text_xs()
                     .text_color(palette::idle(cx))
                     .child(line.clone())
@@ -1753,7 +1753,7 @@ impl ClashPanel {
                                     .py_0p5()
                                     .rounded(px(4.))
                                     .bg(palette::surface(cx))
-                                    .font_family("monospace")
+                                    .font_family(cx.theme().mono_font_family.clone())
                                     .text_xs()
                                     .text_color(palette::green())
                                     .child(SharedString::from(
@@ -1949,7 +1949,7 @@ impl ClashPanel {
                 div()
                     .w(px(120.))
                     .text_right()
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .text_xs()
                     .text_color(if is_dark {
                         palette::green()
@@ -2564,7 +2564,7 @@ impl ClashPanel {
                             } else {
                                 rgb(0xf1f5f9).into()
                             })
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .text_xs()
                             .text_color(if is_selected {
                                 active_chip_color
@@ -3198,7 +3198,7 @@ impl ClashPanel {
                         Input::new(&self.test_domain)
                             .small()
                             .cleanable(true)
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .flex_1(),
                     )
                     .child(
@@ -3248,12 +3248,12 @@ impl ClashPanel {
                                         .child(
                                             div()
                                                 .font_semibold()
-                                                .font_family("monospace")
+                                                .font_family(cx.theme().mono_font_family.clone())
                                                 .child(rule.kind.clone()),
                                         )
                                         .child(
                                             div()
-                                                .font_family("monospace")
+                                                .font_family(cx.theme().mono_font_family.clone())
                                                 .text_color(palette::teal())
                                                 .child(if rule.payload.is_empty() {
                                                     SharedString::from("MATCH (全量匹配)")
@@ -3307,7 +3307,7 @@ impl ClashPanel {
                             .child(
                                 div()
                                     .font_semibold()
-                                    .font_family("monospace")
+                                    .font_family(cx.theme().mono_font_family.clone())
                                     .child(format!("{} 条", self.rules().map_or(0, |r| r.len()))),
                             ),
                     ),
@@ -3359,7 +3359,7 @@ impl ClashPanel {
             div()
                 .min_w_0()
                 .truncate()
-                .font_family("monospace")
+                .font_family(cx.theme().mono_font_family.clone())
                 .text_xs()
                 .text_color(palette::idle(cx))
                 .child(rule.payload.clone())
@@ -3377,7 +3377,7 @@ impl ClashPanel {
                         cell(RULE_INDEX_WIDTH).child(
                             div()
                                 .w_full()
-                                .font_family("monospace")
+                                .font_family(cx.theme().mono_font_family.clone())
                                 .text_xs()
                                 .text_color(palette::idle(cx))
                                 .child(format!("{}", ix + 1)),
@@ -3390,7 +3390,7 @@ impl ClashPanel {
                                 .bg(cx.theme().secondary.opacity(0.6))
                                 .border_1()
                                 .border_color(cx.theme().border.opacity(0.4))
-                                .font_family("monospace")
+                                .font_family(cx.theme().mono_font_family.clone())
                                 .text_xs()
                                 .font_semibold()
                                 .child(rule.kind.clone()),

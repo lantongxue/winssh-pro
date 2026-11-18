@@ -555,7 +555,7 @@ impl SnippetFormDialog {
             .rounded_full()
             .bg(palette::surface(cx))
             .text_xs()
-            .font_family("monospace")
+            .font_family(cx.theme().mono_font_family.clone())
             .text_color(palette::idle(cx))
             .child(format!("#{tag}"))
             .child(
@@ -613,7 +613,7 @@ impl SnippetFormDialog {
                     .child(field_label(t!("snippet_form.field_command").into(), cx))
                     .child(
                         div()
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .text_xs()
                             .text_color(palette::idle(cx))
                             .child(SharedString::from(t!("snippet_form.command_hint"))),
@@ -622,7 +622,7 @@ impl SnippetFormDialog {
             .child(
                 Textarea::new(&self.command)
                     .h(COMMAND_BOX_HEIGHT)
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .text_size(px(11.))
                     .w_full(),
             )
@@ -642,7 +642,7 @@ impl SnippetFormDialog {
                         div()
                             .flex_shrink_0()
                             .min_w(px(96.))
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .text_xs()
                             .text_color(palette::teal())
                             .child(SharedString::from(format!("{{{{{name}}}}}"))),
@@ -651,7 +651,7 @@ impl SnippetFormDialog {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(Input::new(input).small().font_family("monospace").w_full()),
+                            .child(Input::new(input).small().font_family(cx.theme().mono_font_family.clone()).w_full()),
                     )
                     .into_any_element()
             })

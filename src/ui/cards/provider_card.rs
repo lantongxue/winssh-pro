@@ -135,7 +135,7 @@ impl RenderOnce for ProviderCard {
                 div()
                     .w_full()
                     .truncate()
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .text_xs()
                     .text_color(palette::idle(cx))
                     .child(SharedString::from(self.provider.base_url.clone())),

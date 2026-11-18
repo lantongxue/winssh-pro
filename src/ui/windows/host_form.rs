@@ -1944,7 +1944,7 @@ impl HostForm {
             HostKind::Serial => {
                 return field(
                     t!("host_form.field_serial_device").into(),
-                    Input::new(&self.hostname).font_family("monospace").w_full(),
+                    Input::new(&self.hostname).font_family(cx.theme().mono_font_family.clone()).w_full(),
                     cx,
                 )
                 .into_any_element();
@@ -1953,7 +1953,7 @@ impl HostForm {
             HostKind::EasyTier => {
                 return field(
                     t!("host_form.field_easytier_network").into(),
-                    Input::new(&self.hostname).font_family("monospace").w_full(),
+                    Input::new(&self.hostname).font_family(cx.theme().mono_font_family.clone()).w_full(),
                     cx,
                 )
                 .into_any_element();
@@ -1963,7 +1963,7 @@ impl HostForm {
             HostKind::S3 => {
                 return field(
                     t!("host_form.field_s3_endpoint").into(),
-                    Input::new(&self.hostname).font_family("monospace").w_full(),
+                    Input::new(&self.hostname).font_family(cx.theme().mono_font_family.clone()).w_full(),
                     cx,
                 )
                 .into_any_element();
@@ -1973,7 +1973,7 @@ impl HostForm {
             HostKind::Webdav => {
                 return field(
                     t!("host_form.field_webdav_url").into(),
-                    Input::new(&self.hostname).font_family("monospace").w_full(),
+                    Input::new(&self.hostname).font_family(cx.theme().mono_font_family.clone()).w_full(),
                     cx,
                 )
                 .into_any_element();
@@ -1983,13 +1983,13 @@ impl HostForm {
         two_field_row(
             field(
                 t!("host_form.field_hostname").into(),
-                Input::new(&self.hostname).font_family("monospace").w_full(),
+                Input::new(&self.hostname).font_family(cx.theme().mono_font_family.clone()).w_full(),
                 cx,
             ),
             2.,
             field(
                 t!("host_form.field_port").into(),
-                Input::new(&self.port).font_family("monospace").w_full(),
+                Input::new(&self.port).font_family(cx.theme().mono_font_family.clone()).w_full(),
                 cx,
             ),
             1.,
@@ -2036,7 +2036,7 @@ impl HostForm {
         if kind == HostKind::S3 {
             return field(
                 t!("host_form.field_s3_access_key").into(),
-                Input::new(&self.username).font_family("monospace").w_full(),
+                Input::new(&self.username).font_family(cx.theme().mono_font_family.clone()).w_full(),
                 cx,
             )
             .into_any_element();
@@ -2049,7 +2049,7 @@ impl HostForm {
         {
             return field(
                 t!("host_form.field_username").into(),
-                Input::new(&self.username).font_family("monospace").w_full(),
+                Input::new(&self.username).font_family(cx.theme().mono_font_family.clone()).w_full(),
                 cx,
             )
             .into_any_element();
@@ -2058,7 +2058,7 @@ impl HostForm {
         two_field_row(
             field(
                 t!("host_form.field_username").into(),
-                Input::new(&self.username).font_family("monospace").w_full(),
+                Input::new(&self.username).font_family(cx.theme().mono_font_family.clone()).w_full(),
                 cx,
             ),
             1.,
@@ -2099,7 +2099,7 @@ impl HostForm {
                     .child(field(
                         t!("host_form.field_rdp_domain").into(),
                         Input::new(&self.rdp_domain)
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .w_full(),
                         cx,
                     ))
@@ -2141,7 +2141,7 @@ impl HostForm {
                 // 尾部那只眼睛来自 `mask_toggle()`：密码默认是打码的
                 // （`InputState::masked(true)`），点一下明文看一眼，再点回去。
                 Input::new(&self.password)
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .content_type(InputContentType::Password)
                     .mask_toggle()
                     .w_full(),
@@ -2215,7 +2215,7 @@ impl HostForm {
                     .child(
                         Textarea::new(&self.key_content)
                             .h(px(120.))
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .text_size(px(11.))
                             .w_full(),
                     ),
@@ -2227,7 +2227,7 @@ impl HostForm {
                     .child(field(
                         t!("host_form.field_key_passphrase").into(),
                         Input::new(&self.key_passphrase)
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .content_type(InputContentType::Password)
                             .mask_toggle()
                             .w_full(),
@@ -2346,7 +2346,7 @@ impl HostForm {
                     field(
                         t!("host_form.proxy_host").into(),
                         Input::new(&self.proxy_host)
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .w_full(),
                         cx,
                     ),
@@ -2354,7 +2354,7 @@ impl HostForm {
                     field(
                         t!("host_form.proxy_port").into(),
                         Input::new(&self.proxy_port)
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .w_full(),
                         cx,
                     ),
@@ -2364,7 +2364,7 @@ impl HostForm {
                     field(
                         t!("host_form.proxy_username").into(),
                         Input::new(&self.proxy_username)
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .w_full(),
                         cx,
                     ),
@@ -2372,7 +2372,7 @@ impl HostForm {
                     field(
                         t!("host_form.proxy_password").into(),
                         Input::new(&self.proxy_password)
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .content_type(InputContentType::Password)
                             .mask_toggle()
                             .w_full(),
@@ -2488,7 +2488,7 @@ impl HostForm {
                 this.child(field(
                     t!("host_form.field_sftp_run_as").into(),
                     Input::new(&self.sftp_run_as)
-                        .font_family("monospace")
+                        .font_family(cx.theme().mono_font_family.clone())
                         .w_full(),
                     cx,
                 ))
@@ -2497,7 +2497,7 @@ impl HostForm {
                 this.child(field(
                     t!("host_form.field_sftp_command").into(),
                     Input::new(&self.sftp_command)
-                        .font_family("monospace")
+                        .font_family(cx.theme().mono_font_family.clone())
                         .w_full(),
                     cx,
                 ))
@@ -2531,13 +2531,13 @@ impl HostForm {
             .child(two_field_row(
                 field(
                     t!("host_form.field_s3_bucket").into(),
-                    Input::new(&self.s3_bucket).font_family("monospace").w_full(),
+                    Input::new(&self.s3_bucket).font_family(cx.theme().mono_font_family.clone()).w_full(),
                     cx,
                 ),
                 1.,
                 field(
                     t!("host_form.field_s3_region").into(),
-                    Input::new(&self.s3_region).font_family("monospace").w_full(),
+                    Input::new(&self.s3_region).font_family(cx.theme().mono_font_family.clone()).w_full(),
                     cx,
                 ),
                 1.,
@@ -2569,7 +2569,7 @@ impl HostForm {
                 field(
                     t!("host_form.field_webdav_root").into(),
                     Input::new(&self.webdav_root)
-                        .font_family("monospace")
+                        .font_family(cx.theme().mono_font_family.clone())
                         .w_full(),
                     cx,
                 ),
@@ -2780,7 +2780,7 @@ impl HostForm {
             .child(field(
                 t!("host_form.field_easytier_secret").into(),
                 Input::new(&self.password)
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .content_type(InputContentType::Password)
                     .mask_toggle()
                     .w_full(),
@@ -2803,7 +2803,7 @@ impl HostForm {
             .child(
                 Textarea::new(&self.easytier_peers)
                     .h(px(96.))
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .text_size(px(11.))
                     .w_full(),
             )
@@ -2826,7 +2826,7 @@ impl HostForm {
                 field(
                     t!("host_form.field_easytier_ipv4").into(),
                     Input::new(&self.easytier_ipv4)
-                        .font_family("monospace")
+                        .font_family(cx.theme().mono_font_family.clone())
                         .w_full(),
                     cx,
                 ),
@@ -2849,7 +2849,7 @@ impl HostForm {
                     EasyTierAccess::Socks5 => field(
                         t!("host_form.field_easytier_socks5_port").into(),
                         Input::new(&self.easytier_socks5_port)
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .w_full(),
                         cx,
                     )
@@ -2869,7 +2869,7 @@ impl HostForm {
                     true => field(
                         t!("host_form.field_easytier_listen_port").into(),
                         Input::new(&self.easytier_listen_port)
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .w_full(),
                         cx,
                     )
@@ -2910,7 +2910,7 @@ impl HostForm {
             .child(
                 Textarea::new(&self.easytier_proxy_networks)
                     .h(px(72.))
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .text_size(px(11.))
                     .w_full(),
             )
@@ -2965,7 +2965,7 @@ impl HostForm {
             .rounded_full()
             .bg(palette::surface(cx))
             .text_xs()
-            .font_family("monospace")
+            .font_family(cx.theme().mono_font_family.clone())
             .text_color(palette::idle(cx))
             .child(format!("#{tag}"))
             .child(

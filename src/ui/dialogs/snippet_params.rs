@@ -216,12 +216,12 @@ impl Render for SnippetParamsDialog {
                     .gap_1()
                     .child(
                         div()
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .text_xs()
                             .text_color(palette::teal())
                             .child(SharedString::from(format!("{{{{{name}}}}}"))),
                     )
-                    .child(Input::new(input).font_family("monospace").w_full())
+                    .child(Input::new(input).font_family(cx.theme().mono_font_family.clone()).w_full())
                     .into_any_element()
             })
             .collect();
@@ -245,7 +245,7 @@ impl Render for SnippetParamsDialog {
                         .bg(palette::recessed(cx))
                         .border_1()
                         .border_color(cx.theme().border)
-                        .font_family("monospace")
+                        .font_family(cx.theme().mono_font_family.clone())
                         .text_xs()
                         .text_color(cx.theme().foreground)
                         .child(SharedString::from(self.command(cx))),

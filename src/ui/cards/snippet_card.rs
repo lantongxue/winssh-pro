@@ -152,7 +152,7 @@ impl SnippetCard {
             .border_1()
             .border_color(cx.theme().sidebar_border)
             .truncate()
-            .font_family("monospace")
+            .font_family(cx.theme().mono_font_family.clone())
             .text_xs()
             .text_color(palette::teal())
             .child(self.snippet.preview())
@@ -175,7 +175,7 @@ impl SnippetCard {
             .map(|tag| {
                 div()
                     .flex_shrink_0()
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .text_xs()
                     .text_color(palette::idle(cx))
                     .child(SharedString::from(format!("#{tag}")))

@@ -32,6 +32,7 @@ use crate::{
         right_click::{self, RightClickMode},
         scheme,
     },
+    ui_font::{self, UiFont},
     zmodem::config as zmodem_config,
 };
 
@@ -39,6 +40,9 @@ use crate::{
 const GLOBAL_PROXY_KEY: &str = "proxy.global";
 /// 终端字体在 `settings` 表里的键。
 const TERMINAL_FONT_KEY: &str = "terminal.font";
+/// 全局界面字体在 `settings` 表里的键。存的是一份 JSON
+/// （[`crate::ui_font::UiFont`]）。
+const UI_FONT_KEY: &str = "ui.font";
 /// 终端配色方案在 `settings` 表里的键。存的是方案 id 那一个词。
 const TERMINAL_SCHEME_KEY: &str = "terminal.scheme";
 /// 智能助手供应商配置在 `settings` 表里的键。存的是一份 JSON。
@@ -109,6 +113,7 @@ impl SettingService {
                 this.load_close_to_tray().await,
                 this.load_update_preferences().await,
                 this.load_terminal_right_click().await,
+                this.load_ui_font().await,
             )
         });
         match loaded.0 {
@@ -154,6 +159,10 @@ impl SettingService {
         match loaded.10 {
             Ok(mode) => right_click::set_global(mode),
             Err(error) => log::warn!("终端右键行为读不出来，这次运行按右键菜单处理：{error:#}"),
+        }
+        match loaded.11 {
+            Ok(picked) => ui_font::set_global(picked),
+            Err(error) => log::warn!("界面字体读不出来，这次运行按平台默认处理：{error:#}"),
         }
     }
 
@@ -205,6 +214,33 @@ impl SettingService {
         db::run(async move {
             this.repo
                 .set(&this.db, TERMINAL_FONT_KEY, &encoded)
+                .await
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    /// 库里那份全局界面字体。没写过就是出厂档（跟随平台默认字体、16px）。
+    pub async fn load_ui_font(&self) -> Result<UiFont> {
+        let this = self.clone();
+        db::run(async move {
+            let raw = this.repo.get(&this.db, UI_FONT_KEY).await?;
+            Ok(ui_font::decode(&raw.unwrap_or_default()))
+        })
+        .await
+    }
+
+    /// 写回全局界面字体，并同时换掉进程里那份缓存。
+    ///
+    /// 缓存先换，理由和 [`Self::save_global_proxy`] 一样。真正把它写进主题
+    /// 的是根包（`ui::theme::font::apply_saved`）—— 服务层不认识界面类型。
+    pub async fn save_ui_font(&self, value: UiFont) -> Result<()> {
+        ui_font::set_global(value.clone());
+        let this = self.clone();
+        let encoded = ui_font::encode(&value);
+        db::run(async move {
+            this.repo
+                .set(&this.db, UI_FONT_KEY, &encoded)
                 .await
                 .map_err(Into::into)
         })

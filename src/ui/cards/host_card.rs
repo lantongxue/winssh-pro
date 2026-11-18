@@ -187,7 +187,7 @@ impl HostCard {
             .flex()
             .items_center()
             .justify_center()
-            .font_family("monospace")
+            .font_family(cx.theme().mono_font_family.clone())
             .text_size(TILE_TEXT)
             .font_bold()
             .text_color(palette::idle(cx))
@@ -220,7 +220,10 @@ impl HostCard {
                             .min_w_0()
                             .truncate()
                             .text_sm()
-                            .font_semibold()
+                            // medium 而不是 semibold：雅黑只有 400/700 两档，
+                            // 600 会被取成 700，名字比分组头还重，一列扫下来
+                            // 不协调。名字靠字号与全色和地址拉开，不靠加粗。
+                            .font_medium()
                             .text_color(cx.theme().sidebar_foreground)
                             .child(self.host.name.clone()),
                     ),
@@ -231,7 +234,7 @@ impl HostCard {
                 // 不再和系统、协议、标签挤在一起。
                 div()
                     .truncate()
-                    .font_family("monospace")
+                    .font_family(cx.theme().mono_font_family.clone())
                     .text_xs()
                     .text_color(palette::idle(cx))
                     .child(SharedString::from(self.host.address())),
@@ -293,7 +296,7 @@ impl HostCard {
                         .child(
                             div()
                                 .flex_shrink_0()
-                                .font_family("monospace")
+                                .font_family(cx.theme().mono_font_family.clone())
                                 .text_xs()
                                 .text_color(palette::idle(cx).opacity(0.7))
                                 .child(platform),
