@@ -286,11 +286,11 @@ impl HostCard {
                             Icon::new(OsIcon::from_platform(&self.host.platform))
                                 .with_size(PLATFORM_ICON)
                                 .flex_shrink_0()
-                                // 光学对齐：字形的视觉中心（cap-height 的中点）
-                                // 比行盒中心偏上，居中的商标会显得比字低一截。
-                                // 2x 截图上量得约 1.5px，用 margin 把商标垫上去；
-                                // 换字体后若再偏，按同样的办法量一次补一次。
-                                .mb(px(3.))
+                                // 不垫偏移，和右边延迟点一样交给 items_center。
+                                // 早前名字用的 "monospace" 是假族名，回退到比例
+                                // 字体后字形偏上，才手补了 3px 垫高；现在名字
+                                // 走主题等宽族，字形在行盒里居中，那笔补偿反而
+                                // 把商标顶得比字高一截。
                                 .text_color(palette::idle(cx).opacity(0.7)),
                         )
                         .child(
