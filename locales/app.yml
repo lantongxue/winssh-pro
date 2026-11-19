@@ -5487,6 +5487,24 @@ host_trust.accept:
 host_trust.reject:
   en: 'Cancel'
   zh-CN: 取消
+host_trust.changed_title:
+  en: Host Key Changed
+  zh-CN: 主机密钥已变更
+host_trust.changed_subtitle:
+  en: The presented key does not match the one previously trusted.
+  zh-CN: 对端出示的密钥与之前信任的不一致。
+host_trust.label_old_fingerprint:
+  en: 'Trusted'
+  zh-CN: 已存指纹
+host_trust.label_new_fingerprint:
+  en: 'New'
+  zh-CN: 新指纹
+host_trust.changed_warning:
+  en: 'This happens after the server OS is reinstalled or its host keys are regenerated — but it is also the sign of a man-in-the-middle attack. Verify the new fingerprint with the server administrator before replacing the trusted key.'
+  zh-CN: 服务器重装系统或重新生成主机密钥后会出现这种情况，但这也可能是中间人攻击的迹象。替换前请先向服务器管理员核实新指纹。
+host_trust.replace_accept:
+  en: 'Replace & Connect'
+  zh-CN: 替换并连接
 
 # ── 证书信任确认框（FTPS 证书不被系统认时弹出，见 src/ui/dialogs/cert_trust.rs） ──
 cert_trust.title:
@@ -5583,6 +5601,9 @@ trusted_hosts.confirm_delete:
 terminal.banner_trust_rejected:
   en: '[WinSSH] Host identity not verified — connection cancelled.'
   zh-CN: '[WinSSH] 主机身份未确认，连接已取消。'
+terminal.banner_key_change_rejected:
+  en: '[WinSSH] Host key replacement declined — connection cancelled.'
+  zh-CN: '[WinSSH] 已拒绝替换主机密钥，连接已取消。'
 
 # ── 终端里的 rz / sz 文件收发（ZMODEM，见 src/zmodem/） ───────────────────────
 zmodem.bad_file_name:
@@ -5724,6 +5745,9 @@ sftp_host.close_session:
 sftp_host.trust_rejected:
   en: Connection cancelled — you chose not to trust this host
   zh-CN: 连接已取消 —— 已拒绝信任此主机
+sftp_host.key_change_rejected:
+  en: Connection cancelled — you chose not to replace the changed host key
+  zh-CN: 连接已取消 —— 已拒绝替换变更的主机密钥
 
 # ── 独立 FTP 会话（HostKind::Ftp 开出来的那个标签页，见 src/ui/panels/ftp_host.rs） ──
 ftp_host.close_session:

@@ -72,6 +72,9 @@ pub enum AppIcon {
     Route,
     /// 双层机架：主机与会话。
     Server,
+    /// 带感叹号的盾牌：主机密钥变更警告。和 [`Self::ShieldCheck`] 分开 ——
+    /// 那个是"确认身份"，这个是"身份对不上了"。
+    ShieldAlert,
     /// 打勾的盾牌：凭据保险箱。
     ShieldCheck,
     /// 星芒：AI 助手，以及"生成一份新的"这类动作。
@@ -122,6 +125,7 @@ impl IconNamed for AppIcon {
             Self::RefreshCw => "icons/refresh-cw.svg",
             Self::Route => "icons/route.svg",
             Self::Server => "icons/server.svg",
+            Self::ShieldAlert => "icons/shield-alert.svg",
             Self::ShieldCheck => "icons/shield-check.svg",
             Self::Sparkles => "icons/sparkles.svg",
             Self::Squircle => "icons/squircle.svg",

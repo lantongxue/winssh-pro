@@ -43,8 +43,9 @@ impl SshService {
     /// 建一条带主机密钥信任检查的连接。
     ///
     /// `trust` 决定握手时 `check_server_key` 的处置，见 [`TrustPolicy`]。
-    /// 典型用法：首次连接传 `CaptureAndAbort`，失败后检查 `capture` 槽位，
-    /// 展示确认框让用户决定是否信任；已有记录传 `Verify`。
+    /// 典型用法：首次连接传 `CaptureAndAbort`，已有记录传 `Verify`，两者都带
+    /// `capture` 槽位；失败后检查槽位，有值就展示确认框 —— 首次是"是否信任"，
+    /// 密钥变更（`Verify` 失配）是"替换还是拒绝"。
     pub async fn connect_trusted(
         &self,
         host: &Host,

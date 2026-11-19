@@ -420,9 +420,11 @@ impl TerminalPane {
     /// 流程：
     /// 1. 查询 `trusted_hosts` 表，看 `hostname:port` 是否已有记录。
     /// 2. 有记录 → `TrustPolicy::Verify`；无记录 → `TrustPolicy::CaptureAndAbort`。
-    /// 3. 连接失败且 capture 槽有值 → 首次连接未知主机，弹信任确认框。
+    ///    两条路都带同一个 capture 槽。
+    /// 3. 连接失败且 capture 槽有值 → 弹信任确认框：首次连接是"信任并保存"，
+    ///    密钥变更（服务器重装系统）是"替换还是拒绝"，由弹窗按旧指纹区分。
     /// 4. 用户确认 → （可选）保存记录 → 发起第二次连接；用户拒绝 → 写拒绝提示。
-    /// 5. 其他连接错误（网络、认证、密钥变更）→ 把失败信息直接写进终端，
+    /// 5. 其他连接错误（网络、认证）→ 把失败信息直接写进终端，
     ///    不退回本机 shell（见 [`Self::show_ssh_failure`]）。
     fn dial_ssh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let host = self.host.clone();
@@ -450,7 +452,10 @@ impl TerminalPane {
 
             let capture = Arc::new(Mutex::new(None::<HostKeyInfo>));
             let trust = match stored_fp {
-                Some(fp) => TrustPolicy::Verify { expected: fp },
+                Some(fp) => TrustPolicy::Verify {
+                    expected: fp,
+                    capture: capture.clone(),
+                },
                 None => TrustPolicy::CaptureAndAbort {
                     capture: capture.clone(),
                 },
@@ -470,7 +475,7 @@ impl TerminalPane {
                 Err(error) => {
                     let info = capture.lock().ok().and_then(|mut s| s.take());
                     if let Some(info) = info {
-                        // 首次未知主机：弹信任确认框
+                        // 首次未知主机或密钥变更：弹信任确认框（形态由旧指纹区分）
                         let host2 = host.clone();
                         let ph2 = placeholder.clone();
                         let entity2 = this.clone();
@@ -492,7 +497,12 @@ impl TerminalPane {
                                                 TrustedHostService::open().save(&info).await.ok();
                                             }
                                             let trust = if save {
-                                                TrustPolicy::Verify { expected: fp }
+                                                // 重试的 capture 槽不再接弹窗：确认框刚答过，
+                                                // 密钥若又变了（极罕见）就按普通失败展示。
+                                                TrustPolicy::Verify {
+                                                    expected: fp,
+                                                    capture: Arc::new(Mutex::new(None)),
+                                                }
                                             } else {
                                                 TrustPolicy::TrustOnce
                                             };
@@ -509,15 +519,16 @@ impl TerminalPane {
                                     }
                                     TrustDecision::Reject => {
                                         let ph = cb_ph.clone();
+                                        let changed = cb_info.old_fingerprint.is_some();
                                         let _ = cb_entity.update(app, |this, cx| {
-                                            this.show_trust_rejected(&ph, cx);
+                                            this.show_trust_rejected(&ph, changed, cx);
                                         });
                                     }
                                 });
                             HostTrustDialog::open(&info, handler, window, app);
                         });
                     } else {
-                        // 真实连接错误（网络不通、认证失败、密钥变更等）
+                        // 真实连接错误（网络不通、认证失败等）
                         let _ = this.update(cx, |this, cx| {
                             this.show_ssh_failure(&error, &placeholder, cx);
                         });
@@ -732,16 +743,20 @@ impl TerminalPane {
     }
 
     /// 用户拒绝信任：在占位终端写一行提示。不回退到本机 shell（用户主动取消）。
-    fn show_trust_rejected(&mut self, placeholder: &Entity<Emulator>, cx: &mut Context<Self>) {
+    /// `changed` 区分拒绝的是首次信任还是密钥替换，两句话不一样。
+    fn show_trust_rejected(
+        &mut self,
+        placeholder: &Entity<Emulator>,
+        changed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let banner = if changed {
+            t!("terminal.banner_key_change_rejected")
+        } else {
+            t!("terminal.banner_trust_rejected")
+        };
         placeholder.update(cx, |em, cx| {
-            em.write_output(
-                format!(
-                    "\r\n\x1b[33m{}\x1b[0m\r\n",
-                    t!("terminal.banner_trust_rejected"),
-                )
-                .as_bytes(),
-                cx,
-            );
+            em.write_output(format!("\r\n\x1b[33m{banner}\x1b[0m\r\n").as_bytes(), cx);
         });
         cx.notify();
     }

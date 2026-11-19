@@ -40,20 +40,25 @@ pub struct HostKeyInfo {
     /// `SHA256:...` 形式的指纹。
     pub fingerprint: String,
     /// 已存的旧指纹（密钥变更时才有值，首次连接时为 `None`）。
-    #[allow(dead_code)]
     pub old_fingerprint: Option<String>,
 }
+
+/// 握手时捕获密钥的槽位：`check_server_key` 写入，调用方在连接失败后取走。
+pub type KeyCapture = std::sync::Arc<std::sync::Mutex<Option<HostKeyInfo>>>;
 
 /// 主机密钥的校验策略，注入到 [`crate::ssh::SshHandler`] 里。
 #[derive(Clone)]
 pub enum TrustPolicy {
-    /// 库里已有记录：与 `expected` 指纹比对，相同则通过，不同则报密钥变更。
-    Verify { expected: String },
+    /// 库里已有记录：与 `expected` 指纹比对，相同则通过；不同则把新密钥
+    /// 写进 `capture`（带旧指纹）再报 `KeyChanged`，调用方据此弹
+    /// "替换还是拒绝"确认框（服务器重装系统后就是这条路）。
+    Verify {
+        expected: String,
+        capture: KeyCapture,
+    },
     /// 首次连接：捕获密钥后中止握手（`check_server_key` 返回错误），
     /// 调用方从 `capture` 里取出 `HostKeyInfo` 展示确认框。
-    CaptureAndAbort {
-        capture: std::sync::Arc<std::sync::Mutex<Option<HostKeyInfo>>>,
-    },
+    CaptureAndAbort { capture: KeyCapture },
     /// 用户选择"仅本次信任"：不保存记录，直接接受任意密钥。
     TrustOnce,
     /// 不做校验（本机 Shell、测试等场景）。
@@ -64,7 +69,7 @@ pub enum TrustPolicy {
 impl std::fmt::Debug for TrustPolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Verify { expected } => f
+            Self::Verify { expected, .. } => f
                 .debug_struct("Verify")
                 .field("expected", expected)
                 .finish(),

@@ -143,9 +143,10 @@ impl DockedSftpPanel {
     /// 拨 SSH：带主机密钥信任检查，失败**不**回落本机 —— 那只会是把会话变成
     /// 一个本地文件管理器，结果更难发现（见模块文档）。
     ///
-    /// 流程与终端那一段同形：查信任表 → 决定 [`TrustPolicy`] → 先连一次 →
-    /// 首次未知主机弹确认框 → 用户确认后再连。其余失败（网络不通、认证失败、
-    /// 密钥变更）落成面板空状态里那一行原因。
+    /// 流程与终端那一段同形：查信任表 → 决定 [`TrustPolicy`]（两条路都带
+    /// capture 槽）→ 先连一次 → 首次未知主机或密钥变更（服务器重装系统）
+    /// 弹确认框 → 用户确认后再连。其余失败（网络不通、认证失败）落成面板
+    /// 空状态里那一行原因。
     fn dial_ssh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.connecting {
             return;
@@ -166,7 +167,10 @@ impl DockedSftpPanel {
 
             let capture = Arc::new(Mutex::new(None::<HostKeyInfo>));
             let trust = match stored_fp {
-                Some(fp) => TrustPolicy::Verify { expected: fp },
+                Some(fp) => TrustPolicy::Verify {
+                    expected: fp,
+                    capture: capture.clone(),
+                },
                 None => TrustPolicy::CaptureAndAbort {
                     capture: capture.clone(),
                 },
@@ -196,8 +200,9 @@ impl DockedSftpPanel {
         .detach();
     }
 
-    /// 首次未知主机的那只确认框。接受就按"带上保存的指纹"或"只信这一次"
-    /// 再连一次；拒绝就把那句提示挂进面板空状态。
+    /// 信任确认框：首次未知主机是"信任并保存"，密钥变更（有旧指纹）是
+    /// "替换还是拒绝"。接受就按"带上保存的指纹"或"只信这一次"再连一次
+    /// （变更形态恒保存，即替换旧记录）；拒绝就把那句提示挂进面板空状态。
     fn show_trust_dialog(
         &mut self,
         host: Host,
@@ -219,7 +224,12 @@ impl DockedSftpPanel {
                             TrustedHostService::open().save(&info).await.ok();
                         }
                         let trust = if save {
-                            TrustPolicy::Verify { expected: fp }
+                            // 重试的 capture 槽不再接弹窗：确认框刚答过，
+                            // 密钥若又变了（极罕见）就按普通失败展示。
+                            TrustPolicy::Verify {
+                                expected: fp,
+                                capture: Arc::new(Mutex::new(None)),
+                            }
                         } else {
                             TrustPolicy::TrustOnce
                         };
@@ -237,11 +247,15 @@ impl DockedSftpPanel {
                     .detach();
                 }
                 TrustDecision::Reject => {
+                    let message = if accept_info.old_fingerprint.is_some() {
+                        t!("sftp_host.key_change_rejected")
+                    } else {
+                        t!("sftp_host.trust_rejected")
+                    };
                     _ = panel.update(app, |this, cx| {
                         this.connecting = false;
                         this.sftp_panel.update(cx, |panel, cx| {
-                            panel
-                                .note_error(SharedString::from(t!("sftp_host.trust_rejected")), cx);
+                            panel.note_error(SharedString::from(message), cx);
                         });
                         this.set_alive(false, cx);
                         cx.notify();

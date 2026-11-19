@@ -4,7 +4,8 @@
 //!
 //! 1. **认主机密钥**（[`check_server_key`](Handler::check_server_key)）。
 //!    根据调用方注入的 [`TrustPolicy`] 决定如何处置：
-//!    - `Verify`：与已存指纹比对，相同通过，不同报 `KeyChanged`。
+//!    - `Verify`：与已存指纹比对，相同通过；不同把新密钥写进 `capture`
+//!      （带旧指纹）再报 `KeyChanged`，调用方据此弹"替换还是拒绝"确认框。
 //!    - `CaptureAndAbort`：把密钥信息写入 `capture` 槽位，然后返回错误中止握手；
 //!      调用方检测槽位有值后展示信任确认框。
 //!    - `TrustOnce` / `Skip`：直接通过。
@@ -78,16 +79,29 @@ impl Handler for SshHandler {
         match &self.trust {
             TrustPolicy::Skip | TrustPolicy::TrustOnce => Ok(true),
 
-            TrustPolicy::Verify { expected } => {
+            TrustPolicy::Verify { expected, capture } => {
                 if fp == *expected {
                     Ok(true)
                 } else {
-                    // 密钥变更（可能是 MITM）：捕获新密钥信息，让调用方可以展示详情。
+                    // 密钥变更（服务器重装系统，或 MITM）：把新密钥写进槽位
+                    // （带上旧指纹），调用方在 connect 失败后据此弹
+                    // "替换还是拒绝"确认框。早先这里只报错不捕获，重装后的
+                    // 服务器就永远连不上 —— 用户没有任何替换信任的入口。
                     log::error!(
                         "主机 {}:{} 密钥变更！已存 {expected}，对端出示 {fp}",
                         self.host_addr.0,
                         self.host_addr.1,
                     );
+                    let info = HostKeyInfo {
+                        hostname: self.host_addr.0.clone(),
+                        port: self.host_addr.1,
+                        key_type,
+                        fingerprint: fp,
+                        old_fingerprint: Some(expected.clone()),
+                    };
+                    if let Ok(mut slot) = capture.lock() {
+                        *slot = Some(info);
+                    }
                     Err(russh::Error::KeyChanged { line: 0 })
                 }
             }
@@ -141,3 +155,7 @@ impl Handler for SshHandler {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "tests/ssh/client.rs"]
+mod tests;
