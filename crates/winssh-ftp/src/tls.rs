@@ -11,8 +11,10 @@
 //!    - 库里没有 → 记下证书详情、中止握手，调用方弹确认框（凭据还没送出去 ——
 //!      显式 FTPS 的 `AUTH TLS` 在 `USER` 之前，隐式 FTPS 更是一上来就是 TLS）；
 //!    - 库里有且指纹相同 → 放行；
-//!    - 库里有但指纹不同 → 拒绝，报"证书变了"，**不给"继续"的按钮**。和 SSH 的
-//!      `KeyChanged` 一样：真是服务器换了证书，就到「受信任主机」里删掉那一条再连。
+//!    - 库里有但指纹不同 → 记下**新旧两份指纹**（[`CertInfo::old_fingerprint`]）、
+//!      中止握手，调用方弹"替换还是拒绝"确认框 —— 与 SSH 主机密钥变更同一套
+//!      流程：服务器重装系统后证书换了是常事，用户核实新指纹后点"替换并连接"
+//!      即更新库里那条记录；点"拒绝"则旧记录原样保留，连接不建立。
 //!
 //! 按指纹放行时**握手签名照样验**（[`TrustVerifier::verify_tls13_signature`] 那两个）：
 //! 指纹只说明"对端出示的是这张证书"，签名才说明"对端手里有这张证书的私钥"。
@@ -56,6 +58,9 @@ pub struct CertInfo {
     pub key_type: String,
     /// `SHA256:AB:CD:…`，见 [`fingerprint`]。
     pub fingerprint: String,
+    /// 信任库里已存的旧指纹。只有 [`Verdict::Changed`]（钉过指纹却对不上）时
+    /// 才有值，首次见到时是 `None` —— 确认框靠它区分"首次信任"与"证书变更"。
+    pub old_fingerprint: Option<String>,
     /// RFC 4514 的写法：`CN=ftp.example.com,O=Example`。解析不动的证书是空串。
     pub subject: String,
     pub issuer: String,
@@ -73,7 +78,7 @@ impl CertInfo {
             port: self.port,
             key_type: self.key_type.clone(),
             fingerprint: self.fingerprint.clone(),
-            old_fingerprint: None,
+            old_fingerprint: self.old_fingerprint.clone(),
         }
     }
 }
@@ -91,7 +96,8 @@ pub struct CertTrust {
     /// FTPS 一次会话里要握手很多次（每条数据通道一次），用户看过的只是第一张。
     pub pinned: Option<String>,
     /// 被拒的那张证书。首次时调用方从这里取出详情弹确认框；钉了指纹却对不上时
-    /// 服务层从这里取出新指纹，报"证书变了"。
+    /// 这里带着新旧两份指纹（[`CertInfo::old_fingerprint`]），调用方弹"替换还是
+    /// 拒绝"确认框，服务层拿它报"证书变了"。
     pub rejected: Arc<Mutex<Option<CertInfo>>>,
 }
 
@@ -118,7 +124,8 @@ pub enum Verdict {
     Pinned,
     /// 系统不认，也没钉过 —— 首次，要问用户。
     Unknown,
-    /// 系统不认，钉过的指纹与这张对不上 —— 可能是中间人。
+    /// 系统不认，钉过的指纹与这张对不上 —— 可能是中间人，也可能是服务器换了
+    /// 证书。捕获新旧指纹交调用方问用户（替换 / 拒绝），不自行放行。
     Changed,
 }
 
@@ -202,6 +209,7 @@ fn describe(der: &[u8], hostname: &str, port: u16, error: Option<&TlsError>) -> 
         port,
         key_type: key_type.to_string(),
         fingerprint: fingerprint(der),
+        old_fingerprint: None,
         subject,
         issuer,
         not_before,
@@ -288,7 +296,10 @@ impl ServerCertVerifier for TrustVerifier {
         ) {
             Verdict::Trusted | Verdict::Pinned => Ok(ServerCertVerified::assertion()),
             verdict => {
+                let mut info = describe(end_entity, &self.hostname, self.port, system_error);
                 if verdict == Verdict::Changed {
+                    // 变更形态的确认框要并排展示新旧两份指纹，旧的那份只有这里知道。
+                    info.old_fingerprint = self.trust.pinned.clone();
                     log::error!(
                         "FTPS 主机 {}:{} 证书变更！已存 {}，对端出示 {presented}",
                         self.hostname,
@@ -296,7 +307,6 @@ impl ServerCertVerifier for TrustVerifier {
                         self.trust.pinned.as_deref().unwrap_or_default(),
                     );
                 }
-                let info = describe(end_entity, &self.hostname, self.port, system_error);
                 if let Ok(mut slot) = self.trust.rejected.lock() {
                     *slot = Some(info);
                 }
