@@ -15,7 +15,7 @@
 //!   比我们能写的任何转述都准。
 //! - **跨服务器复制从本机中转**。源与目标各一条 SFTP 通道，A 读、B 写，字节
 //!   不落本地盘 —— 两台服务器不需要能互相看见。**同一台服务器换目录不走中转**：
-//!   在既有 SSH 连接上另开一条 exec 通道跑 `cp -a`（[`ServerCopyJob`]），字节
+//!   在既有 SSH 连接上另开一条 exec 通道跑 `cp -r -f -p`（[`ServerCopyJob`]），字节
 //!   根本不进本进程。
 
 use std::path::{Path, PathBuf};
@@ -108,7 +108,7 @@ pub struct RemoteCopyJob {
     pub target_service: SftpService,
 }
 
-/// 一次服务端复制：在同一台服务器上用 `cp -a` 搬，字节不过本机。
+/// 一次服务端复制：在同一台服务器上用 `cp -r -f -p` 搬，字节不过本机。
 ///
 /// 只有源与目标是**同一条 SFTP 通道**（同会话换目录）、通道是标准子系统，
 /// 且对端不是 Windows 时才走这一档；跨会话、跨服务器以及 `sudo` / 自定义命令
@@ -662,7 +662,7 @@ impl SftpService {
 
     /// 派一个"同一台服务器内换目录"的服务端复制任务。
     ///
-    /// 在既有 SSH 连接上另开一条 exec 通道跑 `cp -a`，字节不经过本机；`cp`
+    /// 在既有 SSH 连接上另开一条 exec 通道跑 `cp -r -f -p`，字节不经过本机；`cp`
     /// 不报字节，队列那一条按未知总数画成滑动的进度条。取消会关掉那条通道，
     /// 远端 `cp` 随之被挂断 —— 不会在后台接着把目录写完。
     pub fn spawn_server_copy(
@@ -1423,7 +1423,7 @@ fn remote_copy_target_path(destination_dir: &str, source_path: &str) -> String {
 const SERVER_COPY_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// 服务端复制的入口：在既有 SSH 连接上另开一条 exec 通道，把一段 POSIX sh
-/// 交给 `/bin/sh` 跑 `cp -a`。字节不进本进程，也不落本地盘。
+/// 交给 `/bin/sh` 跑 `cp -r -f -p`。字节不进本进程，也不落本地盘。
 async fn server_copy(job: &ServerCopyJob, ctx: &PumpCtx<'_>) -> Result<()> {
     let source = path::normalize(&job.source);
     if path::file_name(&source).is_empty() {
@@ -1448,7 +1448,7 @@ async fn server_copy(job: &ServerCopyJob, ctx: &PumpCtx<'_>) -> Result<()> {
 
 /// 拼一次服务端复制的 sh 脚本。`target` 是最终落点（目标目录 + 源条目名）。
 ///
-/// 目标已有同名目录时按合并处理（`cp -a "$src/." "$dst/"`），与中转那条路径
+/// 目标已有同名目录时按合并处理（`cp -r -f -p "$src/." "$dst/"`），与中转那条路径
 /// "同名旧文件由改名顶掉"是同一层意思；同名目录挡着一个文件时明确失败，
 /// 不让 `cp` 悄悄在它里面再套一层同名文件。
 fn server_copy_script(source: &str, target: &str) -> String {
@@ -1460,13 +1460,13 @@ fn server_copy_script(source: &str, target: &str) -> String {
 dst={dst}\n\
 if [ -d \"$dst\" ]; then\n\
   if [ -d \"$src\" ]; then\n\
-    cp -a \"$src/.\" \"$dst/\"\n\
+    cp -r -f -p \"$src/.\" \"$dst/\"\n\
   else\n\
     printf '%s\\n' {conflict} >&2\n\
     exit 1\n\
   fi\n\
 else\n\
-  cp -a \"$src\" \"$dst\"\n\
+  cp -r -f -p \"$src\" \"$dst\"\n\
 fi\n"
     )
 }

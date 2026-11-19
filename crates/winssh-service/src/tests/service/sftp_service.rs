@@ -360,9 +360,9 @@
         assert!(script.contains("src='/opt/www/kafka'"));
         assert!(script.contains("dst='/opt/www/backup/kafka'"));
         // 目标已是同名目录：把源目录的**内容**并进去，而不是套出 kafka/kafka。
-        assert!(script.contains("cp -a \"$src/.\" \"$dst/\""));
+        assert!(script.contains("cp -r -f -p \"$src/.\" \"$dst/\""));
         // 目标不存在或是个文件：直接落到最终名字上。
-        assert!(script.contains("cp -a \"$src\" \"$dst\""));
+        assert!(script.contains("cp -r -f -p \"$src\" \"$dst\""));
     }
 
     #[test]
