@@ -7,7 +7,9 @@
 //!   FTP 主机的认证下拉只给"密码"。
 //! - **信任的是证书，不是主机密钥**。FTPS 的证书系统证书库认就直接连；不认
 //!   （自签名、内网 CA、过期……）就弹 [`CertTrustDialog`]，点头之后按指纹记进
-//!   和 SSH 主机密钥同一张信任库，规则见 [`crate::ftp::tls`]。明文 FTP 没有这一步。
+//!   和 SSH 主机密钥同一张信任库；库里钉过指纹却对不上（服务器重装系统换了
+//!   证书）弹的是同一只框的"替换还是拒绝"形态，替换即更新那条记录。规则见
+//!   [`crate::ftp::tls`]。明文 FTP 没有这一步。
 //! - **走 suppaftp，不走 russh**。拨号、TLS、登录与连接池见 [`crate::ftp::client`]。
 //!
 //! 与 [`super::DockedSftpPanel`] 的关系是"同一种壳，两种芯"：
@@ -104,8 +106,9 @@ impl DockedFtpPanel {
     /// 拨 FTP：选路、拨号、TLS、登录，一步到位（见 [`FtpService::connect`]）。
     ///
     /// FTPS 的流程与独立 SFTP 那一段同形：查信任库 → 决定钉不钉指纹 → 先连一次 →
-    /// 证书不被系统认、库里又没有 → 弹确认框 → 用户点头后钉住指纹再连。
-    /// 其余失败（网络不通、密码错、证书变了）只摆原因 + 一颗"再连一次"，
+    /// 证书不被系统认 → 弹确认框（库里没有是首次信任，钉过却对不上是"替换还是
+    /// 拒绝"）→ 用户点头后钉住指纹再连。
+    /// 其余失败（网络不通、密码错）只摆原因 + 一颗"再连一次"，
     /// 不回落本机（见 [`super::DockedSftpPanel`] 上"不回落"的同一个理由）。
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.connecting {
@@ -140,10 +143,11 @@ impl DockedFtpPanel {
                     _ = panel.update_in(cx, |this, window, cx| this.attach(service, window, cx));
                 }
                 Err(error) => {
-                    // 首次、证书被拒：拿被拒的那张弹框。钉过指纹却被拒是"证书变了"，
-                    // 那句报错已经说清楚了，不给继续的按钮。
-                    let first_sight = pinned.is_none().then(|| trust.rejected()).flatten();
-                    _ = panel.update_in(cx, |this, window, cx| match first_sight {
+                    // 证书被拒：拿被拒的那张弹框 —— 有没有旧指纹决定是"首次信任"
+                    // 还是"替换还是拒绝"（见 [`CertTrustDialog`]）。被拒槽是空的
+                    // 说明失败与证书无关（网络、密码……），只摆原因。
+                    let rejected = trust.rejected();
+                    _ = panel.update_in(cx, |this, window, cx| match rejected {
                         Some(info) => this.show_trust_dialog(host.clone(), info, window, cx),
                         None => this.finish_error(format!("{error:#}"), window, cx),
                     });
@@ -153,8 +157,10 @@ impl DockedFtpPanel {
         .detach();
     }
 
-    /// 首次见到一张系统不认的证书时那只确认框。接受就钉住这张证书的指纹再连一次
-    ///（勾了"保存"还要先落库）；拒绝就把那句提示挂进面板空状态。
+    /// 证书被拒时那只确认框：首次信任 / 证书变更两种形态（由 `info.old_fingerprint`
+    /// 区分，见 [`CertTrustDialog`]）。接受就钉住这张证书的指纹再连一次（落库 ——
+    /// 首次勾了"保存"才落，变更必然落，`save` 对已有记录是更新指纹）；拒绝就把
+    /// 那句提示挂进面板空状态，变更形态下旧记录原样保留。
     fn show_trust_dialog(
         &mut self,
         host: Host,
@@ -163,6 +169,7 @@ impl DockedFtpPanel {
         cx: &mut Context<Self>,
     ) {
         let panel = cx.entity().downgrade();
+        let replace = info.old_fingerprint.is_some();
         let accept_info = info.clone();
         let handler: TrustDecisionHandler = std::rc::Rc::new(move |decision, win, app| {
             let panel = panel.clone();
@@ -186,10 +193,15 @@ impl DockedFtpPanel {
                     .detach();
                 }
                 TrustDecision::Reject => {
+                    let note = if replace {
+                        t!("ftp_host.replace_rejected")
+                    } else {
+                        t!("ftp_host.trust_rejected")
+                    };
                     _ = panel.update(app, |this, cx| {
                         this.connecting = false;
                         this.sftp_panel.update(cx, |panel, cx| {
-                            panel.note_error(SharedString::from(t!("ftp_host.trust_rejected")), cx);
+                            panel.note_error(SharedString::from(note), cx);
                         });
                         this.set_alive(false, cx);
                         cx.notify();

@@ -5537,6 +5537,24 @@ cert_trust.problem_other:
 cert_trust.safety_note:
   en: Compare the fingerprint with the one shown in the server's configuration (FileZilla Server shows it in its settings). Trusting a forged certificate exposes your password and files to a man-in-the-middle.
   zh-CN: 请把指纹与服务器配置里显示的核对一致（FileZilla Server 在设置里能看到）。信任一张伪造的证书，密码和文件会暴露给中间人。
+cert_trust.changed_title:
+  en: Certificate Changed
+  zh-CN: 证书已变更
+cert_trust.changed_subtitle:
+  en: The presented certificate does not match the one previously trusted.
+  zh-CN: 对端出示的证书与之前信任的不一致。
+cert_trust.label_old_fingerprint:
+  en: 'Trusted'
+  zh-CN: 已存指纹
+cert_trust.label_new_fingerprint:
+  en: 'New'
+  zh-CN: 新指纹
+cert_trust.changed_warning:
+  en: 'This happens after the server OS is reinstalled or its TLS certificate is regenerated — but it is also the sign of a man-in-the-middle attack. Verify the new fingerprint with the server administrator before replacing the trusted certificate.'
+  zh-CN: 服务器重装系统或重新生成 TLS 证书后会出现这种情况，但这也可能是中间人攻击的迹象。替换前请先向服务器管理员核实新指纹。
+cert_trust.replace_accept:
+  en: 'Replace & Connect'
+  zh-CN: 替换并连接
 
 # ── 可信主机管理弹窗 ──────────────────────────────────────────────────────────
 trusted_hosts.title:
@@ -5732,6 +5750,9 @@ ftp_host.close_session:
 ftp_host.trust_rejected:
   en: Connection cancelled — you chose not to trust this server's certificate
   zh-CN: 连接已取消 —— 已拒绝信任这台服务器的证书
+ftp_host.replace_rejected:
+  en: Connection cancelled — you chose not to replace the certificate; the trusted record is unchanged
+  zh-CN: 连接已取消 —— 已拒绝替换证书，信任库里仍是旧记录
 
 # ── FTP 服务错误（src/service/ftp_service.rs、src/ftp/client.rs） ──
 ftp_err.no_hostname:

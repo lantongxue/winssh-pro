@@ -24,8 +24,9 @@
     }
 
     #[test]
-    fn untrusted_certificate_with_different_pin_is_refused() {
-        // 和 SSH 的 KeyChanged 同一条规矩：可能是中间人，不给"继续"。
+    fn untrusted_certificate_with_different_pin_is_changed() {
+        // 和 SSH 的 KeyChanged 同一条规矩：可能是中间人，也可能是服务器换了证书 ——
+        // 不自行放行，捕获新旧指纹交用户定夺（替换 / 拒绝）。
         assert_eq!(verdict(false, Some(FP_B), FP_A), Verdict::Changed);
     }
 
@@ -87,4 +88,64 @@
         *trust.rejected.lock().unwrap() = Some(describe(b"x", "h", 21, None));
         assert!(trust.rejected().is_some());
         assert!(trust.rejected().is_some());
+    }
+
+    // 下面几条走真的校验器：DER 是垃圾字节，系统证书库在哪台机器上都不会认它，
+    // 所以结果不随环境漂 —— 正好用来验"系统不认"那一层的捕获行为。
+    fn garbage_der() -> CertificateDer<'static> {
+        CertificateDer::from(b"definitely not a certificate".to_vec())
+    }
+
+    fn server_name() -> ServerName<'static> {
+        ServerName::try_from("ftp.example.com").unwrap()
+    }
+
+    #[test]
+    fn changed_certificate_capture_carries_old_fingerprint() {
+        // 服务器重装系统后证书换了：被拒槽里除了新证书详情，还要带上库里那份旧
+        // 指纹 —— 确认框的"替换还是拒绝"形态靠它并排展示两份指纹。
+        let der = garbage_der();
+        let trust = CertTrust::pinned(FP_B.to_string());
+        let verifier = TrustVerifier::new(trust.clone(), "ftp.example.com", 21);
+        let result = verifier.verify_server_cert(&der, &[], &server_name(), &[], UnixTime::now());
+        assert!(result.is_err());
+        let info = trust.rejected().expect("被拒证书要落进捕获槽");
+        assert_eq!(info.fingerprint, fingerprint(&der));
+        assert_eq!(info.old_fingerprint.as_deref(), Some(FP_B));
+    }
+
+    #[test]
+    fn first_sight_capture_has_no_old_fingerprint() {
+        // 首次见到（没钉过指纹）：捕获槽里只有新证书，确认框走"首次信任"形态。
+        let der = garbage_der();
+        let trust = CertTrust::default();
+        let verifier = TrustVerifier::new(trust.clone(), "ftp.example.com", 21);
+        let result = verifier.verify_server_cert(&der, &[], &server_name(), &[], UnixTime::now());
+        assert!(result.is_err());
+        let info = trust.rejected().expect("被拒证书要落进捕获槽");
+        assert_eq!(info.old_fingerprint, None);
+    }
+
+    #[test]
+    fn pinned_certificate_passes_without_system_trust() {
+        // 系统不认但指纹与钉住的相同：放行，捕获槽不动 —— 重装后用户点过"替换"，
+        // 下一次连走的就是这条路。
+        let der = garbage_der();
+        let trust = CertTrust::pinned(fingerprint(&der));
+        let verifier = TrustVerifier::new(trust.clone(), "ftp.example.com", 21);
+        let result = verifier.verify_server_cert(&der, &[], &server_name(), &[], UnixTime::now());
+        assert!(result.is_ok());
+        assert!(trust.rejected().is_none());
+    }
+
+    #[test]
+    fn key_info_carries_both_fingerprints() {
+        // 折成信任库那一行时新旧指纹都带上：save 落库用的是新指纹，旧指纹供展示。
+        let mut info = describe(b"x", "ftp.example.com", 21, None);
+        info.old_fingerprint = Some(FP_B.to_string());
+        let row = info.key_info();
+        assert_eq!(row.hostname, "ftp.example.com");
+        assert_eq!(row.port, 21);
+        assert_eq!(row.fingerprint, info.fingerprint);
+        assert_eq!(row.old_fingerprint.as_deref(), Some(FP_B));
     }
