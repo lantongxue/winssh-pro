@@ -24,7 +24,7 @@ use gpui_kit::{
 
 use crate::ui::{
     menus::{SettingsMenu, SettingsMenuAction},
-    theme::{AppIcon, palette},
+    theme::palette,
     views::SidebarView,
 };
 use rust_i18n::t;
@@ -33,13 +33,13 @@ use rust_i18n::t;
 pub const ACTIVITY_BAR_WIDTH: Pixels = px(48.);
 
 /// 栏首尾的留白，也是分隔线与底部那组之间的距离。
-const BAR_PADDING: Pixels = px(8.);
+pub(crate) const BAR_PADDING: Pixels = px(8.);
 
 /// 图标药丸的边长。比整栏窄一圈，四周留出呼吸与命中的余量。
-const PILL_SIZE: Pixels = px(36.);
+pub(crate) const PILL_SIZE: Pixels = px(36.);
 
 /// 相邻药丸之间的缝。够分开，又不至于让一组条目散掉。
-const PILL_GAP: Pixels = px(6.);
+pub(crate) const PILL_GAP: Pixels = px(6.);
 
 /// 换算图标尺寸用的按钮尺寸：[`Button`] 按自身尺寸的 0.75 倍决定图标大小，
 /// 想要 18px 的图标就得先声明 24，再用 `size()` 把外框改回药丸尺寸。
@@ -55,26 +55,23 @@ const INDICATOR_RADIUS: Pixels = px(2.);
 /// 中间用分隔线断开 —— 位置稳定，但按下去的结果是一次性的。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActivityAction {
-    /// AI 助手。
-    Assistant,
     /// 设置。
     Settings,
 }
 
 impl ActivityAction {
-    /// 自上而下的排列顺序。底部的常规动作（设置由专门的菜单组件负责）。
-    pub const ALL: [ActivityAction; 1] = [Self::Assistant];
+    /// 自上而下的排列顺序。底部如今只剩设置（由专门的菜单组件负责），
+    /// 所以这一组是空的 —— AI 助手已搬去右活动栏，不再占左栏底部。
+    pub const ALL: [ActivityAction; 0] = [];
 
     pub fn id(&self) -> &'static str {
         match self {
-            Self::Assistant => "assistant",
             Self::Settings => "settings",
         }
     }
 
     pub fn label(&self) -> SharedString {
         match self {
-            Self::Assistant => t!("activity.assistant"),
             Self::Settings => t!("activity.settings"),
         }
         .into()
@@ -82,7 +79,6 @@ impl ActivityAction {
 
     pub fn icon(&self) -> Icon {
         match self {
-            Self::Assistant => Icon::new(AppIcon::Sparkles),
             Self::Settings => Icon::new(IconName::Settings),
         }
     }
@@ -227,6 +223,16 @@ impl ActivityBar {
 /// 指示条画在药丸之外、贴着活动栏最左边，所以只能由这一层负责 ——
 /// 按钮自己撑不到那儿。
 fn slot(indicator: Option<Hsla>, pill: impl IntoElement) -> impl IntoElement {
+    rail_slot(indicator, pill, false)
+}
+
+/// [`slot`] 的镜像版：`right_edge` 为真时指示条贴栏的**右**边缘、只收左圆角，
+/// 供窗口最右侧那条活动栏（[`super::SessionActivityBar`]）复用同一套药丸版式。
+pub(crate) fn rail_slot(
+    indicator: Option<Hsla>,
+    pill: impl IntoElement,
+    right_edge: bool,
+) -> impl IntoElement {
     div()
         .relative()
         .w_full()
@@ -238,11 +244,16 @@ fn slot(indicator: Option<Hsla>, pill: impl IntoElement) -> impl IntoElement {
             this.child(
                 div()
                     .absolute()
-                    .left_0()
+                    .map(|this| {
+                        if right_edge {
+                            this.right_0().rounded_l(INDICATOR_RADIUS)
+                        } else {
+                            this.left_0().rounded_r(INDICATOR_RADIUS)
+                        }
+                    })
                     .top((PILL_SIZE - INDICATOR_HEIGHT) * 0.5)
                     .w(INDICATOR_WIDTH)
                     .h(INDICATOR_HEIGHT)
-                    .rounded_r(INDICATOR_RADIUS)
                     .bg(tone),
             )
         })
@@ -253,7 +264,7 @@ fn slot(indicator: Option<Hsla>, pill: impl IntoElement) -> impl IntoElement {
 ///
 /// 底色是主题强调色压到很低的一层 —— 设计稿里它正好和右侧面板同色，
 /// 也就是说“选中的条目”和“它打开的视图”是同一块表面。
-fn pill(id: ElementId, icon: impl Into<Icon>, tone: Hsla, cx: &App) -> Button {
+pub(crate) fn pill(id: ElementId, icon: impl Into<Icon>, tone: Hsla, cx: &App) -> Button {
     let variant = ButtonCustomVariant::new(cx)
         .color(cx.theme().transparent)
         .foreground(tone)

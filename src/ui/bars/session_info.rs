@@ -81,6 +81,10 @@ pub struct SessionInfoBar {
     split: SplitLayout,
     monitor_active: bool,
     sftp_active: bool,
+    /// 右栏此刻是否正开着端口转发 / 命令历史页。这两颗按钮 now 是"开右栏"的
+    /// 入口，开着的时候点亮，和监控 / SFTP 那两颗同一条规矩。
+    forwards_active: bool,
+    history_active: bool,
     tunnels_count: usize,
 }
 
@@ -108,8 +112,22 @@ impl SessionInfoBar {
             split: SplitLayout::default(),
             monitor_active: false,
             sftp_active: false,
+            forwards_active: false,
+            history_active: false,
             tunnels_count: 0,
         }
+    }
+
+    /// 右栏此刻是否正开着端口转发页（这颗按钮点亮）。
+    pub fn forwards_active(mut self, active: bool) -> Self {
+        self.forwards_active = active;
+        self
+    }
+
+    /// 右栏此刻是否正开着命令历史页（这颗按钮点亮）。
+    pub fn history_active(mut self, active: bool) -> Self {
+        self.history_active = active;
+        self
     }
 
     /// 连接还在不在。断了之后点变灰，右边两个动作仍然可用 ——
@@ -321,8 +339,9 @@ impl SessionInfoBar {
     fn render_tunnels(&mut self, cx: &App) -> Option<AnyElement> {
         let handler = self.on_tunnels.take()?;
         // 有隧道在跑的时候整颗按钮点亮 —— 转发是一件"背后一直
-        // 在发生"的事，它在不在跑得从余光里看得见。
-        let active = self.tunnels_count > 0;
+        // 在发生"的事，它在不在跑得从余光里看得见。右栏正开着转发页时也点亮：
+        // 这颗按钮 now 是那一页的入口，开着就该看得出来。
+        let active = self.tunnels_count > 0 || self.forwards_active;
         let tone = palette::green();
         let label = match self.tunnels_count {
             0 => SharedString::from(t!("session_info.tunnels")),
@@ -356,25 +375,40 @@ impl SessionInfoBar {
 
     /// 命令历史那一颗。没接 [`Self::on_history`] 时不画（见 [`Self::render_tunnels`]）。
     ///
-    /// 不像 SFTP 与监控那两颗有"开着 / 关着"两副样子：它弹的是一层对话框，
-    /// 不是这一栏里的一块地方，没有"现在开着"这个状态可言。
+    /// 它 now 是右栏历史页的入口：右栏正开着那一页时整颗点亮，和 SFTP / 监控
+    /// 那两颗同一条规矩 —— 亮着的是"那一页开着"，不是"这里有个按钮"。
     fn render_history(&mut self, cx: &App) -> Option<AnyElement> {
         let handler = self.on_history.take()?;
-        Some(
-            Button::new("session-info-history")
-                .ghost()
-                .xsmall()
-                .icon(
-                    Icon::new(AppIcon::History)
-                        .with_size(ICON_SIZE)
-                        .text_color(palette::idle(cx)),
-                )
-                .label(t!("session_info.history"))
-                .tooltip(t!("session_info.history_tooltip"))
-                .accessibility_id(t!("session_info.history"))
-                .on_click(handler)
-                .into_any_element(),
-        )
+        let tone = palette::teal();
+        let mut btn = Button::new("session-info-history")
+            .xsmall()
+            .icon(
+                Icon::new(AppIcon::History)
+                    .with_size(ICON_SIZE)
+                    .text_color(if self.history_active {
+                        tone
+                    } else {
+                        palette::idle(cx)
+                    }),
+            )
+            .label(t!("session_info.history"))
+            .tooltip(t!("session_info.history_tooltip"))
+            .accessibility_id(t!("session_info.history"))
+            .on_click(handler);
+        btn = if self.history_active {
+            btn.custom(
+                ButtonCustomVariant::new(cx)
+                    .color(tone.opacity(0.15))
+                    .foreground(tone)
+                    .hover(tone.opacity(0.22))
+                    .active(tone.opacity(0.28)),
+            )
+            .border_1()
+            .border_color(tone.opacity(0.4))
+        } else {
+            btn.ghost()
+        };
+        Some(btn.into_any_element())
     }
 
     /// SFTP 那一颗。没接 [`Self::on_sftp`] 时不画（见 [`Self::render_tunnels`]）。

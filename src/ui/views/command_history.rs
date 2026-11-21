@@ -1,4 +1,4 @@
-//! 一台主机的命令历史。
+//! 一台主机的命令历史，常驻在右侧栏里（原先是一扇居中的对话框）。
 //!
 //! 列的是**这台机器**上跑过的命令，不是这条会话跑过的 —— 历史跟着主机走
 //! （见 [`crate::command_history`]），所以关掉标签页再连回来，上次那些还在，
@@ -48,17 +48,17 @@ use crate::{
     host::Host,
     service::{CommandHistoryService, command_history_service::HISTORY_LIMIT},
     terminal::shell_integration,
-    ui::theme::{AppIcon, palette},
+    ui::{
+        Workspace,
+        theme::{AppIcon, palette},
+        views::{SessionTool, right_collapse_button, session_tool_header},
+    },
 };
 use rust_i18n::t;
 
 /// 一行有多高。定高才能走虚拟列表 —— 五百行都靠 flex 量尺的话，
 /// 光是打开这一层就要把一帧的预算吃光（见 AGENTS.md 的渲染性能那一节）。
 const ROW_HEIGHT: Pixels = px(30.);
-
-/// 列表区的高度。固定值：行数从零到五百都有，跟着内容长的话，
-/// 这扇窗会在"两行高"和"顶出屏幕"之间反复横跳。
-const LIST_HEIGHT: Pixels = px(320.);
 
 /// 退出码那一格的宽度，够放下三位数加一个符号。
 const STATUS_WIDTH: Pixels = px(34.);
@@ -89,8 +89,10 @@ pub type HistoryRunHandler = Rc<dyn Fn(String, &mut Window, &mut App)>;
 /// 就开始记，不是下次连上才开始。
 pub type ShellIntegrationHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
-pub struct CommandHistoryDialog {
+pub struct CommandHistoryView {
     host_id: SharedString,
+    /// 标题行上那台主机的名字。历史跟着主机走，名字只是给人看的副标题。
+    host_name: SharedString,
     service: CommandHistoryService,
     search: Entity<InputState>,
     /// 打开这一刻从库里取的快照，最近跑的在最前。
@@ -114,67 +116,12 @@ pub struct CommandHistoryDialog {
     _search_sub: Subscription,
 }
 
-impl CommandHistoryDialog {
-    /// 弹出这台主机的命令历史。
-    pub fn open(
-        host: Host,
-        service: CommandHistoryService,
-        on_run: HistoryRunHandler,
-        on_shell_integration: ShellIntegrationHandler,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let dialog_view = cx.new(|cx| {
-            Self::new(
-                host.clone(),
-                service,
-                on_run,
-                on_shell_integration,
-                window,
-                cx,
-            )
-        });
-        // 读库在这儿起，不在 `new` 里：构造函数不做 I/O，测试才能拿一份现成的
-        // 快照把这一层画出来（gpui 的确定性测试容不下一次跨线程的唤醒）。
-        dialog_view.update(cx, |this, cx| this.load(cx));
-        let clear_view = dialog_view.clone();
-
-        window.open_dialog(cx, move |dialog, _, cx| {
-            let clear_view = clear_view.clone();
-            dialog
-                .w(px(640.))
-                .title(render_header(&host, cx))
-                .child(dialog_view.clone())
-                .footer(
-                    h_flex()
-                        .w_full()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .pt_3()
-                        .border_t_1()
-                        .border_color(cx.theme().border)
-                        .child(
-                            Button::new("command-history-clear")
-                                .ghost()
-                                .xsmall()
-                                .icon(Icon::new(AppIcon::Trash).with_size(ICON))
-                                .label(t!("command_history.clear"))
-                                .on_click(move |_, window, cx| {
-                                    clear_view.update(cx, |this, cx| this.clear(window, cx));
-                                }),
-                        )
-                        .child(
-                            Button::new("command-history-close")
-                                .ghost()
-                                .label(t!("command_history.close"))
-                                .on_click(|_, window, cx| window.close_dialog(cx)),
-                        ),
-                )
-        });
-    }
-
-    fn new(
+impl CommandHistoryView {
+    /// 建一扇常驻在终端标签页里的命令历史视图。
+    ///
+    /// 读库不在这里起（[`Self::load`] 另行调用）：构造函数不做 I/O，测试才能
+    /// 拿一份现成的快照把这一层画出来（gpui 的确定性测试容不下一次跨线程的唤醒）。
+    pub(crate) fn new(
         host: Host,
         service: CommandHistoryService,
         on_run: HistoryRunHandler,
@@ -193,6 +140,7 @@ impl CommandHistoryDialog {
 
         Self {
             host_id: host.id.clone(),
+            host_name: host.name.clone(),
             service,
             search,
             records: Vec::new(),
@@ -209,7 +157,7 @@ impl CommandHistoryDialog {
 
     /// 从库里取一份快照。读不出来只记日志、当成空的 —— 这一层不是会话的
     /// 关键路径，为它弹一个错误框打断用户不值当。
-    fn load(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn load(&mut self, cx: &mut Context<Self>) {
         let service = self.service.clone();
         let host_id = self.host_id.to_string();
         cx.spawn(async move |this, cx| {
@@ -230,6 +178,15 @@ impl CommandHistoryDialog {
         .detach();
     }
 
+    /// 右栏开始看这一页：取一份新快照 —— 和原先"每次打开都读一遍"同口径，
+    /// 本次会话里新跑的命令才看得见。收起时不必做什么：快照留着，下次再看再读。
+    /// 读库只在这一刻起，常驻实体平时不碰 I/O（测试也才画得动它）。
+    pub(crate) fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if visible {
+            self.load(cx);
+        }
+    }
+
     /// 按搜索框里的字重算一遍还剩哪几条。
     fn apply_filter(&mut self, cx: &mut Context<Self>) {
         let query = self.search.read(cx).value().trim().to_lowercase();
@@ -247,13 +204,15 @@ impl CommandHistoryDialog {
         cx.notify();
     }
 
-    /// 点了某一行：把那条命令发回当前会话，并收起这一层。
+    /// 点了某一行：把那条命令发回当前会话。
+    ///
+    /// 这一栏不收起 —— 用户常连着发好几条历史命令，收一次就得再点一次回来。
+    /// 焦点跟着命令进终端（[`HistoryRunHandler`] 那头走 `run_line`）。
     fn run(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(command) = self.record_at(row).map(|record| record.command.to_string()) else {
             return;
         };
         let on_run = self.on_run.clone();
-        window.close_dialog(cx);
         on_run(command, window, cx);
     }
 
@@ -562,105 +521,91 @@ fn render_script(cx: &App) -> impl IntoElement {
         )
 }
 
-/// 标题行：图标 + "命令历史" + 这台主机的名字。
-fn render_header(host: &Host, cx: &App) -> impl IntoElement {
-    h_flex()
-        .items_center()
-        .gap(px(10.))
-        .child(
-            div()
-                .size(px(32.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(cx.theme().radius)
-                .bg(palette::teal().opacity(0.12))
-                .border_1()
-                .border_color(palette::teal().opacity(0.35))
-                .text_color(palette::teal())
-                .child(Icon::new(AppIcon::History).with_size(px(16.))),
-        )
-        .child(
-            v_flex()
-                .gap(px(2.))
-                .child(
-                    div()
-                        .text_sm()
-                        .font_semibold()
-                        .child(SharedString::from(t!("command_history.title"))),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(host.name.clone()),
-                ),
-        )
-}
-
-impl Render for CommandHistoryDialog {
+impl Render for CommandHistoryView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.visible.len();
         let empty_note = self.empty_note();
 
+        // 标题行：工具图标 + 名称 + 主机名，右端清空与收起。
+        let header = session_tool_header(SessionTool::History, Some(self.host_name.clone()), cx)
+            .child(
+                Button::new("command-history-clear")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(AppIcon::Trash).with_size(ICON))
+                    .tooltip(t!("command_history.clear"))
+                    .accessibility_id(t!("command_history.clear"))
+                    .on_click(cx.listener(|this, _, window, cx| this.clear(window, cx))),
+            )
+            .child(
+                right_collapse_button()
+                    .on_click(|_, window, cx| Workspace::collapse_session_tools(window, cx)),
+            );
+
         v_flex()
-            .gap_2()
-            // 顶上留出这 4px 不是为了好看：对话框正文是个会裁剪的滚动容器，
-            // 而输入框聚焦时那圈 ring 画在自己的边框**外面**（gpui-kit 的
-            // `focus_ring_style`，3px 环 + 1px 边框 = 向外 4px）。搜索框正好
-            // 贴着正文顶边，不留这一道，环的上半圈就被裁掉 —— 左右下三边都有、
-            // 独独上边是平的。
-            .pt_1()
-            .pb_1()
-            .child(Input::new(&self.search).small().w_full())
+            .size_full()
+            .bg(cx.theme().background)
+            .child(header)
             .child(
-                div()
-                    .h(LIST_HEIGHT)
-                    .w_full()
-                    .rounded(cx.theme().radius)
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    // 行是方角的，滚到边上不能盖住这一圈圆角。
-                    .overflow_hidden()
-                    .child(match rows {
-                        0 => div()
-                            .p_4()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(empty_note)
-                            .into_any_element(),
-                        _ => v_flex()
-                            .id("command-history-list")
-                            .relative()
-                            .size_full()
-                            .child(
-                                v_virtual_list(
-                                    cx.entity().clone(),
-                                    "command-history-rows",
-                                    self.row_sizes.clone(),
-                                    |this, visible, _, cx| {
-                                        visible.map(|row| this.render_row(row, cx)).collect()
-                                    },
-                                )
-                                .track_scroll(&self.scroll),
-                            )
-                            .scrollbar(&self.scroll, ScrollbarAxis::Vertical)
-                            .into_any_element(),
-                    }),
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .gap_2()
+                    // 四周留白也替搜索框聚焦时那圈向外 4px 的 ring 让了位置
+                    // （gpui-kit 的 `focus_ring_style`），贴着边画会被裁掉半圈。
+                    .p_2()
+                    .child(Input::new(&self.search).small().w_full())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .w_full()
+                            .rounded(cx.theme().radius)
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            // 行是方角的，滚到边上不能盖住这一圈圆角。
+                            .overflow_hidden()
+                            .child(match rows {
+                                0 => div()
+                                    .p_4()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(empty_note)
+                                    .into_any_element(),
+                                _ => v_flex()
+                                    .id("command-history-list")
+                                    .relative()
+                                    .size_full()
+                                    .child(
+                                        v_virtual_list(
+                                            cx.entity().clone(),
+                                            "command-history-rows",
+                                            self.row_sizes.clone(),
+                                            |this, visible, _, cx| {
+                                                visible.map(|row| this.render_row(row, cx)).collect()
+                                            },
+                                        )
+                                        .track_scroll(&self.scroll),
+                                    )
+                                    .scrollbar(&self.scroll, ScrollbarAxis::Vertical)
+                                    .into_any_element(),
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(palette::idle(cx))
+                            .child(SharedString::from(t!(
+                                "command_history.hint",
+                                limit => HISTORY_LIMIT,
+                            ))),
+                    )
+                    .child(self.render_shell_integration(cx)),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(palette::idle(cx))
-                    .child(SharedString::from(t!(
-                        "command_history.hint",
-                        limit => HISTORY_LIMIT,
-                    ))),
-            )
-            .child(self.render_shell_integration(cx))
     }
 }
 
 #[cfg(test)]
-#[path = "../../tests/ui/dialogs/command_history.rs"]
+#[path = "../../tests/ui/views/command_history.rs"]
 mod tests;

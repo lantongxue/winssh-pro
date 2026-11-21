@@ -1,14 +1,17 @@
-//! 主窗口外壳：标题栏 + 固定活动栏 + 侧边栏 + Dock 工作区。
+//! 主窗口外壳：标题栏 + 左活动栏 + 左侧边栏 + Dock 工作区 + 右侧边栏 + 右活动栏。
 //!
 //! 外壳本身不放业务内容。标题栏正中是命令中心，左侧活动栏是稳定的全局导航，
-//! 紧接着是可收起的侧边栏，右边整块交给 [`DockArea`]：中心区承载终端与欢迎页，
-//! 右侧 dock 停着智能助手（[`AssistantPanel`]，默认收起），都可以通过分屏、拖拽
-//! 标签页灵活排列。侧边栏不在 dock 系统内 —— 它的宽度归 `ResizableState`，
-//! 开合归 [`Workspace::sidebar_open`]，显示哪个视图归 [`Workspace::view`]。
+//! 紧接着是可收起的左侧边栏，中间整块交给 [`DockArea`]（中心区承载终端与欢迎页，
+//! 可分屏、拖拽标签页）。窗口最右是左侧的镜像：一条固定的右活动栏
+//! （[`SessionActivityBar`]）加一扇可收起的右侧边栏，停着四块**会话**工具 ——
+//! 资源监控、端口转发、命令历史、智能助手 —— 它们跟着中心区活动的那条会话走。
 //!
-//! 助手那条 dock 的开合与宽度都归 Dock 自己记，外壳不留副本：活动栏上的
-//! AI 助手键和中心区标签条右端那颗 `PanelRight` 按的是同一个
-//! [`DockArea::toggle_dock`]。
+//! 两条侧边栏都不在 dock 系统内：宽度归各自的 `ResizableState`，开合归
+//! [`Workspace::sidebar_open`] / [`Workspace::right_open`]，显示哪一块归
+//! [`Workspace::view`] / [`Workspace::right_tool`]。右栏那三块会话视图的实体
+//! 常驻在各自的终端标签页里（生命周期跟着会话），外壳只把活动会话的那一块借来画；
+//! 助手实体则常驻在外壳上。右栏在看哪一块由 [`Workspace::sync_shown_tool`] 推给
+//! 活动终端（监控据此决定采轻量还是全量）。
 
 use std::rc::Rc;
 
@@ -17,7 +20,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Icon, ResizableState, Root, Sizable as _, StyledExt as _, TitleBar,
     WindowExt as _,
     button::{Button, ButtonVariants as _, DropdownButton},
-    dock::{DockArea, DockLayout, DockPlacement, DockSkin, PanelStyle, panel_handle},
+    dock::{DockArea, DockEvent, DockLayout, DockPlacement, DockSkin, PanelStyle, panel_handle},
     h_flex, h_resizable,
     kbd::Kbd,
     menu::PopupMenuItem,
@@ -26,7 +29,7 @@ use gpui_kit::component::{
 use gpui_kit::{
     Anchor, AnyElement, AnyView, App, AppContext as _, Context, Entity, EntityId, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render,
-    Styled as _, Window, actions, div, prelude::FluentBuilder as _, px,
+    Styled as _, WeakEntity, Window, actions, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::service::{
@@ -34,13 +37,13 @@ use crate::service::{
     TrustedHostService,
 };
 use crate::ui::{
-    bars::{ActivityAction, ActivityBar, CommandCenterBar},
+    bars::{ActivityAction, ActivityBar, CommandCenterBar, SessionActivityBar},
     dialogs::{CommandPaletteDialog, CommandPaletteEvent},
-    panels::{ASSISTANT_DOCK_WIDTH, AssistantPanel, TerminalPanel, WelcomeEvent, WelcomePanel},
+    panels::{AssistantPanel, TerminalPanel, WelcomeEvent, WelcomePanel},
     theme::AppIcon,
     views::{
         ClashView, ClashViewEvent, CredentialVaultEvent, CredentialVaultView, HostExplorerEvent,
-        HostExplorerView, SidebarView, SnippetVaultEvent, SnippetVaultView,
+        HostExplorerView, SessionTool, SidebarView, SnippetVaultEvent, SnippetVaultView,
     },
     windows::{CredentialVaultWindow, SettingsWindow, TrustedHostsWindow, show_fps_monitor},
 };
@@ -72,8 +75,8 @@ actions!(
 
 /// Dock 布局的持久化标识与版本。改变默认布局时提升版本号。
 const DOCK_ID: &str = "winssh-main-dock";
-/// 3：智能助手从贴右缘的一层抽屉变成右侧 dock 里的一块面板。
-const DOCK_VERSION: usize = 3;
+/// 4：智能助手从右侧 dock 搬进右侧边栏，Dock 不再设右 dock。
+const DOCK_VERSION: usize = 4;
 
 /// 标题栏左端让给窗口按钮的宽度：macOS 上是红绿灯占的那一段（与
 /// [`TitleBar`] 内部的留白同宽），其余平台的窗口按钮在右边，标题栏左端不留位置。
@@ -84,6 +87,12 @@ const WINDOW_CONTROLS_INSET: gpui_kit::Pixels = px(80.);
 const WINDOW_CONTROLS_INSET: gpui_kit::Pixels = px(0.);
 
 const SIDEBAR_WIDTH: gpui_kit::Pixels = px(300.);
+
+/// 右侧边栏展开时的初始宽度。对话与监控都读得舒服的那一档；之后用户拖多宽
+/// 记在 [`Workspace::right_resizable`] 里。下限跟监控面板原先的可拖下限一致。
+const RIGHT_SIDEBAR_WIDTH: gpui_kit::Pixels = px(380.);
+const RIGHT_SIDEBAR_MIN: gpui_kit::Pixels = px(280.);
+const RIGHT_SIDEBAR_MAX: gpui_kit::Pixels = px(700.);
 
 pub struct Workspace {
     dock_area: Entity<DockArea>,
@@ -114,6 +123,16 @@ pub struct Workspace {
     /// 侧边栏是否展开。收起时活动栏留在原处，右边整块让给 Dock。
     sidebar_open: bool,
     resizable_state: Entity<ResizableState>,
+    /// 智能助手。常驻在外壳上（右栏的一块），只操作中心区当前那条会话。
+    assistant: Entity<AssistantPanel>,
+    /// 右侧边栏是否展开。收起时右活动栏留在原处，中间整块让给 Dock。
+    right_open: bool,
+    /// 右侧边栏当前显示哪一块会话工具，也就是右活动栏上选中的那个条目。
+    right_tool: SessionTool,
+    right_resizable: Entity<ResizableState>,
+    /// 右栏此刻正把哪一条终端的工具借去画。换标签页 / 开合右栏时由
+    /// [`Self::sync_shown_tool`] 维护：旧的那条要收回"没在看你"，新的那条接上。
+    shown_target: Option<WeakEntity<TerminalPanel>>,
     /// 当前独占窗口内容的远程桌面；Dock 布局仍留在原处，退出后原样呈现。
     desktop_fullscreen: Option<AnyView>,
     /// 进入时是否由我们把窗口切成原生全屏；退出时只撤销自己开启的状态。
@@ -245,6 +264,8 @@ impl Workspace {
         let assistant = cx.new(|cx| {
             AssistantPanel::new(AssistantService::open(), dock_area.downgrade(), window, cx)
         });
+        // 助手停右栏（不在 Dock 里），标题行由它正文自己画。
+        assistant.update(cx, |assistant, _| assistant.set_sidebar_mode(true));
 
         let command_palette = cx.new(|cx| CommandPaletteDialog::new(window, cx));
         cx.subscribe_in(
@@ -255,6 +276,7 @@ impl Workspace {
                     .host_explorer
                     .update(cx, |explorer, cx| explorer.open_host(host, window, cx)),
                 CommandPaletteEvent::ShowView(view) => this.show_view(*view, cx),
+                CommandPaletteEvent::ShowTool(tool) => this.toggle_tool(*tool, window, cx),
                 CommandPaletteEvent::NewHost => this
                     .host_explorer
                     .update(cx, |explorer, cx| explorer.new_host(window, cx)),
@@ -271,7 +293,6 @@ impl Workspace {
                     this.snippet_vault
                         .update(cx, |vault, cx| vault.new_snippet(window, cx));
                 }
-                CommandPaletteEvent::Activity(action) => this.run_action(*action, window, cx),
             },
         )
         .detach();
@@ -285,23 +306,21 @@ impl Workspace {
                 window,
                 cx,
             );
-            // 智能助手停在右侧 dock 里，但**默认收起**：开软件是来连机器的，
-            // 助手是想起来才叫的那一档，一进门就占掉右边三百多像素不合适。
-            // 面板本身照样在这儿装好 —— 活动栏那颗 AI 助手键按下去就是把这条
-            // dock 展开，不必等那一下才现搭。
-            area.set_dock(
-                DockPlacement::Right,
-                DockLayout::tabs().panel_view(panel_handle(assistant.clone()), cx),
-                window,
-                cx,
-            );
-            // 宽度还是先定到对话读得舒服的那一档：它是展开时的宽度，
-            // 之后用户拖多宽，Dock 自己记着。
-            area.set_dock_size(DockPlacement::Right, ASSISTANT_DOCK_WIDTH, window, cx);
-            // 新建的 dock 是开着的（`Dock::new`），这里把它扳回去。
-            // Dock 没有"直接设开合"的口子，只有这一个扳手。
-            area.toggle_dock(DockPlacement::Right, window, cx);
         });
+
+        // 中心区一动（切标签页、开关、分屏、拖拽）就重认"右栏在看哪一条会话"，
+        // 并把开合状态推给新旧两条终端。漏掉任何一种都会让右栏停在上一台机器上。
+        cx.subscribe_in(
+            &dock_area,
+            window,
+            |this, _, event: &DockEvent, window, cx| {
+                if matches!(event, DockEvent::LayoutChanged) {
+                    this.sync_shown_tool(window, cx);
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
 
         // WSL 发行版探测放后台：`wsl.exe --list` 要起一个子进程，慢的话
         // 几百毫秒，堵在开窗这一帧不值得。探完（多半是空表）回来把标题栏
@@ -332,6 +351,13 @@ impl Workspace {
             view: SidebarView::Hosts,
             sidebar_open: true,
             resizable_state,
+            assistant,
+            // 右栏默认收起：开软件是来连机器的，会话工具是想起来才叫的那一档，
+            // 一进门就占掉右边三百多像素不合适。右活动栏常驻，点一下才展开。
+            right_open: false,
+            right_tool: SessionTool::Monitor,
+            right_resizable: cx.new(|_| ResizableState::default()),
+            shown_target: None,
             desktop_fullscreen: None,
             desktop_fullscreen_owns_window: false,
             desktop_fullscreen_native_seen: false,
@@ -450,17 +476,71 @@ impl Workspace {
     }
 
     /// 执行活动栏底部的全局动作。
-    fn run_action(&mut self, action: ActivityAction, window: &mut Window, cx: &mut Context<Self>) {
+    fn run_action(&mut self, action: ActivityAction, _window: &mut Window, cx: &mut Context<Self>) {
         match action {
             ActivityAction::Settings => self.open_settings_window(cx),
-            // 助手是右侧 dock 里的一块面板，开合就是开合那条 dock ——
-            // 和中心区标签条右端那颗 `PanelRight` 是同一个动作。
-            ActivityAction::Assistant => {
-                self.dock_area.update(cx, |area, cx| {
-                    area.toggle_dock(DockPlacement::Right, window, cx);
-                });
+        }
+    }
+
+    /// 右活动栏 / 信息栏按钮 / 快捷键共用的入口：把右栏切到某一块会话工具。
+    /// 再次选中当前这一块等于收起右栏 —— 和左栏"同一个键既是去这儿也是别看了"
+    /// 同一条语义。
+    fn toggle_tool(&mut self, tool: SessionTool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.right_open && self.right_tool == tool {
+            self.right_open = false;
+        } else {
+            self.right_tool = tool;
+            self.right_open = true;
+        }
+        self.sync_shown_tool(window, cx);
+        cx.notify();
+    }
+
+    /// 收起右栏（各视图标题行上那颗朝右的箭头）。
+    fn collapse_tools(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.right_open {
+            return;
+        }
+        self.right_open = false;
+        self.sync_shown_tool(window, cx);
+        cx.notify();
+    }
+
+    /// 把"右栏在看哪一块"推给中心区活动的那条终端，并收回上一条的。
+    ///
+    /// 监控靠这一格决定采轻量还是全量；信息栏上那几颗按钮靠它点亮。右栏收起时
+    /// 推 `None`，所有终端的监控都回到轻量采集（状态栏那几个数字照旧有）。
+    fn sync_shown_tool(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active = TerminalPanel::active_in(&self.dock_area, window, cx);
+        let tool = self.right_open.then_some(self.right_tool);
+        let active_id = active.as_ref().map(|entity| entity.entity_id());
+
+        // 上一条若换了人，先收回它的"没在看你"；还是同一条则下面重推一次即可。
+        if let Some(prev) = self.shown_target.take().and_then(|weak| weak.upgrade()) {
+            if Some(prev.entity_id()) != active_id {
+                prev.update(cx, |terminal, cx| terminal.set_shown_tool(None, cx));
             }
         }
+        if let Some(terminal) = active {
+            terminal.update(cx, |terminal, cx| terminal.set_shown_tool(tool, cx));
+            self.shown_target = Some(terminal.downgrade());
+        }
+    }
+
+    /// 会话侧（终端信息栏按钮、Alt+M/P/H、监控头上那颗关闭）够不到外壳实体，
+    /// 经窗口根视图找回来再喊话 —— 与 [`Self::toggle_desktop_fullscreen`] 同一条路。
+    pub(crate) fn show_session_tool(tool: SessionTool, window: &mut Window, cx: &mut App) {
+        let Some(workspace) = Self::in_window(window, cx) else {
+            return;
+        };
+        workspace.update(cx, |this, cx| this.toggle_tool(tool, window, cx));
+    }
+
+    pub(crate) fn collapse_session_tools(window: &mut Window, cx: &mut App) {
+        let Some(workspace) = Self::in_window(window, cx) else {
+            return;
+        };
+        workspace.update(cx, |this, cx| this.collapse_tools(window, cx));
     }
 
     fn on_toggle_command_palette(
@@ -660,6 +740,56 @@ impl Workspace {
             SidebarView::Keys => self.credential_vault.clone().into_any_element(),
         }
     }
+
+    /// 右侧边栏当前那一块。助手常驻在外壳上；其余三块借中心区活动会话的实体来画
+    /// （它们常驻在各自的终端标签页里）。没有可绑定的会话时画空状态，不编内容。
+    fn render_right_sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.right_tool == SessionTool::Assistant {
+            return self.assistant.clone().into_any_element();
+        }
+        let active = TerminalPanel::active_in(&self.dock_area, window, cx);
+        let Some(terminal) = active else {
+            return self.render_right_empty(cx);
+        };
+        let terminal = terminal.read(cx);
+        match self.right_tool {
+            SessionTool::Monitor => terminal.monitor_panel().into_any_element(),
+            SessionTool::Forwards => terminal.forwards_view().into_any_element(),
+            SessionTool::History => match terminal.history_view() {
+                Some(view) => view.into_any_element(),
+                // 本机 Shell 没有主机记录、也就没有历史页。
+                None => self.render_right_empty(cx),
+            },
+            SessionTool::Assistant => unreachable!("助手在上面已经返回"),
+        }
+    }
+
+    /// 右栏没有可绑定的会话时那句话。
+    fn render_right_empty(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .p_6()
+            .bg(cx.theme().background)
+            .child(
+                self.right_tool
+                    .icon()
+                    .with_size(px(24.))
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_center()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("session_tools.no_session")),
+            )
+            .into_any_element()
+    }
 }
 
 impl Focusable for Workspace {
@@ -725,11 +855,14 @@ impl Render for Workspace {
                             })),
                     )
                     .child(div().flex_1().min_w_0().map(|this| {
-                        if !self.sidebar_open {
-                            return this.child(self.dock_area.clone());
-                        }
-
-                        this.child(
+                        // 左半：左侧边栏 + Dock。左栏收起时整块让给 Dock，
+                        // 拖出来的宽度留在 ResizableState 里，展开后还是原样。
+                        let left = if !self.sidebar_open {
+                            div()
+                                .size_full()
+                                .child(self.dock_area.clone())
+                                .into_any_element()
+                        } else {
                             h_resizable("workspace-main-split")
                                 .with_state(&self.resizable_state)
                                 .child(
@@ -741,9 +874,40 @@ impl Render for Workspace {
                                 .child(
                                     resizable_panel()
                                         .child(div().size_full().child(self.dock_area.clone())),
+                                )
+                                .into_any_element()
+                        };
+                        if !self.right_open {
+                            return this.child(left);
+                        }
+                        // 右栏展开：再切一刀，左半吃掉剩余宽度，右栏拖自己的那一份。
+                        this.child(
+                            h_resizable("workspace-right-split")
+                                .with_state(&self.right_resizable)
+                                .child(resizable_panel().child(left))
+                                .child(
+                                    resizable_panel()
+                                        .size(RIGHT_SIDEBAR_WIDTH)
+                                        .size_range(RIGHT_SIDEBAR_MIN..RIGHT_SIDEBAR_MAX)
+                                        .child(
+                                            div()
+                                                .size_full()
+                                                .overflow_hidden()
+                                                .border_l_1()
+                                                .border_color(cx.theme().border)
+                                                .child(self.render_right_sidebar(window, cx)),
+                                        ),
                                 ),
                         )
-                    })),
+                    }))
+                    // 右活动栏宽度固定，贴在窗口最右缘，是左活动栏的镜像。
+                    .child(
+                        SessionActivityBar::new(self.right_tool, self.right_open).on_select(
+                            cx.listener(|this, tool: &SessionTool, window, cx| {
+                                this.toggle_tool(*tool, window, cx);
+                            }),
+                        ),
+                    ),
             )
             // 帧率浮层，设置面板里那个开关点亮的就是它。挂在外壳最外面那层
             // （已经是 `relative()`）而不是某个面板里：它量的是这扇窗一整帧的

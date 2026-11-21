@@ -579,16 +579,17 @@
     /// 量的是"终端里正刷屏"这个场景：每帧给终端窗格一次 `cx.notify()`，然后
     /// 整帧走完 layout/prepaint/paint。它是这一栏所有面板的预算表 ——
     /// 终端每吐一批输出，Dock 那一层的面板缓存就不命中（见
-    /// [`crate::ui::panels::MonitorPanel`] 的模块文档），**整条标签页**连右侧
-    /// 监控、底部 SFTP 一起重建一遍，所以这里的数就是一帧的实际开销。
+    /// [`crate::ui::panels::MonitorPanel`] 的模块文档），**整条标签页**连底部
+    /// SFTP 一起重建一遍，所以这里的数就是一帧的实际开销。
     ///
-    /// 落这条量尺时（release 档，监控面板还没采到读数，所以它那一栏只画空状态；
-    /// 带读数的 Metrics 页另有 [`MonitorPanel`] 自己那条量尺）：
+    /// 监控 / 转发 / 历史已搬去右侧边栏（不在本标签页的子树里），不再计入这条
+    /// 量尺；监控自己那一栏的开销另有 [`MonitorPanel`] 的 `frame_cost`。
+    ///
+    /// 落这条量尺时（release 档）：
     ///
     /// | 开了什么 | 每帧 |
     /// | --- | --- |
     /// | 只有终端 | 0.8ms |
-    /// | 加监控面板（空状态） | 1.0ms |
     /// | 再加 SFTP 栏 | 4.8ms |
     ///
     /// 120fps 的预算是 8.3ms。
@@ -615,8 +616,6 @@
         let pane = panel.read_with(cx, |panel, _| panel.panes[0].clone());
 
         run(cx, &pane, "只有终端");
-        panel.update(cx, |panel, cx| panel.set_monitor_open(true, cx));
-        run(cx, &pane, "加监控面板");
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| panel.toggle_sftp(window, cx));
         });

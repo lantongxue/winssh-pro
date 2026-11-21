@@ -211,6 +211,11 @@ session_info.clear:
   en: Clear screen
   zh-CN: 清屏
 
+# ── 右侧边栏（会话工具：监控 / 转发 / 历史 / 助手） ────────────────────────
+session_tools.no_session:
+  en: No SSH session in front. Open a host to use this tool.
+  zh-CN: 当前没有 SSH 会话。打开一台主机后才能使用这一工具。
+
 # ── 命令历史（会话信息栏上那颗按钮弹出） ─────────────────────────────────
 command_history.title:
   en: Command History

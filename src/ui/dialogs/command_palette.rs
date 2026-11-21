@@ -27,9 +27,8 @@ use gpui_kit::{
 use crate::{
     host::{Host, HostGroup},
     ui::{
-        bars::ActivityAction,
         theme::{AppIcon, palette},
-        views::SidebarView,
+        views::{SessionTool, SidebarView},
         workspace::{OpenSettingsWindow, OpenVaultWindow, ToggleSidebar},
     },
 };
@@ -61,14 +60,14 @@ pub enum CommandPaletteEvent {
     OpenHost(Host),
     /// 侧边栏切到这个视图。
     ShowView(SidebarView),
+    /// 右侧边栏切到这一块会话工具。
+    ShowTool(SessionTool),
     /// 新建一台主机。
     NewHost,
     /// 往保险箱里新建一条凭据。
     NewCredential,
     /// 新建一条命令片段。
     NewSnippet,
-    /// 活动栏底部那几个全局动作里的一个。
-    Activity(ActivityAction),
 }
 
 /// 面板里的一条命令：条目长什么样，加上确认之后要做的事。
@@ -346,10 +345,10 @@ fn action_commands() -> Vec<PaletteCommand> {
         ),
         PaletteCommand::new(
             CommandItem::new()
-                .label(ActivityAction::Assistant.label())
+                .label(SessionTool::Assistant.label())
                 .icon(AppIcon::Sparkles)
                 .keywords(["ai", "assistant", "copilot"]),
-            CommandPaletteEvent::Activity(ActivityAction::Assistant),
+            CommandPaletteEvent::ShowTool(SessionTool::Assistant),
         ),
         PaletteCommand::dispatching(
             CommandItem::new()

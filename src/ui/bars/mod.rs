@@ -2,6 +2,7 @@
 //!
 //! 它们的位置、尺寸与条目顺序不随内容变化，只表达"现在在哪儿"和"能做什么"，
 //! 本身不放业务内容：[`ActivityBar`] 是窗口最左边那条全局导航，
+//! [`SessionActivityBar`] 是它镜像到最右边的会话导航，
 //! [`CommandCenterBar`] 是标题栏正中那一段入口，
 //! [`SessionInfoBar`] 与 [`SessionStatusBar`] 是终端的上下两沿。
 //!
@@ -10,11 +11,13 @@
 
 mod activity_bar;
 mod command_center;
+mod session_activity_bar;
 mod session_info;
 mod session_status;
 
 pub use activity_bar::{ActivityAction, ActivityBar};
 pub use command_center::CommandCenterBar;
+pub use session_activity_bar::SessionActivityBar;
 pub use session_info::SessionInfoBar;
 pub use session_status::SessionStatusBar;
 

@@ -23,7 +23,7 @@ mod vnc;
 mod webdav_host;
 mod welcome;
 
-pub use assistant::{ASSISTANT_DOCK_WIDTH, AssistantPanel};
+pub use assistant::AssistantPanel;
 pub use clash::ClashPanel;
 pub use easytier::EasyTierPanel;
 pub use ftp_host::DockedFtpPanel;

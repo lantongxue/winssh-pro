@@ -53,24 +53,20 @@
     }
 
     struct Harness {
-        dialog: Entity<CommandHistoryDialog>,
+        dialog: Entity<CommandHistoryView>,
     }
 
     impl Render for Harness {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            v_flex()
-                .size_full()
-                .child(render_header(&host(), cx))
-                .child(self.dialog.clone())
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            v_flex().size_full().child(self.dialog.clone())
         }
     }
 
-    /// 把对话框挂进窗口画一帧。
+    /// 把视图挂进窗口画一帧。
     ///
-    /// 外面套一层 [`Root`]：[`CommandHistoryDialog::run`] 要收起对话框层，
-    /// 窗口第一层不是 `Root` 的话那一句直接 panic。里面再套一层 `Harness`，
-    /// 是为了把标题那一段也画上 —— 它不在 [`Render`] 里（交给对话框外壳的），
-    /// 单画正文覆盖不到，而它同样是一条会读实体状态的 builder 链。
+    /// 外面套一层 [`Root`]：shell 集成那个确认框（`open_alert_dialog`）要窗口
+    /// 第一层是 `Root`，不然直接 panic。标题行现在在视图自己的 [`Render`] 里，
+    /// 单画这一个实体就覆盖得到。
     ///
     /// 快照是**直接塞进去**的，不走 `load` —— 那一步要跨到数据层的 tokio
     /// runtime 上，而 gpui 的测试调度器会把任何来自别的线程的唤醒判成不确定。
@@ -80,7 +76,7 @@
         records: Vec<CommandRecord>,
         on_run: HistoryRunHandler,
     ) -> (
-        Entity<CommandHistoryDialog>,
+        Entity<CommandHistoryView>,
         &mut gpui_kit::VisualTestContext,
     ) {
         draw_with(cx, records, on_run, Rc::new(|_, _, _| {}))
@@ -93,7 +89,7 @@
         on_run: HistoryRunHandler,
         on_shell_integration: ShellIntegrationHandler,
     ) -> (
-        Entity<CommandHistoryDialog>,
+        Entity<CommandHistoryView>,
         &mut gpui_kit::VisualTestContext,
     ) {
         use gpui_kit::component::Root;
@@ -104,7 +100,7 @@
         cx.update(gpui_kit::init);
         let (root, cx) = cx.add_window_view(|window, cx| {
             let dialog = cx.new(|cx| {
-                let mut this = CommandHistoryDialog::new(
+                let mut this = CommandHistoryView::new(
                     host(),
                     service,
                     on_run,
@@ -315,7 +311,7 @@
     }
 
     // 「清空」和行尾那颗「删除」都没有界面层的用例：
-    // [`CommandHistoryDialog::clear`] 与 [`CommandHistoryDialog::delete`] 都会派
+    // [`CommandHistoryView::clear`] 与 [`CommandHistoryView::delete`] 都会派
     // 一次落库到数据层的 tokio runtime 上，而 gpui 的测试调度器一看到来自别的
     // 线程的唤醒就判这个测试不确定（整个测试进程 abort，不只是这一条挂）。
     // 这两件事本身归服务层那两条用例

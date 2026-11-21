@@ -13,14 +13,13 @@ mod backup_restore;
 mod cert_trust;
 mod clash_form;
 mod clash_tun_settings;
-mod command_history;
 mod command_palette;
 mod credential_form;
+mod forward_form;
 mod host_trust;
 mod key_generator;
 mod mihomo_download;
 mod password_generator;
-mod port_forward;
 mod remote_copy;
 mod sftp_chmod;
 mod sftp_form;
@@ -36,14 +35,13 @@ pub use cert_trust::CertTrustDialog;
 pub use clash_form::{ClashFormDialog, ClashSavedHandler};
 #[allow(unused_imports)]
 pub use clash_tun_settings::{ClashTunSavedHandler, ClashTunSettingsDialog};
-pub use command_history::{CommandHistoryDialog, HistoryRunHandler, ShellIntegrationHandler};
 pub use command_palette::{CommandPaletteDialog, CommandPaletteEvent};
 pub use credential_form::{CredentialFormDialog, CredentialSavedHandler};
+pub use forward_form::{ForwardFormDialog, ForwardSavedHandler};
 pub use host_trust::{HostTrustDialog, TrustDecision, TrustDecisionHandler};
 pub use key_generator::KeyGeneratorDialog;
 pub use mihomo_download::MihomoDownloadDialog;
 pub use password_generator::PasswordGeneratorDialog;
-pub use port_forward::{ForwardsHandler, PortForwardDialog};
 pub use remote_copy::{
     RemoteCopyChannel, RemoteCopyDialog, RemoteCopyHandler, RemoteCopyRequest, RemoteCopyTarget,
 };

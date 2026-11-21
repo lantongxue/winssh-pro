@@ -11,12 +11,18 @@
 //! 见 [`crate::ui::panels`]。
 
 mod clash;
+mod command_history;
 mod credential_vault;
+mod forwards;
 mod host_explorer;
 mod snippet_vault;
 
 pub use clash::{ClashView, ClashViewEvent};
+pub use command_history::{CommandHistoryView, HistoryRunHandler, ShellIntegrationHandler};
 pub use credential_vault::{CredentialVaultEvent, CredentialVaultView, VaultFilter};
+pub use forwards::{ForwardsHandler, ForwardsView};
+// 三档转发的配色：列表卡片与表单弹窗共用同一套，别处画徽章也借它。
+pub(crate) use forwards::kind_tone;
 pub use host_explorer::{FocusSearch, HostExplorerEvent, HostExplorerView};
 pub use snippet_vault::{SnippetVaultEvent, SnippetVaultView};
 
@@ -25,7 +31,10 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
 };
-use gpui_kit::{App, Div, ParentElement as _, Pixels, SharedString, Styled as _, div, px};
+use gpui_kit::{
+    App, Div, ParentElement as _, Pixels, SharedString, Styled as _, div,
+    prelude::FluentBuilder as _, px,
+};
 
 use crate::ui::theme::{AppIcon, palette};
 use rust_i18n::t;
@@ -119,6 +128,107 @@ pub(crate) fn collapse_button() -> Button {
         .ghost()
         .xsmall()
         .icon(IconName::ChevronLeft)
+        .tooltip(t!("sidebar.collapse"))
+        .accessibility_id(t!("sidebar.collapse"))
+}
+
+/// 右侧栏里的一个会话工具，同时也是右活动栏上的一个导航条目。
+///
+/// 与左侧的 [`SidebarView`] 不同，这一栏说的是**当前这条会话**的设施：
+/// 监控、转发、历史都跟着中心区活动的那条终端走（见
+/// [`crate::ui::panels::TerminalPanel::active_in`]），助手 likewise 只操作
+/// 当前会话。没有可绑定的会话时前三者画空状态，助手自己也会说"没有会话"。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionTool {
+    /// 资源监控：对端主机的实时资源与进程。
+    Monitor,
+    /// 端口转发：这条会话上的隧道规则与实况。
+    Forwards,
+    /// 命令历史：这台主机上跑过的命令。
+    History,
+    /// 智能助手：只操作当前会话的对话面板。
+    Assistant,
+}
+
+impl SessionTool {
+    /// 自上而下的排列顺序。右活动栏上的导航条目。
+    pub const ALL: [Self; 4] = [Self::Monitor, Self::Forwards, Self::History, Self::Assistant];
+
+    pub fn id(&self) -> &'static str {
+        match self {
+            Self::Monitor => "monitor",
+            Self::Forwards => "forwards",
+            Self::History => "history",
+            Self::Assistant => "assistant",
+        }
+    }
+
+    /// 工具名称，用作右活动栏图标按钮与侧栏标题行的可访问名称。
+    pub fn label(&self) -> SharedString {
+        match self {
+            Self::Monitor => t!("session_info.monitor"),
+            Self::Forwards => t!("session_info.tunnels"),
+            Self::History => t!("session_info.history"),
+            Self::Assistant => t!("activity.assistant"),
+        }
+        .into()
+    }
+
+    pub fn icon(&self) -> Icon {
+        match self {
+            Self::Monitor => Icon::new(AppIcon::Activity),
+            Self::Forwards => Icon::new(IconName::Network),
+            Self::History => Icon::new(AppIcon::History),
+            Self::Assistant => Icon::new(AppIcon::Sparkles),
+        }
+    }
+}
+
+/// 右侧栏视图共用的标题行：工具图标 + 名称（+ 可选的主机名副标题），
+/// 右边留给调用方追加动作按钮。与左侧 [`view_header`] 同骨架，只是镜像到右栏。
+pub(crate) fn session_tool_header(tool: SessionTool, subtitle: Option<SharedString>, cx: &App) -> Div {
+    h_flex()
+        .flex_shrink_0()
+        .h(HEADER_HEIGHT)
+        .px(GUTTER)
+        .gap_2()
+        .items_center()
+        .border_b_1()
+        .border_color(cx.theme().sidebar_border)
+        .child(
+            tool.icon()
+                .with_size(ICON_SIZE)
+                .flex_shrink_0()
+                .text_color(palette::teal()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_sm()
+                .font_semibold()
+                .child(tool.label()),
+        )
+        .when_some(subtitle, |this, subtitle| {
+            this.child(
+                div()
+                    .flex_shrink_0()
+                    .max_w(px(120.))
+                    .truncate()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(subtitle),
+            )
+        })
+}
+
+/// 收起右侧栏的按钮。箭头朝右（镜像左侧那颗朝左的）。
+pub(crate) fn right_collapse_button() -> Button {
+    Button::new("right-sidebar-collapse")
+        .ghost()
+        .xsmall()
+        .icon(IconName::ChevronRight)
         .tooltip(t!("sidebar.collapse"))
         .accessibility_id(t!("sidebar.collapse"))
 }

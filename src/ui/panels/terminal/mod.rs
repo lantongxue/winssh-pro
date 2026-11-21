@@ -34,7 +34,7 @@ use gpui_kit::component::{
     WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, DockArea, DockPlacement, PaneRef, Panel, PanelEvent, PanelId, TabGroup},
-    h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
+    h_flex, resizable_panel, v_flex, v_resizable,
 };
 use gpui_kit::{
     App, AppContext as _, Axis, ClickEvent, Context, Entity, EntityId, EventEmitter, FocusHandle,
@@ -59,14 +59,16 @@ use crate::{
     ssh::SshSession,
     terminal::TerminalBounds,
     ui::{
+        Workspace,
         bars::{SessionInfoBar, SessionStatusBar},
-        dialogs::{
-            CommandHistoryDialog, ForwardsHandler, HistoryRunHandler, PortForwardDialog,
-            RemoteCopyChannel, RemoteCopyTarget, ShellIntegrationHandler, ZmodemTransferDialog,
-        },
+        dialogs::{RemoteCopyChannel, RemoteCopyTarget, ZmodemTransferDialog},
         panels::{MonitorEvent, MonitorPanel, SftpPanel, SftpPanelEvent},
         pickers::scheme_picker::{SchemePicker, SchemePickerOptions},
         theme::palette,
+        views::{
+            CommandHistoryView, ForwardsHandler, ForwardsView, HistoryRunHandler, SessionTool,
+            ShellIntegrationHandler,
+        },
     },
 };
 use rust_i18n::t;
@@ -120,9 +122,6 @@ const TAB_DOT_SIZE: gpui_kit::Pixels = px(6.);
 /// `SEARCH_BAR_RIGHT`），改这几个数时要一起看。
 const PANE_CLOSE_INSET: gpui_kit::Pixels = px(8.);
 const PANE_CLOSE_SIZE: gpui_kit::Pixels = px(24.);
-
-/// 右侧监控面板的固定宽度。
-const MONITOR_WIDTH: gpui_kit::Pixels = px(360.);
 
 /// 底部 SFTP 栏展开时的初始高度，以及能拖到多高/多矮。展开时给到三行的目录加一条
 /// 队列（原型是 h-20 那一档），拖拽范围则由"还能看见一两行"到"半屏"。
@@ -390,12 +389,18 @@ pub struct TerminalPanel {
     /// 面板自己的焦点句柄。**只是个兜底** —— [`Focusable`] 实际交出去的是
     /// 活动窗格的句柄，见那边的说明。
     focus_handle: FocusHandle,
-    /// 右侧监控面板是否展开。
-    monitor_open: bool,
+    /// 右侧栏此刻正显示着本会话的哪一个工具（`None` = 右栏没在看本会话）。
+    /// 由工作区在"右栏开合 / 换工具 / 中心区换标签页"时推过来
+    /// （[`Self::set_shown_tool`]）：监控靠它决定采轻量还是全量，信息栏上那几颗
+    /// 按钮靠它点亮。视图实体本身常驻在本标签页里，右栏只是借去画。
+    shown_tool: Option<SessionTool>,
     monitor_panel: Entity<MonitorPanel>,
-    /// 终端与监控面板之间的可拖拽分隔状态。
-    resizable_state: Entity<ResizableState>,
-    resizable_id: SharedString,
+    /// 端口转发视图。和监控面板同一条生命周期：常驻在本标签页里，连上之后
+    /// 由 [`Self::start_saved_forwards`] 把转发服务接进来。
+    forwards_view: Entity<ForwardsView>,
+    /// 命令历史视图。跟着"库里有没有这台主机"走（同 [`Self::history`]），
+    /// 本机 Shell 没有主机记录，那一档是 `None`。
+    history_view: Option<Entity<CommandHistoryView>>,
     /// 底部 SFTP 栏。它和监控面板一样是这一栏终端自己的子面板，不进 Dock。
     sftp_open: bool,
     sftp_panel: Entity<SftpPanel>,
@@ -553,6 +558,49 @@ impl TerminalPanel {
             let quad_rows = new_split_state(cx);
             let quad_rows_right = new_split_state(cx);
 
+            // 右栏那三块会话视图常驻在本标签页里（右栏只是借去画），改完的
+            // 规则 / 发出去的命令 / 扳动的开关都经弱句柄交回本标签页落库。
+            let history = hosts.as_ref().map(|_| CommandHistoryService::open());
+            let weak = cx.entity().downgrade();
+            let on_change: ForwardsHandler = Rc::new(move |rules, window, cx| {
+                weak.update(cx, |this: &mut Self, cx| {
+                    this.save_forwards(rules, window, cx)
+                })
+                .ok();
+            });
+            let forwards_view = cx.new(|cx| {
+                ForwardsView::new(host.clone(), None, host.forwards.clone(), on_change, cx)
+            });
+            let history_view = history.clone().map(|service| {
+                let weak = cx.entity().downgrade();
+                let on_run: HistoryRunHandler = Rc::new(move |command, window, cx| {
+                    weak.update(cx, |this: &mut Self, cx| {
+                        this.run_line(&command, window, cx)
+                    })
+                    .ok();
+                });
+                let weak = cx.entity().downgrade();
+                let on_shell_integration: ShellIntegrationHandler =
+                    Rc::new(move |on, window, cx| {
+                        weak.update(cx, |this: &mut Self, cx| {
+                            this.save_shell_integration(on, window, cx)
+                        })
+                        .ok();
+                    });
+                // 读库不在这里起：等右栏真的看这一页时再读（`set_visible`），
+                // 常驻实体平时不碰 I/O。
+                cx.new(|cx| {
+                    CommandHistoryView::new(
+                        host.clone(),
+                        service,
+                        on_run,
+                        on_shell_integration,
+                        window,
+                        cx,
+                    )
+                })
+            });
+
             let mut this = Self {
                 telemetry: None,
                 source,
@@ -564,17 +612,17 @@ impl TerminalPanel {
                 quad_rows: quad_rows.clone(),
                 quad_rows_right: quad_rows_right.clone(),
                 focus_handle: cx.focus_handle(),
-                monitor_open: false,
+                shown_tool: None,
                 monitor_panel: monitor_panel.clone(),
-                resizable_state: cx.new(|_| ResizableState::default()),
-                resizable_id: SharedString::from(format!("terminal-monitor-{}", host.id)),
+                forwards_view,
+                history_view,
                 sftp_open: false,
                 sftp_panel: sftp_panel.clone(),
                 sftp_resizable_state: cx.new(|_| ResizableState::default()),
                 sftp_resizable_id: SharedString::from(format!("terminal-sftp-{}", host.id)),
                 sftp_opening: false,
                 ssh: None,
-                history: hosts.as_ref().map(|_| CommandHistoryService::open()),
+                history,
                 hosts,
                 dock_area,
                 alive: false,
@@ -582,7 +630,7 @@ impl TerminalPanel {
                 host,
             };
             this.adopt_pane(pane, window, cx);
-            Self::subscribe_monitor(&monitor_panel, cx);
+            Self::subscribe_monitor(&monitor_panel, window, cx);
             Self::subscribe_sftp(&sftp_panel, window, cx);
             this.subscribe_quad_row_sync(window, cx);
             this
@@ -630,7 +678,7 @@ impl TerminalPanel {
                 }
                 self.ssh = Some(session.clone());
                 let service = crate::service::MonitorService::new(session.handle.clone());
-                let expanded = self.monitor_open;
+                let expanded = self.shown_tool == Some(SessionTool::Monitor);
                 self.monitor_panel.update(cx, |monitor, cx| {
                     monitor.attach(service, cx);
                     monitor.set_expanded(expanded, cx);
@@ -968,13 +1016,18 @@ impl TerminalPanel {
     ///
     /// 读数走事件而不是让状态栏自己去采：那是同一次采集里已经带回来的数字，
     /// 为三个数再往对端跑一趟没有道理。
-    fn subscribe_monitor(monitor_panel: &Entity<MonitorPanel>, cx: &mut Context<Self>) {
-        cx.subscribe(
+    fn subscribe_monitor(
+        monitor_panel: &Entity<MonitorPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.subscribe_in(
             monitor_panel,
-            |this: &mut Self, _, event: &MonitorEvent, cx| match event {
-                MonitorEvent::Close => {
-                    this.set_monitor_open(false, cx);
-                }
+            window,
+            |this: &mut Self, _, event: &MonitorEvent, window, cx| match event {
+                // 监控头上那颗关闭收的是整条右栏（它已不在终端里画）。
+                // 帧末再喊：这一刻本标签页正被订阅回调借着。
+                MonitorEvent::Close => this.request_collapse(window, cx),
                 MonitorEvent::Reading(telemetry) => {
                     this.telemetry = Some(*telemetry);
                     cx.notify();
@@ -1137,6 +1190,13 @@ impl TerminalPanel {
     ) {
         let service = ForwardService::new(session);
         self.forwards = Some(service.clone());
+        // 右栏那扇转发视图常驻着，连上这一刻把服务与主机那一行的规则接进去；
+        // 它自己 cx.notify，右栏即便没重画也会从空状态换成规则列表。
+        let host = self.host.clone();
+        let rules_now = self.host.forwards.clone();
+        self.forwards_view.update(cx, |view, cx| {
+            view.bind(host, service.clone(), rules_now, cx);
+        });
 
         let rules: Vec<PortForward> = self
             .host
@@ -1189,40 +1249,32 @@ impl TerminalPanel {
             .unwrap_or(0)
     }
 
-    /// 打开端口转发对话框（信息栏上那颗按钮，或者 Alt+P）。
+    /// 请工作区把右栏切到某一块会话工具。
     ///
-    /// 还没连上就不开：那一屏上的每一颗按钮都要一条活着的连接才有意义，
-    /// 开一个全是灰按钮的框不如直说。
+    /// **挪到帧末**：调用方（信息栏按钮、Alt+M/P/H、监控头上那颗关闭）正借着
+    /// 本标签页（`cx.listener` / 订阅回调都把 `&mut Self` 借出去了），而工作区
+    /// 那一步要回头读中心区每一条终端认"当前是谁"（[`TerminalPanel::active_in`]）
+    /// —— 当场读会撞上 "cannot read … while it is already being updated"。
+    /// 帧末借用已还，再喊就安全。与 [`Self::close`] / [`Self::focus_active`] 同一条理由。
+    fn request_tool(&self, tool: SessionTool, window: &mut Window, cx: &mut Context<Self>) {
+        window.defer(cx, move |window, cx| {
+            Workspace::show_session_tool(tool, window, cx);
+        });
+    }
+
+    /// 请工作区收起右栏。帧末的理由同 [`Self::request_tool`]。
+    fn request_collapse(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.defer(cx, move |window, cx| {
+            Workspace::collapse_session_tools(window, cx);
+        });
+    }
+
+    /// 展开右栏的端口转发页（信息栏上那颗按钮，或者 Alt+P）。
+    ///
+    /// 视图常驻在本标签页里，这里只是请工作区把右栏切到它；还没连上时那一页
+    /// 自己画"需要 SSH 连接"的空状态，不必在这儿拦。
     fn open_forwards(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 已经有一层对话框盖着就不再叠一层。Alt+P 连按两次、或者框开着还点了
-        // 信息栏上那颗按钮，都会走到这儿 —— 叠出来的第二个框长得和第一个一样，
-        // 关掉一个还剩一个，看着像关不掉。
-        if window.has_active_dialog(cx) {
-            return;
-        }
-        let Some(service) = self.forwards.clone() else {
-            window.push_notification(t!("terminal.forwards_need_ssh"), cx);
-            return;
-        };
-
-        // 规则改完由这里落库：对话框只管改，主机那一行的正本归标签页。
-        let panel = cx.entity().downgrade();
-        let on_change: ForwardsHandler = std::rc::Rc::new(
-            move |rules: Vec<PortForward>, window: &mut Window, cx: &mut App| {
-                panel
-                    .update(cx, |this, cx| this.save_forwards(rules, window, cx))
-                    .ok();
-            },
-        );
-
-        PortForwardDialog::open(
-            self.host.clone(),
-            service,
-            self.host.forwards.clone(),
-            on_change,
-            window,
-            cx,
-        );
+        self.request_tool(SessionTool::Forwards, window, cx);
     }
 
     /// 把改好的转发规则记在这台主机上，并写回库里。
@@ -1280,34 +1332,16 @@ impl TerminalPanel {
         cx.stop_propagation();
     }
 
-    /// 打开这台主机的命令历史。
+    /// 展开右栏的命令历史页（信息栏上那颗按钮，或者 Alt+H）。
     ///
     /// 点中一条就发进**当前**这条会话 —— 历史是按主机存的，但用它的总是
     /// 手边这个终端（分屏时是活动的那一半，跟着 [`Self::run_line`] 走）。
+    /// 本机 Shell 没有主机记录、也就没有历史页，那一档不接这颗按钮。
     fn open_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(service) = self.history.clone() else {
+        if self.history_view.is_none() {
             return;
-        };
-        let panel = cx.entity().downgrade();
-        let on_run: HistoryRunHandler = Rc::new(move |command: String, window, cx| {
-            panel
-                .update(cx, |this, cx| this.run_line(&command, window, cx))
-                .ok();
-        });
-        let panel = cx.entity().downgrade();
-        let on_shell_integration: ShellIntegrationHandler = Rc::new(move |on: bool, window, cx| {
-            panel
-                .update(cx, |this, cx| this.save_shell_integration(on, window, cx))
-                .ok();
-        });
-        CommandHistoryDialog::open(
-            self.host.clone(),
-            service,
-            on_run,
-            on_shell_integration,
-            window,
-            cx,
-        );
+        }
+        self.request_tool(SessionTool::History, window, cx);
     }
 
     /// 记下这台主机要不要自动装 shell 集成，并在打开时立刻装进当前这条会话。
@@ -1326,6 +1360,9 @@ impl TerminalPanel {
         for pane in self.panes.clone() {
             pane.update(cx, |pane, cx| pane.set_shell_integration(on, cx));
         }
+        // 不回推右栏那扇历史页：开关正是从它那儿扳的，它自己的快照在
+        // `apply_shell_integration` 里已经先改过了；再 update 它一次会撞上
+        // "already being updated"（这一刻它正被确认框的回调借着）。
 
         let Some(hosts) = self.hosts.clone() else {
             // 本机 Shell 没有主机记录。这一档根本走不到（命令历史那颗按钮
@@ -1427,26 +1464,47 @@ impl TerminalPanel {
         .detach();
     }
 
-    /// 展开或收起右侧监控面板。
+    /// 工作区告诉本标签页：右栏此刻在看你的哪一个工具（`None` = 没在看你）。
     ///
-    /// 收起之后采集不停 —— 状态栏中间那三个数字一直看得见，而它们来自同一次
-    /// 采集。面板只是换成轻量脚本（不采进程列表），见 `MonitorPanel::set_expanded`。
-    fn set_monitor_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        if self.monitor_open == open {
+    /// 监控靠这一格决定采轻量还是全量 —— 右栏没在看它时采集不停，只是换成
+    /// 轻量脚本（状态栏中间那三个数字一直看得见，来自同一次采集），见
+    /// `MonitorPanel::set_expanded`。信息栏上那几颗按钮也靠它点亮。
+    pub(crate) fn set_shown_tool(&mut self, tool: Option<SessionTool>, cx: &mut Context<Self>) {
+        if self.shown_tool == tool {
             return;
         }
-        self.monitor_open = open;
+        self.shown_tool = tool;
+        let expanded = tool == Some(SessionTool::Monitor);
         self.monitor_panel
-            .update(cx, |monitor, cx| monitor.set_expanded(open, cx));
+            .update(cx, |monitor, cx| monitor.set_expanded(expanded, cx));
+        // 转发页的心跳、历史页的读库都只在被看着时才跑。
+        let forwards = self.forwards_view.clone();
+        forwards.update(cx, |view, cx| {
+            view.set_visible(tool == Some(SessionTool::Forwards), cx)
+        });
+        if let Some(history) = self.history_view.clone() {
+            history.update(cx, |view, cx| {
+                view.set_visible(tool == Some(SessionTool::History), cx)
+            });
+        }
         cx.notify();
     }
 
-    fn toggle_monitor(&mut self, cx: &mut Context<Self>) {
-        self.set_monitor_open(!self.monitor_open, cx);
+    /// 右栏借去画的三块会话视图。它们常驻在本标签页里，生命周期跟着会话走。
+    pub(crate) fn monitor_panel(&self) -> Entity<MonitorPanel> {
+        self.monitor_panel.clone()
     }
 
-    fn on_toggle_monitor(&mut self, _: &ToggleMonitor, _: &mut Window, cx: &mut Context<Self>) {
-        self.toggle_monitor(cx);
+    pub(crate) fn forwards_view(&self) -> Entity<ForwardsView> {
+        self.forwards_view.clone()
+    }
+
+    pub(crate) fn history_view(&self) -> Option<Entity<CommandHistoryView>> {
+        self.history_view.clone()
+    }
+
+    fn on_toggle_monitor(&mut self, _: &ToggleMonitor, window: &mut Window, cx: &mut Context<Self>) {
+        self.request_tool(SessionTool::Monitor, window, cx);
         // 同 [`Self::on_toggle_sftp`]：不拦住的话 Alt+M 还会当成 `\x1bm` 进终端。
         cx.stop_propagation();
     }
@@ -1800,7 +1858,10 @@ impl Render for TerminalPanel {
 
         let connected = self.connected(cx);
         let grid = self.grid(cx);
-        let monitor_open = self.monitor_open;
+        // 信息栏上那几颗"开右栏"的按钮点不点亮，看右栏此刻在看本会话的哪一块。
+        let monitor_open = self.shown_tool == Some(SessionTool::Monitor);
+        let forwards_open = self.shown_tool == Some(SessionTool::Forwards);
+        let history_open = self.shown_tool == Some(SessionTool::History);
         let split = self.split;
         let over_ssh = self.source.over_ssh();
         let has_history = self.history.is_some();
@@ -1842,8 +1903,10 @@ impl Render for TerminalPanel {
                     this.set_split(*layout, window, cx);
                 }))
                 // 隧道、SFTP、监控只对 SSH 会话接：不接的那三颗信息栏不画。
+                // 隧道 / 监控那两颗 now 是"开右栏对应页"的入口，点亮跟着右栏走。
                 .when(over_ssh, |bar| {
                     bar.tunnels_count(tunnels)
+                        .forwards_active(forwards_open)
                         .on_tunnels(cx.listener(|this, _, window, cx| {
                             this.open_forwards(window, cx);
                         }))
@@ -1853,13 +1916,16 @@ impl Render for TerminalPanel {
                         }))
                         .on_monitor(
                             monitor_open,
-                            cx.listener(|this, _, _, cx| this.toggle_monitor(cx)),
+                            cx.listener(|this, _, window, cx| {
+                                this.request_tool(SessionTool::Monitor, window, cx);
+                            }),
                         )
                 })
                 .when(has_history, |bar| {
-                    bar.on_history(cx.listener(|this, _, window, cx| {
-                        this.open_history(window, cx);
-                    }))
+                    bar.history_active(history_open)
+                        .on_history(cx.listener(|this, _, window, cx| {
+                            this.open_history(window, cx);
+                        }))
                 })
                 // 配色那一颗跟着"库里有没有这台主机"走，同命令历史那一颗。
                 // 本机 shell 换出来的配色无处可存，那一档就不摆这颗按钮。
@@ -1884,48 +1950,15 @@ impl Render for TerminalPanel {
                             .connected(connected)
                             .grid(grid.num_columns(), grid.num_lines()),
                     );
-                let body = if monitor_open {
-                    div()
-                        .flex_1()
-                        .min_h_0()
-                        .min_w_0()
-                        .child(
-                            h_resizable(self.resizable_id.clone())
-                                .with_state(&self.resizable_state)
-                                .child(resizable_panel().child(terminal_view))
-                                .child(
-                                    resizable_panel()
-                                        .size(MONITOR_WIDTH)
-                                        .size_range(px(280.)..px(700.))
-                                        .child(
-                                            div()
-                                                .size_full()
-                                                .overflow_hidden()
-                                                .border_l_1()
-                                                .border_color(cx.theme().border)
-                                                // 别在这儿给它套 `Entity::cached`：
-                                                // 缓存进不了门。Dock 已经把整个面板
-                                                // 挂成一块带缓存的子视图，终端刷屏时
-                                                // 那一层每帧都不命中，而 GPUI 重建一棵
-                                                // 缓存子树时会置上 `Window::refreshing`，
-                                                // 嵌在里面的缓存视图一律跳过复用 ——
-                                                // 试过，每帧照样重画。这一栏能省的只有
-                                                // 它自己一帧建多少元素，见那个模块的
-                                                // 文档与 `frame_cost`。
-                                                .child(self.monitor_panel.clone()),
-                                        ),
-                                ),
-                        )
-                        .into_any_element()
-                } else {
-                    h_flex()
-                        .flex_1()
-                        .min_h_0()
-                        .min_w_0()
-                        .items_stretch()
-                        .child(terminal_view)
-                        .into_any_element()
-                };
+                // 监控 / 转发 / 历史都搬到右栏去了（见 [`Workspace`]），终端这一侧
+                // 不再嵌右侧子面板，整块宽度留给网格。
+                let body = h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .items_stretch()
+                    .child(terminal_view)
+                    .into_any_element();
                 if self.sftp_open {
                     // 底部这一栏的高度是拖出来的，所以走 `v_resizable`；面板那边只需要知道
                     // 现在多高（它按高度决定"展开/压扁"那颗按钮给哪一档），以及终端此刻

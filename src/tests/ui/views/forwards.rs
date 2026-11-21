@@ -2,11 +2,13 @@
     use crate::forward::PortForward;
     use crate::host::{AuthMethod, MonitorIntervals};
     use crate::ssh::{SshSession, forward::ForwardRegistry};
+    use crate::ui::dialogs::ForwardFormDialog;
+    use gpui_kit::{AppContext as _, Entity};
 
     /// 把这一屏完整画一遍：layout → prepaint → paint 全走完。
     ///
     /// 理由与 [`crate::ui::panels::TerminalPanel`] 那个绘制测试相同：这一屏是
-    /// 一整条很深的 builder 链（标题、表单、每条规则三行），而那种深度带来的
+    /// 一整条很深的 builder 链（标题、每条规则三行），而那种深度带来的
     /// 栈溢出 `cargo check` 与 clippy 都看不见，只有真的把树走一遍才掉得出来。
     /// 它不断言任何具体样式，断言的是"画得完"。
     #[gpui_kit::test]
@@ -16,106 +18,53 @@
         // 第二帧才读得到）。
         cx.update(|window, cx| window.draw(cx).clear(cx));
 
-        // 新建表单那一段只有开着才画得到，三档的字段还各不相同。
-        for kind in ForwardKind::ALL {
-            cx.update(|window, cx| {
-                dialog.update(cx, |this, cx| {
-                    this.open_draft(window, cx);
-                    if let Some(draft) = &mut this.draft {
-                        draft.kind = kind;
-                    }
-                });
-                window.draw(cx).clear(cx);
-            });
-        }
-
-        // 修改表单是另一条分支：标题、边框、被改的那张卡片都换了样子。
+        // 修改表单如今是一扇弹窗：停着的规则才弹得出来，弹出来也要画得完。
         cx.update(|window, cx| {
-            dialog.update(cx, |this, cx| {
-                this.start_edit("fwd-local".into(), window, cx)
-            });
+            dialog.update(cx, |this, cx| this.start_edit("fwd-local".into(), window, cx));
             window.draw(cx).clear(cx);
         });
-    }
-
-    /// 三档转发都要真的落在那条凹槽里，一档都不能被挤到框外面。
-    ///
-    /// 这条来自一次真的翻车：三颗按钮各自 `w_full()`，而 [`Button`] 在自己的
-    /// 根上无条件加了 `flex_shrink_0`，于是三颗各要 100% 宽、谁也不肯让，
-    /// 加起来 300%，后两档跑到可见区域外面 —— 界面上看着就是"转发类型只有
-    /// 本地"。这种错**画得完**，所以绘制测试全绿；只有量一量它们落在哪儿才
-    /// 掉得出来。
-    #[gpui_kit::test]
-    fn every_forwarding_type_stays_inside_the_selector(cx: &mut gpui_kit::TestAppContext) {
-        let (dialog, cx) = draw_dialog(cx, rules());
-        cx.update(|window, cx| {
-            dialog.update(cx, |this, cx| this.open_draft(window, cx));
-            window.draw(cx).clear(cx);
-        });
-
-        let group = cx
-            .debug_bounds(KIND_GROUP_PROBE)
-            .expect("那条凹槽应该画出来了");
-        for (ix, probe) in KIND_PROBES.iter().enumerate() {
-            let cell = cx
-                .debug_bounds(probe)
-                .unwrap_or_else(|| panic!("第 {ix} 档（{probe}）压根没画出来"));
-            assert!(
-                cell.size.width > px(0.),
-                "第 {ix} 档（{probe}）被压成了零宽"
-            );
-            // 半个像素的余量：布局是浮点算出来的，边界相等时不该判成越界。
-            assert!(
-                cell.left() >= group.left() - px(0.5) && cell.right() <= group.right() + px(0.5),
-                "第 {ix} 档（{probe}）跑到了凹槽外面：它在 {:?}..{:?}，凹槽是 {:?}..{:?}",
-                cell.left(),
-                cell.right(),
-                group.left(),
-                group.right(),
-            );
-        }
     }
 
     /// 改一条规则是**原地替换**：id 不变、位置不变，列表也不该多出一条来。
     ///
     /// 这一条盯的是"改"与"新建"共用同一张表单带来的那个风险 —— 走错分支的
-    /// 结果不是报错，而是列表里悄悄多出一条几乎一样的规则。
+    /// 结果不是报错，而是列表里悄悄多出一条几乎一样的规则。表单在弹窗里组规则
+    /// （[`ForwardFormDialog::build_rule`]），本页只负责把它放进列表
+    /// （[`ForwardsView::store_rule`]）。
     #[gpui_kit::test]
     fn editing_a_rule_replaces_it_in_place(cx: &mut gpui_kit::TestAppContext) {
         let (dialog, cx) = draw_dialog(cx, rules());
         let port = crate::db::runtime().block_on(free_port());
 
         cx.update(|window, cx| {
-            dialog.update(cx, |this, cx| {
+            let existing = dialog.read(cx).rules[0].clone();
+            let rules = dialog.read(cx).rules.clone();
+            let form = cx.new(|cx| {
+                ForwardFormDialog::new(Some(existing), rules, Rc::new(|_, _, _| {}), window, cx)
+            });
+            // 表单里得是这条规则**现在的值**，不是一张空表。
+            form.read_with(cx, |form, cx| {
+                assert_eq!(form.editing.as_deref(), Some("fwd-local"));
+                assert_eq!(form.name.read(cx).value(), "PostgreSQL 5432 Local Forward");
+                assert_eq!(form.listen_port.read(cx).value(), "15432");
+                assert_eq!(form.target_host.read(cx).value(), "10.0.4.15");
+            });
+            form.update(cx, |form, cx| {
+                form.name
+                    .update(cx, |state, cx| state.set_value("改过的名字", window, cx));
+                form.listen_port
+                    .update(cx, |state, cx| state.set_value(port.to_string(), window, cx));
+            });
+
+            // 读表单 + 放进列表，也就是保存去掉"顺手起隧道"之后剩下的那两步。
+            // 起隧道派在应用级 runtime 上，醒来的线程不是测试调度器那一条，
+            // 在这儿走它只会把测试变得不确定 —— 那部分由
+            // [`crate::service::ForwardService`] 自己的测试盯着。
+            let rule = form.read(cx).build_rule(cx).expect("这张表填得是对的");
+            dialog.update(cx, |this, _| {
                 // 改之前先按过 Stop，规则里的 enabled 是假的。
                 this.rules[0].enabled = false;
-                this.start_edit("fwd-local".into(), window, cx);
-
-                let draft = this.draft.as_ref().expect("停着的规则该打得开修改表单");
-                assert_eq!(draft.editing.as_deref(), Some("fwd-local"));
-                // 表单里得是这条规则**现在的值**，不是一张空表。
-                assert_eq!(draft.name.read(cx).value(), "PostgreSQL 5432 Local Forward");
-                assert_eq!(draft.listen_port.read(cx).value(), "15432");
-                assert_eq!(draft.target_host.read(cx).value(), "10.0.4.15");
-
-                draft.name.update(cx, |state, cx| {
-                    state.set_value("改过的名字", window, cx);
-                });
-                draft.listen_port.update(cx, |state, cx| {
-                    state.set_value(port.to_string(), window, cx);
-                });
-            });
-        });
-
-        // 读表单 + 放进列表，也就是 `save_draft` 去掉"顺手起隧道"之后剩下的
-        // 那两步。起隧道派在应用级 runtime 上，醒来的线程不是测试调度器那一条，
-        // 在这儿走它只会把测试变得不确定 —— 那部分由
-        // [`crate::service::ForwardService`] 自己的测试盯着。
-        cx.update(|_, cx| {
-            dialog.update(cx, |this, cx| {
-                let rule = this.build_draft(cx).expect("这张表填得是对的");
                 this.store_rule(rule);
-                this.draft = None;
             });
         });
 
@@ -126,18 +75,20 @@
             assert_eq!(edited.name, "改过的名字");
             assert_eq!(edited.listen_port, port);
             assert!(edited.enabled, "存下来就要起，那么以后也该自己起");
-            assert!(this.draft.is_none(), "存完表单该收起来");
         });
     }
 
     /// **在跑的改不了，停下来才能改。**
     ///
     /// 改一条跑着的规则等于让列表和真正听着的那个端口对不上 —— 界面上写着新
-    /// 端口，实际听着的还是旧的，那种错要等到客户端连不上才发现。
+    /// 端口，实际听着的还是旧的，那种错要等到客户端连不上才发现。表单是弹窗，
+    /// "弹没弹出来"就问窗口上有没有盖着的那一层。
     #[gpui_kit::test]
     fn a_forward_has_to_be_stopped_before_it_can_be_edited(cx: &mut gpui_kit::TestAppContext) {
         let (dialog, cx) = draw_dialog(cx, rules());
-        let service = dialog.read_with(cx, |this, _| this.service.clone());
+        let service = dialog
+            .read_with(cx, |this, _| this.service.clone())
+            .expect("draw_dialog 接进去的是一条活连接");
 
         // 真的起一条隧道：这一条问的就是"实况在跑"时的行为，光把 enabled
         // 设成真不算 —— 那只是意图。
@@ -152,8 +103,11 @@
             dialog.update(cx, |this, cx| {
                 this.rules[0].listen_port = port;
                 this.start_edit("fwd-local".into(), window, cx);
-                assert!(this.draft.is_none(), "跑着的转发不该打得开修改表单");
             });
+            assert!(
+                !window.has_active_dialog(cx),
+                "跑着的转发不该弹得出修改表单"
+            );
         });
 
         // 停下来，同一颗按钮就该管用了。
@@ -161,8 +115,8 @@
         cx.update(|window, cx| {
             dialog.update(cx, |this, cx| {
                 this.start_edit("fwd-local".into(), window, cx);
-                assert!(this.draft.is_some(), "停下来之后就该改得了");
             });
+            assert!(window.has_active_dialog(cx), "停下来之后就该弹得出表单");
         });
     }
 
@@ -248,16 +202,18 @@
         }
     }
 
-    /// 把标题与正文一起挂进窗口画。
+    /// 把这一页挂进窗口画。
     ///
-    /// 标题那一段不在 [`Render`] 里（它是交给对话框外壳的），所以单画正文
-    /// 覆盖不到它 —— 而它同样是一条会读实体状态的 builder 链。
+    /// 外面套一层 [`Root`]：新增 / 修改现在弹的是居中弹窗（`open_dialog`），
+    /// 窗口第一层不是 `Root` 的话那一句直接 panic。
     fn draw_dialog(
         cx: &mut gpui_kit::TestAppContext,
         rules: Vec<PortForward>,
-    ) -> (Entity<PortForwardDialog>, &mut gpui_kit::VisualTestContext) {
-        // 真的连一次进程内的假 sshd：`ForwardService` 要一条活着的连接，而它
-        // 不该为了测试变成 `Option`。那台假 sshd 就在回环上，见 `ssh::exec::fake`。
+    ) -> (Entity<ForwardsView>, &mut gpui_kit::VisualTestContext) {
+        use gpui_kit::component::Root;
+
+        // 真的连一次进程内的假 sshd：`ForwardService` 要一条活着的连接。
+        // 那台假 sshd 就在回环上，见 `ssh::exec::fake`。
         let (handle, _) =
             crate::db::runtime().block_on(crate::ssh::exec::fake::connect("", "", true));
         let service = ForwardService::new(SshSession {
@@ -266,11 +222,17 @@
         });
 
         cx.update(gpui_kit::init);
-        let (harness, cx) = cx.add_window_view(|_, cx| {
+        let (root, cx) = cx.add_window_view(|window, cx| {
             let dialog = cx.new(|cx| {
-                PortForwardDialog::new(host(), service, rules, Rc::new(|_, _, _| {}), cx)
+                ForwardsView::new(host(), Some(service), rules, Rc::new(|_, _, _| {}), cx)
             });
-            Harness { dialog }
+            Root::new(cx.new(|_| Harness { dialog }), window, cx)
+        });
+        let harness = root.read_with(cx, |root, _| {
+            root.view()
+                .clone()
+                .downcast::<Harness>()
+                .expect("刚放进去的就是它")
         });
         let dialog = harness.read_with(cx, |harness, _| harness.dialog.clone());
         cx.update(|window, cx| window.draw(cx).clear(cx));
@@ -278,14 +240,11 @@
     }
 
     struct Harness {
-        dialog: Entity<PortForwardDialog>,
+        dialog: Entity<ForwardsView>,
     }
 
     impl Render for Harness {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            v_flex()
-                .size_full()
-                .child(render_header(&host(), &self.dialog, cx))
-                .child(self.dialog.clone())
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            v_flex().size_full().child(self.dialog.clone())
         }
     }

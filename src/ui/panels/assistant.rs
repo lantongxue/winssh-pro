@@ -1,14 +1,13 @@
-//! 智能助手面板：Dock 里的一块对话面板，默认停在右侧 dock。
+//! 智能助手面板：右侧边栏里的一块对话面板（右活动栏第四个条目）。
 //!
-//! 它是**正经的 Dock 面板**而不是自己贴在窗口右缘的一层：标签条、宽度、
-//! 开合、拖拽与分屏都归 Dock，和终端、SFTP 编辑器同一套。所以这块面板
-//! 能被拖到中心区当标签页、能和别的面板并排，也能整块收起来（中心区标签
-//! 条右端那颗 `PanelRight`，或活动栏上的 AI 助手键）。
+//! 它常驻在 [`crate::ui::Workspace`] 上，由右栏借去画，开合与宽度归右栏
+//! （[`crate::ui::Workspace::right_open`] / `right_resizable`），不再进 Dock。
+//! 在右栏时没有标签条代画标题，正文自己顶上那一行（[`Self::render_sidebar_header`]）：
+//! 当前对话（点开换一段）、自动执行警示牌、新开与删除、收起右栏。
 //!
-//! 面板自己画的只有下半段：消息流与输入行。上半段那条标签条是 Dock 画的，
-//! 三样东西从 [`Panel`] 的钩子递上去 —— 标题是当前对话（点开换一段，
-//! [`Panel::title`]）、自动执行那块警示牌（[`Panel::title_suffix`]）、
-//! 新开与删除两颗按钮（[`Panel::toolbar_buttons`]）。
+//! [`Panel`] / [`BasePanel`] 的钩子（[`Panel::title`]、[`Panel::title_suffix`]、
+//! [`Panel::toolbar_buttons`]）留着 —— 真把它停进 Dock 时（测试外壳就是这么做的）
+//! 标题那一行改由 Dock 的标签条代画，正文就不重复画（`sidebar` 开关）。
 //!
 //! 消息流用组件库的 [`MessageScroller`]（虚拟列表 + 跟尾 + 回到最新），
 //! 消息本体四种画法：用户的话靠右的实底气泡、助手的话靠左的 Markdown（脚注
@@ -160,11 +159,10 @@ use crate::ui::menus::{
 };
 use crate::ui::panels::{ActiveCenterPanel, SessionEvent, TerminalPanel};
 use crate::ui::theme::{AppIcon, palette};
+use crate::ui::views::{GUTTER, HEADER_HEIGHT, right_collapse_button};
 use crate::ui::windows::{SettingsTab, SettingsWindow, persist_assistant_config};
+use crate::ui::Workspace;
 use rust_i18n::t;
-
-/// 右侧 dock 的初始宽度。之后由用户拖，Dock 自己记着。
-pub const ASSISTANT_DOCK_WIDTH: Pixels = px(380.);
 
 /// 标签条上那个对话名最多画多少字。按钮不会替里面的文字省略，太长会把
 /// 右边那几颗动作按钮挤出标签条。
@@ -343,6 +341,10 @@ pub struct AssistantPanel {
     /// 事件泵。面板没了它跟着没，运行侧发现通道关了自己收口。
     _run: Option<Task<()>>,
     _composer_subscription: gpui_kit::Subscription,
+    /// 是否停在右侧边栏里（而不是 Dock 里）。在右栏时没有标签条代画标题，
+    /// 正文自己顶上那一行标题（对话切换 / 新开 / 删除 / 收起）；在 Dock 里时
+    /// 那一行不画 —— 否则对话菜单会和标签条上那颗重名重画。
+    sidebar: bool,
 }
 
 /// Dock 要面板会报 [`PanelEvent`]（关闭、缩放这类），这块面板自己不报
@@ -451,7 +453,13 @@ impl AssistantPanel {
             run_abort: None,
             _run: None,
             _composer_subscription,
+            sidebar: false,
         }
+    }
+
+    /// 工作区把助手停进右侧边栏时喊一声：此后正文自己画标题行。
+    pub(crate) fn set_sidebar_mode(&mut self, on: bool) {
+        self.sidebar = on;
     }
 
     /// 按当前绑定的主机（[`Self::host_of`]）重读对话列表，并把最近一段的消息
@@ -2037,14 +2045,79 @@ impl AssistantPanel {
     }
 }
 
+impl AssistantPanel {
+    /// 右栏里的标题行。助手原先停靠在 Dock 里，标题（对话切换）、右端那两颗
+    /// （新开 / 删除）和自动执行警示牌都由 Dock 的标签条代画；搬进右栏后没有
+    /// 标签条了，这一行自己把它们接回来 —— 对话切换是换一段对话的唯一入口，
+    /// 不能丢。版式与右栏其它视图的标题行同骨架（[`HEADER_HEIGHT`] / [`GUTTER`]）。
+    fn render_sidebar_header(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let title = self.conversation_title();
+        h_flex()
+            .flex_shrink_0()
+            .h(HEADER_HEIGHT)
+            .px(GUTTER)
+            .gap_1()
+            .items_center()
+            .border_b_1()
+            .border_color(cx.theme().sidebar_border)
+            .child(
+                Icon::new(AppIcon::Sparkles)
+                    .with_size(px(16.))
+                    .flex_shrink_0()
+                    .text_color(palette::teal()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(self.render_conversation_menu(title, cx)),
+            )
+            .when(assistant_config::global().auto_execute, |this| {
+                this.child(
+                    div()
+                        .flex_shrink_0()
+                        .px_1p5()
+                        .py_0p5()
+                        .rounded_sm()
+                        .text_xs()
+                        .bg(palette::amber().opacity(0.15))
+                        .text_color(palette::amber())
+                        .child(t!("assistant.auto_badge")),
+                )
+            })
+            .child(
+                Button::new("assistant-new-chat")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Plus)
+                    .tooltip(t!("assistant.new_chat"))
+                    .disabled(self.running)
+                    .on_click(cx.listener(|this, _, _, cx| this.new_conversation(cx))),
+            )
+            .child(
+                Button::new("assistant-delete-chat")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(AppIcon::Trash))
+                    .tooltip(t!("assistant.delete_chat"))
+                    .disabled(self.running || self.active.is_none())
+                    .on_click(cx.listener(|this, _, _, cx| this.delete_conversation(cx))),
+            )
+            .child(
+                right_collapse_button()
+                    .on_click(|_, window, cx| Workspace::collapse_session_tools(window, cx)),
+            )
+    }
+}
+
 impl BasePanel for AssistantPanel {
     fn panel_name(&self) -> &'static str {
         "AssistantPanel"
     }
 
-    /// 关不掉：这块面板没有"另一份"，关掉就只能从活动栏重新建一个，
-    /// 而它还攥着这一场运行和那格当前会话。收起来（整条 dock 一起）足够了
-    /// —— 中心区标签条右端那颗 `PanelRight`，或活动栏上的 AI 助手键。
+    /// 关不掉：这块面板没有"另一份"，关掉就只能重新建一个，而它还攥着这一场
+    /// 运行和那格当前会话。收起来（整条右栏一起）足够了 —— 右活动栏上再按一次
+    /// 助手那颗，或它标题行右端那颗朝右的箭头。
     fn closable(&self, _: &App) -> bool {
         false
     }
@@ -2118,6 +2191,7 @@ impl Render for AssistantPanel {
             .id("assistant-panel")
             .size_full()
             .bg(cx.theme().background)
+            .when(self.sidebar, |this| this.child(self.render_sidebar_header(cx)))
             .child(div().flex_1().min_h_0().child(self.render_transcript(cx)))
             // 运行指示：泵还开着、没在等审核、也还没开口说话（或者流出思考）
             // 时，说明模型在等首字或者命令在跑。字一旦流出来，那行字本身就是
