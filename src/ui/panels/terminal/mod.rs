@@ -67,7 +67,10 @@ use crate::{
         Workspace,
         bars::{SessionInfoBar, SessionStatusBar},
         dialogs::{RemoteCopyChannel, RemoteCopyTarget, ZmodemTransferDialog},
-        panels::{DockerContainerPanel, MonitorEvent, MonitorPanel, SftpPanel, SftpPanelEvent},
+        panels::{
+            DockerContainerPanel, DockerNodePanel, DockerServicePanel, MonitorEvent, MonitorPanel,
+            SftpPanel, SftpPanelEvent,
+        },
         pickers::scheme_picker::{SchemePicker, SchemePickerOptions},
         theme::palette,
         views::{
@@ -268,12 +271,30 @@ impl ActiveCenterPanel {
                     .focus_handle(cx)
                     .contains_focused(window, cx);
                 pages.push((focused, Self::Editor(editor.read(cx).session_target())));
-            } else if let Ok(container) = view.downcast::<DockerContainerPanel>() {
+            } else if let Ok(container) = view.clone().downcast::<DockerContainerPanel>() {
                 // 容器详情页认回打开它的宿主终端；宿主没了就不进名单。
                 let Some(host_tab) = container.read(cx).host_tab() else {
                     return;
                 };
                 let focused = container
+                    .read(cx)
+                    .focus_handle(cx)
+                    .contains_focused(window, cx);
+                pages.push((focused, Self::Container(host_tab)));
+            } else if let Ok(service) = view.clone().downcast::<DockerServicePanel>() {
+                let Some(host_tab) = service.read(cx).host_tab() else {
+                    return;
+                };
+                let focused = service
+                    .read(cx)
+                    .focus_handle(cx)
+                    .contains_focused(window, cx);
+                pages.push((focused, Self::Container(host_tab)));
+            } else if let Ok(node) = view.downcast::<DockerNodePanel>() {
+                let Some(host_tab) = node.read(cx).host_tab() else {
+                    return;
+                };
+                let focused = node
                     .read(cx)
                     .focus_handle(cx)
                     .contains_focused(window, cx);
@@ -1076,44 +1097,61 @@ impl TerminalPanel {
             |this: &mut Self, _, event: &DockerViewEvent, window, cx| match event {
                 DockerViewEvent::Notify(message) => window.push_notification(message.clone(), cx),
                 DockerViewEvent::OpenDetail(panel) => {
-                    // 详情面板挂进中心区，紧跟本终端标签页（同 SFTP 编辑器的落点）。
-                    let Some(area) = this.dock_area.upgrade() else {
-                        return;
-                    };
-                    let host = PanelId::from(cx.entity_id());
-                    let panel_id = PanelId::from(panel.entity_id());
                     let panel = panel.clone();
-                    // 带上服务器标识：右栏功能面板/助手在本标签活动时认回本终端。
                     let host_weak = cx.entity().downgrade();
                     panel.update(cx, |panel, _| panel.set_host_tab(host_weak));
-                    area.update(cx, |area, cx| {
-                        area.add_panel_view(
-                            panel_handle(panel),
-                            DockPlacement::Center,
-                            None,
-                            window,
-                            cx,
-                        );
-                        let target = area.layout(DockPlacement::Center).and_then(|tree| {
-                            let node = tree.find_panel_node(host)?;
-                            let PaneRef::Tabs { panels, .. } = tree.find_node(node)?.kind() else {
-                                return None;
-                            };
-                            let ix = panels.iter().position(|held| *held == host)?;
-                            Some(InsertTarget::Tabs {
-                                node,
-                                ix: Some(ix + 1),
-                                activate: true,
-                            })
-                        });
-                        if let Some(target) = target {
-                            area.move_panel(panel_id, target, window, cx);
-                        }
-                    });
+                    let id = PanelId::from(panel.entity_id());
+                    this.mount_center_view(panel, id, window, cx);
+                }
+                DockerViewEvent::OpenService(panel) => {
+                    let panel = panel.clone();
+                    let host_weak = cx.entity().downgrade();
+                    panel.update(cx, |panel, _| panel.set_host_tab(host_weak));
+                    let id = PanelId::from(panel.entity_id());
+                    this.mount_center_view(panel, id, window, cx);
+                }
+                DockerViewEvent::OpenNode(panel) => {
+                    let panel = panel.clone();
+                    let host_weak = cx.entity().downgrade();
+                    panel.update(cx, |panel, _| panel.set_host_tab(host_weak));
+                    let id = PanelId::from(panel.entity_id());
+                    this.mount_center_view(panel, id, window, cx);
                 }
             },
         )
         .detach();
+    }
+
+    /// 把一个 Docker 详情面板挂进中心区，紧跟本终端标签页（同 SFTP 编辑器落点）。
+    fn mount_center_view<P: Panel>(
+        &mut self,
+        panel: Entity<P>,
+        panel_id: PanelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(area) = self.dock_area.upgrade() else {
+            return;
+        };
+        let host = PanelId::from(cx.entity_id());
+        area.update(cx, |area, cx| {
+            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+            let target = area.layout(DockPlacement::Center).and_then(|tree| {
+                let node = tree.find_panel_node(host)?;
+                let PaneRef::Tabs { panels, .. } = tree.find_node(node)?.kind() else {
+                    return None;
+                };
+                let ix = panels.iter().position(|held| *held == host)?;
+                Some(InsertTarget::Tabs {
+                    node,
+                    ix: Some(ix + 1),
+                    activate: true,
+                })
+            });
+            if let Some(target) = target {
+                area.move_panel(panel_id, target, window, cx);
+            }
+        });
     }
 
     /// 底部 SFTP 栏的四件事：关掉自己、把命令送进终端、要一个新高度、通道没了要重来。

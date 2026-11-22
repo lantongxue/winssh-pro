@@ -74,7 +74,7 @@ impl std::error::Error for ConnectError {}
 /// 一条会话的 Docker 客户端。廉价克隆（bollard 内部是 `Arc`）。
 #[derive(Clone)]
 pub struct DockerClient {
-    docker: Docker,
+    pub(crate) docker: Docker,
     engine: EngineInfo,
 }
 
@@ -191,17 +191,7 @@ impl DockerClient {
             .tail(tail)
             .build();
         let stream = self.docker.logs(name, Some(options));
-        stream.map(|item| {
-            item.map(|output| {
-                let stderr = matches!(output, LogOutput::StdErr { .. });
-                let text = String::from_utf8_lossy(output.as_ref()).into_owned();
-                LogLine {
-                    stderr,
-                    text: text.into(),
-                }
-            })
-            .map_err(anyhow::Error::from)
-        })
+        stream.map(|item| item.map(map_log).map_err(anyhow::Error::from))
     }
 
     /// 资源读数流。`one_shot` 只取一帧（不持续）。
@@ -516,8 +506,18 @@ fn split_reference(reference: &str) -> (String, String) {
     }
 }
 
+/// 一条日志输出折成视图行（stderr 区分出来供着色）。容器/服务日志共用。
+pub(crate) fn map_log(output: LogOutput) -> LogLine {
+    let stderr = matches!(output, LogOutput::StdErr { .. });
+    let text = String::from_utf8_lossy(output.as_ref()).into_owned();
+    LogLine {
+        stderr,
+        text: text.into(),
+    }
+}
+
 /// 把 serde 枚举折成它的小写字符串（`RUNNING` → "running"），不必逐 variant 匹配。
-fn enum_str<T: serde::Serialize>(value: &T) -> String {
+pub(crate) fn enum_str<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_value(value)
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned))
@@ -525,7 +525,7 @@ fn enum_str<T: serde::Serialize>(value: &T) -> String {
 }
 
 /// id 短形式：去掉 `sha256:` 前缀取前 12 位。
-fn short_id(id: &str) -> String {
+pub(crate) fn short_id(id: &str) -> String {
     id.strip_prefix("sha256:").unwrap_or(id).chars().take(12).collect()
 }
 

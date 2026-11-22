@@ -20,7 +20,8 @@ use tokio::sync::Mutex;
 
 use crate::docker::{
     ConnectError, ContainerDetail, ContainerStats, ContainerSummary, DockerClient, EngineInfo,
-    FileEntry, ImageSummary, LogLine, PullProgress,
+    FileEntry, ImageSummary, LogLine, NodeAvailability, NodeSummary, PullProgress, ServiceDetail,
+    ServiceSummary, SwarmStatus, TaskSummary,
 };
 use crate::ssh::SshHandler;
 
@@ -242,5 +243,99 @@ impl DockerService {
         let name = name.to_owned();
         let target = target.to_owned();
         crate::db::run(async move { client.delete(&name, &target).await }).await
+    }
+
+    // ─── Swarm ──────────────────────────────────────────────────────────────
+
+    /// 集群状态（是否 manager / 计数）。UI 据此点亮服务/节点入口。
+    pub async fn swarm_status(&self) -> Result<SwarmStatus> {
+        let client = self.ensure().await?;
+        crate::db::run(async move { client.swarm_status().await }).await
+    }
+
+    pub async fn list_services(&self) -> Result<Vec<ServiceSummary>> {
+        let client = self.ensure().await?;
+        crate::db::run(async move { client.list_services().await }).await
+    }
+
+    pub async fn inspect_service(&self, id: &str) -> Result<ServiceDetail> {
+        let client = self.ensure().await?;
+        let id = id.to_owned();
+        crate::db::run(async move { client.inspect_service(&id).await }).await
+    }
+
+    /// 服务日志流。丢掉返回的 receiver 即断流。
+    pub async fn service_logs(
+        &self,
+        id: &str,
+        follow: bool,
+        tail: &str,
+        timestamps: bool,
+    ) -> Result<LogStream> {
+        let client = self.ensure().await?;
+        let id = id.to_owned();
+        let tail = tail.to_owned();
+        let (tx, rx) = unbounded();
+        crate::db::runtime().spawn(async move {
+            let stream = client.service_logs(&id, follow, &tail, timestamps);
+            futures::pin_mut!(stream);
+            while let Some(item) = stream.next().await {
+                if tx.unbounded_send(item).is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(rx)
+    }
+
+    pub async fn scale_service(&self, id: &str, replicas: u64) -> Result<()> {
+        let client = self.ensure().await?;
+        let id = id.to_owned();
+        crate::db::run(async move { client.scale_service(&id, replicas).await }).await
+    }
+
+    pub async fn remove_service(&self, id: &str) -> Result<()> {
+        let client = self.ensure().await?;
+        let id = id.to_owned();
+        crate::db::run(async move { client.remove_service(&id).await }).await
+    }
+
+    pub async fn service_tasks(
+        &self,
+        service_id: &str,
+        service_name: &str,
+    ) -> Result<Vec<TaskSummary>> {
+        let client = self.ensure().await?;
+        let id = service_id.to_owned();
+        let name = service_name.to_owned();
+        crate::db::run(async move { client.service_tasks(&id, &name).await }).await
+    }
+
+    pub async fn list_nodes(&self) -> Result<Vec<NodeSummary>> {
+        let client = self.ensure().await?;
+        crate::db::run(async move { client.list_nodes().await }).await
+    }
+
+    pub async fn inspect_node(&self, id: &str) -> Result<NodeSummary> {
+        let client = self.ensure().await?;
+        let id = id.to_owned();
+        crate::db::run(async move { client.inspect_node(&id).await }).await
+    }
+
+    pub async fn set_node_availability(
+        &self,
+        id: &str,
+        availability: NodeAvailability,
+    ) -> Result<()> {
+        let client = self.ensure().await?;
+        let id = id.to_owned();
+        crate::db::run(async move { client.set_node_availability(&id, availability).await }).await
+    }
+
+    pub async fn node_tasks(&self, node_id: &str, node_name: &str) -> Result<Vec<TaskSummary>> {
+        let client = self.ensure().await?;
+        let id = node_id.to_owned();
+        let name = node_name.to_owned();
+        crate::db::run(async move { client.node_tasks(&id, &name).await }).await
     }
 }

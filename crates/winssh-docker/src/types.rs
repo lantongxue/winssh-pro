@@ -196,6 +196,129 @@ pub struct PullProgress {
     pub error: Option<SharedString>,
 }
 
+/// Swarm 集群状态：判定入口是否点亮 + 头部徽标计数。
+#[derive(Clone, Debug, Default)]
+pub struct SwarmStatus {
+    /// 本机在 swarm 里（local_node_state == active）。
+    pub active: bool,
+    /// 本机是 manager（control_available）——只有它才显示服务/节点管理。
+    pub manager: bool,
+    pub nodes: u64,
+    pub managers: u64,
+}
+
+/// 服务模式：replicated 按副本数铺，global 每节点一个。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceMode {
+    Replicated,
+    Global,
+}
+
+/// 服务列表里的一行。
+#[derive(Clone, Debug)]
+pub struct ServiceSummary {
+    pub id: SharedString,
+    pub name: SharedString,
+    /// 栈名（label com.docker.stack.namespace）；无栈为空。
+    pub stack: SharedString,
+    pub mode: ServiceMode,
+    pub running: u64,
+    pub desired: u64,
+    pub image: SharedString,
+    pub ports: Vec<PortMapping>,
+    pub updated: i64,
+}
+
+/// 服务详情（概览段）。
+#[derive(Clone, Debug)]
+pub struct ServiceDetail {
+    pub id: SharedString,
+    pub name: SharedString,
+    pub stack: SharedString,
+    pub mode: ServiceMode,
+    pub desired: u64,
+    pub image: SharedString,
+    pub ports: Vec<PortMapping>,
+    pub env: Vec<(SharedString, SharedString)>,
+    pub mounts: Vec<Mount>,
+    pub constraints: Vec<SharedString>,
+    /// 更新策略的人话形式（parallelism / order）。
+    pub update_policy: SharedString,
+    pub created: i64,
+    pub updated: i64,
+}
+
+/// 一个任务（服务在某个节点上的实例）。
+#[derive(Clone, Debug)]
+pub struct TaskSummary {
+    pub id: SharedString,
+    pub slot: i64,
+    pub service_id: SharedString,
+    pub service_name: SharedString,
+    pub node_id: SharedString,
+    pub node_name: SharedString,
+    /// 当前状态（running/pending/shutdown/failed…小写原词）。
+    pub state: SharedString,
+    pub desired_state: SharedString,
+    /// 状态附言（pending 的原因等）。
+    pub message: SharedString,
+    pub container_id: SharedString,
+    pub image: SharedString,
+    pub updated: i64,
+}
+
+/// 节点角色。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeRole {
+    Manager,
+    Worker,
+}
+
+/// 节点可用性：active 接新任务、pause 只停新调度、drain 迁走任务。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeAvailability {
+    Active,
+    Pause,
+    Drain,
+}
+
+impl NodeAvailability {
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "pause" => Self::Pause,
+            "drain" => Self::Drain,
+            _ => Self::Active,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Pause => "pause",
+            Self::Drain => "drain",
+        }
+    }
+}
+
+/// 节点列表/详情里的一行。
+#[derive(Clone, Debug)]
+pub struct NodeSummary {
+    pub id: SharedString,
+    pub hostname: SharedString,
+    pub role: NodeRole,
+    pub leader: bool,
+    /// ready / down / …小写原词。
+    pub state: SharedString,
+    pub availability: NodeAvailability,
+    pub addr: SharedString,
+    pub engine_version: SharedString,
+    pub platform: SharedString,
+    pub cpus: u64,
+    pub memory_bytes: u64,
+    /// manager 的可达性（reachable/unreachable）；worker 为空。
+    pub reachability: SharedString,
+}
+
 /// 从 Docker 的人话状态里解出退出码："Exited (137) 3 days ago" → `Some(137)`。
 ///
 /// 列表里那颗点要据此分色：正常退出（0）灰、非零退出琥珀/红。运行中的状态

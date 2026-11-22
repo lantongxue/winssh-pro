@@ -24,11 +24,14 @@ pub mod client;
 pub mod connector;
 pub mod listing;
 pub mod path;
+pub mod swarm;
 pub mod types;
 
 pub use client::{ConnectError, DockerClient};
 pub use connector::DialStdioConnector;
+pub use swarm::{node_state_tone, task_state_tone};
 pub use types::{
     ContainerDetail, ContainerState, ContainerStats, ContainerSummary, EngineInfo, FileEntry,
-    FileKind, ImageSummary, LogLine, Mount, PortMapping, PullProgress,
+    FileKind, ImageSummary, LogLine, Mount, NodeAvailability, NodeRole, NodeSummary, PortMapping,
+    PullProgress, ServiceDetail, ServiceMode, ServiceSummary, SwarmStatus, TaskSummary,
 };

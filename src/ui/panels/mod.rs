@@ -9,6 +9,8 @@
 mod assistant;
 mod clash;
 mod docker_container;
+mod docker_node;
+mod docker_service;
 mod easytier;
 #[allow(dead_code)]
 mod event_log;
@@ -27,6 +29,8 @@ mod welcome;
 pub use assistant::AssistantPanel;
 pub use clash::ClashPanel;
 pub use docker_container::DockerContainerPanel;
+pub use docker_node::DockerNodePanel;
+pub use docker_service::DockerServicePanel;
 pub use easytier::EasyTierPanel;
 pub use ftp_host::DockedFtpPanel;
 pub use monitor::{MonitorEvent, MonitorPanel};

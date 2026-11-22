@@ -341,6 +341,132 @@ docker.detail.logs:
 docker.detail.terminal:
   en: Terminal
   zh-CN: 终端
+docker.tab.services:
+  en: Services
+  zh-CN: 服务
+docker.tab.nodes:
+  en: Nodes
+  zh-CN: 节点
+docker.swarm.badge:
+  en: "%{nodes} nodes · %{managers} mgr"
+  zh-CN: "%{nodes} 节点 · %{managers} manager"
+docker.swarm.worker_title:
+  en: Connected to a worker node
+  zh-CN: 连的是 worker 节点
+docker.swarm.worker_body:
+  en: Swarm management (services/nodes) needs a manager. Local containers/images still work.
+  zh-CN: Swarm 管理（服务/节点）需连 manager。本机容器/镜像照常管理。
+docker.stack.none:
+  en: No stack
+  zh-CN: 无栈
+docker.filter.manager:
+  en: Managers
+  zh-CN: manager
+docker.filter.worker:
+  en: Workers
+  zh-CN: worker
+docker.action.scale:
+  en: Scale
+  zh-CN: 扩缩容
+docker.action.activate:
+  en: Activate
+  zh-CN: activate
+docker.action.pause:
+  en: Pause
+  zh-CN: pause
+docker.action.drain:
+  en: Drain
+  zh-CN: drain
+docker.service.tasks:
+  en: Tasks
+  zh-CN: 任务
+docker.service.constraints:
+  en: Constraints
+  zh-CN: 约束
+docker.service.update_policy:
+  en: Update policy
+  zh-CN: 更新策略
+docker.service.task_node:
+  en: Node
+  zh-CN: 节点
+docker.service.task_state:
+  en: State
+  zh-CN: 状态
+docker.service.task_container:
+  en: Container
+  zh-CN: 容器
+docker.service.task_updated:
+  en: Updated
+  zh-CN: 更新
+docker.service.empty:
+  en: No services
+  zh-CN: 没有服务
+docker.node.empty:
+  en: No nodes
+  zh-CN: 没有节点
+docker.node.role:
+  en: Role
+  zh-CN: 角色
+docker.node.availability:
+  en: Availability
+  zh-CN: 可用性
+docker.node.state:
+  en: State
+  zh-CN: 状态
+docker.node.addr:
+  en: Address
+  zh-CN: 地址
+docker.node.engine:
+  en: Engine
+  zh-CN: 引擎
+docker.node.platform:
+  en: Platform
+  zh-CN: 平台
+docker.node.resources:
+  en: Resources
+  zh-CN: 资源
+docker.node.reachability:
+  en: Reachability
+  zh-CN: 可达性
+docker.node.tasks:
+  en: Tasks on this node
+  zh-CN: 该节点上的任务
+docker.node.leader:
+  en: leader
+  zh-CN: leader
+docker.scale.title:
+  en: Scale service
+  zh-CN: 扩缩容
+docker.scale.replicas:
+  en: Replicas (current %{current})
+  zh-CN: 副本数（当前 %{current}）
+docker.scale.apply:
+  en: Apply
+  zh-CN: 应用
+docker.scale.hint:
+  en: Updates roll tasks per the service's update_config. Scaling down stops extra tasks; scaling up may leave pending tasks if nodes lack resources.
+  zh-CN: 更新按服务自身 update_config 滚动替换 task。缩容停掉多余 task；扩容受节点资源与约束限制，可能产生 pending task。
+docker.scale.global:
+  en: Global services fill every node automatically; scaling is not available.
+  zh-CN: global 服务按节点数自动铺满，不提供扩缩容。
+docker.confirm.drain.title:
+  en: Drain node
+  zh-CN: drain 节点
+docker.confirm.drain.body:
+  en: Drain "%{name}"? Its tasks will be rescheduled to other nodes.
+  zh-CN: drain「%{name}」？其上的 task 会迁往其他节点。
+docker.confirm.remove_service.title:
+  en: Remove service
+  zh-CN: 删除服务
+docker.confirm.remove_service.body:
+  en: Remove service "%{name}" and all its tasks?
+  zh-CN: 删除服务「%{name}」及其全部 task？
+docker.notify.scaled:
+  en: Scaled %{name} to %{replicas}
+  zh-CN: 已将 %{name} 扩缩到 %{replicas}
+docker.notify.availability:
+  en: "%{name} set to %{availability}"
+  zh-CN: 已将 %{name} 设为 %{availability}
 docker.detail.basic:
   en: Basic
   zh-CN: 基本信息

@@ -25,7 +25,8 @@ use gpui_kit::{
 };
 
 use crate::docker::{
-    ConnectError, ContainerState, ContainerSummary, EngineInfo, ImageSummary,
+    ConnectError, ContainerState, ContainerSummary, EngineInfo, ImageSummary, NodeAvailability,
+    NodeRole, NodeSummary, ServiceMode, ServiceSummary, SwarmStatus,
 };
 use crate::host::Host;
 use crate::service::DockerService;
@@ -33,7 +34,7 @@ use crate::ssh::SshSession;
 use crate::ui::{
     Workspace,
     dialogs::{DockerConfirmDialog, DockerPullDialog},
-    panels::DockerContainerPanel,
+    panels::{DockerContainerPanel, DockerNodePanel, DockerServicePanel},
     theme::{AppIcon, palette},
     views::{SessionTool, right_collapse_button, session_tool_header},
 };
@@ -56,15 +57,21 @@ pub enum DockerViewEvent {
     Notify(SharedString),
     /// 点容器行建好的详情面板，交给宿主挂成中心区标签页。
     OpenDetail(Entity<DockerContainerPanel>),
+    /// 点服务行建好的服务详情面板。
+    OpenService(Entity<DockerServicePanel>),
+    /// 点节点行建好的节点详情面板。
+    OpenNode(Entity<DockerNodePanel>),
 }
 
 impl EventEmitter<DockerViewEvent> for DockerView {}
 
-/// 右栏 Docker 页当前看哪一段。
+/// 右栏 Docker 页当前看哪一段。服务/节点仅 manager 时出现。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DockerTab {
     Containers,
     Images,
+    Services,
+    Nodes,
 }
 
 /// 容器列表的状态筛子。
@@ -83,8 +90,15 @@ pub struct DockerView {
     error: Option<ConnectError>,
     containers: Vec<ContainerSummary>,
     images: Vec<ImageSummary>,
+    services: Vec<ServiceSummary>,
+    nodes: Vec<NodeSummary>,
+    swarm: SwarmStatus,
     tab: DockerTab,
     filter: ContainerFilter,
+    /// 服务按栈筛（空串=全部）。
+    stack_filter: SharedString,
+    /// 节点按角色筛（空串=全部 / manager / worker）。
+    node_filter: SharedString,
     search: Entity<InputState>,
     refresh: Option<Task<()>>,
     /// 这条会话的 SSH 连接，传给详情标签页内嵌容器终端用。
@@ -106,8 +120,13 @@ impl DockerView {
             error: None,
             containers: Vec::new(),
             images: Vec::new(),
+            services: Vec::new(),
+            nodes: Vec::new(),
+            swarm: SwarmStatus::default(),
             tab: DockerTab::Containers,
             filter: ContainerFilter::All,
+            stack_filter: SharedString::default(),
+            node_filter: SharedString::default(),
             search,
             refresh: None,
             session: None,
@@ -129,6 +148,9 @@ impl DockerView {
         self.error = None;
         self.containers.clear();
         self.images.clear();
+        self.services.clear();
+        self.nodes.clear();
+        self.swarm = SwarmStatus::default();
         self.kick(cx);
         cx.notify();
     }
@@ -165,9 +187,15 @@ impl DockerView {
             enum Fetched {
                 Containers(Vec<ContainerSummary>),
                 Images(Vec<ImageSummary>),
+                Services(Vec<ServiceSummary>),
+                Nodes(Vec<NodeSummary>),
                 Failed,
             }
             let engine = service.connect().await;
+            let swarm = match &engine {
+                Ok(_) => service.swarm_status().await.unwrap_or_default(),
+                Err(_) => SwarmStatus::default(),
+            };
             let data = match (&engine, tab) {
                 (Ok(_), DockerTab::Containers) => match service.list_containers().await {
                     Ok(list) => Fetched::Containers(list),
@@ -175,6 +203,14 @@ impl DockerView {
                 },
                 (Ok(_), DockerTab::Images) => match service.list_images().await {
                     Ok(list) => Fetched::Images(list),
+                    Err(_) => Fetched::Failed,
+                },
+                (Ok(_), DockerTab::Services) => match service.list_services().await {
+                    Ok(list) => Fetched::Services(list),
+                    Err(_) => Fetched::Failed,
+                },
+                (Ok(_), DockerTab::Nodes) => match service.list_nodes().await {
+                    Ok(list) => Fetched::Nodes(list),
                     Err(_) => Fetched::Failed,
                 },
                 (Err(_), _) => Fetched::Failed,
@@ -190,9 +226,16 @@ impl DockerView {
                         this.engine = None;
                     }
                 }
+                this.swarm = swarm;
+                // 不再是 manager（重连到 worker / 退出 swarm）就回落容器段。
+                if !this.swarm.manager && matches!(this.tab, DockerTab::Services | DockerTab::Nodes) {
+                    this.tab = DockerTab::Containers;
+                }
                 match data {
                     Fetched::Containers(list) => this.containers = list,
                     Fetched::Images(list) => this.images = list,
+                    Fetched::Services(list) => this.services = list,
+                    Fetched::Nodes(list) => this.nodes = list,
                     Fetched::Failed => {}
                 }
                 cx.notify();
@@ -248,7 +291,134 @@ impl DockerView {
             .collect()
     }
 
+    fn filtered_services(&self, cx: &App) -> Vec<ServiceSummary> {
+        let query = self.query(cx);
+        self.services
+            .iter()
+            .filter(|s| self.stack_filter.is_empty() || s.stack == self.stack_filter)
+            .filter(|s| {
+                query.is_empty()
+                    || s.name.to_lowercase().contains(&query)
+                    || s.image.to_lowercase().contains(&query)
+                    || s.stack.to_lowercase().contains(&query)
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn filtered_nodes(&self, cx: &App) -> Vec<NodeSummary> {
+        let query = self.query(cx);
+        self.nodes
+            .iter()
+            .filter(|n| match self.node_filter.as_ref() {
+                "manager" => n.role == NodeRole::Manager,
+                "worker" => n.role == NodeRole::Worker,
+                _ => true,
+            })
+            .filter(|n| {
+                query.is_empty()
+                    || n.hostname.to_lowercase().contains(&query)
+                    || n.addr.to_lowercase().contains(&query)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// 服务按栈分组的组名顺序（保持列表顺序去重）。
+    fn service_stacks(&self) -> Vec<SharedString> {
+        let mut stacks: Vec<SharedString> = Vec::new();
+        for s in &self.services {
+            if !stacks.iter().any(|x| x == &s.stack) {
+                stacks.push(s.stack.clone());
+            }
+        }
+        stacks
+    }
+
     // ─── 动作 ───────────────────────────────────────────────────────────────
+
+    fn open_service(
+        &mut self,
+        id: SharedString,
+        name: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(service) = self.service.clone() else {
+            return;
+        };
+        let panel = cx.new(|cx| DockerServicePanel::new(service, id, name, window, cx));
+        cx.emit(DockerViewEvent::OpenService(panel));
+    }
+
+    fn open_node(
+        &mut self,
+        id: SharedString,
+        hostname: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(service) = self.service.clone() else {
+            return;
+        };
+        let panel = cx.new(|cx| DockerNodePanel::new(service, id, hostname, window, cx));
+        cx.emit(DockerViewEvent::OpenNode(panel));
+    }
+
+    /// 节点行悬停的可用性动作；drain 二次确认。
+    fn act_node_availability(
+        &mut self,
+        id: SharedString,
+        hostname: SharedString,
+        target: NodeAvailability,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity().downgrade();
+        let service = self.service.clone();
+        let host_for_apply = hostname.clone();
+        let apply = Rc::new(move |_force: bool, _window: &mut Window, cx: &mut App| {
+            let Some(service) = service.clone() else {
+                return;
+            };
+            let id = id.clone();
+            let hostname = host_for_apply.clone();
+            view.update(cx, |_this, cx| {
+                cx.spawn(async move |this, cx| {
+                    let result = service.set_node_availability(&id, target).await;
+                    this.update(cx, |this, cx| {
+                        if let Err(e) = result {
+                            cx.emit(DockerViewEvent::Notify(SharedString::from(format!("{e:#}"))));
+                        } else {
+                            cx.emit(DockerViewEvent::Notify(SharedString::from(t!(
+                                "docker.notify.availability",
+                                name => hostname,
+                                availability => target.as_str(),
+                            ))));
+                        }
+                        this.kick(cx);
+                    })
+                    .ok();
+                })
+                .detach();
+            })
+            .ok();
+        });
+        if target == NodeAvailability::Drain {
+            let body = SharedString::from(t!("docker.confirm.drain.body", name => hostname));
+            DockerConfirmDialog::open(
+                SharedString::from(t!("docker.confirm.drain.title")),
+                body,
+                None,
+                false,
+                apply,
+                window,
+                cx,
+            );
+        } else {
+            apply(false, window, cx);
+        }
+    }
 
     fn open_detail(
         &mut self,
@@ -424,6 +594,27 @@ impl DockerView {
                         ))),
                 )
             })
+            .when(connected && self.swarm.manager, |this| {
+                this.child(
+                    h_flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap_1()
+                        .px_1p5()
+                        .rounded_full()
+                        .bg(palette::teal().opacity(0.15))
+                        .border_1()
+                        .border_color(palette::teal().opacity(0.4))
+                        .text_color(palette::teal())
+                        .text_size(px(10.5))
+                        .child(Icon::new(IconName::Network).with_size(px(11.)))
+                        .child(SharedString::from(t!(
+                            "docker.swarm.badge",
+                            nodes => self.swarm.nodes,
+                            managers => self.swarm.managers,
+                        ))),
+                )
+            })
             .child(
                 Button::new("docker-refresh")
                     .ghost()
@@ -441,7 +632,6 @@ impl DockerView {
     }
 
     fn render_segment(&self, cx: &mut Context<Self>) -> AnyElement {
-        let containers_on = self.tab == DockerTab::Containers;
         h_flex()
             .flex_shrink_0()
             .gap_0p5()
@@ -450,8 +640,12 @@ impl DockerView {
             .p_0p5()
             .rounded(cx.theme().radius)
             .bg(palette::surface(cx))
-            .child(self.segment_button("docker-tab-containers", t!("docker.tab.containers"), self.containers.len(), containers_on, DockerTab::Containers, cx))
-            .child(self.segment_button("docker-tab-images", t!("docker.tab.images"), self.images.len(), !containers_on, DockerTab::Images, cx))
+            .child(self.segment_button("docker-tab-containers", t!("docker.tab.containers"), self.containers.len(), self.tab == DockerTab::Containers, DockerTab::Containers, cx))
+            .child(self.segment_button("docker-tab-images", t!("docker.tab.images"), self.images.len(), self.tab == DockerTab::Images, DockerTab::Images, cx))
+            .when(self.swarm.manager, |this| {
+                this.child(self.segment_button("docker-tab-services", t!("docker.tab.services"), self.services.len(), self.tab == DockerTab::Services, DockerTab::Services, cx))
+                    .child(self.segment_button("docker-tab-nodes", t!("docker.tab.nodes"), self.nodes.len(), self.tab == DockerTab::Nodes, DockerTab::Nodes, cx))
+            })
             .into_any_element()
     }
 
@@ -481,17 +675,105 @@ impl DockerView {
     }
 
     fn render_chips(&self, cx: &mut Context<Self>) -> AnyElement {
-        let running = self.containers.iter().filter(|c| c.state.is_running() || c.state == ContainerState::Paused).count();
-        let stopped = self.containers.iter().filter(|c| c.state.is_stopped()).count();
+        match self.tab {
+            DockerTab::Containers => {
+                let running = self.containers.iter().filter(|c| c.state.is_running() || c.state == ContainerState::Paused).count();
+                let stopped = self.containers.iter().filter(|c| c.state.is_stopped()).count();
+                h_flex()
+                    .flex_shrink_0()
+                    .gap_1p5()
+                    .px_2()
+                    .pt_2()
+                    .child(self.chip("docker-filter-all", t!("docker.filter.all"), self.containers.len(), self.filter == ContainerFilter::All, ContainerFilter::All, cx))
+                    .child(self.chip("docker-filter-running", t!("docker.filter.running"), running, self.filter == ContainerFilter::Running, ContainerFilter::Running, cx))
+                    .child(self.chip("docker-filter-stopped", t!("docker.filter.stopped"), stopped, self.filter == ContainerFilter::Stopped, ContainerFilter::Stopped, cx))
+                    .into_any_element()
+            }
+            DockerTab::Services => {
+                let stacks = self.service_stacks();
+                let mut bar = h_flex().flex_shrink_0().gap_1p5().px_2().pt_2().flex_wrap();
+                bar = bar.child(self.stack_chip("docker-stack-all", t!("docker.filter.all"), self.services.len(), self.stack_filter.is_empty(), SharedString::default(), cx));
+                for stack in stacks {
+                    let label = if stack.is_empty() { SharedString::from(t!("docker.stack.none")) } else { stack.clone() };
+                    let count = self.services.iter().filter(|s| s.stack == stack).count();
+                    let id = SharedString::from(format!("docker-stack-{}", if stack.is_empty() { "_none" } else { stack.as_ref() }));
+                    bar = bar.child(self.stack_chip(id, label, count, self.stack_filter == stack, stack, cx));
+                }
+                bar.into_any_element()
+            }
+            DockerTab::Nodes => {
+                let managers = self.nodes.iter().filter(|n| n.role == NodeRole::Manager).count();
+                let workers = self.nodes.iter().filter(|n| n.role == NodeRole::Worker).count();
+                h_flex()
+                    .flex_shrink_0()
+                    .gap_1p5()
+                    .px_2()
+                    .pt_2()
+                    .child(self.node_chip("docker-node-all", t!("docker.filter.all"), self.nodes.len(), self.node_filter.is_empty(), "", cx))
+                    .child(self.node_chip("docker-node-manager", t!("docker.filter.manager"), managers, self.node_filter.as_ref() == "manager", "manager", cx))
+                    .child(self.node_chip("docker-node-worker", t!("docker.filter.worker"), workers, self.node_filter.as_ref() == "worker", "worker", cx))
+                    .into_any_element()
+            }
+            DockerTab::Images => div().into_any_element(),
+        }
+    }
+
+    fn stack_chip(
+        &self,
+        id: impl Into<gpui_kit::ElementId>,
+        label: impl Into<SharedString>,
+        count: usize,
+        on: bool,
+        stack: SharedString,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         h_flex()
-            .flex_shrink_0()
-            .gap_1p5()
-            .px_2()
-            .pt_2()
-            .child(self.chip("docker-filter-all", t!("docker.filter.all"), self.containers.len(), self.filter == ContainerFilter::All, ContainerFilter::All, cx))
-            .child(self.chip("docker-filter-running", t!("docker.filter.running"), running, self.filter == ContainerFilter::Running, ContainerFilter::Running, cx))
-            .child(self.chip("docker-filter-stopped", t!("docker.filter.stopped"), stopped, self.filter == ContainerFilter::Stopped, ContainerFilter::Stopped, cx))
-            .into_any_element()
+            .id(id)
+            .h(px(24.))
+            .px_2p5()
+            .items_center()
+            .gap_1()
+            .rounded(cx.theme().radius)
+            .bg(palette::surface(cx))
+            .border_1()
+            .border_color(if on { palette::blue() } else { palette::surface(cx) })
+            .text_size(px(12.))
+            .text_color(if on { cx.theme().foreground } else { palette::idle(cx) })
+            .child(label.into())
+            .child(div().text_size(px(10.5)).text_color(palette::idle(cx)).child(count.to_string()))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.stack_filter = stack.clone();
+                cx.notify();
+            }))
+    }
+
+    fn node_chip(
+        &self,
+        id: &'static str,
+        label: impl Into<SharedString>,
+        count: usize,
+        on: bool,
+        value: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        h_flex()
+            .id(id)
+            .h(px(24.))
+            .px_2p5()
+            .items_center()
+            .gap_1()
+            .rounded(cx.theme().radius)
+            .bg(palette::surface(cx))
+            .border_1()
+            .border_color(if on { palette::blue() } else { palette::surface(cx) })
+            .text_size(px(12.))
+            .text_color(if on { cx.theme().foreground } else { palette::idle(cx) })
+            .child(label.into())
+            .child(div().text_size(px(10.5)).text_color(palette::idle(cx)).child(count.to_string()))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.node_filter = SharedString::from(value);
+                cx.notify();
+            }))
     }
 
     fn chip(
@@ -710,6 +992,339 @@ impl DockerView {
             .into_any_element()
     }
 
+    fn render_service_row(&self, s: &ServiceSummary, cx: &mut Context<Self>) -> AnyElement {
+        let id = s.id.clone();
+        let name = s.name.clone();
+        let id_for_open = id.clone();
+        let name_for_open = name.clone();
+        let id_for_scale = id.clone();
+        let name_for_scale = name.clone();
+        let desired_for_scale = s.desired;
+        let id_for_logs = id.clone();
+        let name_for_logs = name.clone();
+        let id_for_remove = id.clone();
+        let name_for_remove = name.clone();
+        let global = s.mode == ServiceMode::Global;
+        let mismatch = s.running != s.desired;
+        let ports = s
+            .ports
+            .iter()
+            .filter(|p| p.host_port != 0)
+            .map(|p| format!("{}→{}", p.host_port, p.container_port))
+            .collect::<Vec<_>>()
+            .join(" ");
+        div()
+            .id(SharedString::from(format!("docker-service-{}", s.id)))
+            .group(ROW_GROUP)
+            .h(px(56.))
+            .px_2()
+            .flex()
+            .flex_col()
+            .justify_center()
+            .gap_0p5()
+            .hover(|style| style.bg(palette::surface_strong(cx)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_service(id_for_open.clone(), name_for_open.clone(), window, cx);
+            }))
+            .child(
+                h_flex()
+                    .relative()
+                    .items_center()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(12.5))
+                            .font_semibold()
+                            .text_color(cx.theme().foreground)
+                            .child(name.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(9.5))
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded(px(4.))
+                            .bg(palette::surface_strong(cx))
+                            .text_color(if global { palette::coral() } else { palette::sky() })
+                            .child(SharedString::from(if global { "global" } else { "replicated" })),
+                    )
+                    .child(
+                        h_flex()
+                            .absolute()
+                            .right_0()
+                            .h_full()
+                            .items_center()
+                            .gap_0p5()
+                            .invisible()
+                            .group_hover(ROW_GROUP, |style| style.visible())
+                            .child(
+                                Button::new(SharedString::from(format!("docker-svc-scale-{}", id_for_scale)))
+                                    .ghost()
+                                    .xsmall()
+                                    .disabled(global)
+                                    .icon(Icon::new(IconName::ArrowUp).with_size(px(13.)))
+                                    .tooltip(t!("docker.action.scale"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        let Some(service) = this.service.clone() else { return };
+                                        let panel = cx.entity().downgrade();
+                                        crate::ui::dialogs::DockerScaleDialog::open(
+                                            service,
+                                            id_for_scale.clone(),
+                                            name_for_scale.clone(),
+                                            desired_for_scale,
+                                            std::rc::Rc::new(move |_w, cx| {
+                                                panel.update(cx, |this, cx| this.kick(cx)).ok();
+                                            }),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("docker-svc-logs-{}", id_for_logs)))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(IconName::FileText).with_size(px(13.)))
+                                    .tooltip(t!("docker.detail.logs"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.open_service(id_for_logs.clone(), name_for_logs.clone(), window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("docker-svc-rm-{}", id_for_remove)))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(AppIcon::Trash).with_size(px(13.)))
+                                    .tooltip(t!("docker.action.remove"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.remove_service(id_for_remove.clone(), name_for_remove.clone(), window, cx);
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_size(px(11.))
+                            .text_color(if mismatch { palette::amber() } else { palette::green() })
+                            .group_hover(ROW_GROUP, |style| style.invisible())
+                            .child(format!("{}/{}", s.running, s.desired)),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(11.))
+                            .text_color(palette::idle(cx))
+                            .child(s.image.clone()),
+                    )
+                    .when(!ports.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .flex_shrink_0()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_size(px(10.5))
+                                .text_color(palette::idle(cx))
+                                .child(ports),
+                        )
+                    }),
+            )
+            .into_any_element()
+    }
+
+    fn remove_service(
+        &mut self,
+        id: SharedString,
+        name: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity().downgrade();
+        let body = SharedString::from(t!("docker.confirm.remove_service.body", name => name));
+        let target = id.clone();
+        DockerConfirmDialog::open(
+            SharedString::from(t!("docker.confirm.remove_service.title")),
+            body,
+            None,
+            true,
+            std::rc::Rc::new(move |_force, _window, cx| {
+                view.update(cx, |this, cx| {
+                    let Some(service) = this.service.clone() else { return };
+                    let id = target.clone();
+                    cx.spawn(async move |this, cx| {
+                        let result = service.remove_service(&id).await;
+                        this.update(cx, |this, cx| {
+                            if let Err(e) = result {
+                                cx.emit(DockerViewEvent::Notify(SharedString::from(format!("{e:#}"))));
+                            }
+                            this.kick(cx);
+                        })
+                        .ok();
+                    })
+                    .detach();
+                })
+                .ok();
+            }),
+            window,
+            cx,
+        );
+    }
+
+    fn render_node_row(&self, n: &NodeSummary, cx: &mut Context<Self>) -> AnyElement {
+        let id = n.id.clone();
+        let hostname = n.hostname.clone();
+        let id_for_open = id.clone();
+        let host_for_open = hostname.clone();
+        let dot = match crate::docker::node_state_tone(&n.state) {
+            "ready" => palette::green(),
+            "down" => cx.theme().danger,
+            _ => palette::idle(cx),
+        };
+        let avail_color = match n.availability {
+            NodeAvailability::Active => palette::green(),
+            NodeAvailability::Drain => palette::amber(),
+            NodeAvailability::Pause => palette::sky(),
+        };
+        let mut acts = h_flex()
+            .absolute()
+            .right_0()
+            .h_full()
+            .items_center()
+            .gap_0p5()
+            .invisible()
+            .group_hover(ROW_GROUP, |style| style.visible());
+        if n.availability != NodeAvailability::Active {
+            let id_a = id.clone();
+            let host_a = hostname.clone();
+            acts = acts.child(
+                Button::new(SharedString::from(format!("docker-node-act-{}", id)))
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(IconName::Play).with_size(px(13.)))
+                    .tooltip(t!("docker.action.activate"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.act_node_availability(id_a.clone(), host_a.clone(), NodeAvailability::Active, window, cx);
+                    })),
+            );
+        }
+        if n.availability != NodeAvailability::Pause {
+            let id_p = id.clone();
+            let host_p = hostname.clone();
+            acts = acts.child(
+                Button::new(SharedString::from(format!("docker-node-pause-{}", id)))
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(AppIcon::Pause).with_size(px(13.)))
+                    .tooltip(t!("docker.action.pause"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.act_node_availability(id_p.clone(), host_p.clone(), NodeAvailability::Pause, window, cx);
+                    })),
+            );
+        }
+        if n.availability != NodeAvailability::Drain {
+            let id_d = id.clone();
+            let host_d = hostname.clone();
+            acts = acts.child(
+                Button::new(SharedString::from(format!("docker-node-drain-{}", id)))
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(AppIcon::ArrowDown).with_size(px(13.)))
+                    .tooltip(t!("docker.action.drain"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.act_node_availability(id_d.clone(), host_d.clone(), NodeAvailability::Drain, window, cx);
+                    })),
+            );
+        }
+        div()
+            .id(SharedString::from(format!("docker-node-{}", n.id)))
+            .group(ROW_GROUP)
+            .h(px(52.))
+            .px_2()
+            .flex()
+            .flex_col()
+            .justify_center()
+            .gap_0p5()
+            .hover(|style| style.bg(palette::surface_strong(cx)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_node(id_for_open.clone(), host_for_open.clone(), window, cx);
+            }))
+            .child(
+                h_flex()
+                    .relative()
+                    .items_center()
+                    .gap_1p5()
+                    .child(div().size(px(8.)).flex_shrink_0().rounded_full().bg(dot))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(12.5))
+                            .font_semibold()
+                            .text_color(cx.theme().foreground)
+                            .child(hostname.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(9.5))
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded(px(4.))
+                            .bg(palette::surface_strong(cx))
+                            .text_color(if n.role == NodeRole::Manager { palette::sky() } else { palette::idle(cx) })
+                            .child(SharedString::from(match n.role {
+                                NodeRole::Manager => if n.leader { "manager · leader" } else { "manager" },
+                                NodeRole::Worker => "worker",
+                            })),
+                    )
+                    .child(acts)
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(10.))
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded_full()
+                            .border_1()
+                            .border_color(avail_color.opacity(0.4))
+                            .text_color(avail_color)
+                            .group_hover(ROW_GROUP, |style| style.invisible())
+                            .child(SharedString::from(n.availability.as_str())),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .pl(px(15.))
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_size(px(10.5))
+                    .text_color(palette::idle(cx))
+                    .child(n.engine_version.clone())
+                    .child(format!("{} CPU", n.cpus))
+                    .child(human_size(n.memory_bytes))
+                    .child(n.addr.clone()),
+            )
+            .into_any_element()
+    }
+
     fn render_footer(&self, cx: &App) -> AnyElement {
         let engine = self.engine.clone();
         h_flex()
@@ -800,6 +1415,8 @@ impl DockerView {
         let (title, body) = match self.tab {
             DockerTab::Containers => (t!("docker.empty.title"), t!("docker.empty.body")),
             DockerTab::Images => (t!("docker.images.empty.title"), t!("docker.empty.body")),
+            DockerTab::Services => (t!("docker.service.empty"), t!("docker.empty.body")),
+            DockerTab::Nodes => (t!("docker.node.empty"), t!("docker.empty.body")),
         };
         v_flex()
             .flex_1()
@@ -986,6 +1603,76 @@ impl Render for DockerView {
                             .bg(palette::surface(cx))
                             .py_1()
                             .when(empty, |this| this.child(self.render_empty(cx)))
+                            .children(rows),
+                    )
+                    .into_any_element()
+            }
+            DockerTab::Services => {
+                let rows: Vec<AnyElement> = self
+                    .filtered_services(cx)
+                    .iter()
+                    .map(|s| self.render_service_row(s, cx))
+                    .collect();
+                let empty = rows.is_empty();
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.render_chips(cx))
+                    .child(
+                        div()
+                            .id("docker-service-list")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .mt_2()
+                            .border_t_1()
+                            .border_color(cx.theme().sidebar_border)
+                            .bg(palette::surface(cx))
+                            .py_1()
+                            .when(empty, |this| {
+                                this.child(
+                                    div()
+                                        .p_4()
+                                        .text_xs()
+                                        .text_color(palette::idle(cx))
+                                        .child(SharedString::from(t!("docker.service.empty"))),
+                                )
+                            })
+                            .children(rows),
+                    )
+                    .into_any_element()
+            }
+            DockerTab::Nodes => {
+                let rows: Vec<AnyElement> = self
+                    .filtered_nodes(cx)
+                    .iter()
+                    .map(|n| self.render_node_row(n, cx))
+                    .collect();
+                let empty = rows.is_empty();
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.render_chips(cx))
+                    .child(
+                        div()
+                            .id("docker-node-list")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .mt_2()
+                            .border_t_1()
+                            .border_color(cx.theme().sidebar_border)
+                            .bg(palette::surface(cx))
+                            .py_1()
+                            .when(empty, |this| {
+                                this.child(
+                                    div()
+                                        .p_4()
+                                        .text_xs()
+                                        .text_color(palette::idle(cx))
+                                        .child(SharedString::from(t!("docker.node.empty"))),
+                                )
+                            })
                             .children(rows),
                     )
                     .into_any_element()

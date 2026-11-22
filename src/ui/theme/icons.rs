@@ -29,6 +29,10 @@ pub enum AppIcon {
     /// Docker 鲸鱼标：Docker 容器管理（右活动栏那一枚、详情标签页）。
     /// 用仓库自带的 `assets/icons/docker.svg`（填充式商标），不用组件库的集装箱。
     Docker,
+    /// 双竖条：暂停（Swarm 节点 pause）。默认图标集没带，自带一份。
+    Pause,
+    /// 向下箭头：drain（Swarm 节点迁走任务）。默认图标集没带，自带一份。
+    ArrowDown,
     /// 竖着一分为二的方框：左右分屏。
     Columns2,
     /// 横着一分为二的方框：上下分屏。
@@ -108,6 +112,8 @@ impl IconNamed for AppIcon {
             Self::Brain => "icons/brain.svg",
             Self::Cable => "icons/cable.svg",
             Self::Docker => "icons/docker.svg",
+            Self::Pause => "icons/pause.svg",
+            Self::ArrowDown => "icons/arrow-down.svg",
             Self::Columns2 => "icons/columns-2.svg",
             Self::Rows2 => "icons/rows-2.svg",
             Self::Grid2x2 => "icons/grid-2x2.svg",
