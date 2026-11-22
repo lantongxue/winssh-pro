@@ -51,7 +51,9 @@ impl DockerClient {
     // ─── 服务 ───────────────────────────────────────────────────────────────
 
     pub async fn list_services(&self) -> Result<Vec<ServiceSummary>> {
-        let options = ListServicesOptionsBuilder::new().build();
+        // status=true 才返回 ServiceStatus（running/desired task 数）；
+        // 不带的话列表副本恒为 0，与详情（按任务表算）对不上。
+        let options = ListServicesOptionsBuilder::new().status(true).build();
         let list = self.docker.list_services(Some(options)).await?;
         Ok(list.into_iter().map(service_summary).collect())
     }

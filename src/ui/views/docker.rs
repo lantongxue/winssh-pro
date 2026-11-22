@@ -866,6 +866,9 @@ impl DockerView {
                             .h_full()
                             .items_center()
                             .gap_0p5()
+                            .bg(palette::surface_strong(cx))
+                            .rounded(px(5.))
+                            .px_1()
                             .invisible()
                             .group_hover(ROW_GROUP, |style| style.visible())
                             .when(running, |this| {
@@ -1050,6 +1053,7 @@ impl DockerView {
                             .rounded(px(4.))
                             .bg(palette::surface_strong(cx))
                             .text_color(if global { palette::coral() } else { palette::sky() })
+                            .group_hover(ROW_GROUP, |style| style.invisible())
                             .child(SharedString::from(if global { "global" } else { "replicated" })),
                     )
                     .child(
@@ -1059,6 +1063,9 @@ impl DockerView {
                             .h_full()
                             .items_center()
                             .gap_0p5()
+                            .bg(palette::surface_strong(cx))
+                            .rounded(px(5.))
+                            .px_1()
                             .invisible()
                             .group_hover(ROW_GROUP, |style| style.visible())
                             .child(
@@ -1204,6 +1211,9 @@ impl DockerView {
             .h_full()
             .items_center()
             .gap_0p5()
+            .bg(palette::surface_strong(cx))
+            .rounded(px(5.))
+            .px_1()
             .invisible()
             .group_hover(ROW_GROUP, |style| style.visible());
         if n.availability != NodeAvailability::Active {
@@ -1289,6 +1299,7 @@ impl DockerView {
                             .rounded(px(4.))
                             .bg(palette::surface_strong(cx))
                             .text_color(if n.role == NodeRole::Manager { palette::sky() } else { palette::idle(cx) })
+                            .group_hover(ROW_GROUP, |style| style.invisible())
                             .child(SharedString::from(match n.role {
                                 NodeRole::Manager => if n.leader { "manager · leader" } else { "manager" },
                                 NodeRole::Worker => "worker",
