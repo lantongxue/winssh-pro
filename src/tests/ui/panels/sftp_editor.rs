@@ -1,5 +1,6 @@
     use super::{
-        SftpEditorPanel, language_for, language_for_shebang, open_after_host, parse_goto,
+        PATH_PROBE, SERVER_PROBE, ServerIdentity, SftpEditorPanel, language_for,
+        language_for_shebang, open_after_host, parse_goto,
     };
 
     /// 编辑页开在打开它的那个会话标签页后面，关掉它要落回那一页。
@@ -127,6 +128,66 @@
             PanelId::from(host.entity_id()),
             "关掉编辑页要落回打开它的那一页，而不是下一台服务器"
         );
+    }
+
+    /// 一具画在窗口里的空壳编辑页：不读不写，但工具栏照常画。
+    fn drawn_editor(
+        cx: &mut gpui_kit::TestAppContext,
+        server: Option<ServerIdentity>,
+    ) -> (
+        gpui_kit::Entity<gpui_kit::component::Root>,
+        &mut gpui_kit::VisualTestContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (root, cx) = cx.add_window_view(|window, cx| {
+            use gpui_kit::AppContext as _;
+            let editor = cx.new(|cx| {
+                let mut editor = SftpEditorPanel::new_detached(None, cx);
+                editor.server = server;
+                editor
+            });
+            gpui_kit::component::Root::new(editor, window, cx)
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        (root, cx)
+    }
+
+    /// 工具栏左端画着这份文件所属的服务器（名字 + 地址）—— 几台机器各开一份
+    /// 文件时，光看路径分不出是谁家的 `/etc/hosts`。
+    #[gpui_kit::test]
+    fn toolbar_shows_the_server_the_file_belongs_to(cx: &mut gpui_kit::TestAppContext) {
+        let (_root, cx) = drawn_editor(
+            cx,
+            Some(ServerIdentity {
+                name: "web-01".into(),
+                address: "root@10.0.1.11".into(),
+            }),
+        );
+        assert!(
+            cx.debug_bounds(SERVER_PROBE).is_some(),
+            "工具栏上没有服务器标识"
+        );
+    }
+
+    /// 没有服务器可标（测试空壳）时退回铅笔那一格，不画空标识。
+    #[gpui_kit::test]
+    fn toolbar_without_a_server_keeps_the_pencil(cx: &mut gpui_kit::TestAppContext) {
+        let (_root, cx) = drawn_editor(cx, None);
+        assert!(
+            cx.debug_bounds(SERVER_PROBE).is_none(),
+            "没有服务器却画出了标识"
+        );
+    }
+
+    /// 点路径复制到的是完整远端路径，不是文件名 —— 这条行为已上线，
+    /// 钉住防回归（改工具栏时最容易把这一格的点击弄丢）。
+    #[gpui_kit::test]
+    fn clicking_the_path_copies_the_full_remote_path(cx: &mut gpui_kit::TestAppContext) {
+        let (_root, cx) = drawn_editor(cx, None);
+        let path = cx.debug_bounds(PATH_PROBE).expect("工具栏上没有路径");
+        cx.simulate_click(path.center(), gpui_kit::Modifiers::none());
+        let copied = cx.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(copied.as_deref(), Some("/tmp/detached.conf"));
     }
 
     #[test]

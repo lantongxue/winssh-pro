@@ -27,7 +27,8 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::DialogFooter,
     dock::{
@@ -75,6 +76,12 @@ const TOOLBAR_HEIGHT: gpui_kit::Pixels = px(26.);
 /// 图标要收一档才压得住。
 const ICON_SIZE: gpui_kit::Pixels = px(12.);
 
+/// 服务器标识那一格的测试探针名（`debug_bounds` 只认 `debug_selector`）。
+const SERVER_PROBE: &str = "sftp-editor-server";
+
+/// 路径那一格的测试探针名。路径要能点着复制，测试靠它找到落点。
+const PATH_PROBE: &str = "sftp-editor-path";
+
 /// 正文这一侧的读取状态。
 enum Read {
     /// 正在从对端读。
@@ -85,6 +92,18 @@ enum Read {
     Failed(SharedString),
 }
 
+/// 工具栏左端的服务器标识：这份文件所属主机的显示名与地址。
+///
+/// 地址取 [`crate::host::Host::address`] 那一份（SSH 系是 `user@host[:port]`，
+/// S3 / WebDAV 是端点 URL）。和 [`SessionTarget`] 各管各的：那一条是智能助手
+/// 要的 SSH 通道，FTP / S3 / WebDAV 没有它 —— 标识只是"这份文件在哪台机器上"，
+/// 四种文件协议都画。
+#[derive(Clone)]
+pub struct ServerIdentity {
+    pub name: SharedString,
+    pub address: SharedString,
+}
+
 /// 远端文本编辑标签页。
 pub struct SftpEditorPanel {
     /// 远端文件通道。`None` 只在测试的空壳（`new_detached`）里出现 ——
@@ -92,6 +111,9 @@ pub struct SftpEditorPanel {
     service: Option<crate::service::FileService>,
     path: SharedString,
     name: SharedString,
+    /// 工具栏左端画的那台服务器（名字 + 地址）。`None` 只在测试空壳
+    /// （`new_detached`）里出现 —— 真实打开路径上一定有一台主机。
+    server: Option<ServerIdentity>,
     /// 从文件名解析出的语法名（如 `"rust"`、`"bash"`），喂给编辑器高亮，也在工具栏画一个
     /// 语言标签。`None` 表示按纯文本处理（未知扩展名、无扩展名）。
     language: Option<SharedString>,
@@ -197,6 +219,7 @@ impl SftpEditorPanel {
         service: crate::service::FileService,
         path: impl Into<SharedString>,
         name: impl Into<SharedString>,
+        server: Option<ServerIdentity>,
         session: Option<SessionTarget>,
         on_saved: SavedHandler,
         window: &mut Window,
@@ -209,6 +232,7 @@ impl SftpEditorPanel {
             service: Some(service),
             path,
             name,
+            server,
             language,
             editor: None,
             goto: None,
@@ -242,6 +266,7 @@ impl SftpEditorPanel {
             service: None,
             path: "/tmp/detached.conf".into(),
             name: "detached.conf".into(),
+            server: None,
             language: None,
             editor: None,
             goto: None,
@@ -836,9 +861,9 @@ impl Render for SftpEditorPanel {
             .on_action(cx.listener(|this, action: &CloseGoToLine, window, cx| {
                 this.on_close_goto(action, window, cx)
             }))
-            // 工具栏：铅笔 + 远端路径 + 语言标签 + 保存按钮。和终端会话的信息栏同一套
-            // chrome —— 固定 26 高、凹陷底色、一道下边线、`text_xs` 的安静前景，让编辑
-            // 标签页和终端标签页并排时读起来是同一条上沿。
+            // 工具栏：服务器标识 + 远端路径 + 语言标签 + 保存按钮。和终端会话的信息栏
+            // 同一套 chrome —— 固定 26 高、凹陷底色、一道下边线、`text_xs` 的安静前景，
+            // 让编辑标签页和终端标签页并排时读起来是同一条上沿。
             .child(
                 h_flex()
                     .flex_shrink_0()
@@ -859,17 +884,55 @@ impl Render for SftpEditorPanel {
                             .min_w_0()
                             .items_center()
                             .gap_2()
-                            .child(
-                                Icon::new(AppIcon::Pencil)
-                                    .with_size(ICON_SIZE)
-                                    .flex_shrink_0()
-                                    .text_color(palette::sky()),
-                            )
+                            // 左端第一格是"这份文件在哪台机器上"：服务器图标 +
+                            // 名字 + 地址，一道竖线接路径 —— 和终端信息栏
+                            // "user@host | 目录"同一条读法。几台机器各开一份文件时，
+                            // 光看路径分不出是谁家的 `/etc/hosts`。标识不缩，
+                            // 截断让给路径（信息栏也是地址不缩、目录吃截断）。
+                            .when_some(self.server.clone(), |this, server| {
+                                this.child(
+                                    Icon::new(AppIcon::Server)
+                                        .with_size(ICON_SIZE)
+                                        .flex_shrink_0()
+                                        .text_color(palette::sky()),
+                                )
+                                .child(
+                                    div()
+                                        .id(SERVER_PROBE)
+                                        .debug_selector(|| SERVER_PROBE.to_string())
+                                        .flex_shrink_0()
+                                        .font_medium()
+                                        .text_color(cx.theme().foreground)
+                                        .child(server.name),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .font_family(cx.theme().mono_font_family.clone())
+                                        .child(server.address),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_color(cx.theme().border)
+                                        .child("|"),
+                                )
+                            })
+                            // 没有服务器可标（测试空壳）时退回原来那枚铅笔。
+                            .when(self.server.is_none(), |this| {
+                                this.child(
+                                    Icon::new(AppIcon::Pencil)
+                                        .with_size(ICON_SIZE)
+                                        .flex_shrink_0()
+                                        .text_color(palette::sky()),
+                                )
+                            })
                             .child({
                                 let path = self.path.clone();
                                 // 路径继承条上的 `text_xs` 与安静前景，只额外要一副等宽字。
                                 div()
-                                    .id("sftp-editor-path")
+                                    .id(PATH_PROBE)
+                                    .debug_selector(|| PATH_PROBE.to_string())
                                     .min_w_0()
                                     .truncate()
                                     .cursor(CursorStyle::PointingHand)

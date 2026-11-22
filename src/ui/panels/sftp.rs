@@ -60,7 +60,7 @@ use russh::client::Handle;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use winssh_domain::settings::sftp::SftpLaunchMode;
 
-use super::sftp_editor::{SavedHandler as SftpSavedHandler, SftpEditorPanel};
+use super::sftp_editor::{SavedHandler as SftpSavedHandler, ServerIdentity, SftpEditorPanel};
 use crate::ui::{
     dialogs::{
         ChmodHandler, RemoteCopyDialog, RemoteCopyHandler, RemoteCopyRequest, SftpChmodDialog,
@@ -2517,6 +2517,12 @@ impl SftpPanel {
         // 这页文件属于哪台机器：从某台主机的 SFTP 栏里打开的就带着那台主机的
         // 目标，切过去时智能助手不会把会话跟丢。
         let session = self.session_target();
+        // 工具栏左端的标识：名字 + 地址。四种文件协议都画（S3 / WebDAV 的地址
+        // 是端点 URL，`Host::address` 自己分档），不依赖助手那条 SSH 会话。
+        let server = ServerIdentity {
+            name: self.host.name.clone(),
+            address: self.host.address().into(),
+        };
         // 存完盘要把大小与时间画对，所以重列一次。
         let on_saved: SftpSavedHandler = Rc::new(move |window, app| {
             let Some(entity) = panel.upgrade() else {
@@ -2530,6 +2536,7 @@ impl SftpPanel {
                 service,
                 entry.path.clone(),
                 entry.name.clone(),
+                Some(server),
                 session,
                 on_saved,
                 window,
