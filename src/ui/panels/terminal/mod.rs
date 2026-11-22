@@ -67,7 +67,7 @@ use crate::{
         Workspace,
         bars::{SessionInfoBar, SessionStatusBar},
         dialogs::{RemoteCopyChannel, RemoteCopyTarget, ZmodemTransferDialog},
-        panels::{MonitorEvent, MonitorPanel, SftpPanel, SftpPanelEvent},
+        panels::{DockerContainerPanel, MonitorEvent, MonitorPanel, SftpPanel, SftpPanelEvent},
         pickers::scheme_picker::{SchemePicker, SchemePickerOptions},
         theme::palette,
         views::{
@@ -228,6 +228,9 @@ pub enum ActiveCenterPanel {
     /// 一份远端文件，以及打开它时那台机器的目标。`None` 是这一页没有服务器
     /// 标识（FTP / S3 / WebDAV 那几档）。
     Editor(Option<SessionTarget>),
+    /// 一个容器详情标签页，带着打开它的那条终端会话（宿主标签）。右栏功能
+    /// 面板与助手据此认回那台主机，而不是把右栏整片空掉。
+    Container(WeakEntity<TerminalPanel>),
 }
 
 impl ActiveCenterPanel {
@@ -259,12 +262,22 @@ impl ActiveCenterPanel {
                     .focus_handle(cx)
                     .contains_focused(window, cx);
                 pages.push((focused, Self::Terminal(terminal)));
-            } else if let Ok(editor) = view.downcast::<SftpEditorPanel>() {
+            } else if let Ok(editor) = view.clone().downcast::<SftpEditorPanel>() {
                 let focused = editor
                     .read(cx)
                     .focus_handle(cx)
                     .contains_focused(window, cx);
                 pages.push((focused, Self::Editor(editor.read(cx).session_target())));
+            } else if let Ok(container) = view.downcast::<DockerContainerPanel>() {
+                // 容器详情页认回打开它的宿主终端；宿主没了就不进名单。
+                let Some(host_tab) = container.read(cx).host_tab() else {
+                    return;
+                };
+                let focused = container
+                    .read(cx)
+                    .focus_handle(cx)
+                    .contains_focused(window, cx);
+                pages.push((focused, Self::Container(host_tab)));
             }
         });
 
@@ -283,6 +296,9 @@ impl ActiveCenterPanel {
         match self {
             Self::Terminal(panel) => panel.read(cx).session_target(cx),
             Self::Editor(target) => target.clone().filter(|target| !target.handle.is_closed()),
+            Self::Container(host_tab) => host_tab
+                .upgrade()
+                .and_then(|panel| panel.read(cx).session_target(cx)),
         }
     }
 }
@@ -970,6 +986,7 @@ impl TerminalPanel {
         match ActiveCenterPanel::in_center(dock_area, window, cx)? {
             ActiveCenterPanel::Terminal(panel) => Some(panel),
             ActiveCenterPanel::Editor(_) => None,
+            ActiveCenterPanel::Container(host_tab) => host_tab.upgrade(),
         }
     }
 
@@ -1066,6 +1083,9 @@ impl TerminalPanel {
                     let host = PanelId::from(cx.entity_id());
                     let panel_id = PanelId::from(panel.entity_id());
                     let panel = panel.clone();
+                    // 带上服务器标识：右栏功能面板/助手在本标签活动时认回本终端。
+                    let host_weak = cx.entity().downgrade();
+                    panel.update(cx, |panel, _| panel.set_host_tab(host_weak));
                     area.update(cx, |area, cx| {
                         area.add_panel_view(
                             panel_handle(panel),

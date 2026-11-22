@@ -548,6 +548,7 @@ impl AssistantPanel {
         // [`ActiveCenterPanel::session_target`] 里按句柄的开关现判。
         let panel = match &active {
             Some(ActiveCenterPanel::Terminal(panel)) => Some(panel.clone()),
+            Some(ActiveCenterPanel::Container(host_tab)) => host_tab.upgrade(),
             _ => None,
         };
 

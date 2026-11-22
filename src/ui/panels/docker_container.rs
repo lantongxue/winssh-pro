@@ -34,7 +34,7 @@ use crate::service::DockerService;
 use crate::ssh::SshSession;
 use crate::ui::{
     dialogs::{DockerConfirmDialog, DockerInputDialog},
-    panels::{PaneOrigin, TerminalPane},
+    panels::{PaneOrigin, TerminalPane, TerminalPanel},
     theme::{AppIcon, palette},
 };
 use rust_i18n::t;
@@ -85,6 +85,9 @@ pub struct DockerContainerPanel {
     focus_handle: FocusHandle,
     /// 挂进 Dock 后所在的标签组（关自己用），[`BasePanel::on_added_to`] 里接住。
     group: Option<WeakEntity<TabGroup>>,
+    /// 打开本标签页的那条终端会话（宿主标签）。右栏功能面板与助手靠它认回
+    /// 那台主机——否则活动中心变成本面板时右栏会整片空掉。
+    host_tab: Option<WeakEntity<TerminalPanel>>,
 }
 
 impl DockerContainerPanel {
@@ -121,6 +124,7 @@ impl DockerContainerPanel {
             files_error: None,
             focus_handle: cx.focus_handle(),
             group: None,
+            host_tab: None,
         };
         this.load_detail(cx);
         this.start_stats(window, cx);
@@ -147,6 +151,16 @@ impl DockerContainerPanel {
         );
         pane.update(cx, |pane, cx| pane.set_pending_line(cmd, cx));
         self.terminal_pane = Some(pane);
+    }
+
+    /// 记下打开本标签页的宿主终端标签（挂进 Dock 时由宿主设置）。
+    pub(crate) fn set_host_tab(&mut self, tab: WeakEntity<TerminalPanel>) {
+        self.host_tab = Some(tab);
+    }
+
+    /// 宿主终端标签的弱句柄；右栏/助手据此认回那台主机。
+    pub(crate) fn host_tab(&self) -> Option<WeakEntity<TerminalPanel>> {
+        self.host_tab.clone()
     }
 
     /// 关掉自己这个标签页（帧末摘除，避免订阅回调里重入）。
