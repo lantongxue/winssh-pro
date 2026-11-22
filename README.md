@@ -12,7 +12,7 @@
 
 [winssh.net](https://winssh.net) · [Releases](https://github.com/lantongxue/winssh-pro/releases) · [Issues](https://github.com/lantongxue/winssh-pro/issues)
 
-<img src="docs/overview-zh.webp" width="900" alt="WinSSH Pro 主界面" />
+<img src="docs/screenshot-workspace.png" width="900" alt="WinSSH Pro 主工作区：终端、资源监控与 SFTP" />
 
 </div>
 
@@ -31,6 +31,17 @@
 - Clash 订阅管理
 - 主机信息面板实时显示 CPU、内存、磁盘、网络吞吐与进程列表
 - 命令片段库、事件日志、全量数据备份与恢复
+- Docker 容器与 Swarm 管理经现有 SSH 会话接 Engine API：容器/镜像/日志/统计/文件，服务/节点/任务管理与扩缩容
+
+## 界面预览
+
+**Docker 容器管理** —— 容器详情带实时 CPU/内存/网络统计与流式日志跟随，另有文件浏览与内嵌终端；右栏可切到 Swarm 服务/节点/任务管理与扩缩容。
+
+<img src="docs/screenshot-docker.png" width="900" alt="Docker 容器详情与流式日志" />
+
+**凭据保险箱** —— 账号密码、SSH 私钥、API 令牌分档存放，带密码生成器与 SSH 密钥对生成，建主机时取用。
+
+<img src="docs/screenshot-vault.png" width="900" alt="凭据保险箱窗口" />
 
 ## 安装
 
