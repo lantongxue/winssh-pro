@@ -29,6 +29,7 @@ winssh-assistant = { workspace = true }
 winssh-zmodem = { workspace = true }
 winssh-terminal = { workspace = true }
 winssh-monitor = { workspace = true }
+winssh-docker = { workspace = true }
 winssh-backup = { workspace = true }
 winssh-localfs = { workspace = true }
 winssh-netstats = { workspace = true }

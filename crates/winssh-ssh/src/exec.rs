@@ -92,6 +92,31 @@ pub async fn exec_script_cancellable(
     }
 }
 
+/// 在同一条连接上开一条**长活**的 `exec` 通道，把它的双向字节流交出去。
+///
+/// 与 [`exec_script`] 那条"跑完收输出就关"不同：这条把通道交给调用方持续读写，
+/// 通道活到调用方把它丢掉为止。Docker 的 `docker system dial-stdio` 走它
+/// （见 `winssh-docker`）—— 一条 HTTP 连接对应一条这样的通道，SSH 的多路复用
+/// 让若干条 HTTP 连接与终端互不干扰。
+///
+/// 命令本身的成败由调用方在流上自己读：`exec` 请求只是发出去，远端那一句
+/// `docker: command not found` 是随后从 stderr 来的，这里不收。要干净地分辨
+/// "没装 / 没权限"，调用方先跑一次 [`exec_script`] 探一下（`DockerService` 这么做）。
+pub async fn exec_stream(
+    handle: &Handle<SshHandler>,
+    command: &str,
+) -> Result<russh::ChannelStream<russh::client::Msg>> {
+    let channel = handle
+        .channel_open_session()
+        .await
+        .with_context(|| t!("ssh_exec.open_channel_failed").to_string())?;
+    channel
+        .exec(true, command)
+        .await
+        .with_context(|| t!("ssh_exec.exec_failed").to_string())?;
+    Ok(channel.into_stream())
+}
+
 async fn run_script(
     handle: &Handle<SshHandler>,
     script: &str,

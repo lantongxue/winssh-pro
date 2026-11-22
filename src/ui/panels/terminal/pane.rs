@@ -206,6 +206,10 @@ pub struct TerminalPane {
     /// 的本机 shell 也都"连着"，但它们都不是用户点头要往里装东西的那台机器。
     /// 往对端打字之前问的是这一个。
     remote_shell: bool,
+    /// 连上之后要自动打进这个 shell 的一行命令（容器终端用：新窗格还在拨号时
+    /// 先把 `docker exec -it …` 记在这儿，[`Self::adopt`] 成功那一刻再发，
+    /// 免得命令打进占位终端被替换掉）。发过即清。
+    pending_line: Option<String>,
     /// 这条会话的终端。开不出来时是 `None`，[`Self::error`] 说明原因。
     emulator: Option<Entity<Emulator>>,
     error: Option<SharedString>,
@@ -262,6 +266,7 @@ impl TerminalPane {
             let mut this = Self {
                 host,
                 remote_shell: false,
+                pending_line: None,
                 emulator: None,
                 error: None,
                 grid: TerminalBounds::default(),
@@ -824,6 +829,10 @@ impl TerminalPane {
         self.emulator = Some(emulator);
         self.error = None;
         self.remote_shell = true;
+        // 容器终端那一下：连上这一刻才把记着的命令发进去（见 [`Self::pending_line`]）。
+        if let Some(cmd) = self.pending_line.take() {
+            self.send_line(&cmd, cx);
+        }
         // 这台主机上开着开关就在这儿装。只有这条路会走到 —— SSH 拨不通时
         // 错误直接留在占位终端里（见 [`Self::show_ssh_failure`]），不会拿到
         // 别处机器去自作主张地装集成。
@@ -1091,6 +1100,16 @@ impl TerminalPane {
         };
         let cmd = cmd.to_owned();
         emulator.update(cx, |em, cx| em.input(format!("{cmd}\n").into_bytes(), cx));
+    }
+
+    /// 记一行"连上就发"的命令。已经连着就立刻发；还在拨号就记到
+    /// [`Self::pending_line`]，[`Self::adopt`] 成功那一刻发。容器终端走它。
+    pub fn set_pending_line(&mut self, cmd: String, cx: &mut Context<Self>) {
+        if self.remote_shell {
+            self.send_line(&cmd, cx);
+        } else {
+            self.pending_line = Some(cmd);
+        }
     }
 
     // ─── 按键与鼠标 ─────────────────────────────────────────────────────────

@@ -14,6 +14,7 @@ mod command_history;
 mod credential;
 mod db;
 mod desktop;
+mod docker;
 mod easytier;
 mod forward;
 mod ftp;

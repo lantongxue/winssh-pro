@@ -80,6 +80,10 @@ const OWNED: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/cable.svg"),
     ),
     (
+        "icons/docker.svg",
+        include_bytes!("../assets/icons/docker.svg"),
+    ),
+    (
         "icons/code-xml.svg",
         include_bytes!("../assets/icons/code-xml.svg"),
     ),

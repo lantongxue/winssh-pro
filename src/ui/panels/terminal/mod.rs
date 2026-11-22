@@ -27,13 +27,18 @@ mod scrollbar;
 mod split;
 
 pub use pane::{BackTab, CloseSearch, CopySelection, Find, PasteClipboard, Tab};
+// 容器详情标签页要内嵌一个真的终端窗格（Share 同一条连接 + 待发送的 docker exec）。
+pub use pane::{PaneOrigin, TerminalPane};
 pub use split::SplitLayout;
 
 use gpui_kit::component::{
     ActiveTheme as _, IconName, ResizablePanelEvent, ResizableState, Sizable as _,
     WindowExt as _,
     button::{Button, ButtonVariants as _},
-    dock::{BasePanel, DockArea, DockPlacement, PaneRef, Panel, PanelEvent, PanelId, TabGroup},
+    dock::{
+        BasePanel, DockArea, DockPlacement, InsertTarget, PaneRef, Panel, PanelEvent, PanelId,
+        TabGroup, panel_handle,
+    },
     h_flex, resizable_panel, v_flex, v_resizable,
 };
 use gpui_kit::{
@@ -45,7 +50,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use self::{
-    pane::{PaneOrigin, TerminalPane, TerminalPaneEvent},
+    pane::TerminalPaneEvent,
     split::{new_split_state, render_split},
 };
 use super::sftp_editor::{SftpEditorPanel, open_after_host};
@@ -66,8 +71,8 @@ use crate::{
         pickers::scheme_picker::{SchemePicker, SchemePickerOptions},
         theme::palette,
         views::{
-            CommandHistoryView, ForwardsHandler, ForwardsView, HistoryRunHandler, SessionTool,
-            ShellIntegrationHandler,
+            CommandHistoryView, DockerView, DockerViewEvent, ForwardsHandler, ForwardsView,
+            HistoryRunHandler, SessionTool, ShellIntegrationHandler,
         },
     },
 };
@@ -398,6 +403,9 @@ pub struct TerminalPanel {
     /// 端口转发视图。和监控面板同一条生命周期：常驻在本标签页里，连上之后
     /// 由 [`Self::start_saved_forwards`] 把转发服务接进来。
     forwards_view: Entity<ForwardsView>,
+    /// Docker 视图。和转发视图同一条生命周期：常驻在本标签页里，连上之后
+    /// 由 [`Self::attach_docker`] 把 Docker 服务接进来。
+    docker_view: Entity<DockerView>,
     /// 命令历史视图。跟着"库里有没有这台主机"走（同 [`Self::history`]），
     /// 本机 Shell 没有主机记录，那一档是 `None`。
     history_view: Option<Entity<CommandHistoryView>>,
@@ -571,6 +579,9 @@ impl TerminalPanel {
             let forwards_view = cx.new(|cx| {
                 ForwardsView::new(host.clone(), None, host.forwards.clone(), on_change, cx)
             });
+            // Docker 页常驻本标签页；连上后 attach_docker 把服务与连接接进去，
+            // 容器终端由详情标签页内嵌（不再分屏到本终端）。
+            let docker_view = cx.new(|cx| DockerView::new(host.clone(), None, window, cx));
             let history_view = history.clone().map(|service| {
                 let weak = cx.entity().downgrade();
                 let on_run: HistoryRunHandler = Rc::new(move |command, window, cx| {
@@ -615,6 +626,7 @@ impl TerminalPanel {
                 shown_tool: None,
                 monitor_panel: monitor_panel.clone(),
                 forwards_view,
+                docker_view: docker_view.clone(),
                 history_view,
                 sftp_open: false,
                 sftp_panel: sftp_panel.clone(),
@@ -632,6 +644,7 @@ impl TerminalPanel {
             this.adopt_pane(pane, window, cx);
             Self::subscribe_monitor(&monitor_panel, window, cx);
             Self::subscribe_sftp(&sftp_panel, window, cx);
+            Self::subscribe_docker(&docker_view, window, cx);
             this.subscribe_quad_row_sync(window, cx);
             this
         })
@@ -692,6 +705,7 @@ impl TerminalPanel {
                     self.open_sftp(session.handle.clone(), window, cx);
                 }
                 self.start_saved_forwards(session.clone(), window, cx);
+                self.attach_docker(session.handle.clone(), session.clone(), cx);
                 cx.notify();
             }
             TerminalPaneEvent::Changed => {
@@ -1037,6 +1051,51 @@ impl TerminalPanel {
         .detach();
     }
 
+    /// Docker 页往外发的通知（动作失败之类），宿主替它弹出来。
+    fn subscribe_docker(docker_view: &Entity<DockerView>, window: &mut Window, cx: &mut Context<Self>) {
+        cx.subscribe_in(
+            docker_view,
+            window,
+            |this: &mut Self, _, event: &DockerViewEvent, window, cx| match event {
+                DockerViewEvent::Notify(message) => window.push_notification(message.clone(), cx),
+                DockerViewEvent::OpenDetail(panel) => {
+                    // 详情面板挂进中心区，紧跟本终端标签页（同 SFTP 编辑器的落点）。
+                    let Some(area) = this.dock_area.upgrade() else {
+                        return;
+                    };
+                    let host = PanelId::from(cx.entity_id());
+                    let panel_id = PanelId::from(panel.entity_id());
+                    let panel = panel.clone();
+                    area.update(cx, |area, cx| {
+                        area.add_panel_view(
+                            panel_handle(panel),
+                            DockPlacement::Center,
+                            None,
+                            window,
+                            cx,
+                        );
+                        let target = area.layout(DockPlacement::Center).and_then(|tree| {
+                            let node = tree.find_panel_node(host)?;
+                            let PaneRef::Tabs { panels, .. } = tree.find_node(node)?.kind() else {
+                                return None;
+                            };
+                            let ix = panels.iter().position(|held| *held == host)?;
+                            Some(InsertTarget::Tabs {
+                                node,
+                                ix: Some(ix + 1),
+                                activate: true,
+                            })
+                        });
+                        if let Some(target) = target {
+                            area.move_panel(panel_id, target, window, cx);
+                        }
+                    });
+                }
+            },
+        )
+        .detach();
+    }
+
     /// 底部 SFTP 栏的四件事：关掉自己、把命令送进终端、要一个新高度、通道没了要重来。
     ///
     /// 它不碰传输也不碰目录：那些都在面板里。宿主只负责布局（这一栏多高、开不开）
@@ -1170,6 +1229,22 @@ impl TerminalPanel {
         // `Window::dispatch_key_event`），不拦住的话 Alt+F 既开了这一栏，
         // 又作为 `\x1bf` 进了远端 shell —— 在 readline 里那是"往后跳一个词"。
         cx.stop_propagation();
+    }
+
+    // ─── Docker ─────────────────────────────────────────────────────────────
+
+    /// 连上了：把 Docker 服务与这条连接接进常驻的 Docker 视图（与转发视图同款）。
+    /// 连接传给视图，详情标签页用它内嵌容器终端。
+    fn attach_docker(
+        &mut self,
+        handle: std::sync::Arc<russh::client::Handle<crate::ssh::SshHandler>>,
+        session: SshSession,
+        cx: &mut Context<Self>,
+    ) {
+        let service = crate::service::DockerService::new(handle);
+        let host = self.host.clone();
+        self.docker_view
+            .update(cx, |view, cx| view.bind(host, service, session, cx));
     }
 
     // ─── 端口转发 ───────────────────────────────────────────────────────────
@@ -1482,6 +1557,10 @@ impl TerminalPanel {
         forwards.update(cx, |view, cx| {
             view.set_visible(tool == Some(SessionTool::Forwards), cx)
         });
+        let docker = self.docker_view.clone();
+        docker.update(cx, |view, cx| {
+            view.set_visible(tool == Some(SessionTool::Docker), cx)
+        });
         if let Some(history) = self.history_view.clone() {
             history.update(cx, |view, cx| {
                 view.set_visible(tool == Some(SessionTool::History), cx)
@@ -1497,6 +1576,10 @@ impl TerminalPanel {
 
     pub(crate) fn forwards_view(&self) -> Entity<ForwardsView> {
         self.forwards_view.clone()
+    }
+
+    pub(crate) fn docker_view(&self) -> Entity<DockerView> {
+        self.docker_view.clone()
     }
 
     pub(crate) fn history_view(&self) -> Option<Entity<CommandHistoryView>> {

@@ -26,6 +26,9 @@ pub enum AppIcon {
     /// 组件库默认图标集没带这一枚（`Cable` 只在全量目录里，默认不内嵌，
     /// 取不到字节），所以自带一份。
     Cable,
+    /// Docker 鲸鱼标：Docker 容器管理（右活动栏那一枚、详情标签页）。
+    /// 用仓库自带的 `assets/icons/docker.svg`（填充式商标），不用组件库的集装箱。
+    Docker,
     /// 竖着一分为二的方框：左右分屏。
     Columns2,
     /// 横着一分为二的方框：上下分屏。
@@ -104,6 +107,7 @@ impl IconNamed for AppIcon {
             Self::Bookmark => "icons/bookmark.svg",
             Self::Brain => "icons/brain.svg",
             Self::Cable => "icons/cable.svg",
+            Self::Docker => "icons/docker.svg",
             Self::Columns2 => "icons/columns-2.svg",
             Self::Rows2 => "icons/rows-2.svg",
             Self::Grid2x2 => "icons/grid-2x2.svg",

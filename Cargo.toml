@@ -93,6 +93,7 @@ winssh-vnc = { path = "crates/winssh-vnc" }
 winssh-rdp = { path = "crates/winssh-rdp" }
 winssh-backup = { path = "crates/winssh-backup" }
 winssh-monitor = { path = "crates/winssh-monitor" }
+winssh-docker = { path = "crates/winssh-docker" }
 winssh-service = { path = "crates/winssh-service" }
 winssh-updater = { path = "crates/winssh-updater" }
 anyhow = "1"
@@ -515,6 +516,21 @@ bytes = "1"
 # `src/service/webdav_service.rs`）。reqwest 0.13 里这几个入口都挂在这个特性下。
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 
+# Docker 容器管理（见 crates/winssh-docker）。bollard 是 Rust 事实标准的异步
+# Docker Engine API 客户端（Apache-2.0，活跃维护）。**默认特性关掉、只点 http 与
+# chrono**：http 带进 hyper-util（图上已有），chrono 让 stubs 的时间字段用 chrono
+# （图上已有）；不点 ssl（传输是 SSH，不需要 TLS）、不点 pipe（不连本机 socket）、
+# 不点 ssh（那会经 openssh crate 拉起系统 ssh 二进制重新认证，绕开我们已经建好的
+# russh 会话）、不点 buildkit（拖 tonic/grpc）。逐个对过 Cargo.lock，新增编译只有
+# bollard + bollard-stubs 两个 crate，其余依赖全在树里。
+bollard = { version = "0.21", default-features = false, features = ["http", "chrono"] }
+# 把 russh 通道接进 bollard 的自定义传输要用到 hyper 本体与 hyper-util 的客户端：
+# 连接器实现 tower::Service<Uri>，返回的流包成 hyper 的 Read/Write（见
+# winssh-docker/src/connector.rs）。版本跟图上那一份走，不多编译一份东西。
+hyper = "1"
+hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
+tower-service = "0.3"
+
 # russh 的默认加密后端 aws-lc-rs 会用 C + 汇编编译 aws-lc-sys；在 x86_64 Windows 上
 # 它的汇编要靠 NASM 汇编，本机没有 nasm.exe 时 build 脚本直接 panic。开启
 # `prebuilt-nasm` 让 aws-lc-sys 使用 crate 里随附的预汇编 .obj，构建机就不必再装 NASM。
@@ -581,6 +597,7 @@ winssh-vnc = { workspace = true }
 winssh-rdp = { workspace = true }
 winssh-backup = { workspace = true }
 winssh-monitor = { workspace = true }
+winssh-docker = { workspace = true }
 winssh-service = { workspace = true }
 anyhow = { workspace = true }
 gpui-kit = { workspace = true }

@@ -1329,6 +1329,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "bollard"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbe8358268799ebb3e4df23cb9d47f4c72bbc4f5247e2fa6a1bf7b6c0baea220"
+dependencies = [
+ "base64 0.22.1",
+ "bollard-stubs",
+ "bytes",
+ "chrono",
+ "futures-core",
+ "futures-util",
+ "hex",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "log",
+ "pin-project-lite",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "serde_urlencoded",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tower-service",
+ "url",
+ "winapi",
+]
+
+[[package]]
+name = "bollard-stubs"
+version = "1.53.1-rc.29.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce412eb6f7096743011dc3cb5c674caeb24ced61d8c498fe07cf7998a4fea889"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "serde_repr",
+]
+
+[[package]]
 name = "bon"
 version = "3.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14856,6 +14899,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "winssh-docker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bollard",
+ "bytes",
+ "chrono",
+ "futures",
+ "gpui-kit",
+ "hyper",
+ "hyper-util",
+ "log",
+ "russh",
+ "rust-i18n",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tower-service",
+ "winssh-db",
+ "winssh-ssh",
+]
+
+[[package]]
 name = "winssh-domain"
 version = "0.1.0"
 dependencies = [
@@ -15016,6 +15085,7 @@ dependencies = [
  "winssh-clash",
  "winssh-db",
  "winssh-desktop",
+ "winssh-docker",
  "winssh-domain",
  "winssh-easytier",
  "winssh-ftp",
@@ -15158,6 +15228,7 @@ dependencies = [
  "winssh-clash",
  "winssh-db",
  "winssh-desktop",
+ "winssh-docker",
  "winssh-domain",
  "winssh-easytier",
  "winssh-ftp",

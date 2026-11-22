@@ -13,6 +13,7 @@
 mod clash;
 mod command_history;
 mod credential_vault;
+mod docker;
 mod forwards;
 mod host_explorer;
 mod snippet_vault;
@@ -20,6 +21,7 @@ mod snippet_vault;
 pub use clash::{ClashView, ClashViewEvent};
 pub use command_history::{CommandHistoryView, HistoryRunHandler, ShellIntegrationHandler};
 pub use credential_vault::{CredentialVaultEvent, CredentialVaultView, VaultFilter};
+pub use docker::{DockerView, DockerViewEvent};
 pub use forwards::{ForwardsHandler, ForwardsView};
 // 三档转发的配色：列表卡片与表单弹窗共用同一套，别处画徽章也借它。
 pub(crate) use forwards::kind_tone;
@@ -142,6 +144,8 @@ pub(crate) fn collapse_button() -> Button {
 pub enum SessionTool {
     /// 资源监控：对端主机的实时资源与进程。
     Monitor,
+    /// Docker：那台主机上的容器与镜像（经现有 SSH 会话接 Engine API）。
+    Docker,
     /// 端口转发：这条会话上的隧道规则与实况。
     Forwards,
     /// 命令历史：这台主机上跑过的命令。
@@ -152,11 +156,18 @@ pub enum SessionTool {
 
 impl SessionTool {
     /// 自上而下的排列顺序。右活动栏上的导航条目。
-    pub const ALL: [Self; 4] = [Self::Monitor, Self::Forwards, Self::History, Self::Assistant];
+    pub const ALL: [Self; 5] = [
+        Self::Monitor,
+        Self::Docker,
+        Self::Forwards,
+        Self::History,
+        Self::Assistant,
+    ];
 
     pub fn id(&self) -> &'static str {
         match self {
             Self::Monitor => "monitor",
+            Self::Docker => "docker",
             Self::Forwards => "forwards",
             Self::History => "history",
             Self::Assistant => "assistant",
@@ -167,6 +178,7 @@ impl SessionTool {
     pub fn label(&self) -> SharedString {
         match self {
             Self::Monitor => t!("session_info.monitor"),
+            Self::Docker => t!("session_info.docker"),
             Self::Forwards => t!("session_info.tunnels"),
             Self::History => t!("session_info.history"),
             Self::Assistant => t!("activity.assistant"),
@@ -177,6 +189,7 @@ impl SessionTool {
     pub fn icon(&self) -> Icon {
         match self {
             Self::Monitor => Icon::new(AppIcon::Activity),
+            Self::Docker => Icon::new(AppIcon::Docker),
             Self::Forwards => Icon::new(IconName::Network),
             Self::History => Icon::new(AppIcon::History),
             Self::Assistant => Icon::new(AppIcon::Sparkles),

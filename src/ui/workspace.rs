@@ -754,6 +754,7 @@ impl Workspace {
         let terminal = terminal.read(cx);
         match self.right_tool {
             SessionTool::Monitor => terminal.monitor_panel().into_any_element(),
+            SessionTool::Docker => terminal.docker_view().into_any_element(),
             SessionTool::Forwards => terminal.forwards_view().into_any_element(),
             SessionTool::History => match terminal.history_view() {
                 Some(view) => view.into_any_element(),

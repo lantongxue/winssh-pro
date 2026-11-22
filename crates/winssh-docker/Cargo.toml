@@ -1,0 +1,47 @@
+[package]
+name = "winssh-docker"
+version = "0.1.0"
+edition = "2024"
+description = "WinSSH Pro 的 Docker 后端：经现有 SSH 会话接 Docker Engine API（容器/镜像/日志/stats/文件）"
+license = "Apache-2.0"
+
+[features]
+# 进程内假 sshd +  canned Docker API，供上层 crate 的测试共用（与 winssh-ssh 的
+# test-support 同一套路子）。正式构建不带。
+test-support = []
+
+[dependencies]
+# 借现有 SSH 会话的句柄与 exec 通道（exec_stream / exec_script），不另开连接。
+winssh-ssh = { workspace = true }
+# 连接器直接拿 russh 的句柄与通道流类型（Handle / client::Msg / ChannelStream）。
+russh = { workspace = true }
+# 只借 SharedString 一个类型承载文本（与 winssh-monitor 同款）。
+gpui-kit = { workspace = true }
+# Docker Engine API 客户端。特性见根 Cargo.toml 那一段注释。
+bollard = { workspace = true }
+# 把 russh 通道包成 hyper 流接进 bollard 的自定义传输。
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tower-service = { workspace = true }
+tokio = { workspace = true }
+# 上传把本地 tar 临时文件按块流给 Engine API（ReaderStream），不整份读进内存。
+tokio-util = { workspace = true, features = ["io"] }
+futures = { workspace = true }
+anyhow = { workspace = true }
+rust-i18n = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+# 容器文件上传/下载走 Engine API 的 archive（tar 流），打包/解包用它。
+tar = { workspace = true }
+# 传输落临时文件再打包/解包，不整份进内存。
+tempfile = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+# 测试跑在应用级 tokio runtime 上（winssh_db::runtime().block_on）。
+winssh-db = { workspace = true }
+winssh-ssh = { workspace = true, features = ["test-support"] }
+russh = { workspace = true }
+tempfile = { workspace = true }

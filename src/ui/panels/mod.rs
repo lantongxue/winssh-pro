@@ -8,6 +8,7 @@
 
 mod assistant;
 mod clash;
+mod docker_container;
 mod easytier;
 #[allow(dead_code)]
 mod event_log;
@@ -25,6 +26,7 @@ mod welcome;
 
 pub use assistant::AssistantPanel;
 pub use clash::ClashPanel;
+pub use docker_container::DockerContainerPanel;
 pub use easytier::EasyTierPanel;
 pub use ftp_host::DockedFtpPanel;
 pub use monitor::{MonitorEvent, MonitorPanel};
@@ -43,8 +45,9 @@ pub use sftp_host::DockedSftpPanel;
 pub use sftp_editor::SftpEditorPanel;
 pub use sftp_editor::{CloseGoToLine, GoToLine, SaveFile};
 pub use terminal::{
-    ActiveCenterPanel, BackTab, CloseSearch, CopySelection, Find, PasteClipboard, SessionEvent,
-    SplitLayout, Tab, TerminalPanel, ToggleForwards, ToggleHistory, ToggleMonitor, ToggleSftp,
+    ActiveCenterPanel, BackTab, CloseSearch, CopySelection, Find, PaneOrigin, PasteClipboard,
+    SessionEvent, SplitLayout, Tab, TerminalPane, TerminalPanel, ToggleForwards, ToggleHistory,
+    ToggleMonitor, ToggleSftp,
 };
 pub use vnc::VncPanel;
 pub use webdav_host::DockedWebdavPanel;

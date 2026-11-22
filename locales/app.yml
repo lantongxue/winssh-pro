@@ -192,6 +192,335 @@ session_info.monitor_hide:
 session_info.monitor_show:
   en: Show right-side monitor (Alt+M)
   zh-CN: 显示右侧资源监控（Alt+M）
+session_info.docker:
+  en: Docker
+  zh-CN: Docker
+
+# ── Docker 容器管理（右栏 Docker 页 + 详情弹窗，见 crates/winssh-docker） ──────
+docker.state.created:
+  en: Created
+  zh-CN: 已创建
+docker.state.running:
+  en: Running
+  zh-CN: 运行中
+docker.state.paused:
+  en: Paused
+  zh-CN: 已暂停
+docker.state.restarting:
+  en: Restarting
+  zh-CN: 重启中
+docker.state.removing:
+  en: Removing
+  zh-CN: 删除中
+docker.state.exited:
+  en: Exited
+  zh-CN: 已退出
+docker.state.dead:
+  en: Dead
+  zh-CN: 已死
+docker.state.stopping:
+  en: Stopping
+  zh-CN: 停止中
+docker.state.unknown:
+  en: Unknown
+  zh-CN: 未知
+docker.tab.containers:
+  en: Containers
+  zh-CN: 容器
+docker.tab.images:
+  en: Images
+  zh-CN: 镜像
+docker.filter.all:
+  en: All
+  zh-CN: 全部
+docker.filter.running:
+  en: Running
+  zh-CN: 运行中
+docker.filter.stopped:
+  en: Stopped
+  zh-CN: 已停止
+docker.search.placeholder:
+  en: Search name / image / port…
+  zh-CN: 搜索名称 / 镜像 / 端口…
+docker.search.images_placeholder:
+  en: Search images…
+  zh-CN: 搜索镜像…
+docker.engine.running_count:
+  en: "%{running}/%{total} running"
+  zh-CN: "%{running}/%{total} 运行"
+docker.engine.refreshed:
+  en: refreshed just now
+  zh-CN: 刚刚刷新
+docker.empty.title:
+  en: No containers
+  zh-CN: 没有容器
+docker.empty.body:
+  en: This host's Docker engine has no containers yet.
+  zh-CN: 这台主机的 Docker 引擎里还没有容器。
+docker.images.empty.title:
+  en: No images
+  zh-CN: 没有镜像
+docker.error.not_installed.title:
+  en: Docker is not installed on this host
+  zh-CN: 这台主机上没有 Docker
+docker.error.permission.title:
+  en: This user cannot access Docker
+  zh-CN: 当前用户无权访问 Docker
+docker.error.permission.body:
+  en: "Add the login user to the docker group, then sign in again:"
+  zh-CN: 把登录用户加进 docker 组后重新登录：
+docker.error.other.title:
+  en: Cannot connect to Docker
+  zh-CN: 连不上 Docker
+docker.error.retry:
+  en: Retry
+  zh-CN: 重试
+docker.error.copy_fix:
+  en: Copy command
+  zh-CN: 复制命令
+docker.action.start:
+  en: Start
+  zh-CN: 启动
+docker.action.stop:
+  en: Stop
+  zh-CN: 停止
+docker.action.restart:
+  en: Restart
+  zh-CN: 重启
+docker.action.logs:
+  en: Logs
+  zh-CN: 日志
+docker.action.terminal:
+  en: Terminal
+  zh-CN: 终端
+docker.action.remove:
+  en: Remove
+  zh-CN: 删除
+docker.action.more:
+  en: More
+  zh-CN: 更多
+docker.action.run:
+  en: Run
+  zh-CN: 运行
+docker.confirm.remove_container.title:
+  en: Remove container
+  zh-CN: 删除容器
+docker.confirm.remove_container.body:
+  en: Remove "%{name}"? This cannot be undone.
+  zh-CN: 删除「%{name}」？此操作不可撤销。
+docker.confirm.remove_container.force:
+  en: Force (remove even if running)
+  zh-CN: 强制（运行中也删除）
+docker.confirm.remove_image.title:
+  en: Remove image
+  zh-CN: 删除镜像
+docker.confirm.remove_image.body:
+  en: Remove "%{name}"?
+  zh-CN: 删除「%{name}」？
+docker.confirm.stop.title:
+  en: Stop container
+  zh-CN: 停止容器
+docker.confirm.stop.body:
+  en: Stop "%{name}"?
+  zh-CN: 停止「%{name}」？
+docker.confirm.cancel:
+  en: Cancel
+  zh-CN: 取消
+docker.confirm.confirm:
+  en: Confirm
+  zh-CN: 确认
+docker.detail.overview:
+  en: Overview
+  zh-CN: 概览
+docker.detail.files:
+  en: Files
+  zh-CN: 文件
+docker.detail.logs:
+  en: Logs
+  zh-CN: 日志
+docker.detail.terminal:
+  en: Terminal
+  zh-CN: 终端
+docker.detail.basic:
+  en: Basic
+  zh-CN: 基本信息
+docker.detail.id:
+  en: Container ID
+  zh-CN: 容器 ID
+docker.detail.command:
+  en: Command
+  zh-CN: 命令
+docker.detail.restart_policy:
+  en: Restart policy
+  zh-CN: 重启策略
+docker.detail.working_dir:
+  en: Working dir
+  zh-CN: 工作目录
+docker.detail.ports:
+  en: Port mappings
+  zh-CN: 端口映射
+docker.detail.mounts:
+  en: Mounts
+  zh-CN: 挂载
+docker.detail.env:
+  en: Environment
+  zh-CN: 环境变量
+docker.detail.readonly:
+  en: read-only
+  zh-CN: 只读
+docker.detail.readwrite:
+  en: read-write
+  zh-CN: 读写
+docker.detail.created:
+  en: Created
+  zh-CN: 创建于
+docker.stats.cpu:
+  en: CPU
+  zh-CN: CPU
+docker.stats.mem:
+  en: Memory
+  zh-CN: 内存
+docker.stats.net:
+  en: Network
+  zh-CN: 网络
+docker.stats.pids:
+  en: Processes
+  zh-CN: 进程
+docker.detail.close:
+  en: Close
+  zh-CN: 关闭
+docker.files.upload:
+  en: Upload
+  zh-CN: 上传文件
+docker.files.mkdir:
+  en: New folder
+  zh-CN: 新建目录
+docker.files.download:
+  en: Download
+  zh-CN: 下载
+docker.files.rename:
+  en: Rename
+  zh-CN: 重命名
+docker.files.delete:
+  en: Delete
+  zh-CN: 删除
+docker.files.parent:
+  en: Parent directory
+  zh-CN: 上级目录
+docker.files.refresh:
+  en: Refresh
+  zh-CN: 刷新
+docker.files.empty:
+  en: Empty directory
+  zh-CN: 空目录
+docker.files.drop_hint:
+  en: Drop local files here to upload
+  zh-CN: 拖本地文件进列表即上传
+docker.files.items:
+  en: "%{count} items"
+  zh-CN: "%{count} 项"
+docker.files.as_user:
+  en: acting as the container's default user
+  zh-CN: 以容器默认用户操作
+docker.files.stopped_hint:
+  en: "Container is stopped: browse / upload / download work; rename / delete / new folder need it running."
+  zh-CN: 容器已停止：可浏览 / 上传 / 下载；重命名 / 删除 / 新建目录需运行中。
+docker.files.confirm_delete.title:
+  en: Delete file
+  zh-CN: 删除文件
+docker.files.confirm_delete.body:
+  en: Delete "%{name}" inside the container? Directories are removed recursively.
+  zh-CN: 删除容器内的「%{name}」？目录会递归删除。
+docker.files.mkdir.title:
+  en: New folder
+  zh-CN: 新建目录
+docker.files.mkdir.placeholder:
+  en: Folder name
+  zh-CN: 目录名
+docker.files.rename.title:
+  en: Rename
+  zh-CN: 重命名
+docker.files.rename.placeholder:
+  en: New name
+  zh-CN: 新名字
+docker.logs.follow:
+  en: Follow
+  zh-CN: 跟随
+docker.logs.timestamps:
+  en: Timestamps
+  zh-CN: 时间戳
+docker.logs.tail:
+  en: "Tail %{lines}"
+  zh-CN: 尾部 %{lines} 行
+docker.logs.copy:
+  en: Copy
+  zh-CN: 复制
+docker.logs.download:
+  en: Download
+  zh-CN: 下载
+docker.logs.clear:
+  en: Clear
+  zh-CN: 清屏
+docker.logs.following:
+  en: Following · scroll up to pause
+  zh-CN: 跟随中 · 向上滚动暂停
+docker.pull.title:
+  en: Pull image
+  zh-CN: 拉取镜像
+docker.pull.placeholder:
+  en: "repo:tag, e.g. nginx:1.27"
+  zh-CN: "repo:tag，如 nginx:1.27"
+docker.pull.pull:
+  en: Pull
+  zh-CN: 拉取
+docker.pull.pulling:
+  en: Pulling…
+  zh-CN: 拉取中…
+docker.pull.done:
+  en: Pulled %{name}
+  zh-CN: 已拉取 %{name}
+docker.pull.failed:
+  en: "Pull failed: %{error}"
+  zh-CN: 拉取失败：%{error}
+docker.images.dangling:
+  en: Dangling
+  zh-CN: 悬空
+docker.images.clean_dangling:
+  en: Clean dangling
+  zh-CN: 清理悬空
+docker.images.total_size:
+  en: "%{size} total"
+  zh-CN: 共 %{size}
+docker.notify.action_failed:
+  en: "%{action} failed: %{error}"
+  zh-CN: "%{action}失败：%{error}"
+docker.notify.copied:
+  en: Copied
+  zh-CN: 已复制
+docker.notify.downloaded:
+  en: Downloaded to %{path}
+  zh-CN: 已下载到 %{path}
+docker.notify.uploaded:
+  en: Uploaded %{count} item(s)
+  zh-CN: 已上传 %{count} 项
+docker.notify.deleted:
+  en: Deleted %{name}
+  zh-CN: 已删除 %{name}
+docker.notify.created:
+  en: Created %{name}
+  zh-CN: 已新建 %{name}
+docker.notify.renamed:
+  en: Renamed to %{name}
+  zh-CN: 已重命名为 %{name}
+docker.terminal_failed:
+  en: Cannot open a terminal here
+  zh-CN: 这里打不开终端
+docker.download.title:
+  en: Choose download folder
+  zh-CN: 选择下载目录
+docker.upload.title:
+  en: Choose files to upload
+  zh-CN: 选择要上传的文件
 session_info.scheme:
   en: Color scheme
   zh-CN: 配色方案
@@ -5148,6 +5477,9 @@ ssh_exec.close_write_failed:
 ssh_exec.canceled:
   en: The remote command was canceled
   zh-CN: 远端命令已取消
+ssh_exec.exec_failed:
+  en: Starting the remote command failed
+  zh-CN: 远端启动命令失败
 
 # ── 终端里那几行方括号提示 ───────────────────────────────────────────────
 bridge.send_failed:
