@@ -559,6 +559,7 @@ impl DockerView {
             }))
             .child(
                 h_flex()
+                    .relative()
                     .items_center()
                     .gap_1p5()
                     .child(div().size(px(8.)).rounded_full().flex_shrink_0().bg(dot))
@@ -572,10 +573,16 @@ impl DockerView {
                             .text_color(cx.theme().foreground)
                             .child(name.clone()),
                     )
-                    // 悬停出的快捷动作。
+                    // 悬停出的快捷动作：绝对定位贴右、不占布局宽度（状态文字才能贴右）。
+                    // 用 invisible/visible（visibility）而非 hidden/flex（display）：
+                    // display:none 会跳过子元素 prepaint，group_hover 在 paint 才变可见
+                    // 就会 "must call prepaint before paint"。visibility 隐藏仍 prepaint。
                     .child(
                         h_flex()
-                            .flex_shrink_0()
+                            .absolute()
+                            .right_0()
+                            .h_full()
+                            .items_center()
                             .gap_0p5()
                             .invisible()
                             .group_hover(ROW_GROUP, |style| style.visible())
@@ -610,7 +617,8 @@ impl DockerView {
                                 this.remove_container(name_for_remove.clone(), running, window, cx);
                             })),
                     )
-                    // 不悬停时右侧是状态文字。
+                    // 不悬停时右侧是状态文字；悬停时 invisible 隐去（仍占位），
+                    // 让绝对定位的动作覆盖在同一块右缘。
                     .child(
                         div()
                             .flex_shrink_0()
