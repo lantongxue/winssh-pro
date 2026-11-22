@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>主机面板重设计 · 草图</title>
+<style>
+  :root {
+    /* 全部取自应用现有主题：shadcn neutral dark + src/ui/theme/palette.rs */
+    --chrome: #0a0a0a;          /* sidebar */
+    --surface: #151515;         /* sidebar_accent 40% 叠在 chrome 上 */
+    --surface-strong: #1b1b1b;  /* sidebar_accent 60% */
+    --border: #262626;          /* sidebar_border */
+    --fg: #f5f5f5;              /* sidebar_foreground */
+    --soft: #d4d4d4;
+    --idle: #8a8a8a;            /* muted_foreground 70% */
+    --faint: #737373;
+    --blue: #0c64c0;
+    --coral: #c27e65;
+    --magenta: #e42b87;
+    --green: #29c231;
+    --amber: #d9a03c;
+    --sky: #4c8dc0;
+    --radius: 6px;
+    --sans: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #111;
+    color: var(--soft);
+    font-family: var(--sans);
+    padding: 40px 32px 64px;
+  }
+  .page { max-width: 1120px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 600; color: var(--fg); }
+  .sub { font-size: 13px; color: var(--idle); margin-top: 6px; line-height: 1.7; }
+  .sub b { color: var(--soft); font-weight: 500; }
+
+  .problems {
+    margin: 20px 0 32px;
+    padding: 14px 18px;
+    background: #161616;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 12.5px;
+    line-height: 2;
+    color: var(--idle);
+  }
+  .problems span { color: var(--soft); }
+
+  .boards { display: flex; gap: 48px; flex-wrap: wrap; align-items: flex-start; }
+  .board { width: 400px; }
+  .board-title { font-size: 15px; font-weight: 600; color: var(--fg); margin-bottom: 4px; }
+  .board-title em { font-style: normal; font-size: 11px; font-weight: 500; color: var(--green); border: 1px solid #29c23155; border-radius: 4px; padding: 1px 6px; margin-left: 8px; vertical-align: 1px; }
+  .board-sub { font-size: 12px; color: var(--idle); margin-bottom: 14px; line-height: 1.6; }
+
+  /* ── 面板本体：按真实侧边栏 300px 画 ── */
+  .panel {
+    width: 300px;
+    height: 760px;
+    background: var(--chrome);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    color: var(--fg);
+    font-size: 13px;
+  }
+  .phead {
+    height: 42px; flex: none;
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 12px;
+    font-weight: 600; font-size: 13.5px;
+  }
+  .phead svg { color: var(--idle); }
+  .phead .sp { flex: 1; }
+  .iconbtn {
+    width: 22px; height: 22px; border-radius: 5px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--idle); cursor: pointer;
+  }
+  .iconbtn:hover { background: var(--surface-strong); color: var(--fg); }
+
+  .filters { flex: none; padding: 0 10px 10px; display: flex; flex-direction: column; gap: 8px; }
+  .search {
+    height: 30px; border-radius: var(--radius);
+    background: var(--surface);
+    display: flex; align-items: center; gap: 7px;
+    padding: 0 9px;
+    color: var(--faint); font-size: 12.5px;
+  }
+  .search .sp { flex: 1; }
+  .kbd {
+    font-family: var(--mono); font-size: 10px; color: var(--idle);
+    background: var(--surface-strong); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px;
+  }
+  .chips { display: flex; gap: 6px; }
+  .chip {
+    height: 24px; padding: 0 10px;
+    display: flex; align-items: center; gap: 5px;
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--idle); font-size: 12px;
+    border: 1px solid transparent;
+    cursor: pointer; white-space: nowrap;
+  }
+  .chip:hover { background: var(--surface-strong); }
+  .chip.on { border-color: var(--blue); color: var(--fg); }
+  .chip .n { font-size: 10.5px; color: var(--faint); }
+  .chip.on .n { color: var(--idle); }
+
+  .list { flex: 1; min-height: 0; background: var(--surface); border-top: 1px solid var(--border); overflow: hidden; padding: 4px 0; }
+
+  /* 分组头 */
+  .grow {
+    height: 28px; margin: 2px 6px;
+    display: flex; align-items: center; gap: 7px;
+    padding: 0 6px; border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .grow:hover { background: var(--surface-strong); }
+  .grow .chev { color: var(--faint); width: 12px; flex: none; display: flex; }
+  .grow .folder { color: var(--coral); flex: none; display: flex; }
+  .grow .name { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 500; color: var(--soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .grow .count { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .grow .del { opacity: 0; color: #f87171; display: flex; }
+  .grow:hover .del { opacity: 1; }
+
+  /* ── 方案 A：48px 平铺行 ── */
+  .hrow {
+    height: 48px; margin: 0 6px;
+    display: flex; align-items: center; gap: 9px;
+    padding: 0 8px 0 14px;
+    border-radius: var(--radius);
+    position: relative;
+    cursor: pointer;
+  }
+  .hrow:hover, .hrow.demo-hover { background: var(--surface-strong); }
+  .hrow.sel { background: var(--surface-strong); }
+  .hrow.sel::before {
+    content: ""; position: absolute; left: 2px; top: 9px; bottom: 9px;
+    width: 2px; border-radius: 2px; background: var(--blue);
+  }
+  .tile {
+    width: 26px; height: 26px; flex: none;
+    border-radius: 6px;
+    background: var(--chrome);
+    border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 8.5px; font-weight: 700;
+    color: var(--idle); letter-spacing: .2px;
+  }
+  .hrow:hover .tile, .hrow.demo-hover .tile { color: var(--soft); }
+  .hbody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .hname { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; min-width: 0; }
+  .hname .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .dot.live { background: var(--magenta); }
+  .dot.off { background: #333; }
+  .hmeta { font-family: var(--mono); font-size: 10.5px; color: var(--idle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hmeta .os { color: var(--faint); }
+  .hright { flex: none; display: flex; align-items: center; gap: 4px; }
+  .lat { display: flex; align-items: center; gap: 5px; font-size: 10.5px; font-variant-numeric: tabular-nums; }
+  .lat .dot { width: 5px; height: 5px; }
+  .lat.ok { color: var(--green); } .lat.ok .dot { background: var(--green); }
+  .lat.slow { color: var(--amber); } .lat.slow .dot { background: var(--amber); }
+  .quick { display: none; align-items: center; gap: 2px; }
+  .hrow:hover .lat, .hrow.demo-hover .lat { display: none; }
+  .hrow:hover .quick, .hrow.demo-hover .quick { display: flex; }
+  .qbtn {
+    width: 24px; height: 24px; border-radius: 5px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--idle);
+  }
+  .qbtn:hover { background: var(--chrome); color: var(--fg); }
+  .qbtn.go { color: var(--green); }
+
+  /* 常用区：36px 单行 */
+  .sec {
+    height: 26px; margin: 2px 6px 0;
+    display: flex; align-items: center; gap: 7px; padding: 0 6px;
+    font-size: 11px; color: var(--faint);
+  }
+  .sec .chev { display: flex; color: var(--faint); }
+  .sec .hint { margin-left: auto; font-size: 10px; color: #525252; }
+  .frow {
+    height: 34px; margin: 0 6px;
+    display: flex; align-items: center; gap: 8px;
+    padding: 0 8px 0 14px; border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .frow:hover { background: var(--surface-strong); }
+  .frow .tile { width: 20px; height: 20px; font-size: 7px; border-radius: 5px; }
+  .frow .fname { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+  .frow .lat { font-size: 10px; }
+
+  .pfoot { flex: none; padding: 10px; border-top: 1px solid var(--border); }
+  .newbtn {
+    height: 32px; border-radius: var(--radius);
+    background: var(--blue); color: #fff;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    font-size: 13px; font-weight: 500; cursor: pointer;
+  }
+  .newbtn:hover { background: #1472d8; }
+
+  /* ── 方案 B：56px 无边框卡片 ── */
+  .bcard {
+    height: 56px; margin: 0 6px 5px 14px;
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 10px;
+    border-radius: 8px;
+    background: var(--chrome);
+    position: relative;
+    cursor: pointer;
+  }
+  .bcard:hover { background: var(--surface-strong); }
+  .bcard.sel { background: var(--surface-strong); }
+  .bcard.sel::before {
+    content: ""; position: absolute; left: 2px; top: 10px; bottom: 10px;
+    width: 2px; border-radius: 2px; background: var(--blue);
+  }
+  .bcard .tile { width: 30px; height: 30px; font-size: 9px; }
+  .bcard .hname { font-size: 13px; }
+  .bcard .hmeta { font-size: 10.5px; }
+  .bcard .hright { align-self: flex-start; margin-top: 9px; }
+  .tag {
+    font-size: 9.5px; color: var(--idle);
+    background: var(--surface-strong);
+    border-radius: 3px; padding: 0 4px; margin-left: 5px;
+    font-family: var(--sans);
+  }
+  .bcard .menu { color: var(--faint); display: flex; }
+
+  /* 标注 */
+  .mark {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 50%;
+    background: var(--blue); color: #fff;
+    font-size: 9.5px; font-weight: 600; font-family: var(--mono);
+    flex: none; vertical-align: 1px;
+  }
+  .legend { margin-top: 16px; font-size: 12px; line-height: 1.7; color: var(--idle); width: 400px; }
+  .legend li { list-style: none; display: flex; gap: 8px; margin-bottom: 7px; align-items: baseline; }
+  .legend .mark { position: relative; top: 2px; }
+  .legend b { color: var(--soft); font-weight: 500; }
+  .legend .note { color: var(--faint); }
+
+  .anno { position: absolute; right: -9px; top: -6px; z-index: 2; }
+  .rel { position: relative; }
+
+  .foot-note {
+    margin-top: 36px; padding-top: 18px; border-top: 1px solid #222;
+    font-size: 12px; color: var(--faint); line-height: 1.9; max-width: 860px;
+  }
+  .foot-note b { color: var(--idle); font-weight: 500; }
+  svg { display: block; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>主机面板重设计 · 草图</h1>
+  <div class="sub">
+    两个方向，同一套现有配色（palette.rs 语义色原样保留：<b style="color:var(--magenta)">品红点＝会话存活</b>、<b style="color:var(--green)">绿＝可达</b>、<b style="color:var(--coral)">珊瑚＝分组</b>、<b style="color:var(--blue)">蓝＝位置与主操作</b>）。
+    面板按真实侧边栏 300px 宽画，行高固定，虚拟滚动不受影响。<b>把鼠标悬到主机行上可以看到交互。</b>
+  </div>
+
+  <div class="problems">
+    <span>现状的四个问题：</span>
+    ① 每张卡片带边框＋底色＋缩进导轨，300px 里全是框线，地址被截得只剩一半；
+    ② 协议筛选片偏大，「全部（20）」的括号计数读起来费劲；
+    ③ 常用主机埋在分组里，连一台机器要先找组、再展开、再双击；
+    ④ 顶部「＋」和底部大按钮是同一个动作的两个入口。
+  </div>
+
+  <div class="boards">
+
+    <!-- ═══════════ 方案 A ═══════════ -->
+    <div class="board">
+      <div class="board-title">方案 A · 高密度运维列表<em>推荐</em></div>
+      <div class="board-sub">去掉卡片盒子，让列表回到「一眼扫 20 台」的密度；协议徽标一列是这版唯一的重音。</div>
+
+      <div class="panel">
+        <div class="phead">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><line x1="6" y1="6.5" x2="6" y2="6.5"/><line x1="6" y1="17.5" x2="6" y2="17.5"/></svg>
+          主机
+          <span class="sp"></span>
+          <span class="iconbtn rel"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg><span class="mark anno">g</span></span>
+        </div>
+
+        <div class="filters">
+          <div class="search rel">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+            搜索主机
+            <span class="sp"></span>
+            <span class="kbd">⌘K</span>
+            <span class="mark anno">a</span>
+          </div>
+          <div class="chips rel">
+            <span class="chip on">全部 <span class="n">20</span></span>
+            <span class="chip">SSH</span>
+            <span class="chip">SFTP</span>
+            <span class="chip">FTP</span>
+            <span class="chip">S3</span>
+            <span class="mark anno">b</span>
+          </div>
+        </div>
+
+        <div class="list">
+          <!-- 常用 -->
+          <div class="sec rel">
+            <span class="chev"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></span>
+            常用
+            <span class="hint">按连接频次自动收录</span>
+            <span class="mark anno">c</span>
+          </div>
+          <div class="frow">
+            <span class="tile">&gt;_</span>
+            <span class="fname"><span class="dot live"></span>web-prod-01</span>
+            <span class="lat ok"><span class="dot"></span>12ms</span>
+          </div>
+          <div class="frow">
+            <span class="tile">&gt;_</span>
+            <span class="fname"><span class="dot off"></span>db-master</span>
+            <span class="lat ok"><span class="dot"></span>31ms</span>
+          </div>
+          <div class="frow">
+            <span class="tile">S3</span>
+            <span class="fname"><span class="dot off"></span>aimao-video-test</span>
+          </div>
+
+          <!-- 生产环境 -->
+          <div class="grow rel" style="margin-top:6px">
+            <span class="chev"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></span>
+            <span class="folder"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
+            <span class="name">生产环境</span>
+            <span class="count">12</span>
+            <span class="del"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></span>
+            <span class="mark anno">d</span>
+          </div>
+
+          <div class="hrow sel rel">
+            <span class="tile">&gt;_</span>
+            <span class="hbody">
+              <span class="hname"><span class="dot live"></span><span class="t">web-prod-01</span></span>
+              <span class="hmeta">root@10.0.1.11:22 <span class="os">· Ubuntu</span></span>
+            </span>
+            <span class="hright">
+              <span class="lat ok"><span class="dot"></span>12ms</span>
+              <span class="quick">
+                <span class="qbtn go"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21"/></svg></span>
+                <span class="qbtn"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+              </span>
+            </span>
+            <span class="mark anno">e</span>
+          </div>
+
+          <div class="hrow demo-hover rel">
+            <span class="tile">&gt;_</span>
+            <span class="hbody">
+              <span class="hname"><span class="dot off"></span><span class="t">web-prod-02</span></span>
+              <span class="hmeta">root@10.0.1.12:22 <span class="os">· Debian</span></span>
+            </span>
+            <span class="hright">
+              <span class="lat ok"><span class="dot"></span>18ms</span>
+              <span class="quick">
+                <span class="qbtn go"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21"/></svg></span>
+                <span class="qbtn"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+              </span>
+            </span>
+            <span class="mark anno">f</span>
+          </div>
+
+          <div class="hrow">
+            <span class="tile">&gt;_</span>
+            <span class="hbody">
+              <span class="hname"><span class="dot off"></span><span class="t">db-master</span></span>
+              <span class="hmeta">dba@10.0.2.20:22 <span class="os">· Rocky</span></span>
+            </span>
+            <span class="hright"><span class="lat ok"><span class="dot"></span>31ms</span></span>
+          </div>
+
+          <div class="hrow">
+            <span class="tile">&gt;_</span>
+            <span class="hbody">
+              <span class="hname"><span class="dot off"></span><span class="t">gateway-sg</span></span>
+              <span class="hmeta">ops@gw.example.com:2222 <span class="os">· Ubuntu</span></span>
+            </span>
+            <span class="hright"><span class="lat slow"><span class="dot"></span>208ms</span></span>
+          </div>
+
+          <div class="hrow">
+            <span class="tile">SFTP</span>
+            <span class="hbody">
+              <span class="hname"><span class="dot off"></span><span class="t">backup-nas</span></span>
+              <span class="hmeta">backup@10.0.3.5:22 <span class="os">· Synology</span></span>
+            </span>
+            <span class="hright"><span class="lat ok"><span class="dot"></span>9ms</span></span>
+          </div>
+
+          <!-- 公司 -->
+          <div class="grow" style="margin-top:6px">
+            <span class="chev"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></span>
+            <span class="folder"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
+            <span class="name">公司</span>
+            <span class="count">7</span>
+            <span class="del"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></span>
+          </div>
+
+          <!-- OSS -->
+          <div class="grow">
+            <span class="chev"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></span>
+            <span class="folder"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
+            <span class="name">OSS</span>
+            <span class="count">1</span>
+            <span class="del"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></span>
+          </div>
+
+          <div class="hrow">
+            <span class="tile">S3</span>
+            <span class="hbody">
+              <span class="hname"><span class="dot off"></span><span class="t">aimao-video-test</span></span>
+              <span class="hmeta">oss-cn-hangzhou.aliyuncs.com</span>
+            </span>
+            <span class="hright">
+              <span class="lat ok"><span class="dot"></span>44ms</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="pfoot">
+          <div class="newbtn">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            新建主机
+          </div>
+        </div>
+      </div>
+
+      <ul class="legend">
+        <li><span class="mark">a</span><span><b>搜索收薄</b>，placeholder 缩成「搜索主机」，右缘 ⌘K 提示可直接聚焦。</span></li>
+        <li><span class="mark">b</span><span><b>筛选片小一档</b>（24px），计数只留在「全部」上，且不再带括号。</span></li>
+        <li><span class="mark">c</span><span><b>新增「常用」区</b>：按连接频次自动收前几台，34px 单行，单击直连。<span class="note">需要给主机记一个连接次数/最近连接时间，是这版唯一要动数据的地方。</span></span></li>
+        <li><span class="mark">d</span><span><b>分组头 28px</b>：计数去盒变纯文字，删除仍是悬停显形；珊瑚色文件夹保留。</span></li>
+        <li><span class="mark">e</span><span><b>主机行 48px 平铺</b>：去边框去盒子，协议徽标（&gt;_ / SFTP / S3）成一列节奏；地址等宽独占一行，不再和系统、协议挤同一行被截断。选中仍是左缘蓝条。</span></li>
+        <li><span class="mark">f</span><span><b>悬停换出「▶ 连接 ＋ ⋮」</b>：连接从「知道要双击」变成看得见的按钮（第二行即悬停效果）。延迟只在平时显示。</span></li>
+        <li><span class="mark">g</span><span><b>新建只留一个入口</b>：底部主按钮保留，头部的「＋」去掉。</span></li>
+      </ul>
+    </div>
+
+    <!-- ═══════════ 方案 B ═══════════ -->
+    <div class="board">
+      <div class="board-title">方案 B · 卡片精修</div>
+      <div class="board-sub">保留卡片心智，只减噪音：去边框、协议徽标左置、地址独占一行。改动最小的一版。</div>
+
+      <div class="panel">
+        <div class="phead">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><line x1="6" y1="6.5" x2="6" y2="6.5"/><line x1="6" y1="17.5" x2="6" y2="17.5"/></svg>
+          主机
+          <span class="sp"></span>
+          <span class="iconbtn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span>
+          <span class="iconbtn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg></span>
+        </div>
+
+        <div class="filters">
+          <div class="search">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+            搜索主机
+            <span class="sp"></span>
+            <span class="kbd">⌘K</span>
+          </div>
+          <div class="chips">
+            <span class="chip on">全部 <span class="n">20</span></span>
+            <span class="chip">SSH</span>
+            <span class="chip">SFTP</span>
+            <span class="chip">FTP</span>
+            <span class="chip">S3</span>
+          </div>
+        </div>
+
+        <div class="list" style="padding-top:6px">
+          <div class="grow">
+            <span class="chev"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></span>
+            <span class="folder"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
+            <span class="name">生产环境</span>
+            <span class="count">12</span>
+            <span class="del"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></span>
+          </div>
+
+          <div class="bcard sel">
+            <span class="tile">&gt;_</span>
+            <span class="hbody">
+              <span class="hname"><span class="dot live"></span><span class="t">web-prod-01</span></span>
+              <span class="hmeta">root@10.0.1.11:22 <span class="os">· Ubuntu</span><span class="tag">核心</span></span>
+            </span>
+            <span class="hright">
+              <span class="lat ok"><span class="dot"></span>12ms</span>
+              <span class="menu"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+            </span>
+          </div>
+
+          <div class="bcard">
+            <span class="tile">&gt;_</span>
+            <span class="hbody">
+              <span class="hname"><span class="dot off"></span><span class="t">web-prod-02</span></span>
+              <span class="hmeta">root@10.0.1.12:22 <span class="os">· Debian</span></span>
+            </span>
+            <span class="hright">
+              <span class="lat ok"><span class="dot"></span>18ms</span>
+              <span class="menu"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+            </span>
+          </div>
+
+          <div class="bcard">
+            <span class="tile">&gt;_</span>
+            <span class="hbody">
+              <span class="hname"><span class="dot off"></span><span class="t">gateway-sg</span></span>
+              <span class="hmeta">ops@gw.example.com:2222 <span class="os">· Ubuntu</span></span>
+            </span>
+            <span class="hright">
+              <span class="lat slow"><span class="dot"></span>208ms</span>
+              <span class="menu"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+            </span>
+          </div>
+
+          <div class="grow" style="margin-top:6px">
+            <span class="chev"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></span>
+            <span class="folder"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
+            <span class="name">公司</span>
+            <span class="count">7</span>
+            <span class="del"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></span>
+          </div>
+
+          <div class="grow">
+            <span class="chev"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></span>
+            <span class="folder"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>
+            <span class="name">OSS</span>
+            <span class="count">1</span>
+            <span class="del"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></span>
+          </div>
+
+          <div class="bcard">
+            <span class="tile">S3</span>
+            <span class="hbody">
+              <span class="hname"><span class="dot off"></span><span class="t">aimao-video-test</span></span>
+              <span class="hmeta">oss-cn-hangzhou.aliyuncs.com</span>
+            </span>
+            <span class="hright">
+              <span class="lat ok"><span class="dot"></span>44ms</span>
+              <span class="menu"><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+            </span>
+          </div>
+        </div>
+
+        <div class="pfoot">
+          <div class="newbtn">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            新建主机
+          </div>
+        </div>
+      </div>
+
+      <ul class="legend">
+        <li><span class="mark" style="background:var(--faint)">1</span><span><b>卡片 64 → 56px</b>：去掉整圈边框，只留底色一档；悬停/选中提亮＋左缘蓝条，和现在同一套语言。</span></li>
+        <li><span class="mark" style="background:var(--faint)">2</span><span><b>协议徽标左置</b>：从第二行的一段文字变成左侧 30px 徽标，扫一眼就知道哪台是 S3。</span></li>
+        <li><span class="mark" style="background:var(--faint)">3</span><span><b>地址独占第二行</b>：等宽字体，系统收成注脚，标签最多露 1–2 个小片；不再五段挤一行。</span></li>
+        <li><span class="mark" style="background:var(--faint)">4</span><span><b>不动数据、不加区</b>：搜索/筛选/分组照旧，只是尺寸与排布收紧。落地成本约等于改一遍 HostCard。</span></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="foot-note">
+    <b>两案共同点：</b>颜色全部来自现有 palette.rs 与主题（chrome #0a0a0a / surface #151515 / border #262626），不引入新色；
+    行高全部固定（A：48/34/28px，B：56/28px），虚拟列表与 8.3ms 帧预算不受影响；
+    平铺行比带边框卡片每行少一层描边与圆角裁剪，渲染只会更便宜。
+    <b>取舍：</b>A 改的是「找机器→连上去」这条主路径（常用区＋看得见的连接按钮），需要给主机加连接频次统计；
+    B 只改画法，一天内可落地。也可以先落 B、把 A 的常用区与悬停直连当第二步。
+  </div>
+</div>
+</body>
+</html>

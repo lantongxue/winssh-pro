@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docker Swarm 支持 · 草图</title>
+<style>
+  :root {
+    /* 全部取自应用现有主题：shadcn neutral dark + src/ui/theme/palette.rs */
+    --chrome: #0a0a0a; --surface: #151515; --surface-strong: #1b1b1b;
+    --border: #262626; --fg: #f5f5f5; --soft: #d4d4d4; --idle: #8a8a8a; --faint: #737373;
+    --blue: #0c64c0; --teal: #43c1a0; --coral: #c27e65; --magenta: #e42b87;
+    --green: #29c231; --amber: #d9a03c; --sky: #4c8dc0; --red: #d0605e;
+    --radius: 6px;
+    --sans: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#111; color:var(--soft); font-family:var(--sans); padding:40px 32px 64px; }
+  .page { max-width:1320px; margin:0 auto; }
+  h1 { font-size:20px; font-weight:600; color:var(--fg); }
+  .sub { font-size:13px; color:var(--idle); margin-top:6px; line-height:1.7; }
+  .sub b { color:var(--soft); font-weight:500; }
+  .decisions { margin:20px 0 36px; padding:14px 18px; background:#161616; border:1px solid var(--border); border-radius:8px; font-size:12.5px; line-height:1.9; color:var(--idle); }
+  .decisions b { color:var(--soft); font-weight:500; }
+  .decisions code { font-family:var(--mono); font-size:11.5px; color:var(--sky); background:var(--surface); border-radius:4px; padding:1px 5px; }
+  .decisions .tag { color:var(--teal); }
+  .boards { display:flex; gap:44px; flex-wrap:wrap; align-items:flex-start; margin-bottom:40px; }
+  .board { width:428px; } .board.wide { width:620px; }
+  .board-title { font-size:15px; font-weight:600; color:var(--fg); margin-bottom:4px; }
+  .board-title em { font-style:normal; font-size:11px; font-weight:500; color:var(--green); border:1px solid #29c23155; border-radius:4px; padding:1px 6px; margin-left:8px; vertical-align:1px; }
+  .board-title em.later { color:var(--amber); border-color:#d9a03c55; }
+  .board-sub { font-size:12px; color:var(--idle); margin-bottom:14px; line-height:1.6; }
+  .notes { margin-top:14px; list-style:none; font-size:12px; line-height:1.75; color:var(--idle); }
+  .notes li { display:flex; gap:8px; margin-bottom:7px; }
+  .notes b { color:var(--soft); font-weight:500; }
+  .notes code { font-family:var(--mono); font-size:11px; color:var(--sky); }
+  .mk { flex:none; width:16px; height:16px; margin-top:2px; border-radius:50%; background:var(--surface-strong); border:1px solid var(--border); color:var(--teal); font-size:10px; font-style:normal; font-weight:600; display:inline-flex; align-items:center; justify-content:center; }
+  .mk.inline { margin:0 0 0 5px; vertical-align:-3px; width:14px; height:14px; font-size:9px; }
+  .ic { fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; flex:none; }
+
+  .rig { display:flex; }
+  .panel { width:380px; height:720px; background:var(--chrome); border:1px solid var(--border); border-radius:10px 0 0 10px; overflow:hidden; display:flex; flex-direction:column; color:var(--fg); font-size:13px; }
+  .panel.solo { border-radius:10px; } .panel.auto { height:auto; }
+  .abar { width:48px; height:720px; flex:none; background:var(--chrome); border:1px solid var(--border); border-left:none; border-radius:0 10px 10px 0; display:flex; flex-direction:column; align-items:center; gap:6px; padding:6px 0; }
+  .pill { position:relative; width:36px; height:36px; border-radius:8px; display:flex; align-items:center; justify-content:center; color:var(--idle); }
+  .pill.on { background:var(--surface-strong); color:var(--teal); }
+  .pill.on::after { content:""; position:absolute; right:-6px; top:10px; width:3px; height:16px; border-radius:2px; background:var(--blue); }
+  .phead { height:36px; flex:none; display:flex; align-items:center; gap:8px; padding:0 8px; border-bottom:1px solid var(--border); font-weight:600; font-size:13px; }
+  .phead .host { font-weight:400; font-size:11px; color:var(--idle); max-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .phead .sp { flex:1; }
+  .iconbtn { width:22px; height:22px; border-radius:5px; flex:none; display:flex; align-items:center; justify-content:center; color:var(--idle); }
+  .swarmbadge { display:flex; align-items:center; gap:5px; padding:2px 8px; border-radius:10px; background:#43c1a01a; border:1px solid #43c1a055; color:var(--teal); font-size:10.5px; font-weight:500; }
+  .toolbar { flex:none; padding:8px 8px 0; display:flex; gap:6px; }
+  .search { flex:1; height:30px; border-radius:var(--radius); background:var(--surface); display:flex; align-items:center; gap:7px; padding:0 9px; color:var(--faint); font-size:12.5px; min-width:0; }
+  .seg { flex:none; display:flex; gap:2px; margin:8px 8px 0; background:var(--surface); border-radius:var(--radius); padding:2px; }
+  .seg .tab { flex:1; height:26px; border-radius:4px; display:flex; align-items:center; justify-content:center; gap:5px; font-size:11.5px; color:var(--idle); }
+  .seg .tab.on { background:var(--surface-strong); color:var(--fg); font-weight:500; }
+  .seg .n { font-size:10px; color:var(--faint); } .seg .tab.on .n { color:var(--idle); }
+  .chips { flex:none; display:flex; gap:6px; padding:8px 8px 0; flex-wrap:wrap; }
+  .chip { height:24px; padding:0 10px; display:flex; align-items:center; gap:5px; border-radius:var(--radius); background:var(--surface); color:var(--idle); font-size:12px; border:1px solid transparent; white-space:nowrap; }
+  .chip.on { border-color:var(--blue); color:var(--fg); }
+  .chip .n { font-size:10.5px; color:var(--faint); } .chip.on .n { color:var(--idle); }
+  .list { flex:1; min-height:0; background:var(--surface); border-top:1px solid var(--border); margin-top:8px; overflow:hidden; padding:4px 0; }
+  .srow { height:56px; padding:0 8px; display:flex; flex-direction:column; justify-content:center; gap:3px; }
+  .srow.hover { background:var(--surface-strong); }
+  .srow .l1 { display:flex; align-items:center; gap:7px; min-width:0; }
+  .srow .name { font-size:12.5px; font-weight:600; color:var(--fg); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mode { font-size:9.5px; padding:1px 6px; border-radius:4px; background:var(--surface-strong); color:var(--sky); flex:none; }
+  .mode.global { color:var(--coral); }
+  .rep { margin-left:auto; flex:none; font-family:var(--mono); font-size:11px; color:var(--green); }
+  .rep.mismatch { color:var(--amber); }
+  .srow .l2 { display:flex; align-items:center; gap:7px; min-width:0; }
+  .srow .img { font-size:11px; color:var(--faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .srow .ports { margin-left:auto; flex:none; font-family:var(--mono); font-size:10.5px; color:var(--idle); }
+  .acts { margin-left:auto; flex:none; display:flex; gap:2px; }
+  .acts .iconbtn { width:24px; height:24px; }
+  .stackhead { height:24px; margin:2px 6px; display:flex; align-items:center; gap:6px; font-size:10.5px; color:var(--faint); }
+  .stackhead .ic { color:var(--coral); }
+  .pfoot { flex:none; height:28px; display:flex; align-items:center; gap:6px; padding:0 10px; border-top:1px solid var(--border); font-size:11px; color:var(--idle); }
+  .pfoot .dot { width:6px; height:6px; border-radius:50%; background:var(--green); }
+  .pfoot .sp { flex:1; }
+
+  .nrow { height:52px; padding:0 8px; display:flex; flex-direction:column; justify-content:center; gap:3px; }
+  .nrow.hover { background:var(--surface-strong); }
+  .nrow .l1 { display:flex; align-items:center; gap:7px; }
+  .dot { width:8px; height:8px; border-radius:50%; flex:none; }
+  .dot.ready { background:var(--green); } .dot.down { background:var(--red); }
+  .nrow .name { font-size:12.5px; font-weight:600; color:var(--fg); }
+  .role { font-size:9.5px; padding:1px 6px; border-radius:4px; background:#0c64c022; color:var(--sky); flex:none; }
+  .role.worker { background:var(--surface-strong); color:var(--idle); }
+  .avail { margin-left:auto; flex:none; font-size:10px; padding:1px 7px; border-radius:9px; border:1px solid; }
+  .avail.active { color:var(--green); border-color:#29c23155; }
+  .avail.drain { color:var(--amber); border-color:#d9a03c55; }
+  .avail.pause { color:var(--sky); border-color:#4c8dc055; }
+  .nrow .l2 { display:flex; gap:8px; padding-left:15px; font-family:var(--mono); font-size:10.5px; color:var(--faint); }
+
+  .dialog { width:620px; background:var(--chrome); border:1px solid var(--border); border-radius:10px; box-shadow:0 18px 50px rgba(0,0,0,.55); overflow:hidden; color:var(--fg); font-size:13px; display:flex; flex-direction:column; }
+  .dialog.narrow { width:420px; }
+  .dhead { padding:14px 16px 12px; border-bottom:1px solid var(--border); }
+  .dhead .r1 { display:flex; align-items:center; gap:9px; }
+  .dhead .name { font-size:15px; font-weight:600; }
+  .dhead .sp { flex:1; }
+  .dhead .r2 { margin-top:5px; font-size:11.5px; color:var(--idle); }
+  .badge { font-size:10.5px; padding:2px 8px; border-radius:10px; border:1px solid; }
+  .badge.run { color:var(--green); border-color:#29c23155; background:#29c23112; }
+  .badge.warn { color:var(--amber); border-color:#d9a03c55; background:#d9a03c12; }
+  .dbtn { height:26px; padding:0 10px; border-radius:5px; display:inline-flex; align-items:center; gap:5px; background:var(--surface); color:var(--soft); font-size:12px; }
+  .dbtn.danger { color:var(--red); } .dbtn.primary { background:var(--blue); color:#fff; }
+  .dtabs { display:flex; gap:2px; padding:8px 16px 0; border-bottom:1px solid var(--border); }
+  .dtab { padding:6px 12px 8px; font-size:12.5px; color:var(--idle); border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .dtab.on { color:var(--fg); font-weight:500; border-bottom-color:var(--blue); }
+  .dbody { padding:12px 16px 14px; }
+  .sec { font-size:11px; font-weight:600; color:var(--idle); letter-spacing:.04em; margin:12px 0 6px; }
+  .sec:first-child { margin-top:0; }
+  .kv { display:grid; grid-template-columns:96px 1fr; row-gap:5px; font-size:12px; }
+  .kv .k { color:var(--faint); } .kv .v { color:var(--soft); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .kv .v.mono { font-family:var(--mono); font-size:11.5px; }
+  .trow { display:flex; align-items:center; gap:8px; height:34px; padding:0 4px; font-size:11.5px; border-bottom:1px solid var(--border); }
+  .trow:last-child { border-bottom:none; }
+  .trow .slot { width:34px; flex:none; font-family:var(--mono); color:var(--faint); }
+  .trow .node { width:70px; flex:none; color:var(--soft); }
+  .tstate { font-size:10px; padding:1px 7px; border-radius:9px; border:1px solid; flex:none; }
+  .tstate.running { color:var(--green); border-color:#29c23155; }
+  .tstate.pending { color:var(--amber); border-color:#d9a03c55; }
+  .tstate.shutdown { color:var(--idle); border-color:var(--border); }
+  .trow .cid { flex:1; min-width:0; font-family:var(--mono); font-size:10.5px; color:var(--faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .trow .upd { flex:none; font-size:10.5px; color:var(--faint); }
+  .dfoot { display:flex; align-items:center; gap:8px; padding:10px 16px; border-top:1px solid var(--border); font-size:11.5px; color:var(--idle); }
+  .dfoot .sp { flex:1; }
+  .field { margin-bottom:12px; }
+  .field label { display:block; font-size:11.5px; color:var(--idle); margin-bottom:5px; }
+  .stepper { display:flex; align-items:center; gap:0; }
+  .stepper .input { width:90px; height:32px; border-radius:0; background:var(--surface); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-family:var(--mono); font-size:14px; color:var(--fg); }
+  .stepper .sbtn { width:32px; height:32px; background:var(--surface); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; color:var(--soft); }
+  .stepper .sbtn:first-child { border-radius:var(--radius) 0 0 var(--radius); }
+  .stepper .sbtn:last-child { border-radius:0 var(--radius) var(--radius) 0; }
+  .hintline { font-size:11px; color:var(--faint); line-height:1.7; }
+  .state { padding:26px 24px; display:flex; flex-direction:column; align-items:center; text-align:center; gap:8px; border-bottom:1px solid var(--border); }
+  .state:last-child { border-bottom:none; }
+  .state .t { font-size:13px; font-weight:600; color:var(--soft); }
+  .state .d { font-size:11.5px; color:var(--idle); line-height:1.7; }
+  .state code { font-family:var(--mono); font-size:10.5px; color:var(--amber); background:var(--surface); border-radius:4px; padding:2px 7px; }
+  .final { margin-top:4px; padding:16px 18px; background:#161616; border:1px solid var(--border); border-radius:8px; font-size:12.5px; line-height:1.9; color:var(--idle); }
+  .final h2 { font-size:14px; color:var(--fg); font-weight:600; margin-bottom:8px; }
+  .final b { color:var(--soft); font-weight:500; }
+  .final code { font-family:var(--mono); font-size:11.5px; color:var(--sky); background:var(--surface); border-radius:4px; padding:1px 5px; }
+  .final .cols { display:flex; gap:40px; flex-wrap:wrap; } .final .col { flex:1; min-width:300px; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-docker" viewBox="0 0 24 24"><path d="M22 7.7c0-.6-.4-1.2-.8-1.5l-6.3-3.9a1.72 1.72 0 0 0-1.7 0l-10.3 6c-.5.2-.9.8-.9 1.4v6.6c0 .5.4 1.2.8 1.5l6.3 3.9a1.72 1.72 0 0 0 1.7 0l10.3-6c.5-.3.9-1 .9-1.5Z"/><path d="M10 21.9V14L2.1 9.1M10 14l11.9-6.9M14 19.8v-8.1M18 17.5V9.4"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+  <symbol id="i-network" viewBox="0 0 24 24"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3M12 12V8"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 9 4.9-9 4.9-9-4.9Z"/><path d="m3 12 9 4.9 9-4.9"/><path d="m3 17 9 4.9 9-4.9"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01M6 18h.01"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-scale" viewBox="0 0 24 24"><path d="M12 3v18"/><path d="m8 7 4-4 4 4"/><path d="m8 17 4 4 4-4"/></symbol>
+  <symbol id="i-logs" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4M10 9H8M16 13H8M16 17H8"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+  <symbol id="i-drain" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m8 11 4 4 4-4"/><path d="M4 21h16"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-stack" viewBox="0 0 24 24"><path d="M4 4h16v6H4zM4 14h16v6H4z"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></symbol>
+</svg>
+
+<div class="page">
+  <h1>Docker Swarm 支持 · 草图</h1>
+  <div class="sub">
+    在现有 Docker 功能上加<b>集群层</b>：服务 / 节点 / 任务 / 栈。复用同一条 <b>dial-stdio</b> 传输——
+    连到 <b>manager</b> 时它的 daemon 就是 Swarm 控制面；连到 worker 或非 swarm 主机时<b>不显示</b>集群入口。
+    版式沿用右栏与详情标签页的既有骨架。
+  </div>
+
+  <div class="decisions">
+    <b>设计要点</b><br>
+    ① <b>manager 判定</b>：<code>info().swarm</code> 的 <code>control_available==true &amp;&amp; local_node_state=="active"</code> 才点亮「服务/节点」两个 segment 与集群徽标；worker 上 <code>/services</code>、<code>/nodes</code> 会 503/406，判定后隐藏入口而非报错刷屏。<br>
+    ② <b>零新增传输/依赖</b>：bollard 0.21 已带 service/node/task/swarm 全套 API，同一只 <code>DockerClient</code> 直接调。<br>
+    ③ <b>写操作带 version</b>：扩缩容 / 节点可用性都要先 <code>inspect</code> 拿 <code>version.index</code> 再 update（否则 409），封装内部处理。<br>
+    ④ <b>栈不单独建模</b>：按 <code>com.docker.stack.namespace</code> label 给服务分组/筛选。<br>
+    ⑤ <b>一期</b>：服务列表/详情(概览·任务·日志)/扩缩容/删除；节点列表/详情/drain·activate·pause。<span class="tag">二期</span>：secrets/configs、overlay 网络、服务创建/改镜像、节点移除（bollard 0.21 未暴露 <code>remove_node</code>）、swarm init/join/leave（破坏性，不做或显式告警）。
+  </div>
+
+  <!-- 板 1 · 服务段 -->
+  <div class="boards">
+    <div class="board">
+      <div class="board-title">右栏 Docker 页 · 服务段<em>manager</em></div>
+      <div class="board-sub">manager 时 segment 变四枚：容器/镜像/服务/节点。头部加集群徽标；服务按栈分组。</div>
+      <div class="rig">
+        <div class="panel">
+          <div class="phead">
+            <svg class="ic" width="16" height="16" style="color:var(--teal)"><use href="#i-docker"/></svg>
+            Docker <span class="host">swarm-mgr-01</span>
+            <span class="swarmbadge"><svg class="ic" width="11" height="11"><use href="#i-network"/></svg>5 节点 · 3 manager</span>
+            <span class="sp"></span>
+            <span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-refresh"/></svg></span>
+            <span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-chev-r"/></svg></span>
+          </div>
+          <div class="toolbar"><div class="search"><svg class="ic" width="13" height="13"><use href="#i-search"/></svg>搜索服务 / 镜像 / 栈…</div></div>
+          <div class="seg">
+            <span class="tab">容器 <span class="n">59</span></span>
+            <span class="tab">镜像 <span class="n">12</span></span>
+            <span class="tab on">服务 <span class="n">5</span></span>
+            <span class="tab">节点 <span class="n">5</span></span>
+          </div>
+          <div class="chips">
+            <span class="chip on">全部 <span class="n">5</span></span>
+            <span class="chip">tzm <span class="n">3</span></span>
+            <span class="chip">monitoring <span class="n">1</span></span>
+            <span class="chip">无栈 <span class="n">1</span></span>
+          </div>
+          <div class="list">
+            <div class="stackhead"><svg class="ic" width="12" height="12"><use href="#i-stack"/></svg>栈 tzm</div>
+            <div class="srow hover">
+              <div class="l1">
+                <span class="name">tzm-cartoon_web</span><span class="mode">replicated</span>
+                <span class="acts">
+                  <span class="iconbtn" title="扩缩容"><svg class="ic" width="13" height="13"><use href="#i-scale"/></svg></span>
+                  <span class="iconbtn" title="日志"><svg class="ic" width="13" height="13"><use href="#i-logs"/></svg></span>
+                  <span class="iconbtn" title="删除"><svg class="ic" width="13" height="13"><use href="#i-trash"/></svg></span>
+                </span>
+              </div>
+              <div class="l2"><span class="img">registry…/tzm-cartoon:828c1e</span><span class="rep">3/3</span><span class="ports">8080→80</span></div>
+            </div>
+            <div class="srow">
+              <div class="l1"><span class="name">tzm-cartoon_api</span><span class="mode">replicated</span><span class="rep mismatch">2/3</span></div>
+              <div class="l2"><span class="img">registry…/tzm-cartoon:828c1e</span><span class="ports">9000→9000</span></div>
+            </div>
+            <div class="srow">
+              <div class="l1"><span class="name">tzm-cartoon_worker</span><span class="mode global">global</span><span class="rep">4/4</span></div>
+              <div class="l2"><span class="img">registry…/tzm-cartoon:828c1e</span><span class="ports">—</span></div>
+            </div>
+            <div class="stackhead"><svg class="ic" width="12" height="12"><use href="#i-stack"/></svg>栈 monitoring</div>
+            <div class="srow">
+              <div class="l1"><span class="name">monitoring_agent</span><span class="mode global">global</span><span class="rep">5/5</span></div>
+              <div class="l2"><span class="img">prom/node-exporter:v1.8</span><span class="ports">9100→9100</span></div>
+            </div>
+            <div class="stackhead">无栈</div>
+            <div class="srow">
+              <div class="l1"><span class="name">tzm-cache_redis</span><span class="mode">replicated</span><span class="rep">1/1</span></div>
+              <div class="l2"><span class="img">redis:7.4</span><span class="ports">6379→6379</span></div>
+            </div>
+          </div>
+          <div class="pfoot"><span class="dot"></span>Swarm active · 引擎 27.3.1<span class="sp"></span>5 服务 · 刚刚刷新</div>
+        </div>
+        <div class="abar">
+          <span class="pill"><svg class="ic" width="18" height="18"><use href="#i-activity"/></svg></span>
+          <span class="pill on"><svg class="ic" width="18" height="18"><use href="#i-docker"/></svg></span>
+          <span class="pill"><svg class="ic" width="18" height="18"><use href="#i-network"/></svg></span>
+          <span class="pill"><svg class="ic" width="18" height="18"><use href="#i-history"/></svg></span>
+          <span class="pill"><svg class="ic" width="18" height="18"><use href="#i-sparkles"/></svg></span>
+        </div>
+      </div>
+      <ul class="notes">
+        <li><i class="mk">a</i><span><b>集群徽标</b>：nodes/managers 计数来自 <code>info().swarm</code>；仅 manager 显示。底栏心跳同容器页（3s 轮询、可见才跑）。</span></li>
+        <li><i class="mk">b</i><span><b>副本列</b> <code>running/desired</code>：相等绿、不等琥珀（如 2/3，有 task 没起来）。global 服务 desired=可用节点数。</span></li>
+        <li><i class="mk">c</i><span><b>按栈分组</b>：label <code>com.docker.stack.namespace</code>；筛子即栈名。无栈归一组。不单独建 stack 对象。</span></li>
+        <li><i class="mk">d</i><span><b>悬停动作</b>：扩缩容 / 日志 / 删除（二次确认）。单击行开服务详情标签页。global 服务扩缩容按钮禁用（tooltip 说明）。</span></li>
+      </ul>
+    </div>
+
+    <!-- 板 2 · 节点段 -->
+    <div class="board">
+      <div class="board-title">右栏 Docker 页 · 节点段</div>
+      <div class="board-sub">集群成员：角色 / 状态 / 可用性 / 引擎 / 资源。悬停出 drain·activate·pause。</div>
+      <div class="rig">
+        <div class="panel solo">
+          <div class="phead">
+            <svg class="ic" width="16" height="16" style="color:var(--teal)"><use href="#i-docker"/></svg>
+            Docker <span class="host">swarm-mgr-01</span>
+            <span class="swarmbadge"><svg class="ic" width="11" height="11"><use href="#i-network"/></svg>5 节点 · 3 manager</span>
+            <span class="sp"></span>
+            <span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-refresh"/></svg></span>
+            <span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-chev-r"/></svg></span>
+          </div>
+          <div class="toolbar"><div class="search"><svg class="ic" width="13" height="13"><use href="#i-search"/></svg>搜索节点 / 地址…</div></div>
+          <div class="seg">
+            <span class="tab">容器 <span class="n">59</span></span>
+            <span class="tab">镜像 <span class="n">12</span></span>
+            <span class="tab">服务 <span class="n">5</span></span>
+            <span class="tab on">节点 <span class="n">5</span></span>
+          </div>
+          <div class="chips">
+            <span class="chip on">全部 <span class="n">5</span></span>
+            <span class="chip">manager <span class="n">3</span></span>
+            <span class="chip">worker <span class="n">2</span></span>
+          </div>
+          <div class="list">
+            <div class="nrow">
+              <div class="l1"><span class="dot ready"></span><span class="name">node-01</span><span class="role">manager · leader</span><span class="avail active">active</span></div>
+              <div class="l2"><span>27.3.1</span><span>8 CPU</span><span>16 GiB</span><span>10.0.0.11</span></div>
+            </div>
+            <div class="nrow">
+              <div class="l1"><span class="dot ready"></span><span class="name">node-02</span><span class="role">manager</span><span class="avail active">active</span></div>
+              <div class="l2"><span>27.3.1</span><span>8 CPU</span><span>16 GiB</span><span>10.0.0.12</span></div>
+            </div>
+            <div class="nrow">
+              <div class="l1"><span class="dot ready"></span><span class="name">node-03</span><span class="role worker">worker</span><span class="avail active">active</span></div>
+              <div class="l2"><span>27.3.1</span><span>16 CPU</span><span>32 GiB</span><span>10.0.0.13</span></div>
+            </div>
+            <div class="nrow hover">
+              <div class="l1"><span class="dot ready"></span><span class="name">node-04</span><span class="role worker">worker</span>
+                <span class="acts">
+                  <span class="iconbtn" title="activate"><svg class="ic" width="13" height="13"><use href="#i-play"/></svg></span>
+                  <span class="iconbtn" title="pause"><svg class="ic" width="13" height="13"><use href="#i-pause"/></svg></span>
+                </span>
+                <span class="avail drain">drain</span></div>
+              <div class="l2"><span>27.3.1</span><span>16 CPU</span><span>32 GiB</span><span>10.0.0.14</span></div>
+            </div>
+            <div class="nrow">
+              <div class="l1"><span class="dot down"></span><span class="name">node-05</span><span class="role worker">worker</span><span class="avail active">active</span></div>
+              <div class="l2"><span>27.2.0</span><span>4 CPU</span><span>8 GiB</span><span>10.0.0.15</span></div>
+            </div>
+          </div>
+          <div class="pfoot"><span class="dot"></span>Swarm active<span class="sp"></span>4 ready · 1 down</div>
+        </div>
+      </div>
+      <ul class="notes">
+        <li><i class="mk">a</i><span><b>状态点</b>：ready 绿 / down 红。<b>可用性药丸</b>：active 绿 / pause 蓝 / drain 琥珀——两者独立（down 的节点仍可标 active）。</span></li>
+        <li><i class="mk">b</i><span><b>悬停动作</b>按当前可用性互补：drain 节点给 activate/pause；active 给 drain/pause；pause 给 activate/drain。改可用性带 version，二次确认（drain 会迁走 task）。</span></li>
+        <li><i class="mk">c</i><span><b>leader</b> 标在 manager 角色后（<code>manager_status.leader</code>）。资源来自 <code>description.resources</code>（nano_cpus→CPU、memory_bytes→GiB）。</span></li>
+        <li><i class="mk">d</i><span>单击行开节点详情标签页。<b>移除节点一期不做</b>（bollard 0.21 未暴露 remove_node）。</span></li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- 板 3 · 服务详情 任务 -->
+  <div class="boards">
+    <div class="board wide">
+      <div class="board-title">服务详情标签页 · 任务</div>
+      <div class="board-sub">dock 标签页（带 host_tab 会话标识）。三段：概览 / 任务 / 日志。任务表是 Swarm 的核心视图。</div>
+      <div class="dialog">
+        <div class="dhead">
+          <div class="r1">
+            <svg class="ic" width="16" height="16" style="color:var(--teal)"><use href="#i-layers"/></svg>
+            <span class="name">tzm-cartoon_api</span>
+            <span class="badge warn">replicated · 2/3</span>
+            <span class="sp"></span>
+            <span class="dbtn"><svg class="ic" width="12" height="12"><use href="#i-scale"/></svg>扩缩容</span>
+            <span class="dbtn"><svg class="ic" width="12" height="12"><use href="#i-logs"/></svg>日志</span>
+            <span class="dbtn danger"><svg class="ic" width="12" height="12"><use href="#i-trash"/></svg>删除</span>
+          </div>
+          <div class="r2">registry…/tzm-cartoon:828c1e · 栈 tzm · swarm-mgr-01</div>
+        </div>
+        <div class="dtabs"><span class="dtab">概览</span><span class="dtab on">任务</span><span class="dtab">日志</span></div>
+        <div class="dbody">
+          <div class="sec">任务（3 desired · 2 running）<i class="mk inline">a</i></div>
+          <div class="trow"><span class="slot">#1</span><span class="node">node-01</span><span class="tstate running">running</span><span class="cid">a1b2c3d4e5f6</span><span class="upd">2h 前</span></div>
+          <div class="trow"><span class="slot">#2</span><span class="node">node-03</span><span class="tstate running">running</span><span class="cid">c3d4e5f6a1b2</span><span class="upd">2h 前</span></div>
+          <div class="trow"><span class="slot">#3</span><span class="node">node-04</span><span class="tstate pending">pending</span><span class="cid">—（node-04 已 drain，无可用节点）</span><span class="upd">5m 前</span></div>
+          <div class="sec">概览摘要</div>
+          <div class="kv">
+            <span class="k">镜像</span><span class="v mono">registry…/tzm-cartoon:828c1e</span>
+            <span class="k">端口</span><span class="v mono">9000→9000/tcp (ingress)</span>
+            <span class="k">约束</span><span class="v mono">node.role==worker</span>
+            <span class="k">更新策略</span><span class="v">parallelism 1 · order start-first</span>
+          </div>
+        </div>
+        <div class="dfoot"><span>任务点容器 id 可跳到该容器详情</span><span class="sp"></span><span class="dbtn">关闭</span></div>
+      </div>
+      <ul class="notes">
+        <li><i class="mk">a</i><span><b>任务表</b>：<code>list_tasks(filters service=…)</code>。slot / 节点 / 状态(running·pending·shutdown·failed) / 容器 id / 更新时刻。pending 带原因（<code>status.message</code>，如 drain 无可用节点）——把"为什么 2/3"说清楚。</span></li>
+        <li><i class="mk">b</i><span><b>容器 id 可点</b>：跳到对应容器详情标签页（复用现有 DockerContainerPanel），把集群视图和单机视图串起来。</span></li>
+        <li><i class="mk">c</i><span><b>日志段</b>复用容器日志那套（<code>service_logs</code> 同 LogsOptions：follow/tail/timestamps），只是端点换成 /services/{id}/logs。</span></li>
+        <li><i class="mk">d</i><span><b>概览段</b>：spec 的 image/replicas/ports/env/mounts/constraints/update_config/rollback_config；与容器概览同款 kv 版式。</span></li>
+      </ul>
+    </div>
+
+    <!-- 板 4 · 扩缩容 -->
+    <div class="board">
+      <div class="board-title">扩缩容弹窗</div>
+      <div class="board-sub">只改 replicas。带 version index；global 服务不可扩缩（入口禁用）。</div>
+      <div class="dialog narrow">
+        <div class="dhead"><div class="r1"><span class="name" style="font-size:14px">扩缩容 · tzm-cartoon_api</span><span class="sp"></span><span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-x"/></svg></span></div></div>
+        <div class="dbody">
+          <div class="field">
+            <label>副本数（当前 2）</label>
+            <div class="stepper">
+              <span class="sbtn"><svg class="ic" width="13" height="13"><use href="#i-minus"/></svg></span>
+              <span class="input">3</span>
+              <span class="sbtn"><svg class="ic" width="13" height="13"><use href="#i-plus"/></svg></span>
+            </div>
+          </div>
+          <div class="hintline">
+            更新会按服务自身的 update_config 滚动替换 task（parallelism 1 · start-first）。<br>
+            缩容会停掉多余 task；扩容受节点资源与约束限制，可能产生 pending task。<br>
+            <span style="color:var(--amber)">global 服务按节点数自动铺满，不提供扩缩容。</span>
+          </div>
+        </div>
+        <div class="dfoot"><span class="sp"></span><span class="dbtn">取消</span><span class="dbtn primary">应用</span></div>
+      </div>
+      <ul class="notes">
+        <li><i class="mk">a</i><span><b>实现</b>：inspect 拿 <code>version.index</code> 与 spec → 改 <code>mode.replicated.replicas</code> → <code>update_service(version)</code>。步进器 + 直接输入，最小 0。</span></li>
+        <li><i class="mk">b</i><span>应用后回列表/详情刷新副本列；滚动期间 running/desired 不等属正常（琥珀），任务表能看到新旧 task 交替。</span></li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- 板 5 · 节点详情 + 板 6 非 manager -->
+  <div class="boards">
+    <div class="board wide">
+      <div class="board-title">节点详情标签页 · 概览</div>
+      <div class="board-sub">dock 标签页。角色/状态/可用性/资源/引擎 + 该节点上的任务；可用性动作在头部。</div>
+      <div class="dialog">
+        <div class="dhead">
+          <div class="r1">
+            <span class="dot ready"></span><span class="name">node-04</span>
+            <span class="badge warn">worker · drain</span>
+            <span class="sp"></span>
+            <span class="dbtn"><svg class="ic" width="12" height="12"><use href="#i-play"/></svg>activate</span>
+            <span class="dbtn"><svg class="ic" width="12" height="12"><use href="#i-pause"/></svg>pause</span>
+          </div>
+          <div class="r2">10.0.0.14 · 引擎 27.3.1 · linux/amd64</div>
+        </div>
+        <div class="dbody">
+          <div class="sec">节点</div>
+          <div class="kv">
+            <span class="k">角色</span><span class="v">worker</span>
+            <span class="k">状态</span><span class="v">ready</span>
+            <span class="k">可用性</span><span class="v">drain（task 已迁走）</span>
+            <span class="k">资源</span><span class="v mono">16 CPU · 32 GiB</span>
+            <span class="k">引擎</span><span class="v mono">27.3.1</span>
+            <span class="k">平台</span><span class="v mono">linux / amd64</span>
+          </div>
+          <div class="sec">该节点上的任务（2）</div>
+          <div class="trow"><span class="slot">#1</span><span class="node" style="width:150px">tzm-cartoon_worker</span><span class="tstate running">running</span><span class="cid">e5f6a1b2c3d4</span><span class="upd">1d 前</span></div>
+          <div class="trow"><span class="slot">#1</span><span class="node" style="width:150px">monitoring_agent</span><span class="tstate running">running</span><span class="cid">f6a1b2c3d4e5</span><span class="upd">1d 前</span></div>
+        </div>
+        <div class="dfoot"><span>manager 节点另显 leader / reachability</span><span class="sp"></span><span class="dbtn">关闭</span></div>
+      </div>
+      <ul class="notes">
+        <li><i class="mk">a</i><span><b>可用性动作</b>互补当前值；<code>update_node(version, spec.availability)</code>。drain 二次确认（会迁走 task）；pause 只停新调度不迁走。</span></li>
+        <li><i class="mk">b</i><span><b>该节点任务</b>：<code>list_tasks(filters node=…)</code>，把"这台机器上跑了什么"和集群视图对上。manager 另显 <code>manager_status</code>（leader/reachability/addr）。</span></li>
+      </ul>
+    </div>
+
+    <div class="board">
+      <div class="board-title">非 manager / 非 swarm 态</div>
+      <div class="board-sub">集群入口按判定隐藏或禁用，不报错刷屏；单机功能照旧。</div>
+      <div class="rig">
+        <div class="panel solo auto">
+          <div class="phead">
+            <svg class="ic" width="16" height="16" style="color:var(--teal)"><use href="#i-docker"/></svg>
+            Docker <span class="host">swarm-wkr-03</span><span class="sp"></span>
+            <span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-chev-r"/></svg></span>
+          </div>
+          <div class="state">
+            <svg class="ic" width="26" height="26" style="color:var(--amber)"><use href="#i-alert"/></svg>
+            <span class="t">连的是 worker 节点</span>
+            <span class="d">Swarm 管理（服务/节点）需连 <b>manager</b>。<br>本机容器/镜像照常管理。</span>
+            <code>swarm.local_node_state=active · control_available=false</code>
+          </div>
+          <div class="state">
+            <svg class="ic" width="26" height="26"><use href="#i-docker"/></svg>
+            <span class="t">非 swarm 主机</span>
+            <span class="d">不显示「服务/节点」segment 与集群徽标，<br>只有容器/镜像两段（现状不变）。</span>
+            <code>swarm.local_node_state=inactive</code>
+          </div>
+        </div>
+      </div>
+      <ul class="notes">
+        <li><i class="mk">a</i><span><b>worker</b>：segment 只留容器/镜像，页头给一句"需连 manager"提示（可点跳转主机列表）；不尝试调 /services 避免 503 刷屏。</span></li>
+        <li><i class="mk">b</i><span><b>非 swarm</b>：与现状完全一致，零回归。判定只读 <code>info().swarm</code>，一次连接判一次、重连重判。</span></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="final">
+    <h2>落点（后端 / 分层）</h2>
+    <div class="cols">
+      <div class="col">
+        <b>winssh-docker</b> 加 <code>swarm</code> 模块：类型（ServiceSummary/ServiceDetail/TaskSummary/NodeSummary/SwarmInfo）+ client 方法
+        （<code>swarm_info</code>、<code>list_services</code>、<code>inspect_service</code>、<code>service_logs</code>、<code>scale_service</code>、<code>remove_service</code>、<code>list_tasks</code>、<code>list_nodes</code>、<code>inspect_node</code>、<code>set_node_availability</code>）。
+        scale/availability 内部先 inspect 取 version 再 update。<br>
+        <b>DockerService</b> 加对应入口（长流 service_logs 走现有 channel 模式）。
+      </div>
+      <div class="col">
+        <b>UI</b>：DockerView 按 <code>swarm_info</code> 判定加「服务/节点」segment 与集群徽标；
+        新增 <code>DockerServicePanel</code> / <code>DockerNodePanel</code> 两个 dock 标签页（照 DockerContainerPanel：带 host_tab、概览/任务/日志分段、复用确认弹窗与日志组件）。
+        服务/节点列表行复用容器行的定高+悬停动作版式。<br>
+        <b>不做</b>：remove_node（上游未暴露）、swarm init/join/leave、secrets/configs/overlay（二期）。
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Docker 容器管理 · 草图</title>
+<style>
+  :root {
+    /* 全部取自应用现有主题：shadcn neutral dark + src/ui/theme/palette.rs */
+    --chrome: #0a0a0a;          /* sidebar */
+    --surface: #151515;         /* sidebar_accent 40% 叠在 chrome 上 */
+    --surface-strong: #1b1b1b;  /* sidebar_accent 60% */
+    --border: #262626;          /* sidebar_border */
+    --fg: #f5f5f5;              /* sidebar_foreground */
+    --soft: #d4d4d4;
+    --idle: #8a8a8a;            /* muted_foreground 70% */
+    --faint: #737373;
+    --blue: #0c64c0;
+    --teal: #43c1a0;
+    --coral: #c27e65;
+    --magenta: #e42b87;
+    --green: #29c231;
+    --amber: #d9a03c;
+    --sky: #4c8dc0;
+    --red: #d0605e;
+    --radius: 6px;
+    --sans: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #111; color: var(--soft); font-family: var(--sans); padding: 40px 32px 64px; }
+  .page { max-width: 1320px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 600; color: var(--fg); }
+  .sub { font-size: 13px; color: var(--idle); margin-top: 6px; line-height: 1.7; }
+  .sub b { color: var(--soft); font-weight: 500; }
+
+  .decisions {
+    margin: 20px 0 36px; padding: 14px 18px;
+    background: #161616; border: 1px solid var(--border); border-radius: 8px;
+    font-size: 12.5px; line-height: 1.9; color: var(--idle);
+  }
+  .decisions b { color: var(--soft); font-weight: 500; }
+  .decisions .tag { color: var(--teal); }
+  .decisions code { font-family: var(--mono); font-size: 11.5px; color: var(--sky); background: var(--surface); border-radius: 4px; padding: 1px 5px; }
+
+  .boards { display: flex; gap: 44px; flex-wrap: wrap; align-items: flex-start; margin-bottom: 40px; }
+  .board { width: 428px; }
+  .board.wide { width: 620px; }
+  .board-title { font-size: 15px; font-weight: 600; color: var(--fg); margin-bottom: 4px; }
+  .board-title em { font-style: normal; font-size: 11px; font-weight: 500; color: var(--green); border: 1px solid #29c23155; border-radius: 4px; padding: 1px 6px; margin-left: 8px; vertical-align: 1px; }
+  .board-title em.later { color: var(--amber); border-color: #d9a03c55; }
+  .board-sub { font-size: 12px; color: var(--idle); margin-bottom: 14px; line-height: 1.6; }
+
+  .notes { margin-top: 14px; list-style: none; font-size: 12px; line-height: 1.75; color: var(--idle); }
+  .notes li { display: flex; gap: 8px; margin-bottom: 7px; }
+  .notes b { color: var(--soft); font-weight: 500; }
+  .notes code { font-family: var(--mono); font-size: 11px; color: var(--sky); }
+  .mk {
+    flex: none; width: 16px; height: 16px; margin-top: 2px;
+    border-radius: 50%; background: var(--surface-strong); border: 1px solid var(--border);
+    color: var(--teal); font-size: 10px; font-style: normal; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .mk.inline { margin: 0 0 0 5px; vertical-align: -3px; width: 14px; height: 14px; font-size: 9px; }
+
+  .ic { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+  /* ── 右栏面板：按真实右栏 380px 画，右侧贴 48px 活动栏 ── */
+  .rig { display: flex; }
+  .panel {
+    width: 380px; height: 720px;
+    background: var(--chrome); border: 1px solid var(--border); border-radius: 10px 0 0 10px;
+    overflow: hidden; display: flex; flex-direction: column;
+    color: var(--fg); font-size: 13px;
+  }
+  .panel.solo { border-radius: 10px; }
+  .abar {
+    width: 48px; height: 720px; flex: none;
+    background: var(--chrome); border: 1px solid var(--border); border-left: none;
+    border-radius: 0 10px 10px 0;
+    display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px 0;
+  }
+  .pill {
+    position: relative; width: 36px; height: 36px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center; color: var(--idle);
+  }
+  .pill.on { background: var(--surface-strong); color: var(--teal); }
+  .pill.on::after {
+    content: ""; position: absolute; right: -6px; top: 10px;
+    width: 3px; height: 16px; border-radius: 2px; background: var(--blue);
+  }
+
+  .phead {
+    height: 36px; flex: none; display: flex; align-items: center; gap: 8px;
+    padding: 0 8px; border-bottom: 1px solid var(--border);
+    font-weight: 600; font-size: 13px;
+  }
+  .phead .host { font-weight: 400; font-size: 11px; color: var(--idle); max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .phead .sp { flex: 1; }
+  .iconbtn {
+    width: 22px; height: 22px; border-radius: 5px; flex: none;
+    display: flex; align-items: center; justify-content: center; color: var(--idle);
+  }
+  .iconbtn:hover { background: var(--surface-strong); color: var(--fg); }
+
+  .toolbar { flex: none; padding: 8px 8px 0; display: flex; gap: 6px; }
+  .search {
+    flex: 1; height: 30px; border-radius: var(--radius); background: var(--surface);
+    display: flex; align-items: center; gap: 7px; padding: 0 9px;
+    color: var(--faint); font-size: 12.5px; min-width: 0;
+  }
+  .btn {
+    height: 30px; padding: 0 11px; border-radius: var(--radius); flex: none;
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--surface); color: var(--soft); font-size: 12px; border: 1px solid transparent;
+  }
+  .btn.primary { background: var(--blue); color: #fff; }
+  .btn.danger { color: var(--red); }
+  .btn.ghost { background: transparent; color: var(--idle); }
+
+  .seg { flex: none; display: flex; gap: 2px; margin: 8px 8px 0; background: var(--surface); border-radius: var(--radius); padding: 2px; }
+  .seg .tab {
+    flex: 1; height: 26px; border-radius: 4px; display: flex; align-items: center; justify-content: center; gap: 6px;
+    font-size: 12px; color: var(--idle);
+  }
+  .seg .tab.on { background: var(--surface-strong); color: var(--fg); font-weight: 500; }
+  .seg .n { font-size: 10.5px; color: var(--faint); }
+  .seg .tab.on .n { color: var(--idle); }
+
+  .chips { flex: none; display: flex; gap: 6px; padding: 8px 8px 0; }
+  .chip {
+    height: 24px; padding: 0 10px; display: flex; align-items: center; gap: 5px;
+    border-radius: var(--radius); background: var(--surface); color: var(--idle);
+    font-size: 12px; border: 1px solid transparent; white-space: nowrap;
+  }
+  .chip.on { border-color: var(--blue); color: var(--fg); }
+  .chip .n { font-size: 10.5px; color: var(--faint); }
+  .chip.on .n { color: var(--idle); }
+
+  .list { flex: 1; min-height: 0; background: var(--surface); border-top: 1px solid var(--border); margin-top: 8px; overflow: hidden; padding: 4px 0; }
+
+  /* 容器行：定高 52，两行文本 */
+  .crow { height: 52px; padding: 0 8px; display: flex; flex-direction: column; justify-content: center; gap: 3px; position: relative; }
+  .crow:hover, .crow.hover { background: var(--surface-strong); }
+  .crow .l1 { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .dot.run { background: var(--green); }
+  .dot.pause { background: var(--amber); }
+  .dot.exit { background: var(--faint); }
+  .dot.dead { background: var(--red); }
+  .crow .name { font-size: 12.5px; font-weight: 600; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .crow .st { margin-left: auto; flex: none; font-size: 11px; color: var(--idle); }
+  .crow .st.bad { color: var(--amber); }
+  .crow .l2 { display: flex; align-items: center; gap: 7px; min-width: 0; padding-left: 15px; }
+  .crow .img { font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .crow .ports { margin-left: auto; flex: none; font-family: var(--mono); font-size: 10.5px; color: var(--idle); }
+  .acts { margin-left: auto; flex: none; display: flex; gap: 2px; }
+  .acts .iconbtn { width: 24px; height: 24px; }
+  .acts .iconbtn.danger { color: var(--red); }
+
+  /* 镜像行：定高 48 */
+  .irow { height: 48px; padding: 0 8px; display: flex; align-items: center; gap: 9px; }
+  .irow:hover, .irow.hover { background: var(--surface-strong); }
+  .irow .ic { color: var(--faint); }
+  .irow .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .irow .tag { font-size: 12.5px; font-weight: 500; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .irow .tag.dangling { color: var(--idle); font-style: italic; }
+  .irow .meta { font-size: 10.5px; color: var(--faint); font-family: var(--mono); }
+  .progress { height: 4px; border-radius: 2px; background: var(--surface-strong); overflow: hidden; margin-top: 3px; }
+  .progress i { display: block; height: 100%; width: 42%; background: var(--blue); border-radius: 2px; }
+
+  .pfoot {
+    flex: none; height: 28px; display: flex; align-items: center; gap: 6px;
+    padding: 0 10px; border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--idle);
+  }
+  .pfoot .dot { width: 6px; height: 6px; }
+  .pfoot .sp { flex: 1; }
+
+  /* ── 居中弹窗 ── */
+  .dialog {
+    width: 620px; background: var(--chrome); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 18px 50px rgba(0,0,0,.55); overflow: hidden;
+    color: var(--fg); font-size: 13px; display: flex; flex-direction: column;
+  }
+  .dialog.narrow { width: 480px; }
+  .dhead { padding: 14px 16px 12px; border-bottom: 1px solid var(--border); }
+  .dhead .r1 { display: flex; align-items: center; gap: 9px; }
+  .dhead .name { font-size: 15px; font-weight: 600; }
+  .badge { font-size: 10.5px; padding: 2px 8px; border-radius: 10px; border: 1px solid; }
+  .badge.run { color: var(--green); border-color: #29c23155; background: #29c23112; }
+  .dhead .sp { flex: 1; }
+  .dhead .r2 { margin-top: 5px; font-size: 11.5px; color: var(--idle); padding-left: 17px; }
+  .dbtn {
+    height: 26px; padding: 0 10px; border-radius: 5px; display: inline-flex; align-items: center; gap: 5px;
+    background: var(--surface); color: var(--soft); font-size: 12px;
+  }
+  .dbtn.danger { color: var(--red); }
+  .stats {
+    display: flex; gap: 18px; padding: 8px 16px; border-bottom: 1px solid var(--border);
+    font-size: 11.5px; color: var(--idle); background: var(--surface);
+  }
+  .stats b { color: var(--soft); font-weight: 500; font-family: var(--mono); font-size: 11.5px; }
+  .dtabs { display: flex; gap: 2px; padding: 8px 16px 0; border-bottom: 1px solid var(--border); }
+  .dtab { padding: 6px 12px 8px; font-size: 12.5px; color: var(--idle); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .dtab.on { color: var(--fg); font-weight: 500; border-bottom-color: var(--blue); }
+  .dbody { padding: 12px 16px 14px; }
+  .sec { font-size: 11px; font-weight: 600; color: var(--idle); letter-spacing: .04em; margin: 12px 0 6px; }
+  .sec:first-child { margin-top: 0; }
+  .kv { display: grid; grid-template-columns: 88px 1fr; row-gap: 5px; font-size: 12px; }
+  .kv .k { color: var(--faint); }
+  .kv .v { color: var(--soft); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kv .v.mono { font-family: var(--mono); font-size: 11.5px; }
+  .prow { display: flex; align-items: center; gap: 8px; height: 26px; font-family: var(--mono); font-size: 11.5px; color: var(--soft); }
+  .prow .arrow { color: var(--faint); }
+  .prow .proto { color: var(--faint); font-size: 10.5px; }
+  .prow .sp { flex: 1; }
+  .ro { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--surface-strong); color: var(--idle); font-family: var(--sans); }
+  .envbox { background: var(--surface); border-radius: var(--radius); padding: 7px 10px; font-family: var(--mono); font-size: 11px; line-height: 1.8; color: var(--soft); max-height: 96px; overflow: hidden; }
+  .envbox .k { color: var(--sky); }
+
+  .logbar { display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+  .toggle { height: 24px; padding: 0 9px; border-radius: 5px; display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; background: var(--surface); color: var(--idle); }
+  .toggle.on { color: var(--fg); border: 1px solid var(--blue); }
+  .toggle .tdot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+  .toggle.on .tdot { background: var(--green); }
+  .logbar .sp { flex: 1; }
+  .logs {
+    background: #0c0c0c; font-family: var(--mono); font-size: 11px; line-height: 1.85;
+    padding: 10px 16px; height: 300px; overflow: hidden; color: var(--soft);
+  }
+  .logs .ts { color: var(--faint); }
+  .logs .warn { color: var(--amber); }
+  .logs .err { color: var(--red); }
+  .logs .dim { color: var(--idle); }
+  .dfoot { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--idle); }
+  .dfoot .sp { flex: 1; }
+
+  /* 表单 */
+  .field { margin-bottom: 11px; }
+  .field label { display: block; font-size: 11.5px; color: var(--idle); margin-bottom: 5px; }
+  .field label b { color: var(--red); font-weight: 400; }
+  .input {
+    height: 30px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 9px; font-size: 12.5px; color: var(--fg);
+  }
+  .input.mono { font-family: var(--mono); font-size: 12px; }
+  .input .ph { color: var(--faint); }
+  .frow { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .frow .input { flex: 1; }
+  .frow .arrow { color: var(--faint); flex: none; }
+  .addline { font-size: 11.5px; color: var(--sky); display: inline-flex; align-items: center; gap: 4px; margin-top: 2px; }
+
+  /* 文件页 */
+  .pathbar { display: flex; align-items: center; gap: 2px; padding: 8px 16px 0; }
+  .crumb { padding: 3px 7px; border-radius: 4px; color: var(--idle); font-family: var(--mono); font-size: 11.5px; }
+  .crumb.on { color: var(--fg); background: var(--surface); }
+  .crumbsep { color: var(--faint); font-size: 11px; }
+  .pathbar .sp { flex: 1; }
+  .filebar { display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--border); }
+  .filebar .sp { flex: 1; }
+  .filebar .hint { font-size: 11px; color: var(--faint); }
+  .frow2 { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 16px; font-size: 12px; }
+  .frow2.head { height: 26px; font-size: 10.5px; color: var(--faint); border-bottom: 1px solid var(--border); }
+  .frow2:not(.head):hover { background: var(--surface-strong); }
+  .frow2.sel { background: rgba(12,100,192,.22); }
+  .fname { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; }
+  .fname .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--soft); }
+  .fname .lnk { color: var(--faint); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fsize { width: 62px; flex: none; text-align: right; font-family: var(--mono); font-size: 11px; color: var(--idle); }
+  .fmtime { width: 100px; flex: none; font-family: var(--mono); font-size: 11px; color: var(--idle); }
+  .fmode { width: 84px; flex: none; font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+  .fslot { width: 74px; flex: none; display: flex; gap: 2px; justify-content: flex-end; opacity: 0; }
+  .frow2:hover .fslot, .frow2.sel .fslot { opacity: 1; }
+  .fslot .iconbtn { width: 22px; height: 22px; }
+
+  /* 空态 / 错误态 */
+  .state { padding: 26px 24px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; border-bottom: 1px solid var(--border); }
+  .state:last-child { border-bottom: none; }
+  .state .ic { color: var(--faint); }
+  .state .t { font-size: 13px; font-weight: 600; color: var(--soft); }
+  .state .d { font-size: 11.5px; color: var(--idle); line-height: 1.7; }
+  .state code { font-family: var(--mono); font-size: 10.5px; color: var(--amber); background: var(--surface); border-radius: 4px; padding: 2px 7px; }
+  .state .btn { margin-top: 4px; }
+
+  .final {
+    margin-top: 4px; padding: 16px 18px; background: #161616;
+    border: 1px solid var(--border); border-radius: 8px; font-size: 12.5px; line-height: 1.9; color: var(--idle);
+  }
+  .final h2 { font-size: 14px; color: var(--fg); font-weight: 600; margin-bottom: 8px; }
+  .final b { color: var(--soft); font-weight: 500; }
+  .final code { font-family: var(--mono); font-size: 11.5px; color: var(--sky); background: var(--surface); border-radius: 4px; padding: 1px 5px; }
+  .final .cols { display: flex; gap: 40px; flex-wrap: wrap; }
+  .final .col { flex: 1; min-width: 300px; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-container" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="1.5"/><path d="M6.5 7v10M11 7v10M15.5 7v10M19.5 7v10"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+  <symbol id="i-network" viewBox="0 0 24 24"><rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3M12 12V8"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/></symbol>
+  <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+  <symbol id="i-restart" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></symbol>
+  <symbol id="i-logs" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4M10 9H8M16 13H8M16 17H8"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></symbol>
+  <symbol id="i-kebab" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+  <symbol id="i-package" viewBox="0 0 24 24"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7M12 19V5"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M7 7h10v10M7 17 17 7"/></symbol>
+</svg>
+
+<div class="page">
+  <h1>Docker 容器管理 · 草图</h1>
+  <div class="sub">
+    入口在<b>右活动栏</b>（监控之后第 5 枚），跟着中心区活动的那条 <b>SSH 会话</b>走 —— 管的是<b>那台主机上</b>的 Docker。
+    版式沿用右栏现有骨架：36px 标题行、380px 默认宽、列表 + 居中弹窗（与转发页同款分工）。
+  </div>
+
+  <div class="decisions">
+    <b>设计要点</b><br>
+    ① <b>不另开连接</b>：在现有 russh 会话上开一条 exec 通道跑 <code>docker system dial-stdio</code>，字节流接进 <b>bollard</b>（Docker Engine API 客户端）—— docker CLI 的 <code>ssh://</code> 上下文同款机制，权限就是该用户的 docker 权限，rootless 自动跟随。<br>
+    ② <b>容器终端不做内嵌</b>：点「终端」新开一个同主机终端标签页跑 <code>docker exec -it … sh</code>，整条终端栈（分屏/滚动/zmodem）白捡。<br>
+    ③ <b>列表便宜、详情才贵</b>：列表可见时 3s 轮询 + 手动刷新，<b>不</b>给每行拉 stats（N+1）；CPU/内存/网络只在详情弹窗开着时拉一条流。<br>
+    ④ <b>危险操作二次确认</b>：删除容器/镜像、停止运行中容器都弹确认；删运行中容器要显式勾「强制」。<br>
+    ⑤ <b>一期范围</b>：容器列表 / 起停重启删 / 日志 / 终端 / <b>容器文件管理</b>（浏览·上传·下载·新建目录·重命名·删除）/ 镜像列表 / 拉取 / 删除。<span class="tag">二期候选</span>：运行容器表单、文件在线编辑、docker events 推送刷新、网络与卷、Compose、端口一键联动转发。<br>
+    ⑥ <b>文件管理两条路</b>：上传/下载走 Engine API 的 <code>archive</code>（tar 流，<b>停止的容器也能用</b>，不依赖容器内二进制）；列举/改名/删除走 <code>exec</code>（运行中且有 shell），没 shell 的镜像列举退回 archive 读 tar 头。
+  </div>
+
+  <!-- ═══════════ 板 1 · 容器列表 ═══════════ -->
+  <div class="boards">
+    <div class="board">
+      <div class="board-title">容器列表<em>主视图</em></div>
+      <div class="board-sub">右活动栏新增 Docker 一枚（集装箱图标，Lucide container）。列表定高行 + 虚拟列表，运行中排前。</div>
+      <div class="rig">
+        <div class="panel">
+          <div class="phead">
+            <svg class="ic" width="16" height="16" style="color:var(--teal)"><use href="#i-container"/></svg>
+            Docker
+            <span class="host">web-01</span>
+            <span class="sp"></span>
+            <span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-refresh"/></svg></span>
+            <span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-chev-r"/></svg></span>
+          </div>
+          <div class="toolbar">
+            <div class="search">
+              <svg class="ic" width="13" height="13"><use href="#i-search"/></svg>
+              搜索名称 / 镜像 / 端口…
+            </div>
+          </div>
+          <div class="seg">
+            <span class="tab on">容器 <span class="n">12</span></span>
+            <span class="tab">镜像 <span class="n">8</span></span>
+          </div>
+          <div class="chips">
+            <span class="chip on">全部 <span class="n">12</span></span>
+            <span class="chip">运行中 <span class="n">8</span></span>
+            <span class="chip">已停止 <span class="n">4</span></span>
+          </div>
+          <div class="list">
+            <div class="crow hover">
+              <div class="l1">
+                <span class="dot run"></span>
+                <span class="name">nginx-prod</span>
+                <span class="acts">
+                  <span class="iconbtn" title="停止"><svg class="ic" width="13" height="13"><use href="#i-stop"/></svg></span>
+                  <span class="iconbtn" title="重启"><svg class="ic" width="13" height="13"><use href="#i-restart"/></svg></span>
+                  <span class="iconbtn" title="日志"><svg class="ic" width="13" height="13"><use href="#i-logs"/></svg></span>
+                  <span class="iconbtn" title="终端"><svg class="ic" width="13" height="13"><use href="#i-terminal"/></svg></span>
+                  <span class="iconbtn"><svg class="ic" width="13" height="13"><use href="#i-kebab"/></svg></span>
+                </span>
+              </div>
+              <div class="l2"><span class="img">nginx:1.27-alpine</span><span class="ports">8080→80</span></div>
+            </div>
+            <div class="crow">
+              <div class="l1"><span class="dot run"></span><span class="name">redis-cache</span><span class="st">Up 3 hours</span></div>
+              <div class="l2"><span class="img">redis:7.4</span><span class="ports">6379→6379</span></div>
+            </div>
+            <div class="crow">
+              <div class="l1"><span class="dot run"></span><span class="name">postgres-main</span><span class="st">Up 2 days</span></div>
+              <div class="l2"><span class="img">postgres:16.4</span><span class="ports">5432→5432</span></div>
+            </div>
+            <div class="crow">
+              <div class="l1"><span class="dot run"></span><span class="name">portainer</span><span class="st">Up 5 days</span></div>
+              <div class="l2"><span class="img">portainer/portainer-ce:2.21</span><span class="ports">9443→9443</span></div>
+            </div>
+            <div class="crow">
+              <div class="l1"><span class="dot run"></span><span class="name">rabbitmq</span><span class="st">Up 2 days</span></div>
+              <div class="l2"><span class="img">rabbitmq:3.13-management</span><span class="ports">5672→5672 +1</span></div>
+            </div>
+            <div class="crow">
+              <div class="l1"><span class="dot pause"></span><span class="name">worker-queue</span><span class="st" style="color:var(--amber)">已暂停</span></div>
+              <div class="l2"><span class="img">app/worker:1.8.2</span><span class="ports">—</span></div>
+            </div>
+            <div class="crow">
+              <div class="l1"><span class="dot exit"></span><span class="name">old-api</span><span class="st">已退出 (0) · 3 天前</span></div>
+              <div class="l2"><span class="img">app/api:1.7.0</span><span class="ports">—</span></div>
+            </div>
+            <div class="crow">
+              <div class="l1"><span class="dot dead"></span><span class="name">debug-box</span><span class="st bad">已退出 (137) · 上周</span></div>
+              <div class="l2"><span class="img">alpine:3.20</span><span class="ports">—</span></div>
+            </div>
+          </div>
+          <div class="pfoot">
+            <span class="dot run"></span> 引擎 27.3.1 · API 1.47
+            <span class="sp"></span>
+            8/12 运行 · 刚刚刷新 <i class="mk inline">e</i>
+          </div>
+        </div>
+        <div class="abar">
+          <span class="pill"><svg class="ic" width="18" height="18"><use href="#i-activity"/></svg></span>
+          <span class="pill on"><svg class="ic" width="18" height="18"><use href="#i-container"/></svg></span>
+          <span class="pill"><svg class="ic" width="18" height="18"><use href="#i-network"/></svg></span>
+          <span class="pill"><svg class="ic" width="18" height="18"><use href="#i-history"/></svg></span>
+          <span class="pill"><svg class="ic" width="18" height="18"><use href="#i-sparkles"/></svg></span>
+        </div>
+      </div>
+      <ul class="notes">
+        <li><i class="mk">a</i><span><b>入口</b>：右活动栏第 2 枚（监控之后），选中指示条贴右缘，与现有四枚同源。仅 SSH 会话可用；视图实体常驻终端标签页，收起右栏只是不看它。</span></li>
+        <li><i class="mk">b</i><span><b>悬停出快捷动作</b>（图中第一行）：停止 / 重启 / 日志 / 终端 / 更多。已停止的行首枚换成 ▶ 启动。不悬停时右侧是状态文字，行内不常驻按钮。</span></li>
+        <li><i class="mk">c</i><span><b>状态点</b>：绿=运行、琥珀=暂停、灰=正常退出、红=非零退出（137 这类退出码同时写在状态里）。颜色全走现有 palette，不另开色。</span></li>
+        <li><i class="mk">d</i><span><b>单击行 → 详情弹窗</b>（板 3–5）。「日志」「终端」直达对应动作；删除只在「更多」菜单里，且二次确认。</span></li>
+        <li><i class="mk">e</i><span><b>底栏是引擎心跳</b>：版本 / API 版本 / 运行比 / 上次刷新。连不上时这一栏变红并带原因（板 6）。列表 3s 轮询只在右栏看着这一页时跑（转发页同款心跳）。</span></li>
+      </ul>
+    </div>
+
+    <!-- ═══════════ 板 2 · 镜像页 ═══════════ -->
+    <div class="board">
+      <div class="board-title">镜像页</div>
+      <div class="board-sub">同一页的第二段。拉取走 Engine API 的进度流，行内画进度条，不弹模态。</div>
+      <div class="rig">
+        <div class="panel solo">
+          <div class="phead">
+            <svg class="ic" width="16" height="16" style="color:var(--teal)"><use href="#i-container"/></svg>
+            Docker
+            <span class="host">web-01</span>
+            <span class="sp"></span>
+            <span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-refresh"/></svg></span>
+            <span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-chev-r"/></svg></span>
+          </div>
+          <div class="toolbar">
+            <div class="search">
+              <svg class="ic" width="13" height="13"><use href="#i-search"/></svg>
+              搜索镜像…
+            </div>
+            <span class="btn primary"><svg class="ic" width="13" height="13"><use href="#i-plus"/></svg>拉取镜像</span>
+          </div>
+          <div class="seg">
+            <span class="tab">容器 <span class="n">12</span></span>
+            <span class="tab on">镜像 <span class="n">8</span></span>
+          </div>
+          <div class="chips">
+            <span class="chip on">全部 <span class="n">8</span></span>
+            <span class="chip">悬空 <span class="n">1</span></span>
+            <span class="chip" style="margin-left:auto">共 1.2 GB</span>
+          </div>
+          <div class="list">
+            <div class="irow" style="height:56px">
+              <svg class="ic" width="15" height="15" style="color:var(--sky)"><use href="#i-download"/></svg>
+              <div class="body">
+                <span class="tag">app/worker:1.9.0</span>
+                <span class="meta">拉取中 · 12.3 / 29.1 MB · 42%</span>
+                <span class="progress"><i></i></span>
+              </div>
+              <span class="iconbtn"><svg class="ic" width="13" height="13"><use href="#i-x"/></svg></span>
+            </div>
+            <div class="irow hover">
+              <svg class="ic" width="15" height="15"><use href="#i-package"/></svg>
+              <div class="body">
+                <span class="tag">nginx:1.27-alpine</span>
+                <span class="meta">a1b2c3d4e5f6 · 48.2 MB · 3 周前</span>
+              </div>
+              <span class="acts">
+                <span class="iconbtn" title="运行" style="color:var(--green)"><svg class="ic" width="13" height="13"><use href="#i-play"/></svg></span>
+                <span class="iconbtn danger" title="删除"><svg class="ic" width="13" height="13"><use href="#i-trash"/></svg></span>
+              </span>
+            </div>
+            <div class="irow">
+              <svg class="ic" width="15" height="15"><use href="#i-package"/></svg>
+              <div class="body"><span class="tag">redis:7.4</span><span class="meta">9f8e7d6c5b4a · 116 MB · 3 周前</span></div>
+            </div>
+            <div class="irow">
+              <svg class="ic" width="15" height="15"><use href="#i-package"/></svg>
+              <div class="body"><span class="tag">postgres:16.4</span><span class="meta">5e4d3c2b1a09 · 432 MB · 1 个月前</span></div>
+            </div>
+            <div class="irow">
+              <svg class="ic" width="15" height="15"><use href="#i-package"/></svg>
+              <div class="body"><span class="tag">app/api:1.8.2</span><span class="meta">77aa88bb99cc · 212 MB · 2 天前</span></div>
+            </div>
+            <div class="irow">
+              <svg class="ic" width="15" height="15"><use href="#i-package"/></svg>
+              <div class="body"><span class="tag">app/api:1.7.0</span><span class="meta">11dd22ee33ff · 208 MB · 3 周前</span></div>
+            </div>
+            <div class="irow">
+              <svg class="ic" width="15" height="15"><use href="#i-package"/></svg>
+              <div class="body"><span class="tag">alpine:3.20</span><span class="meta">44bb55aa66dd · 7.8 MB · 2 个月前</span></div>
+            </div>
+            <div class="irow">
+              <svg class="ic" width="15" height="15" style="color:var(--faint)"><use href="#i-package"/></svg>
+              <div class="body"><span class="tag dangling">&lt;none&gt;:&lt;none&gt;</span><span class="meta">001122334455 · 156 MB · 悬空</span></div>
+            </div>
+          </div>
+          <div class="pfoot">
+            <span class="dot run"></span> 引擎 27.3.1 · API 1.47
+            <span class="sp"></span>
+            8 个镜像 · 1.2 GB
+          </div>
+        </div>
+      </div>
+      <ul class="notes">
+        <li><i class="mk">a</i><span><b>拉取镜像</b>：小弹窗只问一个名字（<code>repo:tag</code>），确认后回到列表行内画进度（Engine API 的 pull 进度流），可取消；完成转通知。私有仓库凭据走保险箱取用，二期。</span></li>
+        <li><i class="mk">b</i><span><b>悬停动作</b>：▶ 运行（打开板 7 表单，镜像名预填）与删除。删除被容器引用的镜像会被引擎拒绝，原话透传给用户。</span></li>
+        <li><i class="mk">c</i><span><b>悬空镜像</b>单独一枚筛子，配「清理悬空」动作（二次确认）；不做完整的 prune 面板。</span></li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ═══════════ 板 3/4 · 详情弹窗 ═══════════ -->
+  <div class="boards">
+    <div class="board wide">
+      <div class="board-title">容器详情 · 概览</div>
+      <div class="board-sub">居中弹窗（与转发表单同款壳）。顶部动作条 + 实时 stats 条，正文两段：基本信息 / 端口 / 挂载 / 环境。</div>
+      <div class="dialog">
+        <div class="dhead">
+          <div class="r1">
+            <span class="dot run"></span>
+            <span class="name">nginx-prod</span>
+            <span class="badge run">运行中 · Up 3 hours</span>
+            <span class="sp"></span>
+            <span class="dbtn"><svg class="ic" width="12" height="12"><use href="#i-stop"/></svg>停止</span>
+            <span class="dbtn"><svg class="ic" width="12" height="12"><use href="#i-restart"/></svg>重启</span>
+            <span class="dbtn"><svg class="ic" width="12" height="12"><use href="#i-terminal"/></svg>终端</span>
+            <span class="dbtn danger"><svg class="ic" width="12" height="12"><use href="#i-trash"/></svg>删除</span>
+            <span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-x"/></svg></span>
+          </div>
+          <div class="r2">nginx:1.27-alpine · web-01 · 创建于 2026-11-21 09:14</div>
+        </div>
+        <div class="stats">
+          <span>CPU <b>3.2%</b></span>
+          <span>内存 <b>84.2 MiB</b> / 1.9 GiB</span>
+          <span>网络 <b>↑1.2 MB ↓8.4 MB</b></span>
+          <span>进程 <b>12</b></span>
+          <i class="mk inline">a</i>
+        </div>
+        <div class="dtabs">
+          <span class="dtab on">概览</span>
+          <span class="dtab">文件</span>
+          <span class="dtab">日志</span>
+        </div>
+        <div class="dbody">
+          <div class="sec">基本信息</div>
+          <div class="kv">
+            <span class="k">容器 ID</span><span class="v mono">a1b2c3d4e5f6 <svg class="ic" width="11" height="11" style="color:var(--faint);vertical-align:-1px"><use href="#i-copy"/></svg></span>
+            <span class="k">命令</span><span class="v mono">nginx -g 'daemon off;'</span>
+            <span class="k">重启策略</span><span class="v">unless-stopped</span>
+            <span class="k">工作目录</span><span class="v mono">/</span>
+          </div>
+          <div class="sec">端口映射 <i class="mk inline">b</i></div>
+          <div class="prow"><span>0.0.0.0:8080</span><span class="arrow">→</span><span>80</span><span class="proto">tcp</span><span class="sp"></span><span class="iconbtn"><svg class="ic" width="12" height="12"><use href="#i-external"/></svg></span></div>
+          <div class="sec">挂载</div>
+          <div class="prow"><span>/srv/nginx/conf</span><span class="arrow">→</span><span>/etc/nginx/conf.d</span><span class="sp"></span><span class="ro">只读</span></div>
+          <div class="prow"><span>/srv/nginx/html</span><span class="arrow">→</span><span>/usr/share/nginx/html</span><span class="sp"></span><span class="ro">读写</span></div>
+          <div class="sec">环境变量</div>
+          <div class="envbox">
+            <span class="k">NGINX_VERSION</span>=1.27.1<br>
+            <span class="k">TZ</span>=Asia/Shanghai<br>
+            <span class="k">PATH</span>=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin…
+          </div>
+        </div>
+        <div class="dfoot">
+          <span>详情开着时才拉 stats 流，关掉即停</span>
+          <span class="sp"></span>
+          <span class="btn">关闭</span>
+        </div>
+      </div>
+      <ul class="notes">
+        <li><i class="mk">a</i><span><b>stats 条</b>：弹窗开着时订阅这一个容器的 stats 流（1s 一跳），关掉即取消 —— 列表页永远不背 N 条流。</span></li>
+        <li><i class="mk">b</i><span><b>端口行</b>： ↗ 二期联动 —— 一键给这个端口建本地转发（复用现有 ForwardService），建完在浏览器打开。一期只展示 + 复制。</span></li>
+        <li><i class="mk">c</i><span><b>动作条</b>与列表行内动作同一套语义；「终端」= 新开同主机终端标签页执行 <code>docker exec -it nginx-prod sh</code>（探测到 bash 就用 bash），弹窗留着不关。</span></li>
+      </ul>
+    </div>
+
+    <!-- ═══════════ 板 4 · 详情 · 文件 ═══════════ -->
+    <div class="board wide">
+      <div class="board-title">容器详情 · 文件<em>新增</em></div>
+      <div class="board-sub">容器文件系统直接管：浏览 / 上传 / 下载 / 新建目录 / 重命名 / 删除。版式与动作借 SFTP 文件面板；停止的容器也能浏览与传输。</div>
+      <div class="dialog">
+        <div class="dhead">
+          <div class="r1">
+            <span class="dot run"></span>
+            <span class="name">nginx-prod</span>
+            <span class="badge run">运行中 · Up 3 hours</span>
+            <span class="sp"></span>
+            <span class="dbtn"><svg class="ic" width="12" height="12"><use href="#i-stop"/></svg>停止</span>
+            <span class="dbtn"><svg class="ic" width="12" height="12"><use href="#i-restart"/></svg>重启</span>
+            <span class="dbtn"><svg class="ic" width="12" height="12"><use href="#i-terminal"/></svg>终端</span>
+            <span class="dbtn danger"><svg class="ic" width="12" height="12"><use href="#i-trash"/></svg>删除</span>
+            <span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-x"/></svg></span>
+          </div>
+          <div class="r2">nginx:1.27-alpine · web-01 · 创建于 2026-11-21 09:14</div>
+        </div>
+        <div class="stats">
+          <span>CPU <b>3.2%</b></span>
+          <span>内存 <b>84.2 MiB</b> / 1.9 GiB</span>
+          <span>网络 <b>↑1.2 MB ↓8.4 MB</b></span>
+          <span>进程 <b>12</b></span>
+        </div>
+        <div class="dtabs">
+          <span class="dtab">概览</span>
+          <span class="dtab on">文件</span>
+          <span class="dtab">日志</span>
+        </div>
+        <div class="pathbar">
+          <span class="iconbtn" title="上级目录"><svg class="ic" width="13" height="13"><use href="#i-up"/></svg></span>
+          <span class="crumb">/</span><span class="crumbsep">›</span>
+          <span class="crumb">etc</span><span class="crumbsep">›</span>
+          <span class="crumb on">nginx</span>
+          <span class="sp"></span>
+          <i class="mk inline">a</i>
+          <span class="iconbtn"><svg class="ic" width="13" height="13"><use href="#i-refresh"/></svg></span>
+        </div>
+        <div class="filebar">
+          <span class="btn"><svg class="ic" width="12" height="12"><use href="#i-plus"/></svg>新建目录</span>
+          <span class="btn primary"><svg class="ic" width="12" height="12"><use href="#i-upload"/></svg>上传文件</span>
+          <i class="mk inline">b</i>
+          <span class="sp"></span>
+          <span class="hint">拖本地文件进列表即上传</span>
+        </div>
+        <div class="frow2 head">
+          <span class="fname">名称</span>
+          <span class="fsize">大小</span>
+          <span class="fmtime">修改时间</span>
+          <span class="fmode">权限</span>
+          <span class="fslot"></span>
+        </div>
+        <div class="frow2">
+          <span class="fname"><svg class="ic" width="14" height="14" style="color:var(--coral)"><use href="#i-folder"/></svg><span class="t">conf.d</span></span>
+          <span class="fsize">—</span>
+          <span class="fmtime">11-21 09:14</span>
+          <span class="fmode">drwxr-xr-x</span>
+          <span class="fslot">
+            <span class="iconbtn" title="下载（tar）"><svg class="ic" width="12" height="12"><use href="#i-download"/></svg></span>
+            <span class="iconbtn danger" title="删除"><svg class="ic" width="12" height="12"><use href="#i-trash"/></svg></span>
+          </span>
+        </div>
+        <div class="frow2">
+          <span class="fname"><svg class="ic" width="14" height="14" style="color:var(--sky)"><use href="#i-link"/></svg><span class="t">modules</span><span class="lnk">→ /usr/lib/nginx/modules</span></span>
+          <span class="fsize">—</span>
+          <span class="fmtime">11-18 22:03</span>
+          <span class="fmode">lrwxrwxrwx</span>
+          <span class="fslot">
+            <span class="iconbtn" title="重命名"><svg class="ic" width="12" height="12"><use href="#i-pencil"/></svg></span>
+            <span class="iconbtn danger" title="删除"><svg class="ic" width="12" height="12"><use href="#i-trash"/></svg></span>
+          </span>
+        </div>
+        <div class="frow2 sel">
+          <span class="fname"><svg class="ic" width="14" height="14" style="color:var(--idle)"><use href="#i-file"/></svg><span class="t">nginx.conf</span></span>
+          <span class="fsize">1.1 KB</span>
+          <span class="fmtime">11-21 09:14</span>
+          <span class="fmode">-rw-r--r--</span>
+          <span class="fslot">
+            <span class="iconbtn" title="下载"><svg class="ic" width="12" height="12"><use href="#i-download"/></svg></span>
+            <span class="iconbtn" title="重命名"><svg class="ic" width="12" height="12"><use href="#i-pencil"/></svg></span>
+            <span class="iconbtn danger" title="删除"><svg class="ic" width="12" height="12"><use href="#i-trash"/></svg></span>
+          </span>
+          <i class="mk inline">c</i>
+        </div>
+        <div class="frow2">
+          <span class="fname"><svg class="ic" width="14" height="14" style="color:var(--idle)"><use href="#i-file"/></svg><span class="t">mime.types</span></span>
+          <span class="fsize">5.2 KB</span>
+          <span class="fmtime">11-18 22:03</span>
+          <span class="fmode">-rw-r--r--</span>
+          <span class="fslot"></span>
+        </div>
+        <div class="frow2">
+          <span class="fname"><svg class="ic" width="14" height="14" style="color:var(--idle)"><use href="#i-file"/></svg><span class="t">fastcgi_params</span></span>
+          <span class="fsize">664 B</span>
+          <span class="fmtime">11-18 22:03</span>
+          <span class="fmode">-rw-r--r--</span>
+          <span class="fslot"></span>
+        </div>
+        <div class="frow2">
+          <span class="fname"><svg class="ic" width="14" height="14" style="color:var(--idle)"><use href="#i-file"/></svg><span class="t">scgi_params</span></span>
+          <span class="fsize">623 B</span>
+          <span class="fmtime">11-18 22:03</span>
+          <span class="fmode">-rw-r--r--</span>
+          <span class="fslot"></span>
+        </div>
+        <div class="frow2">
+          <span class="fname"><svg class="ic" width="14" height="14" style="color:var(--idle)"><use href="#i-file"/></svg><span class="t">uwsgi_params</span></span>
+          <span class="fsize">664 B</span>
+          <span class="fmtime">11-18 22:03</span>
+          <span class="fmode">-rw-r--r--</span>
+          <span class="fslot"></span>
+        </div>
+        <div class="dfoot">
+          <span>7 项 · 以容器默认用户（root）操作 <i class="mk inline">d</i></span>
+          <span class="sp"></span>
+          <span class="btn">关闭</span>
+        </div>
+      </div>
+      <ul class="notes">
+        <li><i class="mk">a</i><span><b>列举两条路</b>：运行中 → bollard exec 跑一层 POSIX 列举脚本（类型/大小/mtime/权限/软链目标，monitor 同款做法）；没 shell（distroless/scratch）或已停止 → archive API 拉 tar 只读条目头。面包屑 + 上级，与 SFTP 面板同款导航。</span></li>
+        <li><i class="mk">b</i><span><b>上传/下载走 archive</b>（GET/PUT tar 流）：不依赖容器内任何二进制，<b>停止的容器照样能用</b>；目录下载 = tar 落盘解开，大文件按字节画进度，完成转通知。拖拽上传读 GPUI ExternalPaths。</span></li>
+        <li><i class="mk">c</i><span><b>改名/删除/新建目录没有 API</b> → exec 执行，仅运行中且有 shell 可用；停止时按钮禁用并 tooltip 说明。删除/覆盖二次确认；路径先 normalize，防 <code>..</code> 逃逸。</span></li>
+        <li><i class="mk">d</i><span><b>操作身份</b>：exec 与 archive 都以容器默认用户（通常 root）生效，底栏明示；不做「切换用户」。</span></li>
+        <li><i class="mk">e</i><span><b>二期</b>：双击文件 → 现有编辑器面板打开（落临时文件，保存即 PUT 回传）；传输并入统一传输队列。</span></li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ═══════════ 板 5/6 · 日志与异常态 ═══════════ -->
+  <div class="boards">
+    <div class="board wide">
+      <div class="board-title">容器详情 · 日志</div>
+      <div class="board-sub">同一扇弹窗的日志页。流式跟随，等宽字体，终端同款底色。</div>
+      <div class="dialog">
+        <div class="dhead">
+          <div class="r1">
+            <span class="dot run"></span>
+            <span class="name">nginx-prod</span>
+            <span class="badge run">运行中 · Up 3 hours</span>
+            <span class="sp"></span>
+            <span class="dbtn"><svg class="ic" width="12" height="12"><use href="#i-stop"/></svg>停止</span>
+            <span class="dbtn"><svg class="ic" width="12" height="12"><use href="#i-restart"/></svg>重启</span>
+            <span class="dbtn"><svg class="ic" width="12" height="12"><use href="#i-terminal"/></svg>终端</span>
+            <span class="dbtn danger"><svg class="ic" width="12" height="12"><use href="#i-trash"/></svg>删除</span>
+            <span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-x"/></svg></span>
+          </div>
+          <div class="r2">nginx:1.27-alpine · web-01 · 创建于 2026-11-21 09:14</div>
+        </div>
+        <div class="stats">
+          <span>CPU <b>3.2%</b></span>
+          <span>内存 <b>84.2 MiB</b> / 1.9 GiB</span>
+          <span>网络 <b>↑1.2 MB ↓8.4 MB</b></span>
+          <span>进程 <b>12</b></span>
+        </div>
+        <div class="dtabs">
+          <span class="dtab">概览</span>
+          <span class="dtab">文件</span>
+          <span class="dtab on">日志</span>
+        </div>
+        <div class="logbar">
+          <span class="toggle on"><span class="tdot"></span>跟随</span>
+          <span class="toggle on">时间戳</span>
+          <span class="toggle">尾部 200 行 ▾</span>
+          <span class="sp"></span>
+          <span class="iconbtn"><svg class="ic" width="13" height="13"><use href="#i-copy"/></svg></span>
+          <span class="iconbtn"><svg class="ic" width="13" height="13"><use href="#i-download"/></svg></span>
+          <span class="iconbtn"><svg class="ic" width="13" height="13"><use href="#i-x"/></svg></span>
+        </div>
+        <div class="logs">
+          <span class="ts">12:03:11.204</span> 10.0.0.8 — GET /api/health <span class="dim">200</span> 0.4ms<br>
+          <span class="ts">12:03:11.318</span> 10.0.0.8 — GET /static/app.js <span class="dim">200</span> 1.2ms<br>
+          <span class="ts">12:03:12.007</span> 10.0.0.12 — POST /api/login <span class="dim">200</span> 18.7ms<br>
+          <span class="ts">12:03:12.441</span> <span class="warn">[warn] 29#29: 2048 worker_connections exceed open file limit 1024</span><br>
+          <span class="ts">12:03:13.002</span> 10.0.0.8 — GET /api/orders <span class="dim">200</span> 6.1ms<br>
+          <span class="ts">12:03:14.156</span> <span class="err">[error] 29#29: *181 connect() failed (111: Connection refused) while connecting to upstream</span><br>
+          <span class="ts">12:03:14.157</span> 10.0.0.15 — GET /api/report <span class="err">502</span> 0.9ms<br>
+          <span class="ts">12:03:15.220</span> 10.0.0.8 — GET /api/health <span class="dim">200</span> 0.3ms<br>
+          <span class="ts">12:03:16.014</span> 10.0.0.12 — GET /static/logo.svg <span class="dim">304</span> 0.2ms<br>
+          <span class="ts">12:03:16.881</span> 10.0.0.8 — GET /api/health <span class="dim">200</span> 0.4ms<br>
+          <span class="ts">12:03:17.590</span> 10.0.0.19 — POST /api/events <span class="dim">202</span> 3.3ms<br>
+          <span class="ts">12:03:18.002</span> 10.0.0.8 — GET /api/health <span class="dim">200</span> 0.3ms<br>
+          <span class="dim">▌</span>
+        </div>
+        <div class="dfoot">
+          <span>跟随中 · 最近 200 行 · 向上滚动自动暂停跟随</span>
+          <span class="sp"></span>
+          <span class="btn">关闭</span>
+        </div>
+      </div>
+      <ul class="notes">
+        <li><i class="mk">a</i><span><b>流式</b>：Engine API <code>logs?follow=1&amp;tail=200</code>，stdout/stderr 分流着色（stderr 里再按 [warn]/[error] 提色）；弹窗关掉即断流。</span></li>
+        <li><i class="mk">b</i><span><b>跟随</b>默认开（运行中容器）；向上滚动自动暂停，回到底部恢复 —— 终端同款心智。已退出容器不跟随，一次拉尾。</span></li>
+        <li><i class="mk">c</i><span><b>复制 / 下载 / 清屏</b>：下载落本地文件（GPUI 剪贴板写不了文件，远端内容一律落盘）；清屏只清视图不动远端。</span></li>
+      </ul>
+    </div>
+
+    <div class="board">
+      <div class="board-title">空态与错误态</div>
+      <div class="board-sub">SSH 客户端里 Docker 的三种常见碰壁，都要给出能动手的下一步，不只一句"失败"。</div>
+      <div class="rig">
+        <div class="panel solo" style="height:auto">
+          <div class="phead">
+            <svg class="ic" width="16" height="16" style="color:var(--teal)"><use href="#i-container"/></svg>
+            Docker
+            <span class="sp"></span>
+            <span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-chev-r"/></svg></span>
+          </div>
+          <div class="state">
+            <svg class="ic" width="26" height="26"><use href="#i-container"/></svg>
+            <span class="t">跟着 SSH 会话走</span>
+            <span class="d">当前没有可绑定的 SSH 会话。<br>连接一台主机后，这里管那台机器上的 Docker。</span>
+          </div>
+          <div class="state">
+            <svg class="ic" width="26" height="26" style="color:var(--amber)"><use href="#i-alert"/></svg>
+            <span class="t">这台主机上没有 Docker</span>
+            <code>sh: docker: command not found</code>
+            <span class="d">远端 stderr 首行原样透传（exec 失败原因同款）。</span>
+            <span class="btn"><svg class="ic" width="12" height="12"><use href="#i-refresh"/></svg>重试</span>
+          </div>
+          <div class="state">
+            <svg class="ic" width="26" height="26" style="color:var(--amber)"><use href="#i-alert"/></svg>
+            <span class="t">当前用户无权访问 Docker</span>
+            <code>permission denied … docker.sock</code>
+            <span class="d">把登录用户加进 docker 组后重新登录：</span>
+            <code>sudo usermod -aG docker $USER</code>
+            <span style="display:flex;gap:6px">
+              <span class="btn"><svg class="ic" width="12" height="12"><use href="#i-copy"/></svg>复制命令</span>
+              <span class="btn"><svg class="ic" width="12" height="12"><use href="#i-refresh"/></svg>重试</span>
+            </span>
+          </div>
+        </div>
+      </div>
+      <ul class="notes">
+        <li><i class="mk">a</i><span><b>非 SSH 会话</b>（串口 / Telnet / RDP…）与未连接时画第一种；Docker 枚导航仍在，点进去看得到原因，不藏入口。</span></li>
+        <li><i class="mk">b</i><span><b>错误分类</b>：command not found → 未安装；permission denied → 无权限（给修复命令）；其余原话透传 + 重试。重连会话后自动重试一次。</span></li>
+      </ul>
+    </div>
+
+  </div>
+
+  <!-- ═══════════ 板 7 · 运行表单 ═══════════ -->
+  <div class="boards">
+    <div class="board" style="width:480px">
+      <div class="board-title">运行容器表单<em class="later">二期候选</em></div>
+      <div class="board-sub">镜像页 ▶ 运行 打开。一期先不做 —— 起容器多数人用 compose / 命令行，表单做浅了反而误导。</div>
+      <div class="dialog narrow">
+        <div class="dhead">
+          <div class="r1">
+            <span class="name" style="font-size:14px">运行容器</span>
+            <span class="sp"></span>
+            <span class="iconbtn"><svg class="ic" width="14" height="14"><use href="#i-x"/></svg></span>
+          </div>
+        </div>
+        <div class="dbody">
+          <div class="field">
+            <label>镜像 <b>*</b></label>
+            <div class="input mono">nginx:1.27-alpine</div>
+          </div>
+          <div class="field">
+            <label>名称</label>
+            <div class="input"><span class="ph">留空自动命名</span></div>
+          </div>
+          <div class="field">
+            <label>端口映射</label>
+            <div class="frow">
+              <div class="input mono" style="flex:.8">8080</div>
+              <span class="arrow">→</span>
+              <div class="input mono" style="flex:.8">80</div>
+              <div class="input" style="flex:.6">tcp ▾</div>
+              <span class="iconbtn"><svg class="ic" width="12" height="12"><use href="#i-x"/></svg></span>
+            </div>
+            <span class="addline"><svg class="ic" width="11" height="11"><use href="#i-plus"/></svg>添加端口</span>
+          </div>
+          <div class="field">
+            <label>环境变量</label>
+            <div class="frow">
+              <div class="input mono">TZ</div>
+              <span class="arrow">=</span>
+              <div class="input mono">Asia/Shanghai</div>
+              <span class="iconbtn"><svg class="ic" width="12" height="12"><use href="#i-x"/></svg></span>
+            </div>
+            <span class="addline"><svg class="ic" width="11" height="11"><use href="#i-plus"/></svg>添加变量</span>
+          </div>
+          <div class="field">
+            <label>重启策略</label>
+            <div class="input">unless-stopped ▾</div>
+          </div>
+        </div>
+        <div class="dfoot">
+          <span>后台运行（-d）</span>
+          <span class="sp"></span>
+          <span class="btn ghost">取消</span>
+          <span class="btn primary"><svg class="ic" width="12" height="12"><use href="#i-play"/></svg>运行</span>
+        </div>
+      </div>
+      <ul class="notes">
+        <li><i class="mk">a</i><span>若做：只覆盖 <code>docker run -d</code> 的常用面（端口/环境/挂载/重启策略/命令），不做全量参数面板；运行成功转通知并跳回容器列表。</span></li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ═══════════ 落点与选型 ═══════════ -->
+  <div class="final">
+    <h2>落点与选型（后端，不在画面里）</h2>
+    <div class="cols">
+      <div class="col">
+        <b>库：bollard 0.21</b>（Rust 事实标准的异步 Docker Engine API 客户端，Apache-2.0，活跃维护）。
+        <code>default-features = false, features = ["http", "chrono"]</code> —— 不带 TLS、不带 openssh、不带 buildkit；
+        hyper / hyper-util / tokio / serde / serde_urlencoded / serde_repr 全在现有依赖树里（逐个对过 Cargo.lock），<b>新增编译只有 bollard + bollard-stubs 两个 crate</b>。<br>
+        <b>不用它自带的 ssh 特性</b>：那会经 openssh crate 拉起系统 ssh 二进制重新认证，绕开我们已经建好的 russh 会话（密码 / 跳板 / 代理 / 2FA 全丢）。
+      </div>
+      <div class="col">
+        <b>接线</b>：现有 russh 会话 → 新 exec 通道跑 <code>docker system dial-stdio</code> → <code>channel.into_stream()</code>（sftp/转发已在用）→ 包成 hyper 流 → <code>Docker::connect_with_custom_transport</code>。bollard 自己的 ssh.rs 就是这个形状，照抄结构、换掉传输。<br>
+        <b>分层</b>：新后端 crate <code>winssh-docker</code>（连接器 + 客户端 + 领域类型）→ <code>winssh-service</code> 加 <code>DockerService</code> → UI 加 <code>SessionTool::Docker</code> / <code>DockerView</code>（常驻终端标签页，bind / set_visible 与转发页同款）+ 详情弹窗。备选传输 <code>direct-streamlocal</code> 转发 docker.sock（russh 0.65 已支持），留作二期开关。<br>
+        <b>文件管理</b>：bollard 的 archive 三件套（<code>get_container_archive_info</code> HEAD stat / <code>download_from_container</code> GET tar / <code>upload_to_container</code> PUT tar）+ exec 列举 —— 停止的容器也能浏览与传输；版式、本地落盘与编辑器复用 SFTP 面板基建。
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
