@@ -473,6 +473,21 @@ docker.detail.basic:
 docker.detail.id:
   en: Container ID
   zh-CN: 容器 ID
+docker.detail.name:
+  en: Container name
+  zh-CN: 容器名
+docker.detail.image:
+  en: Image
+  zh-CN: 镜像
+docker.detail.copy_id:
+  en: Copy container ID
+  zh-CN: 复制容器 ID
+docker.detail.copy_name:
+  en: Copy container name
+  zh-CN: 复制容器名
+docker.detail.copy_image:
+  en: Copy image
+  zh-CN: 复制镜像
 docker.detail.command:
   en: Command
   zh-CN: 命令

@@ -14,16 +14,17 @@ use std::rc::Rc;
 use futures::StreamExt;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
-    WindowExt as _,
+    VirtualListScrollHandle, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent, PanelId, TabGroup},
-    h_flex, v_flex,
+    scroll::{Scrollbar, ScrollbarMode},
+    h_flex, v_flex, v_virtual_list,
 };
 use gpui_kit::{
     AnyElement, App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
-    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Task, WeakEntity,
-    Window, div, prelude::FluentBuilder as _, px,
+    SharedString, Size, StatefulInteractiveElement as _, Styled as _, Task, WeakEntity,
+    Window, div, prelude::FluentBuilder as _, px, size,
 };
 
 use crate::docker::{
@@ -46,6 +47,8 @@ const LOG_TAIL: &str = "200";
 /// 文件行定高。
 const FILE_ROW_HEIGHT: gpui_kit::Pixels = px(30.);
 const FILE_GROUP: &str = "docker-file-row";
+/// 日志行定高：虚拟列表按它排位，日志再长也只画看得见的几行。
+const LOG_ROW_HEIGHT: gpui_kit::Pixels = px(18.);
 
 /// 详情标签页当前看哪一段。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -74,7 +77,9 @@ pub struct DockerContainerPanel {
     follow: bool,
     timestamps: bool,
     log_pump: Option<Task<()>>,
-    log_scroll: ScrollHandle,
+    log_scroll: VirtualListScrollHandle,
+    /// 日志虚拟列表的行高表，长度跟着 [`Self::logs`]（见 [`Self::sync_log_sizes`]）。
+    log_sizes: Rc<Vec<Size<gpui_kit::Pixels>>>,
     // stats
     stats_pump: Option<Task<()>>,
     // 文件
@@ -116,7 +121,8 @@ impl DockerContainerPanel {
             follow: true,
             timestamps: true,
             log_pump: None,
-            log_scroll: ScrollHandle::new(),
+            log_scroll: VirtualListScrollHandle::new(),
+            log_sizes: Rc::new(Vec::new()),
             stats_pump: None,
             cwd: "/".to_owned(),
             files: Vec::new(),
@@ -256,6 +262,13 @@ impl DockerContainerPanel {
         if self.logs.len() > MAX_LOG_LINES {
             let excess = self.logs.len() - MAX_LOG_LINES;
             self.logs.drain(..excess);
+        }
+    }
+
+    /// 日志虚拟列表的行高表跟上行数。行高固定，只有长度会变。
+    fn sync_log_sizes(&mut self) {
+        if self.log_sizes.len() != self.logs.len() {
+            self.log_sizes = Rc::new(vec![size(px(0.), LOG_ROW_HEIGHT); self.logs.len()]);
         }
     }
 
@@ -609,12 +622,12 @@ impl DockerContainerPanel {
 
     // ─── 渲染 ───────────────────────────────────────────────────────────────
 
-    /// 副标题行：镜像 · 主机 · 创建于（设计图名字下面那一行）。
+    /// 副标题行：主机 · 创建于（设计图名字下面那一行）。
     fn subtitle(&self) -> String {
         match self.detail.as_ref() {
+            // 镜像、名字、ID 都在「基本信息」里了，这一行只留主机与创建时间。
             Some(d) => format!(
-                "{} · {} · {} {}",
-                d.image,
+                "{} · {} {}",
                 self.host.name,
                 t!("docker.detail.created"),
                 short_time(d.created),
@@ -708,7 +721,7 @@ impl DockerContainerPanel {
             .on_click(cx.listener(move |this, _, window, cx| this.set_tab(tab, window, cx)))
     }
 
-    fn render_overview(&self, cx: &App) -> AnyElement {
+    fn render_overview(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(detail) = self.detail.clone() else {
             return div().p_4().text_sm().text_color(palette::idle(cx)).child("…").into_any_element();
         };
@@ -720,7 +733,40 @@ impl DockerContainerPanel {
             .gap_3()
             .p_4()
             .child(section_label(t!("docker.detail.basic"), cx))
-            .child(kv_row(t!("docker.detail.id"), detail.id.clone(), cx))
+            .child(kv_copy_row(
+                t!("docker.detail.name"),
+                detail.name.clone(),
+                copy_value_button(
+                    "docker-detail-copy-name",
+                    detail.name.clone(),
+                    SharedString::from(t!("docker.detail.copy_name")),
+                    cx,
+                ),
+                cx,
+            ))
+            .child(kv_copy_row(
+                t!("docker.detail.id"),
+                detail.id.clone(),
+                // 显示的是短 ID，复制的是完整 ID —— 短 ID 补不出全的。
+                copy_value_button(
+                    "docker-detail-copy-id",
+                    detail.full_id.clone(),
+                    SharedString::from(t!("docker.detail.copy_id")),
+                    cx,
+                ),
+                cx,
+            ))
+            .child(kv_copy_row(
+                t!("docker.detail.image"),
+                detail.image.clone(),
+                copy_value_button(
+                    "docker-detail-copy-image",
+                    detail.image.clone(),
+                    SharedString::from(t!("docker.detail.copy_image")),
+                    cx,
+                ),
+                cx,
+            ))
             .child(kv_row(t!("docker.detail.command"), detail.command.clone(), cx))
             .child(kv_row(t!("docker.detail.restart_policy"), detail.restart_policy.clone(), cx))
             .child(kv_row(t!("docker.detail.working_dir"), detail.working_dir.clone(), cx))
@@ -1041,7 +1087,7 @@ impl DockerContainerPanel {
             .into_any_element()
     }
 
-    fn render_logs(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_logs(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let toolbar = h_flex()
             .flex_shrink_0()
             .items_center()
@@ -1093,37 +1139,45 @@ impl DockerContainerPanel {
                     })),
             );
 
-        let lines: Vec<AnyElement> = self
-            .logs
-            .iter()
-            .map(|line| {
-                div()
-                    .text_color(if line.stderr { palette::amber() } else { cx.theme().foreground })
-                    .child(line.text.clone())
-                    .into_any_element()
-            })
-            .collect();
-
-        if self.follow {
+        self.sync_log_sizes();
+        // 贴底才自动跟到底，用户把滚动条往上拖去看旧日志时，
+        // 新行进来别再把他拽回底部。
+        let at_bottom = log_at_bottom(self.log_scroll.offset().y, self.log_scroll.max_offset().y);
+        if self.follow && at_bottom {
             self.log_scroll.scroll_to_bottom();
         }
 
+        let sizes = self.log_sizes.clone();
         v_flex()
             .size_full()
             .child(toolbar)
             .child(
                 div()
                     .id("docker-logs-body")
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.log_scroll)
                     .bg(cx.theme().background)
-                    .p_3()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_size(px(11.))
-                    .line_height(px(18.))
-                    .children(lines),
+                    // 日志行可能成千上万，只画看得见的那几十行。
+                    .child(
+                        v_virtual_list(
+                            cx.entity(),
+                            "docker-log-rows",
+                            sizes,
+                            |this, visible, _, cx| {
+                                visible.map(|ix| this.render_log_row(ix, cx)).collect()
+                            },
+                        )
+                        .size_full()
+                        .track_scroll(&self.log_scroll),
+                    )
+                    // 日志一直在流，滚动条按"滚动时才出现"会跟着新行一闪一闪；
+                    // 这里定成常显，随时能拖。
+                    .child(
+                        Scrollbar::vertical(&self.log_scroll)
+                            .id("docker-logs-scrollbar")
+                            .mode(ScrollbarMode::Always),
+                    ),
             )
             .child(
                 div()
@@ -1138,6 +1192,36 @@ impl DockerContainerPanel {
             )
             .into_any_element()
     }
+
+    /// 一行日志：定高单行，超宽截断 —— 虚拟列表要求每行知道自己多高。
+    fn render_log_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(line) = self.logs.get(ix) else {
+            return div().h(LOG_ROW_HEIGHT).into_any_element();
+        };
+        div()
+            .h(LOG_ROW_HEIGHT)
+            .w_full()
+            .px_3()
+            .truncate()
+            .font_family(cx.theme().mono_font_family.clone())
+            .text_size(px(11.))
+            .line_height(LOG_ROW_HEIGHT)
+            .text_color(if line.stderr {
+                palette::amber()
+            } else {
+                cx.theme().foreground
+            })
+            .child(line.text.clone())
+            .into_any_element()
+    }
+}
+
+/// 滚动视图是否已经贴在底部。
+///
+/// gpui 的滚动 offset 非正（往下滚越来越负），贴底时正好是 `-max_offset`；
+/// 留 2px 容差吸收排版取整。服务详情的日志页也用它。
+pub(super) fn log_at_bottom(offset_y: gpui_kit::Pixels, max_offset_y: gpui_kit::Pixels) -> bool {
+    offset_y <= px(2.) - max_offset_y
 }
 
 fn stat_cell(label: impl Into<SharedString>, value: String, cx: &App) -> impl IntoElement {
@@ -1359,6 +1443,49 @@ fn kv_row(key: impl Into<SharedString>, value: impl Into<SharedString>, cx: &App
         )
 }
 
+/// 可复制的一行（容器名、容器 ID）：复制按钮紧跟在值后面，与草图一致；
+/// 值太长时先截断值，按钮不被挤走。
+fn kv_copy_row(
+    key: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+    button: impl IntoElement,
+    cx: &App,
+) -> impl IntoElement {
+    h_flex()
+        .items_center()
+        .gap_2()
+        .text_size(px(12.))
+        .child(div().w(px(88.)).flex_shrink_0().text_color(palette::idle(cx)).child(key.into()))
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .font_family(cx.theme().mono_font_family.clone())
+                .text_color(cx.theme().foreground)
+                .child(value.into()),
+        )
+        .child(div().flex_shrink_0().child(button))
+        .child(div().flex_1())
+}
+
+/// 值旁边那颗复制按钮：写剪贴板并弹一条"已复制"。
+fn copy_value_button(
+    id: &'static str,
+    value: SharedString,
+    tooltip: SharedString,
+    cx: &mut Context<DockerContainerPanel>,
+) -> Button {
+    Button::new(id)
+        .ghost()
+        .xsmall()
+        .icon(Icon::new(IconName::Copy).with_size(px(12.)))
+        .tooltip(tooltip)
+        .on_click(cx.listener(move |_, _, window, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
+            window.push_notification(SharedString::from(t!("docker.notify.copied")), cx);
+        }))
+}
+
 fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = bytes as f64;
@@ -1493,3 +1620,7 @@ impl Panel for DockerContainerPanel {
         false
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/ui/panels/docker_container.rs"]
+mod tests;

@@ -5,6 +5,7 @@
 //! 全部交给 [`gpui_kit::component::menu`]。
 
 mod desktop_session_menu;
+mod docker_container_menu;
 mod editor_encoding_menu;
 mod execution_mode_menu;
 mod host_menu;
@@ -16,6 +17,9 @@ mod terminal_menu;
 mod thinking_effort_menu;
 
 pub use desktop_session_menu::{DesktopSessionAction, DesktopSessionKind, DesktopSessionMenu};
+pub use docker_container_menu::{
+    DockerContainerAction, DockerContainerActionHandler, DockerContainerMenu,
+};
 pub use editor_encoding_menu::{EditorEncodingMenu, TextEncoding};
 pub use execution_mode_menu::{ExecutionMode, ExecutionModeMenu};
 pub use host_menu::{HostAction, HostActionHandler, HostMenu};

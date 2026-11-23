@@ -9,18 +9,20 @@ use std::rc::Rc;
 use futures::StreamExt;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
-    WindowExt as _,
+    VirtualListScrollHandle, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent, PanelId, TabGroup},
-    h_flex, v_flex,
+    scroll::{Scrollbar, ScrollbarMode},
+    h_flex, v_flex, v_virtual_list,
 };
 use gpui_kit::{
     AnyElement, App, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Size,
     StatefulInteractiveElement as _, Styled as _, Task, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px,
+    prelude::FluentBuilder as _, px, size,
 };
 
+use super::docker_container::log_at_bottom;
 use crate::docker::{ServiceDetail, ServiceMode, TaskSummary, task_state_tone};
 use crate::service::DockerService;
 use crate::ui::{
@@ -31,6 +33,8 @@ use rust_i18n::t;
 
 const MAX_LOG_LINES: usize = 2000;
 const LOG_TAIL: &str = "200";
+/// 日志行定高：虚拟列表按它排位，日志再长也只画看得见的几行。
+const LOG_ROW_HEIGHT: gpui_kit::Pixels = px(18.);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ServiceTab {
@@ -51,7 +55,9 @@ pub struct DockerServicePanel {
     follow: bool,
     timestamps: bool,
     log_pump: Option<Task<()>>,
-    log_scroll: ScrollHandle,
+    log_scroll: VirtualListScrollHandle,
+    /// 日志虚拟列表的行高表，长度跟着 [`Self::logs`]（见 [`Self::sync_log_sizes`]）。
+    log_sizes: Rc<Vec<Size<gpui_kit::Pixels>>>,
     error: Option<SharedString>,
     focus_handle: FocusHandle,
     group: Option<WeakEntity<TabGroup>>,
@@ -77,7 +83,8 @@ impl DockerServicePanel {
             follow: true,
             timestamps: true,
             log_pump: None,
-            log_scroll: ScrollHandle::new(),
+            log_scroll: VirtualListScrollHandle::new(),
+            log_sizes: Rc::new(Vec::new()),
             error: None,
             focus_handle: cx.focus_handle(),
             group: None,
@@ -175,6 +182,13 @@ impl DockerServicePanel {
                 }
             }
         }));
+    }
+
+    /// 日志虚拟列表的行高表跟上行数。行高固定，只有长度会变。
+    fn sync_log_sizes(&mut self) {
+        if self.log_sizes.len() != self.logs.len() {
+            self.log_sizes = Rc::new(vec![size(px(0.), LOG_ROW_HEIGHT); self.logs.len()]);
+        }
     }
 
     fn act_scale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -465,7 +479,7 @@ impl DockerServicePanel {
             .into_any_element()
     }
 
-    fn render_logs(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_logs(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let toolbar = h_flex()
             .flex_shrink_0()
             .items_center()
@@ -504,35 +518,66 @@ impl DockerServicePanel {
                     .icon(Icon::new(IconName::Copy).with_size(px(12.)))
                     .on_click(cx.listener(|this, _, _, cx| this.copy_logs(cx))),
             );
-        let lines: Vec<AnyElement> = self
-            .logs
-            .iter()
-            .map(|l| {
-                div()
-                    .text_color(if l.stderr { palette::amber() } else { cx.theme().foreground })
-                    .child(l.text.clone())
-                    .into_any_element()
-            })
-            .collect();
-        if self.follow {
+        self.sync_log_sizes();
+        // 贴底才自动跟到底，用户把滚动条往上拖去看旧日志时，
+        // 新行进来别再把他拽回底部。
+        let at_bottom = log_at_bottom(self.log_scroll.offset().y, self.log_scroll.max_offset().y);
+        if self.follow && at_bottom {
             self.log_scroll.scroll_to_bottom();
         }
+        let sizes = self.log_sizes.clone();
         v_flex()
             .size_full()
             .child(toolbar)
             .child(
                 div()
                     .id("docker-svc-logs-body")
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.log_scroll)
-                    .p_3()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_size(px(11.))
-                    .line_height(px(18.))
-                    .children(lines),
+                    // 日志行可能成千上万，只画看得见的那几十行。
+                    .child(
+                        v_virtual_list(
+                            cx.entity(),
+                            "docker-svc-log-rows",
+                            sizes,
+                            |this, visible, _, cx| {
+                                visible.map(|ix| this.render_log_row(ix, cx)).collect()
+                            },
+                        )
+                        .size_full()
+                        .track_scroll(&self.log_scroll),
+                    )
+                    // 日志一直在流，滚动条按"滚动时才出现"会跟着新行一闪一闪；
+                    // 这里定成常显，随时能拖。
+                    .child(
+                        Scrollbar::vertical(&self.log_scroll)
+                            .id("docker-svc-logs-scrollbar")
+                            .mode(ScrollbarMode::Always),
+                    ),
             )
+            .into_any_element()
+    }
+
+    /// 一行日志：定高单行，超宽截断 —— 虚拟列表要求每行知道自己多高。
+    fn render_log_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(line) = self.logs.get(ix) else {
+            return div().h(LOG_ROW_HEIGHT).into_any_element();
+        };
+        div()
+            .h(LOG_ROW_HEIGHT)
+            .w_full()
+            .px_3()
+            .truncate()
+            .font_family(cx.theme().mono_font_family.clone())
+            .text_size(px(11.))
+            .line_height(LOG_ROW_HEIGHT)
+            .text_color(if line.stderr {
+                palette::amber()
+            } else {
+                cx.theme().foreground
+            })
+            .child(line.text.clone())
             .into_any_element()
     }
 }

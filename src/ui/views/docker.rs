@@ -12,9 +12,11 @@ use std::rc::Rc;
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputState},
+    menu::ContextMenuExt as _,
     v_flex,
 };
 use gpui_kit::{
@@ -34,6 +36,7 @@ use crate::ssh::SshSession;
 use crate::ui::{
     Workspace,
     dialogs::{DockerConfirmDialog, DockerPullDialog},
+    menus::{DockerContainerAction, DockerContainerActionHandler, DockerContainerMenu},
     panels::{DockerContainerPanel, DockerNodePanel, DockerServicePanel},
     theme::{AppIcon, palette},
     views::{SessionTool, right_collapse_button, session_tool_header},
@@ -261,7 +264,8 @@ impl DockerView {
 
     fn filtered_containers(&self, cx: &App) -> Vec<ContainerSummary> {
         let query = self.query(cx);
-        self.containers
+        let mut containers: Vec<ContainerSummary> = self
+            .containers
             .iter()
             .filter(|c| match self.filter {
                 ContainerFilter::All => true,
@@ -275,7 +279,15 @@ impl DockerView {
                     || c.ports.iter().any(|p| p.host_port.to_string().contains(&query))
             })
             .cloned()
-            .collect()
+            .collect();
+        // 运行中排前面，暂停的次之，停着的垫底；同一档里保持 Docker 返回的
+        // 顺序（`sort_by_key` 是稳定排序）。
+        containers.sort_by_key(|c| match c.state {
+            ContainerState::Running | ContainerState::Restarting => 0,
+            ContainerState::Paused => 1,
+            _ => 2,
+        });
+        containers
     }
 
     fn filtered_images(&self, cx: &App) -> Vec<ImageSummary> {
@@ -824,6 +836,18 @@ impl DockerView {
         let name_for_logs = name.clone();
         let name_for_shell = name.clone();
         let name_for_remove = name.clone();
+        let copy_handler: DockerContainerActionHandler = {
+            let full_id = c.full_id.clone();
+            let name = c.name.clone();
+            Rc::new(move |action, window, cx| {
+                let value = match action {
+                    DockerContainerAction::CopyId => &full_id,
+                    DockerContainerAction::CopyName => &name,
+                };
+                cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
+                window.push_notification(SharedString::from(t!("docker.notify.copied")), cx);
+            })
+        };
 
         div()
             .id(SharedString::from(format!("docker-container-{}", c.id)))
@@ -938,6 +962,8 @@ impl DockerView {
                         )
                     }),
             )
+            // 右键菜单挂在整行上，所以摆在链子最后 —— 它包住上面这一整个元素。
+            .context_menu(DockerContainerMenu::items(Some(copy_handler)))
             .into_any_element()
     }
 
