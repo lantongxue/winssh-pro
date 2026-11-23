@@ -148,6 +148,10 @@ fn main() {
         // 全局代理要在第一条会话建起来之前就位：开窗之后主机面板上点一下就
         // 可能开始拨号，那时候再去读库已经晚了（见 `SettingService::prime`）。
         service::SettingService::open().prime();
+        // 挑过的界面主题这会儿才灌进缓存：赶在第一扇窗之前写进主题，
+        // 没挑过就留着 ui::init 按系统深浅摆好的出厂档（见 ui::theme::selection）。
+        // 先主题后字体 —— 主题文件若带了字体字段，用户的字体偏好该压过它。
+        ui::apply_theme_preference(cx);
         // 界面字体的用户偏好这会儿才灌进缓存：赶在第一扇窗之前经主题写下去，
         // 没挑过就留着 ui::init 挑的平台默认（见 ui::theme::font）。
         ui::apply_font_preference(cx);

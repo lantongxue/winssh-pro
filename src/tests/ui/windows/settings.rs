@@ -1,5 +1,38 @@
 use super::*;
 
+/// 挑过主题之后通用页也要画得通：主题那一行的触发行按当前主题取色、写名字，
+/// 那条路只有真的画一遍才走得到。
+///
+/// 只动进程里那两份缓存（主题名与主题本身），不碰服务层 —— 界面测试不该去开
+/// 用户那座真库。
+#[gpui_kit::test]
+fn the_general_page_draws_with_a_theme_picked(cx: &mut gpui_kit::TestAppContext) {
+    let _guard = crate::service::ui_theme::exclusive_for_test();
+    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        crate::ui::theme::selection::init(cx);
+        crate::service::ui_theme::set_global(SharedString::from("Gruvbox Dark"));
+        crate::ui::apply_theme_preference(cx);
+    });
+
+    let (shell, cx) = cx.add_window_view(SettingsWindow::new);
+    shell.update(cx, |shell, cx| shell.set_tab(SettingsTab::General, cx));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    // 第二帧走的不是同一条路：元素状态、焦点都只有这一帧才读得到。
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    assert_eq!(
+        crate::service::ui_theme::global().as_ref(),
+        "Gruvbox Dark",
+        "画一遍不该改掉它"
+    );
+    assert_eq!(
+        cx.read(|cx| cx.theme().theme_name().clone()).as_ref(),
+        "Gruvbox Dark",
+        "主题本身也不该被画一遍改掉"
+    );
+}
+
 #[gpui_kit::test]
 fn fps_monitor_global_state_sync(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);

@@ -41,6 +41,7 @@ mod workspace;
 pub use dialogs::UpdateDialog;
 pub use theme::appearance::observe as observe_appearance;
 pub use theme::font::apply_saved as apply_font_preference;
+pub use theme::selection::apply_saved as apply_theme_preference;
 pub use workspace::Workspace;
 
 use gpui_kit::component::dock::{ClosePanel, ToggleZoom};
@@ -86,6 +87,9 @@ const RDP: &str = "RdpPanel";
 
 /// 注册主窗口的快捷键与初始外观，必须在 `gpui_kit::init` 之后调用。
 pub fn init(cx: &mut App) {
+    // 内置主题先灌进注册表：设置页与启动时那份用户偏好都要按名字去里面找。
+    // 排在 `appearance::init` 之前 —— 它之后就开始按系统深浅应用主题了。
+    theme::selection::init(cx);
     theme::appearance::init(cx);
     // 界面字体赶在第一帧之前定下来（Windows 雅黑 / macOS 苹方，见模块文档）。
     theme::font::init(cx);

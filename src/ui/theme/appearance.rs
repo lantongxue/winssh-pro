@@ -6,7 +6,9 @@
 //! 这份订阅同时让运行中的系统深浅切换生效 —— 直到用户在设置里手动指定主题为止，
 //! 手动选择之后系统不再覆盖它。
 
-use gpui_kit::component::{Theme, ThemeMode};
+use std::rc::Rc;
+
+use gpui_kit::component::{Theme, ThemeConfig, ThemeMode, ThemeRegistry};
 use gpui_kit::{App, Subscription, Window};
 
 /// 主题是否仍跟随系统。用户在设置里手动切换主题后置为 `false`。
@@ -41,8 +43,47 @@ pub fn set_theme_mode(mode: ThemeMode, window: Option<&mut Window>, cx: &mut App
     }
 }
 
+/// 应用一套主题文件：立即生效，并从此不再跟随系统。
+///
+/// `sibling` 是同一套主题里另一明暗档的那一份（配对规则见
+/// [`super::selection`]）。它只登记进主题的另一格，不参与这一帧的取色 ——
+/// 之后"深色主题"开关在两者之间切时，切换出来的还是同一套的另一个变体。
+///
+/// 主题每次重建都会落回默认值，所以和 [`set_theme_mode`] 一样补一次
+/// [`override_colors`]；重画窗口由 `Theme::update` 一并做掉。
+pub fn apply_theme(config: Rc<ThemeConfig>, sibling: Option<Rc<ThemeConfig>>, cx: &mut App) {
+    cx.set_global(FollowSystemAppearance(false));
+    Theme::update(cx, |theme| {
+        theme.apply_config(&config);
+        if let Some(sibling) = sibling {
+            match sibling.mode.is_dark() {
+                true => theme.dark_theme = sibling,
+                false => theme.light_theme = sibling,
+            }
+        }
+    });
+    override_colors(cx);
+}
+
+/// 回到出厂档：两档都换回组件库的默认主题，并按系统深浅重新跟随系统。
+///
+/// 设置页那个"恢复默认"走这一条。直接 `Theme::change` 不行 —— 它加载的是
+/// 当前那一格里登记的主题，而用户挑过的主题正躺在那一格里。
+pub fn reset_theme(cx: &mut App) {
+    cx.set_global(FollowSystemAppearance(true));
+    let light = ThemeRegistry::global(cx).default_light_theme().clone();
+    let dark = ThemeRegistry::global(cx).default_dark_theme().clone();
+    Theme::update(cx, |theme| {
+        theme.light_theme = light;
+        theme.dark_theme = dark;
+    });
+    // 换完两格再按系统深浅重新加载一次，把颜色也换回出厂档。
+    Theme::sync_system_appearance(None, cx);
+    override_colors(cx);
+}
+
 /// 改掉组件库主题里与产品读法不符的取值。主题每次重建都会落回默认值，
-/// 所以上面三个入口后面都要补一次。
+/// 所以上面每个会应用主题的入口后面都要补一次。
 ///
 /// 只动表格的选中行：组件库只认一个"光标行"，给它叠一层底色加一圈框。可 SFTP
 /// 两栏是能多选的文件列表（选中集归面板自己管，行底色由
@@ -61,7 +102,8 @@ fn override_colors(cx: &mut App) {
     theme.tokens.table_active_border = theme.tokens.table_row_border;
 }
 
-fn follows_system(cx: &App) -> bool {
+/// 现在是不是仍跟着系统深浅走。设置页的主题选择器拿它决定"取消"时怎么还原。
+pub fn follows_system(cx: &App) -> bool {
     cx.try_global::<FollowSystemAppearance>()
         .is_some_and(|follow| follow.0)
 }

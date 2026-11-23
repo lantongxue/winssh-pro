@@ -96,6 +96,33 @@
         });
     }
 
+    /// 界面主题存的是主题名那一个词，走它自己那一行与缓存。
+    #[test]
+    fn the_ui_theme_round_trips_into_its_own_row() {
+        let _guard = ui_theme::exclusive_for_test();
+        db::runtime().block_on(async {
+            let service = SettingService::in_memory().await.unwrap();
+            assert_eq!(
+                service.load_ui_theme().await.unwrap(),
+                "",
+                "没写过就是跟随系统"
+            );
+
+            let picked = SharedString::from("Catppuccin Mocha");
+            service.save_ui_theme(picked.clone()).await.unwrap();
+            assert_eq!(service.load_ui_theme().await.unwrap(), picked);
+            assert_eq!(ui_theme::global(), picked, "缓存也一起换了");
+
+            // 恢复默认存的是空串：下次启动回到跟随系统。
+            service
+                .save_ui_theme(SharedString::default())
+                .await
+                .unwrap();
+            assert_eq!(service.load_ui_theme().await.unwrap(), "");
+            assert_eq!(ui_theme::global(), SharedString::default());
+        });
+    }
+
     /// 配色存的是 id 那一个词。认不出来的存进去也要规范化成空串，
     /// 不然下次启动还要再认一次、再记一行日志。
     #[test]

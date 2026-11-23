@@ -58,6 +58,7 @@ use crate::ui::cards::ProviderCard;
 use crate::ui::dialogs::{BackupRestoreDialog, UpdateDialog};
 use crate::ui::forms::{ModelCancelHandler, ModelForm, ModelSavedHandler};
 use crate::ui::pickers::scheme_picker::{SchemePicker, SchemePickerOptions, scheme_trigger};
+use crate::ui::pickers::theme_picker::{ThemePicker, ThemePickerOptions, theme_trigger};
 use crate::ui::theme::{AppIcon, appearance, font as theme_font, palette};
 use crate::zmodem::config as zmodem_config;
 use rust_i18n::t;
@@ -170,6 +171,36 @@ pub fn persist_assistant_config(config: AssistantConfig, cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// 换掉界面主题名并落库。
+///
+/// 不再重新应用主题：选的时候已经经 [`ThemePicker`] 应用过了（预览即界面），
+/// 这里只管"下次启动还记不记得"。缓存先换，理由同 [`persist_proxy`]；
+/// 空串是"恢复默认"（下次启动跟随系统、用组件库出厂主题）。
+fn persist_ui_theme(name: SharedString, cx: &mut App) {
+    crate::service::ui_theme::set_global(name.clone());
+    cx.background_spawn(async move {
+        if let Err(error) = SettingService::open().save_ui_theme(name).await {
+            log::error!("界面主题存不下去：{error:#}");
+        }
+    })
+    .detach();
+}
+
+/// 打开界面主题选择器：左栏一列可搜索的主题（明暗分节），点选即在整个界面上
+/// 预览（见 [`crate::ui::pickers::theme_picker`]）。
+///
+/// 只有"确定"会走到 [`persist_ui_theme`]；取消那几条路把主题还原成打开那一刻。
+fn open_theme_picker(window: &mut Window, cx: &mut App) {
+    ThemePicker::open(
+        ThemePickerOptions {
+            current: cx.theme().theme_name().clone(),
+            on_confirm: Rc::new(|name, _window, cx| persist_ui_theme(name, cx)),
+        },
+        window,
+        cx,
+    );
 }
 
 /// 换掉终端配色方案并落库。缓存立刻生效、重画所有窗口、落库派到后台，
@@ -1055,6 +1086,22 @@ impl SettingsWindow {
             .group(
                 SettingGroup::new()
                     .title(t!("settings.appearance"))
+                    .item(SettingItem::new(
+                        t!("settings.theme"),
+                        // 三十来套主题摆不平一列下拉，所以这一格只摆一条触发行
+                        // （当前主题的色板、名字与色点），点开才是那个明暗分节、
+                        // 可搜索、点选即预览的选择器（见
+                        // [`crate::ui::pickers::theme_picker`]）。
+                        SettingField::render(|_options, _window, cx: &mut App| {
+                            h_flex().w_full().justify_end().child(
+                                div().w(px(260.)).child(theme_trigger(
+                                    "settings-theme",
+                                    |_, window, cx| open_theme_picker(window, cx),
+                                    cx,
+                                )),
+                            )
+                        }),
+                    ))
                     .item(SettingItem::new(
                         t!("settings.dark_theme"),
                         SettingField::switch(

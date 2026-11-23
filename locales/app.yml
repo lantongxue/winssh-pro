@@ -848,6 +848,9 @@ settings.tab_about:
 settings.appearance:
   en: Appearance
   zh-CN: 外观
+settings.theme:
+  en: Theme
+  zh-CN: 界面主题
 settings.dark_theme:
   en: Dark theme
   zh-CN: 深色主题
@@ -902,6 +905,18 @@ scheme_picker.cancel:
 scheme_picker.hint_settings:
   en: Click a scheme to preview it here — nothing changes until you press OK.
   zh-CN: 点击方案仅预览，点击「确定」后应用。
+theme_picker.title:
+  en: App Theme
+  zh-CN: 界面主题
+theme_picker.reset:
+  en: Reset to default
+  zh-CN: 恢复默认
+theme_picker.hint:
+  en: Click a theme to preview it — press OK to keep it.
+  zh-CN: 点选即可预览，点「确定」保存。
+theme_picker.search:
+  en: Search themes…
+  zh-CN: 搜索主题…
 scheme_picker.hint_host_form:
   en: Pick one — it is saved together with the host.
   zh-CN: 选择后点击「确定」，随主机配置一并保存。

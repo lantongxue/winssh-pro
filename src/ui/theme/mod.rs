@@ -2,7 +2,8 @@
 //!
 //! 这个目录里没有组件，只有组件用来画自己的那套东西。分成三块：
 //!
-//! - [`appearance`]：深浅主题跟不跟随系统；
+//! - [`appearance`]：深浅主题跟不跟随系统、应用挑中的主题；
+//! - [`selection`]：内置主题的装载与配对（gpui-kit `themes/` 那 21 套）；
 //! - [`font`]：默认界面字体按平台挑（雅黑／苹方／gpui 默认）；
 //! - [`palette`]：主题给不出的品牌语义色与表面层级；
 //! - [`ansi`]：终端网格那一套 ANSI 配色；
@@ -13,5 +14,6 @@ pub mod appearance;
 pub mod font;
 pub mod icons;
 pub mod palette;
+pub mod selection;
 
 pub use icons::{AppIcon, OsIcon};

@@ -33,6 +33,7 @@ use crate::{
         scheme,
     },
     ui_font::{self, UiFont},
+    ui_theme,
     zmodem::config as zmodem_config,
 };
 
@@ -43,6 +44,9 @@ const TERMINAL_FONT_KEY: &str = "terminal.font";
 /// 全局界面字体在 `settings` 表里的键。存的是一份 JSON
 /// （[`crate::ui_font::UiFont`]）。
 const UI_FONT_KEY: &str = "ui.font";
+/// 挑中的界面主题在 `settings` 表里的键。存的是主题名那一个词，
+/// 空串是"没挑过"（跟随系统、用组件库出厂主题）。
+const UI_THEME_KEY: &str = "ui.theme";
 /// 终端配色方案在 `settings` 表里的键。存的是方案 id 那一个词。
 const TERMINAL_SCHEME_KEY: &str = "terminal.scheme";
 /// 智能助手供应商配置在 `settings` 表里的键。存的是一份 JSON。
@@ -114,6 +118,7 @@ impl SettingService {
                 this.load_update_preferences().await,
                 this.load_terminal_right_click().await,
                 this.load_ui_font().await,
+                this.load_ui_theme().await,
             )
         });
         match loaded.0 {
@@ -163,6 +168,10 @@ impl SettingService {
         match loaded.11 {
             Ok(picked) => ui_font::set_global(picked),
             Err(error) => log::warn!("界面字体读不出来，这次运行按平台默认处理：{error:#}"),
+        }
+        match loaded.12 {
+            Ok(name) => ui_theme::set_global(name),
+            Err(error) => log::warn!("界面主题读不出来，这次运行跟随系统深浅：{error:#}"),
         }
     }
 
@@ -241,6 +250,33 @@ impl SettingService {
         db::run(async move {
             this.repo
                 .set(&this.db, UI_FONT_KEY, &encoded)
+                .await
+                .map_err(Into::into)
+        })
+        .await
+    }
+
+    /// 库里挑中的界面主题名。没写过就是空串（跟随系统、用组件库出厂主题）。
+    pub async fn load_ui_theme(&self) -> Result<SharedString> {
+        let this = self.clone();
+        db::run(async move {
+            let raw = this.repo.get(&this.db, UI_THEME_KEY).await?;
+            Ok(ui_theme::decode(&raw.unwrap_or_default()))
+        })
+        .await
+    }
+
+    /// 写回挑中的界面主题名，并同时换掉进程里那份缓存。
+    ///
+    /// 缓存先换，理由同 [`Self::save_global_proxy`]。真正把它写进主题的是
+    /// 根包（`ui::theme::selection`）—— 服务层不认识界面类型。
+    pub async fn save_ui_theme(&self, name: SharedString) -> Result<()> {
+        ui_theme::set_global(name.clone());
+        let this = self.clone();
+        let encoded = ui_theme::encode(&name);
+        db::run(async move {
+            this.repo
+                .set(&this.db, UI_THEME_KEY, &encoded)
                 .await
                 .map_err(Into::into)
         })
