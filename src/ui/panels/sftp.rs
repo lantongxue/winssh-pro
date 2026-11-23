@@ -1119,9 +1119,10 @@ impl TableDelegate for RemoteTableDelegate {
 /// 底部这一栏 SFTP 面板。
 pub struct SftpPanel {
     host: Host,
-    /// 这条会话的远端文件通道 —— 上/backed by SFTP（SSH 子系统）、FTP / FTPS（suppaftp）
-    /// 或 S3（rust-s3），面板不再区分[`FileService`]。`None` 时右栏只有一个空状态
-    /// —— 本地 Shell 会话、或者还没连上，都不该画一张假的文件表。
+    /// 这条会话的远端文件通道 —— SFTP（SSH 子系统）、FTP / FTPS（suppaftp）、
+    /// S3（rust-s3）、WebDAV，或 WSL 发行版（`\\wsl.localhost` 共享），面板不再
+    /// 区分[`FileService`]。`None` 时右栏只有一个空状态 —— 本地 Shell 会话、
+    /// 或者还没连上，都不该画一张假的文件表。
     service: Option<FileService>,
     /// 这条会话的 SSH 连接（只有 SFTP 这一档有）。从这一栏打开的文件编辑
     /// 标签页要带着它：切到编辑页时，智能助手的"当前会话"仍停在这台机器上
@@ -3379,6 +3380,14 @@ impl SftpPanel {
         let before = self.host.favorites.clone();
         self.host.favorites = next.clone();
         cx.notify();
+
+        // WSL 会话没有库里那一行（它不是一个保存下来的主机），收藏夹只活在
+        // 这一栏的内存里：写库必然失败，回滚反而让用户觉得按钮坏了。同一扇
+        // 终端里这一栏是常驻的，收藏在本次会话里照常可用；也不必往外报
+        // `HostChanged`（那会让主机列表白回库一次）。
+        if matches!(self.service.as_ref(), Some(FileService::Wsl(_))) {
+            return;
+        }
 
         let host_id = self.host.id.to_string();
         let panel = cx.entity().downgrade();

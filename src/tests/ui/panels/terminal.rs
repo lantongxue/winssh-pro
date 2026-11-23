@@ -622,6 +622,21 @@
         run(cx, &pane, "再加 SFTP 栏");
     }
 
+    /// WSL 会话有文件栏（走 `\\wsl.localhost` 共享），但没有 SSH 才成立的那
+    /// 两颗工具（隧道、监控）—— 本机 Shell 两者都没有。
+    #[test]
+    fn wsl_gets_the_file_panel_but_not_the_ssh_only_tools() {
+        let wsl = Source::Wsl("Ubuntu-24.04".into());
+        assert!(wsl.has_file_panel());
+        assert!(!wsl.over_ssh());
+
+        assert!(Source::Ssh.has_file_panel());
+        assert!(Source::Ssh.over_ssh());
+
+        assert!(!Source::Local.has_file_panel());
+        assert!(!Source::Local.over_ssh());
+    }
+
     struct Harness {
         dock_area: Entity<gpui_kit::component::dock::DockArea>,
         panel: Entity<TerminalPanel>,

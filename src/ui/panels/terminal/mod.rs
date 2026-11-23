@@ -13,10 +13,14 @@
 //! chrome、右边的监控面板、底下的 SFTP 栏，以及分屏。分开的理由见那个模块的
 //! 文档 —— 一句话：选区、搜索、焦点这些东西是"每个终端一份"的。
 //!
-//! **一个标签页 = 一台主机上的一条 SSH 连接。** 分屏出来的第二个窗格走
+//! **SSH 标签页 = 一台主机上的一条 SSH 连接。** 分屏出来的第二个窗格走
 //! [`crate::ssh::SshConnection::open_shell`]，在同一条连接上再开一个 shell，
 //! 不重新拨号也不再认证一次；SFTP 与监控采集本来就是这么做的。所以标签页
 //! 关掉时两个窗格一起没，这也正是"同一台机器的两半"该有的语义。
+//!
+//! 本机 Shell 与 WSL 那两档没有 SSH 连接（见 [`Source`]）：字节源就是本机
+//! PTY。WSL 的文件栏不走 sftp 子系统，走 `\\wsl.localhost\<发行版>` 共享
+//! （见 `winssh_service::WslFileService`），但面板仍是同一个 [`SftpPanel`]。
 //!
 //! 分屏只有三档（单屏 / 上下 / 左右），不是任意布局 —— 取舍写在 [`split`]
 //! 的模块文档里。
@@ -155,18 +159,35 @@ enum Source {
 impl Source {
     /// 这条会话背后有没有一条 SSH 连接。
     ///
-    /// 决定信息栏右边那三颗按钮（端口转发、SFTP 面板、资源监控）和它们的
-    /// 快捷键在不在：三件事都是"在这条 SSH 连接上再开一条通道"做出来的
-    /// —— 隧道要 `direct-tcpip`，SFTP 要 sftp 子系统，监控要在对端跑采集
-    /// 脚本。本机 shell 没有连接可开，所以那三颗不画（点不动的控件比没有
-    /// 更让人困惑），三个动作也不注册：Alt+P/F/M 照旧作为转义序列进本机
-    /// shell，那才是本机 shell 里该有的行为。
+    /// 决定信息栏右边那两颗按钮（端口转发、资源监控）和它们的快捷键在不在：
+    /// 两件事都是"在这条 SSH 连接上再开一条通道"做出来的 —— 隧道要
+    /// `direct-tcpip`，监控要在对端跑采集脚本。本机 shell 没有连接可开，
+    /// 所以那两颗不画（点不动的控件比没有更让人困惑），动作也不注册：
+    /// Alt+M/P 照旧作为转义序列进本机 shell，那才是本机 shell 里该有的行为。
+    ///
+    /// 文件栏不归这一条管：WSL 没有 SSH 连接也有得管，见
+    /// [`Self::has_file_panel`]。
     fn over_ssh(&self) -> bool {
         match self {
             Self::Ssh => true,
             Self::Local | Self::Wsl(_) => false,
-            // 测试里那个壳按 SSH 会话算：整帧渲染那个测试要能走到那三颗按钮，
+            // 测试里那个壳按 SSH 会话算：整帧渲染那个测试要能走到那几颗按钮，
             // 它们各自都还有点亮/不点亮两条分支。
+            #[cfg(test)]
+            Self::Detached => true,
+        }
+    }
+
+    /// 这条会话有没有底部文件栏。
+    ///
+    /// SSH 有（sftp 子系统通道），WSL 也有 —— 走的是
+    /// `\\wsl.localhost\<发行版>` 那条共享，不是 SSH 通道，但对面板是同一套
+    /// 文件管理（列目录、上传下载、编辑、chmod 全都在）。本机 shell 没有
+    /// 可管理的"远端"，这一栏不画。
+    fn has_file_panel(&self) -> bool {
+        match self {
+            Self::Ssh | Self::Wsl(_) => true,
+            Self::Local => false,
             #[cfg(test)]
             Self::Detached => true,
         }
@@ -590,6 +611,20 @@ impl TerminalPanel {
             let sftp_panel = SftpPanel::new(host.clone(), window, cx);
             // 跨会话复制要从 Dock 里数出别的会话：宿主有这个弱句柄，面板没有。
             sftp_panel.update(cx, |panel, _| panel.bind_dock_area(dock_area.clone()));
+            // WSL 的文件栏不走 SSH：这一档的"远端"就是本机的 `\\wsl.localhost`
+            // 共享（见 `winssh_wslfs`），没有要拨的号，面板一建好就把服务接上。
+            // 展开那一栏时才真去列目录（`SftpPanel::set_open`）。
+            if let Source::Wsl(distro) = &source {
+                let service = crate::service::WslFileService::new(distro.to_string());
+                sftp_panel.update(cx, |panel, cx| {
+                    panel.attach(
+                        Some(crate::service::FileService::Wsl(service)),
+                        None,
+                        window,
+                        cx,
+                    )
+                });
+            }
             // 第一个窗格没有连接可借，SSH 那一档只能自己拨号；本机与 WSL
             // 那两档在 [`PaneOrigin`] 里各自带话。
             let origin = match &source {
@@ -2005,6 +2040,7 @@ impl Render for TerminalPanel {
         let history_open = self.shown_tool == Some(SessionTool::History);
         let split = self.split;
         let over_ssh = self.source.over_ssh();
+        let has_file_panel = self.source.has_file_panel();
         let has_history = self.history.is_some();
         // 库里有没有这台主机。信息栏上"命令历史"与"配色"那两颗都跟着它走
         // （`history` 是 `hosts` 的派生，见 [`Self::history`]），但分成两个
@@ -2021,11 +2057,14 @@ impl Render for TerminalPanel {
             // 按键归窗格自己收（它才知道是哪一个终端）。留在这一层的只有
             // 作用于整个标签页的那两个 —— 它们是从窗格那边冒上来的，
             // 所以焦点不在任何一个窗格里时压根不会走到这儿。
-            // 本机 shell 那一档三个都不接，见 [`Source::over_ssh`]。
+            // 本机 shell 那一档两个都不接，见 [`Source::over_ssh`]；文件栏另算，
+            // WSL 也接（它的文件不走 SSH，见 [`Source::has_file_panel`]）。
             .when(over_ssh, |this| {
                 this.on_action(cx.listener(Self::on_toggle_monitor))
-                    .on_action(cx.listener(Self::on_toggle_sftp))
                     .on_action(cx.listener(Self::on_toggle_forwards))
+            })
+            .when(has_file_panel, |this| {
+                this.on_action(cx.listener(Self::on_toggle_sftp))
             })
             // 历史那一颗跟着"库里有没有这台主机"走，不跟 `over_ssh` 走：
             // 本机 shell 没有主机记录，它那条外键无处可挂（见 `Self::history`）。
@@ -2043,17 +2082,13 @@ impl Render for TerminalPanel {
                 .on_split(cx.listener(move |this, layout: &SplitLayout, window, cx| {
                     this.set_split(*layout, window, cx);
                 }))
-                // 隧道、SFTP、监控只对 SSH 会话接：不接的那三颗信息栏不画。
-                // 隧道 / 监控那两颗 now 是"开右栏对应页"的入口，点亮跟着右栏走。
+                // 隧道 / 监控只对 SSH 会话接：不接的那两颗信息栏不画。
+                // 它们 now 是"开右栏对应页"的入口，点亮跟着右栏走。
                 .when(over_ssh, |bar| {
                     bar.tunnels_count(tunnels)
                         .forwards_active(forwards_open)
                         .on_tunnels(cx.listener(|this, _, window, cx| {
                             this.open_forwards(window, cx);
-                        }))
-                        .sftp_active(sftp_open)
-                        .on_sftp(cx.listener(|this, _, window, cx| {
-                            this.toggle_sftp(window, cx);
                         }))
                         .on_monitor(
                             monitor_open,
@@ -2061,6 +2096,13 @@ impl Render for TerminalPanel {
                                 this.request_tool(SessionTool::Monitor, window, cx);
                             }),
                         )
+                })
+                // 文件栏 SSH 与 WSL 都有（见 [`Source::has_file_panel`]）。
+                .when(has_file_panel, |bar| {
+                    bar.sftp_active(sftp_open)
+                        .on_sftp(cx.listener(|this, _, window, cx| {
+                            this.toggle_sftp(window, cx);
+                        }))
                 })
                 .when(has_history, |bar| {
                     bar.history_active(history_open)

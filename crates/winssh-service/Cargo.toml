@@ -32,6 +32,7 @@ winssh-monitor = { workspace = true }
 winssh-docker = { workspace = true }
 winssh-backup = { workspace = true }
 winssh-localfs = { workspace = true }
+winssh-wslfs = { workspace = true }
 winssh-netstats = { workspace = true }
 winssh-desktop = { workspace = true }
 winssh-updater = { workspace = true }

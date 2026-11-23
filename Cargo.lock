@@ -15245,6 +15245,7 @@ dependencies = [
  "winssh-terminal",
  "winssh-updater",
  "winssh-webdav",
+ "winssh-wslfs",
  "winssh-zmodem",
  "zip 9.5.1",
 ]
@@ -15377,6 +15378,18 @@ dependencies = [
  "url",
  "winssh-db",
  "winssh-domain",
+ "winssh-sftp",
+]
+
+[[package]]
+name = "winssh-wslfs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "rust-i18n",
+ "tokio",
+ "winssh-db",
  "winssh-sftp",
 ]
 

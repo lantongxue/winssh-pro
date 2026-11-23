@@ -700,15 +700,17 @@ impl SftpService {
 /// 搬运循环共用的那捆东西：任务身份、取消令牌、暂停开关与进度管子。
 ///
 /// 捆在一起传，`pump` 的参数表就不用长到需要竖着读。
-struct PumpCtx<'a> {
-    id: u64,
-    cancel: &'a CancellationToken,
-    pause: &'a Arc<PauseState>,
-    progress: &'a UnboundedSender<TransferEvent>,
+/// `pub(crate)`：WSL 那一档的文件服务（[`super::WslFileService`]）与本模块
+/// 共用同一条搬运循环 —— 两端都是本机句柄，只有"谁读谁写"不同。
+pub(crate) struct PumpCtx<'a> {
+    pub(crate) id: u64,
+    pub(crate) cancel: &'a CancellationToken,
+    pub(crate) pause: &'a Arc<PauseState>,
+    pub(crate) progress: &'a UnboundedSender<TransferEvent>,
 }
 
 /// 传输结束：把结果说成一个事件。取消不是失败，界面上是另一种颜色。
-fn report_done(
+pub(crate) fn report_done(
     progress: &UnboundedSender<TransferEvent>,
     id: u64,
     outcome: Result<()>,
@@ -1538,23 +1540,26 @@ async fn ensure_dir(session: &Arc<SftpSession>, target: &str) -> Result<()> {
 }
 
 /// 一次目录树上传摊平出来的计划。
+///
+/// `pub(crate)`：WSL 上传（[`super::WslFileService`]）的目标也是 POSIX 路径，
+/// 摊平一棵本地树这件事与 SFTP 一字不差，共用一份。
 #[derive(Default)]
-struct UploadPlan {
+pub(crate) struct UploadPlan {
     /// 要建的远端目录，外层在前。
-    dirs: Vec<String>,
-    files: Vec<UploadFile>,
+    pub(crate) dirs: Vec<String>,
+    pub(crate) files: Vec<UploadFile>,
 }
 
-struct UploadFile {
-    local: PathBuf,
-    remote: String,
-    size: u64,
+pub(crate) struct UploadFile {
+    pub(crate) local: PathBuf,
+    pub(crate) remote: String,
+    pub(crate) size: u64,
 }
 
 impl UploadPlan {
     /// 进度条的分母。它就是计划里这些文件的字节数之和，所以和实际会搬过去的字节
     /// 一定对得上 —— 不会出现"卡在 99%"的那种分母。
-    fn total_bytes(&self) -> u64 {
+    pub(crate) fn total_bytes(&self) -> u64 {
         self.files.iter().map(|file| file.size).sum()
     }
 }
@@ -1566,7 +1571,7 @@ impl UploadPlan {
 ///
 /// 顶层是用户自己挑的，跟着软链接走一步没问题；树**里面**的目录软链接跳过，
 /// 避免死循环或当成普通文件打开报错。普通文件的有效软链接按其指向内容搬运。
-fn plan_upload(local: &Path, remote_dir: &str) -> Result<UploadPlan> {
+pub(crate) fn plan_upload(local: &Path, remote_dir: &str) -> Result<UploadPlan> {
     let mut plan = UploadPlan::default();
     let root = remote_for(local, remote_dir)?;
 
@@ -1747,7 +1752,7 @@ async fn plan_download(
 }
 
 /// 子项的展示名（本地路径相对下载根目录的相对路径，如 `pkg/a/one`）。
-fn relative_local(file_local: &Path, local_root: &Path) -> String {
+pub(crate) fn relative_local(file_local: &Path, local_root: &Path) -> String {
     let fallback = file_local
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -1768,7 +1773,7 @@ fn relative_local(file_local: &Path, local_root: &Path) -> String {
 /// 就往里加，聚合进度报它的最新值，`total` 是整条传输的分母。
 /// `child` 是目录上传里正在搬的那个子项（序号与它自己的大小）：聚合进度
 /// 照旧报整棵树，子项进度只在这一份文件自己的范围内报。
-async fn pump<R, W>(
+pub(crate) async fn pump<R, W>(
     read: &mut R,
     write: &mut W,
     total: u64,
@@ -1845,7 +1850,7 @@ fn emit_progress(
 /// 子项的展示名：远端绝对路径剥掉目标目录后的相对路径（`pkg/a/one`），
 /// 带着上传目录自己的名字，一行能看出它是树里的哪一个。
 /// 树的走法保证了剥得掉；万一剥不掉，退回文件名本身。
-fn relative_remote(remote: &str, remote_dir: &str) -> String {
+pub(crate) fn relative_remote(remote: &str, remote_dir: &str) -> String {
     let name = path::file_name(remote).to_owned();
     match remote.strip_prefix(remote_dir) {
         Some(rest) if !rest.is_empty() => rest.trim_start_matches('/').to_owned(),
@@ -1854,7 +1859,7 @@ fn relative_remote(remote: &str, remote_dir: &str) -> String {
 }
 
 /// 用 `from` 顶掉 `to`：本地这边先删同名再改名（`rename` 在 Windows 上不覆盖）。
-fn replace_with(from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn replace_with(from: &Path, to: &Path) -> Result<()> {
     if to.exists() {
         std::fs::remove_file(to)
             .with_context(|| t!("sftp_err.overwrite_local", path => to.display()).to_string())?;
@@ -1871,7 +1876,7 @@ fn replace_with(from: &Path, to: &Path) -> Result<()> {
 
 /// 本地临时名：`.` 开头，列目录时不挡道，中途死了也一眼看得出它是什么。
 /// `id` 标识任务，多任务并发下载/上传同名文件时避免碰撞。
-fn part_path(local: &Path, id: Option<u64>) -> PathBuf {
+pub(crate) fn part_path(local: &Path, id: Option<u64>) -> PathBuf {
     let name = local
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -1883,7 +1888,7 @@ fn part_path(local: &Path, id: Option<u64>) -> PathBuf {
     local.with_file_name(part_name)
 }
 
-fn part_path_str(remote: &str, id: Option<u64>) -> String {
+pub(crate) fn part_path_str(remote: &str, id: Option<u64>) -> String {
     let name = path::file_name(remote);
     let directory = path::parent(remote);
     let part_name = match id {

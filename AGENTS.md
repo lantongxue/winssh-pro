@@ -56,7 +56,7 @@ alacritty）与 `vendor/`（各补丁副本）是落在本仓库目录树里的�
 ```
 domain ← tls / db ← repository ← 后端 (ssh · proxy · sftp · s3 · ftp · webdav ·
   serial · telnet · easytier · clash · broker-protocol · assistant · localfs ·
-  zmodem · terminal · desktop · netstats · vnc · rdp · backup · monitor)
+  wslfs · zmodem · terminal · desktop · netstats · vnc · rdp · backup · monitor)
   ← service ← 根包 (ui / tray / main)
 ```
 

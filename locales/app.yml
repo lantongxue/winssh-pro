@@ -5277,6 +5277,25 @@ sftp_err.move_into_place:
   en: Could not move %{from} into place as %{to}
   zh-CN: 将 %{from} 移动为 %{to} 失败
 
+# ── WSL 文件服务的错误 ───────────────────────────────────────────────────
+# WSL 发行版的根挂在 `\\wsl.localhost\<发行版>`（旧版本只有 `\\wsl$`）这条
+# Windows 共享上，文件动作走 `std::fs`，mode/属主由发行版里的 `find` 补齐。
+wslfs.err.unsupported:
+  en: WSL file access is only available on Windows
+  zh-CN: WSL 文件访问只在 Windows 上可用
+wslfs.err.distro_not_found:
+  en: 'Cannot reach WSL distro %{distro}: neither \\wsl.localhost nor \\wsl$ answered'
+  zh-CN: '连不上 WSL 发行版 %{distro}：\\wsl.localhost 与 \\wsl$ 都没有响应'
+wslfs.err.spawn:
+  en: 'Could not start WSL (%{distro})'
+  zh-CN: '启动 WSL（%{distro}）失败'
+wslfs.err.command_failed:
+  en: 'Running %{command} inside WSL %{distro} failed: %{message}'
+  zh-CN: '在 WSL %{distro} 里运行 %{command} 失败：%{message}'
+wslfs.err.interrupted:
+  en: The WSL file task was interrupted
+  zh-CN: WSL 文件任务被中断
+
 # ── 主机配置服务 ─────────────────────────────────────────────────────────
 host_service.no_data_dir:
   en: Could not find the user data directory

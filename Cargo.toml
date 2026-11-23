@@ -76,6 +76,7 @@ winssh-proxy = { path = "crates/winssh-proxy" }
 winssh-ssh = { path = "crates/winssh-ssh" }
 winssh-sftp = { path = "crates/winssh-sftp" }
 winssh-localfs = { path = "crates/winssh-localfs" }
+winssh-wslfs = { path = "crates/winssh-wslfs" }
 winssh-s3 = { path = "crates/winssh-s3" }
 winssh-serial = { path = "crates/winssh-serial" }
 winssh-telnet = { path = "crates/winssh-telnet" }

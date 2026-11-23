@@ -22,28 +22,35 @@ use anyhow::Result;
 use crate::sftp::FileEntry;
 
 use super::{
-    FtpService, S3Service, SftpService, WebdavService,
+    FtpService, S3Service, SftpService, WebdavService, WslFileService,
     sftp_service::{TransferEvent, TransferHandle, TransferJob},
 };
 use tokio::sync::mpsc::UnboundedSender;
 
-/// `HostKind::Sftp` 或 `HostKind::Ftp` 主机都能为面板提供的同一份服务。
+/// 一台主机 / 一条会话能为底部文件栏提供的同一份服务。
+///
+/// 前四档来自保存下来的主机（SFTP / FTP / S3 / WebDAV）；`Wsl` 不是主机，
+/// 是 WSL 终端标签页自己带的那条共享通道 —— 面板不关心这个区别。
 #[derive(Clone)]
 pub enum FileService {
     Sftp(SftpService),
     Ftp(FtpService),
     S3(S3Service),
     Webdav(WebdavService),
+    /// WSL 发行版：不是网络协议，走 `\\wsl.localhost` 共享（见
+    /// [`WslFileService`]）。面板对它和 SFTP 一视同仁。
+    Wsl(WslFileService),
 }
 
 impl FileService {
-    /// 面板在徽标上要标注协议名（"SFTP" / "FTP" / "FTPS"），从这一档取。
+    /// 面板在徽标上要标注协议名（"SFTP" / "FTP" / "FTPS" / "WSL"），从这一档取。
     pub fn label(&self) -> &'static str {
         match self {
             Self::Sftp(_) => "SFTP",
             Self::Ftp(service) => service.label(),
             Self::S3(_) => "S3",
             Self::Webdav(service) => service.label(),
+            Self::Wsl(_) => "WSL",
         }
     }
 
@@ -54,6 +61,7 @@ impl FileService {
             Self::Ftp(service) => service.home().await,
             Self::S3(service) => service.home().await,
             Self::Webdav(service) => service.home().await,
+            Self::Wsl(service) => service.home().await,
         }
     }
 
@@ -64,6 +72,7 @@ impl FileService {
             Self::Ftp(service) => service.resolve(raw).await,
             Self::S3(service) => service.resolve(raw).await,
             Self::Webdav(service) => service.resolve(raw).await,
+            Self::Wsl(service) => service.resolve(raw).await,
         }
     }
 
@@ -74,6 +83,7 @@ impl FileService {
             Self::Ftp(service) => service.list(dir).await,
             Self::S3(service) => service.list(dir).await,
             Self::Webdav(service) => service.list(dir).await,
+            Self::Wsl(service) => service.list(dir).await,
         }
     }
 
@@ -84,6 +94,7 @@ impl FileService {
             Self::Ftp(service) => service.create_dir(target).await,
             Self::S3(service) => service.create_dir(target).await,
             Self::Webdav(service) => service.create_dir(target).await,
+            Self::Wsl(service) => service.create_dir(target).await,
         }
     }
 
@@ -94,6 +105,7 @@ impl FileService {
             Self::Ftp(service) => service.create_file(target).await,
             Self::S3(service) => service.create_file(target).await,
             Self::Webdav(service) => service.create_file(target).await,
+            Self::Wsl(service) => service.create_file(target).await,
         }
     }
 
@@ -104,6 +116,7 @@ impl FileService {
             Self::Ftp(service) => service.remove(entry).await,
             Self::S3(service) => service.remove(entry).await,
             Self::Webdav(service) => service.remove(entry).await,
+            Self::Wsl(service) => service.remove(entry).await,
         }
     }
 
@@ -114,6 +127,7 @@ impl FileService {
             Self::Ftp(service) => service.rename(from, to).await,
             Self::S3(service) => service.rename(from, to).await,
             Self::Webdav(service) => service.rename(from, to).await,
+            Self::Wsl(service) => service.rename(from, to).await,
         }
     }
 
@@ -125,6 +139,7 @@ impl FileService {
             Self::Ftp(service) => service.set_mode(target, octal).await,
             Self::S3(service) => service.set_mode(target, octal).await,
             Self::Webdav(service) => service.set_mode(target, octal).await,
+            Self::Wsl(service) => service.set_mode(target, octal).await,
         }
     }
 
@@ -136,6 +151,7 @@ impl FileService {
             Self::Ftp(service) => service.read_bytes(target).await,
             Self::S3(service) => service.read_bytes(target).await,
             Self::Webdav(service) => service.read_bytes(target).await,
+            Self::Wsl(service) => service.read_bytes(target).await,
         }
     }
 
@@ -146,6 +162,7 @@ impl FileService {
             Self::Ftp(service) => service.write_bytes(target, bytes).await,
             Self::S3(service) => service.write_bytes(target, bytes).await,
             Self::Webdav(service) => service.write_bytes(target, bytes).await,
+            Self::Wsl(service) => service.write_bytes(target, bytes).await,
         }
     }
 
@@ -160,6 +177,7 @@ impl FileService {
             Self::Ftp(service) => service.spawn_download(job, progress),
             Self::S3(service) => service.spawn_download(job, progress),
             Self::Webdav(service) => service.spawn_download(job, progress),
+            Self::Wsl(service) => service.spawn_download(job, progress),
         }
     }
 
@@ -174,6 +192,7 @@ impl FileService {
             Self::Ftp(service) => service.spawn_upload(job, progress),
             Self::S3(service) => service.spawn_upload(job, progress),
             Self::Webdav(service) => service.spawn_upload(job, progress),
+            Self::Wsl(service) => service.spawn_upload(job, progress),
         }
     }
 }
