@@ -1327,6 +1327,9 @@ sftp_menu.copy_to_session:
 sftp_menu.copy_to_directory:
   en: Copy to Another Folder…
   zh-CN: 复制到其他目录…
+sftp_menu.move_to_directory:
+  en: Move to Another Folder…
+  zh-CN: 移动到其他目录…
 sftp_menu.open_folder:
   en: Open Folder
   zh-CN: 打开目录
@@ -4085,6 +4088,12 @@ remote_copy.title_directory:
 remote_copy.header_note_directory:
   en: Copies to another folder on this server; the destination must already exist.
   zh-CN: 复制到这台服务器上的另一个目录，目标目录需已存在。
+remote_copy.title_move_directory:
+  en: Move to another folder
+  zh-CN: 移动到其他目录
+remote_copy.header_note_move_directory:
+  en: Moves to another folder on this server; the source leaves its current place.
+  zh-CN: 移动到这台服务器上的另一个目录，源条目不再留在原处。
 remote_copy.source:
   en: Copy from
   zh-CN: 复制来源
@@ -4124,6 +4133,9 @@ remote_copy.same_dir:
 remote_copy.copy:
   en: Start copying
   zh-CN: 开始复制
+remote_copy.move:
+  en: Start moving
+  zh-CN: 开始移动
 remote_copy.cancel:
   en: Cancel
   zh-CN: 取消
@@ -4877,9 +4889,15 @@ sftp.download_failed:
 sftp.remote_copy_failed:
   en: "Copy of “%{name}” failed: %{error}"
   zh-CN: 复制“%{name}”失败：%{error}
+sftp.remote_move_failed:
+  en: "Move of “%{name}” failed: %{error}"
+  zh-CN: 移动“%{name}”失败：%{error}
 sftp.copy_overlap:
   en: "Cannot copy “%{name}” onto itself or into its own subtree on the same server"
   zh-CN: 同一台服务器上，不能把“%{name}”复制到它自己或它的子目录里
+sftp.move_overlap:
+  en: "Cannot move “%{name}” onto itself or into its own subtree"
+  zh-CN: 不能把“%{name}”移到它自己或它的子目录里
 sftp.uploaded:
   en: Uploaded %{name}
   zh-CN: 已上传 %{name}
@@ -4889,6 +4907,9 @@ sftp.downloaded:
 sftp.remote_copied:
   en: Copied %{name}
   zh-CN: 已复制 %{name}
+sftp.remote_moved:
+  en: Moved %{name}
+  zh-CN: 已移动 %{name}
 sftp.copied_paths:
   en: "%{count} paths"
   zh-CN: "%{count} 条路径"
@@ -5155,6 +5176,9 @@ queue.direction_download:
 queue.direction_remote_copy:
   en: Remote copy
   zh-CN: 远程复制
+queue.direction_remote_move:
+  en: Remote move
+  zh-CN: 远程移动
 queue.child_progress:
   en: "%{done}/%{total} items"
   zh-CN: "%{done}/%{total} 项"
@@ -5204,6 +5228,9 @@ sftp_err.action_delete_dir:
 sftp_err.action_rename:
   en: Renaming %{from} to %{to}
   zh-CN: 将 %{from} 重命名为 %{to}
+sftp_err.action_move:
+  en: Moving %{from} to %{to}
+  zh-CN: 将 %{from} 移动到 %{to}
 sftp_err.action_chmod:
   en: Changing the permissions of %{path}
   zh-CN: 修改 %{path} 的权限
@@ -5258,6 +5285,9 @@ sftp_err.copy_incomplete:
 sftp_err.server_copy_conflict:
   en: "A folder with the same name already exists: %{path}"
   zh-CN: 目标位置已有同名目录：%{path}
+sftp_err.server_move_conflict:
+  en: "A folder with the same name already exists: %{path}; move it away first"
+  zh-CN: 目标位置已有同名目录：%{path}，请先把它挪走
 sftp_err.copy_root:
   en: The filesystem root cannot be copied
   zh-CN: 不能复制文件系统根目录

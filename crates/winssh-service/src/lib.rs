@@ -89,7 +89,8 @@ pub use s3_service::S3Service;
 pub use serial_service::SerialService;
 pub use setting_service::SettingService;
 pub use sftp_service::{
-    RemoteCopyJob, ServerCopyJob, SftpService, TransferEvent, TransferHandle, TransferJob,
+    RemoteCopyJob, ServerCopyJob, ServerMoveJob, SftpService, TransferEvent, TransferHandle,
+    TransferJob,
 };
 pub use snippet_service::SnippetService;
 pub use sudo_auth::{SudoAsk, SudoPrompt, sftp_launch};

@@ -108,6 +108,26 @@ pub struct RemoteCopyJob {
     pub target_service: SftpService,
 }
 
+/// 一次服务端移动：在同一台服务器上把条目挪进另一个目录，源条目随之消失。
+///
+/// 标准子系统走对端 `mv -f`（另开一条 exec 通道，字节不过本机）；`sudo` / 自定义
+/// 命令开的通道与 Windows 对端退回 SFTP 的 `rename` —— 那一档 `exec` 会以登录
+/// 账号的身份跑，权限与提权后的通道对不上，Windows 也没有 `mv`。
+#[derive(Clone)]
+pub struct ServerMoveJob {
+    /// 队列里的那一行用它对齐进度事件。
+    pub id: u64,
+    /// 源条目的绝对路径（文件或目录）。
+    pub source: String,
+    /// 目标目录（调用方已确认它存在且是目录）。
+    pub destination: String,
+    /// 能不能在对端跑 `/bin/sh` + `mv`（标准子系统且不是 Windows）。
+    pub shell: bool,
+    /// 握着那条 SSH 连接的入口，`mv` 在它的连接上另开一条 exec 通道跑；
+    /// 走 SFTP 兜底时用它那条子系统通道。
+    pub service: SftpService,
+}
+
 /// 一次服务端复制：在同一台服务器上用 `cp -r -f -p` 搬，字节不过本机。
 ///
 /// 只有源与目标是**同一条 SFTP 通道**（同会话换目录）、通道是标准子系统，
@@ -692,6 +712,43 @@ impl SftpService {
             pause,
             join,
             // `cp` 是一条远端子进程，本地没法在块与块之间停住它。
+            pausable: false,
+        }
+    }
+
+    /// 派一个"同一台服务器内换目录"的服务端移动任务。
+    ///
+    /// 标准子系统在既有 SSH 连接上另开一条 exec 通道跑 `mv -f`，字节不经过本机；
+    /// 提权 / 自定义命令开的通道与 Windows 对端退回 SFTP 的 `rename`。
+    /// `mv` 不报字节，队列那一条按未知总数画成滑动的进度条。取消会关掉那条
+    /// 通道，远端 `mv` 随之被挂断。
+    pub fn spawn_server_move(
+        job: ServerMoveJob,
+        progress: UnboundedSender<TransferEvent>,
+    ) -> TransferHandle {
+        let cancel = CancellationToken::new();
+        let pause = Arc::new(PauseState::default());
+        let task_cancel = cancel.clone();
+        let task_pause = pause.clone();
+        let task_progress = progress.clone();
+        let id = job.id;
+
+        let join = crate::db::runtime().spawn(async move {
+            let ctx = PumpCtx {
+                id,
+                cancel: &task_cancel,
+                pause: &task_pause,
+                progress: &task_progress,
+            };
+            let outcome = server_move(&job, &ctx).await;
+            report_done(&progress, id, outcome, task_cancel.is_cancelled());
+        });
+
+        TransferHandle {
+            cancel,
+            pause,
+            join,
+            // `mv` 是一条远端子进程，本地没法在块与块之间停住它。
             pausable: false,
         }
     }
@@ -1420,9 +1477,9 @@ fn remote_copy_target_path(destination_dir: &str, source_path: &str) -> String {
 
 // ─── 同一台服务器上 cp ─────────────────────────────────────────────────────
 
-/// 一次服务端复制的上限。`cp` 可能搬一棵很大的树，这里只防对端彻底卡死，
-/// 不拿它当正常时限 —— 一整天还没复制完，肯定是出事了。
-const SERVER_COPY_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+/// 一次服务端复制 / 移动的上限。`cp` / `mv` 可能搬一棵很大的树，这里只防对端
+/// 彻底卡死，不拿它当正常时限 —— 一整天还没搬完，肯定是出事了。
+const SERVER_OP_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// 服务端复制的入口：在既有 SSH 连接上另开一条 exec 通道，把一段 POSIX sh
 /// 交给 `/bin/sh` 跑 `cp -r -f -p`。字节不进本进程，也不落本地盘。
@@ -1438,7 +1495,7 @@ async fn server_copy(job: &ServerCopyJob, ctx: &PumpCtx<'_>) -> Result<()> {
     let output = crate::ssh::exec_script_cancellable(
         &job.service.handle,
         &script,
-        SERVER_COPY_TIMEOUT,
+        SERVER_OP_TIMEOUT,
         ctx.cancel,
     )
     .await?;
@@ -1470,6 +1527,73 @@ if [ -d \"$dst\" ]; then\n\
 else\n\
   cp -r -f -p \"$src\" \"$dst\"\n\
 fi\n"
+    )
+}
+
+// ─── 同一台服务器上 mv ─────────────────────────────────────────────────────
+
+/// 服务端移动的入口：标准子系统上另开一条 exec 通道跑 `mv -f`；提权 / 自定义
+/// 命令开的通道与 Windows 对端退回 SFTP 的 `rename` —— 仍然是对端自己挪，
+/// 字节不过本机，只是那一档 `exec` 的权限与 SFTP 通道对不上。
+async fn server_move(job: &ServerMoveJob, ctx: &PumpCtx<'_>) -> Result<()> {
+    let source = path::normalize(&job.source);
+    if path::file_name(&source).is_empty() {
+        bail!("{}", t!("sftp_err.copy_root"));
+    }
+    let destination = path::normalize(&job.destination);
+    let target = remote_copy_target_path(&destination, &source);
+
+    if job.shell {
+        let script = server_move_script(&source, &target);
+        let output = crate::ssh::exec_script_cancellable(
+            &job.service.handle,
+            &script,
+            SERVER_OP_TIMEOUT,
+            ctx.cancel,
+        )
+        .await?;
+        if !output.success() {
+            bail!("{}", output.failure_reason());
+        }
+        return Ok(());
+    }
+
+    // 提权通道 / Windows：走那条通道自己的 SFTP rename。文件沿用上传收尾那套
+    // 「同名旧文件顶掉」，目录直接 rename（同名目录挡着就让它报错）。
+    let session = job.service.session.clone();
+    let (from_label, to_label) = (source.clone(), target.clone());
+    let work = async move {
+        let attrs = session.metadata(&source).await?;
+        match attrs.file_type() {
+            FileType::Dir => session.rename(source, target).await,
+            _ => rename_into_place(&session, &source, &target).await,
+        }
+    };
+    crate::db::run(work).await.map_err(|error| {
+        remote(
+            &t!("sftp_err.action_move", from => from_label, to => to_label),
+            error,
+        )
+    })
+}
+
+/// 拼一次服务端移动的 sh 脚本。`target` 是最终落点（目标目录 + 源条目名）。
+///
+/// `mv -f` 在目标是既有目录时会把源**塞进那个目录里**（`dst/a/a`），所以在
+/// 脚本里先拦下同名目录；同名文件由 `-f` 直接顶掉，与复制那条路径的
+/// 「同名旧文件由改名顶掉」是同一层意思。
+fn server_move_script(source: &str, target: &str) -> String {
+    let src = sh_quote(source);
+    let dst = sh_quote(target);
+    let conflict = sh_quote(t!("sftp_err.server_move_conflict", path => target).as_ref());
+    format!(
+        "src={src}\n\
+dst={dst}\n\
+if [ -d \"$dst\" ]; then\n\
+  printf '%s\\n' {conflict} >&2\n\
+  exit 1\n\
+fi\n\
+mv -f \"$src\" \"$dst\"\n"
     )
 }
 

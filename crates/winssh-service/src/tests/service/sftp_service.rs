@@ -366,6 +366,69 @@
     }
 
     #[test]
+    fn server_move_script_uses_mv_and_refuses_a_folder_at_the_target() {
+        let script = server_move_script("/opt/www/kafka", "/opt/www/backup/kafka");
+        assert!(script.contains("src='/opt/www/kafka'"));
+        assert!(script.contains("dst='/opt/www/backup/kafka'"));
+        // 同名目录挡在落点上：明确失败，别让 `mv` 把源塞进那个目录里。
+        assert!(script.contains("if [ -d \"$dst\" ]; then"));
+        assert!(script.contains("mv -f \"$src\" \"$dst\""));
+    }
+
+    #[test]
+    fn server_move_script_survives_quotes_in_paths() {
+        // 远端路径里单引号合法；漏转义会让整段脚本变成另一个命令。
+        let script = server_move_script("/opt/it's here", "/opt/backup/it's here");
+        assert!(script.contains(r"src='/opt/it'\''s here'"));
+        assert!(script.contains(r"dst='/opt/backup/it'\''s here'"));
+    }
+
+    /// 服务端移动的脚本要真的把一棵多级目录整棵挪走，原处不留副本。
+    ///
+    /// 同复制那几条：需要本机 POSIX `sh` / `mv`，Windows 走 Git Bash 的 PATH。
+    /// 手动验证：
+    ///
+    /// ```text
+    /// cargo test -p winssh-service -- --ignored server_move_script_moves_a_nested_tree
+    /// ```
+    #[test]
+    #[ignore = "需要本机 POSIX sh/mv（Windows 走 Git Bash 的 PATH）"]
+    fn server_move_script_moves_a_nested_tree() {
+        let root = temp_dir("server-move-tree");
+        let _ = std::fs::remove_dir_all(&root);
+        let src = root.join("kafka");
+        let backup = root.join("backup");
+        std::fs::create_dir_all(src.join("logs").join("2026")).unwrap();
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(src.join("app.yml"), b"new").unwrap();
+        std::fs::write(src.join("logs").join("2026").join("run.log"), b"log").unwrap();
+
+        let posix = |path: &Path| path.to_string_lossy().replace('\\', "/");
+        let target = backup.join("kafka");
+        let script = server_move_script(&posix(&src), &posix(&target));
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .output()
+            .expect("本机没有 POSIX sh（Windows 请从 Git Bash 里跑）");
+        assert!(
+            output.status.success(),
+            "脚本失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        assert!(!src.exists(), "移动之后源目录不该还留在原处");
+        assert_eq!(std::fs::read(target.join("app.yml")).unwrap(), b"new");
+        assert_eq!(
+            std::fs::read(target.join("logs").join("2026").join("run.log")).unwrap(),
+            b"log",
+            "多级子目录要整棵挪过去"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn server_copy_script_survives_quotes_in_paths() {
         // 远端路径里单引号合法；漏转义会让整段脚本变成另一个命令。
         let script = server_copy_script("/opt/it's here", "/opt/backup/it's here");

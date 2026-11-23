@@ -285,9 +285,9 @@ impl TransferQueueDrawer {
                 match item.direction {
                     TransferDirection::Upload => active_uploads += 1,
                     TransferDirection::Download => active_downloads += 1,
-                    // 复制在图标那一档不单立第三类：只有复制在跑时落到默认的
-                    // 双向文件夹图标，和"混合传输"同一张脸。
-                    TransferDirection::RemoteCopy => {}
+                    // 复制 / 移动在图标那一档不单立第三类：只有它们在跑时落到
+                    // 默认的双向文件夹图标，和"混合传输"同一张脸。
+                    TransferDirection::RemoteCopy | TransferDirection::RemoteMove => {}
                 }
                 if item.status == TransferStatus::Transferring {
                     transferring_count += 1;
@@ -1197,17 +1197,19 @@ fn direction_badge(direction: TransferDirection, cx: &App) -> impl IntoElement {
         .bg(palette::blue().opacity(0.14))
         .text_color(palette::sky())
         .child(
-            Icon::new(match direction {
-                TransferDirection::Upload => AppIcon::Upload,
-                TransferDirection::Download => AppIcon::Download,
-                TransferDirection::RemoteCopy => AppIcon::FolderSync,
-            })
+            match direction {
+                TransferDirection::Upload => Icon::new(AppIcon::Upload),
+                TransferDirection::Download => Icon::new(AppIcon::Download),
+                TransferDirection::RemoteCopy => Icon::new(AppIcon::FolderSync),
+                TransferDirection::RemoteMove => Icon::new(IconName::ArrowRight),
+            }
             .with_size(px(10.)),
         )
         .child(SharedString::from(match direction {
             TransferDirection::Upload => t!("queue.direction_upload"),
             TransferDirection::Download => t!("queue.direction_download"),
             TransferDirection::RemoteCopy => t!("queue.direction_remote_copy"),
+            TransferDirection::RemoteMove => t!("queue.direction_remote_move"),
         }))
 }
 

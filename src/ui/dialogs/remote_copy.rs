@@ -1,13 +1,15 @@
-//! 远端复制对话框，两种用法：
+//! 远端复制 / 移动对话框，两种用法：
 //!
 //! - **跨会话**：把 A 服务器上选中的条目复制到 B 服务器。这里只问两件事：
 //!   **落到哪条会话**、**落到那个会话的哪个目录**。
-//! - **同会话换目录**：把条目复制到当前服务器上的另一个目录（右键"复制到其他
-//!   目录…"）。没有会话可选，只问目标目录；源与落点是同一条 SFTP 通道。
+//! - **同会话换目录**：把条目复制或移动到当前服务器上的另一个目录（右键"复制到
+//!   其他目录…" / "移动到其他目录…"）。没有会话可选，只问目标目录；源与落点是
+//!   同一条 SFTP 通道。移动与复制共用这一套校验与异步流程，只有标题、按钮文案
+//!   和落定后的搬运方式不同（见 [`RemoteTransferKind`]）。
 //!
 //! 条目本身由发起的 [`SftpPanel`] 带过来（右键那一刻的选中集），字节怎么搬归
-//! 服务层的 [`crate::service::RemoteCopyJob`] —— 它握住两条 SFTP 通道（同会话
-//! 时是同一条的两个克隆），从源读、往目标写，不经过本地磁盘。
+//! 服务层：跨会话复制是 [`crate::service::RemoteCopyJob`]（两条 SFTP 通道，从源
+//! 读、往目标写，不经过本地磁盘），同会话搬是 `cp` / `mv` 那条远端命令。
 //!
 //! 目标会话是**发起那一刻从 Dock 里数出来的**已连接会话（终端标签页与独立
 //! SFTP 标签页），不含发起方自己。两个前提都在这里体现：会话没连上就不会出现在
@@ -81,12 +83,24 @@ pub enum RemoteCopyChannel {
 pub enum RemoteCopyMode {
     /// 另一条已连接的会话（跨会话 / 跨服务器）。
     Session,
-    /// 同一条会话里的另一个目录（同一台服务器内部复制）。
+    /// 同一条会话里的另一个目录（同一台服务器内部复制 / 移动）。
     Directory,
 }
 
-/// 对话框收壳后交给面板的东西：往哪条通道、哪个目录复制。
+/// 落定之后要干的是哪件事。移动与复制共用同一只对话框、同一套目录校验，
+/// 只有标题、按钮文案与面板排队时选的任务不同。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteTransferKind {
+    /// 源条目留在原处，目标目录里多一份。
+    Copy,
+    /// 源条目挪到目标目录，原处不再有它。
+    Move,
+}
+
+/// 对话框收壳后交给面板的东西：往哪条通道、哪个目录复制 / 移动。
 pub struct RemoteCopyRequest {
+    /// 落定之后做复制还是移动。
+    pub kind: RemoteTransferKind,
     /// 落点的显示名：跨会话时是主机名（重名时带序号），同会话换目录时就是
     /// 目标目录本身。复制队列那一行用它标识落点。
     pub label: SharedString,
@@ -105,6 +119,8 @@ pub type RemoteCopyHandler = Rc<dyn Fn(RemoteCopyRequest, &mut Window, &mut App)
 /// 远端复制对话框的正文。
 pub struct RemoteCopyDialog {
     mode: RemoteCopyMode,
+    /// 复制还是移动。标题、按钮与落定后的搬运方式都由它决定。
+    kind: RemoteTransferKind,
     /// 发起方主机名，只用于说明"从哪儿复制"。
     source: SharedString,
     /// 选中的条目概况（一个名字，或者"N 项"）。
@@ -145,6 +161,7 @@ impl RemoteCopyDialog {
         let form = cx.new(|cx| {
             Self::new(
                 RemoteCopyMode::Session,
+                RemoteTransferKind::Copy,
                 source.into(),
                 scope.into(),
                 source_dir.into(),
@@ -164,11 +181,12 @@ impl RemoteCopyDialog {
         Self::present(form, window, cx);
     }
 
-    /// 弹出"复制到其他目录"对话框：落点就是这条会话自己，只问目标目录。
+    /// 弹出"复制 / 移动到其他目录"对话框：落点就是这条会话自己，只问目标目录。
     ///
     /// `source_dir` 是选中条目的父目录，只用来拦"目标就是源目录"；`server` 是
     /// 这台机器的 `hostname:port`，面板拿它拦"落到源条目自己或它的子树里"的重叠
-    /// 落点（见 `SftpPanel::enqueue_remote_copy`）。
+    /// 落点（见 `SftpPanel::enqueue_remote_copy` / `enqueue_remote_move`）。`kind`
+    /// 决定收壳后是复制还是移动。
     pub fn open_directory(
         source: impl Into<SharedString>,
         scope: impl Into<SharedString>,
@@ -176,6 +194,7 @@ impl RemoteCopyDialog {
         server: impl Into<SharedString>,
         service: SftpService,
         panel: WeakEntity<SftpPanel>,
+        kind: RemoteTransferKind,
         on_submit: RemoteCopyHandler,
         window: &mut Window,
         cx: &mut App,
@@ -193,6 +212,7 @@ impl RemoteCopyDialog {
         let form = cx.new(|cx| {
             Self::new(
                 RemoteCopyMode::Directory,
+                kind,
                 source,
                 scope.into(),
                 source_dir.into(),
@@ -224,7 +244,7 @@ impl RemoteCopyDialog {
 
             dialog
                 .w(px(500.))
-                .title(render_header(body.mode, cx))
+                .title(render_header(body.mode, body.kind, cx))
                 .child(form.clone())
                 .footer(
                     h_flex()
@@ -245,7 +265,10 @@ impl RemoteCopyDialog {
                                 .custom(variant)
                                 .bg(blue)
                                 .rounded(cx.theme().radius)
-                                .label(t!("remote_copy.copy"))
+                                .label(match body.kind {
+                                    RemoteTransferKind::Copy => t!("remote_copy.copy"),
+                                    RemoteTransferKind::Move => t!("remote_copy.move"),
+                                })
                                 .disabled(!can_submit)
                                 .on_click(move |_, window, cx| {
                                     submit.update(cx, |this, cx| this.submit(window, cx));
@@ -257,6 +280,7 @@ impl RemoteCopyDialog {
 
     fn new(
         mode: RemoteCopyMode,
+        kind: RemoteTransferKind,
         source: SharedString,
         scope: SharedString,
         source_dir: SharedString,
@@ -317,6 +341,7 @@ impl RemoteCopyDialog {
 
         Self {
             mode,
+            kind,
             source,
             scope,
             source_dir,
@@ -481,6 +506,7 @@ impl RemoteCopyDialog {
                             RemoteCopyMode::Directory => SharedString::from(directory.clone()),
                         };
                         let request = RemoteCopyRequest {
+                            kind: this.kind,
                             label,
                             server: target.server.clone(),
                             service,
@@ -642,16 +668,17 @@ fn field_label(label: SharedString, cx: &App) -> impl IntoElement {
         .child(label)
 }
 
-/// 标题行：青色的双向文件夹图标，说明这次复制把字节从源搬到落点。
-fn render_header(mode: RemoteCopyMode, cx: &App) -> impl IntoElement {
-    let (title, note) = match mode {
-        RemoteCopyMode::Session => (
-            t!("remote_copy.title"),
-            t!("remote_copy.header_note"),
-        ),
-        RemoteCopyMode::Directory => (
+/// 标题行：青色的双向文件夹图标，说明这次复制 / 移动把条目从源搬到落点。
+fn render_header(mode: RemoteCopyMode, kind: RemoteTransferKind, cx: &App) -> impl IntoElement {
+    let (title, note) = match (mode, kind) {
+        (RemoteCopyMode::Session, _) => (t!("remote_copy.title"), t!("remote_copy.header_note")),
+        (RemoteCopyMode::Directory, RemoteTransferKind::Copy) => (
             t!("remote_copy.title_directory"),
             t!("remote_copy.header_note_directory"),
+        ),
+        (RemoteCopyMode::Directory, RemoteTransferKind::Move) => (
+            t!("remote_copy.title_move_directory"),
+            t!("remote_copy.header_note_move_directory"),
         ),
     };
     h_flex()

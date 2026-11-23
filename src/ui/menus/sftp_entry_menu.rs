@@ -2,8 +2,8 @@
 //!
 //! 对应原型 `SessionBottomSFTPPanel` 里那块跟随鼠标弹出的菜单。项的**顺序**照它：
 //! 先是"看一眼 / 进这个条目"（编辑 / 下载 / 进目录），再是要发到别处的动作
-//! （复制到其他会话、复制到其他目录、`cd here`、复制路径），然后是改名、权限，
-//! 删除永远在最后并且单独一段 —— 分组是防手滑。
+//! （复制到其他会话、复制到其他目录、移动到其他目录、`cd here`、复制路径），
+//! 然后是改名、权限，删除永远在最后并且单独一段 —— 分组是防手滑。
 //!
 //! 菜单本体仍然是 [`gpui_kit::component::menu::PopupMenu`]：定位、键盘选择、点外面
 //! 关掉都归它。这里只声明有哪些项、长什么样、点下去往外报哪一个
@@ -11,9 +11,9 @@
 //! 目录树），文件没有"进目录"。
 //!
 //! 菜单对着的是**一批**条目（远端栏能多选）。多选时只留下对一批条目都说得通的
-//! 那几项：下载、复制到其他会话、复制到其他目录、复制路径、删除；编辑、改名、
-//! chmod、`cd here` 这些一次只对一个条目成立，此时不画。列表开头那个 ".." 不是
-//! 条目，右键它只有"打开目录"。
+//! 那几项：下载、复制到其他会话、复制到其他目录、移动到其他目录、复制路径、删除；
+//! 编辑、改名、chmod、`cd here` 这些一次只对一个条目成立，此时不画。列表开头那个
+//! ".." 不是条目，右键它只有"打开目录"。
 
 use std::rc::Rc;
 
@@ -45,6 +45,8 @@ pub enum SftpEntryAction {
     CopyToSession,
     /// 复制到当前服务器上的另一个目录（SFTP → SFTP，同一台机器内部搬）。
     CopyToDirectory,
+    /// 移动到当前服务器上的另一个目录（源条目挪走，原处不留副本）。
+    MoveToDirectory,
     /// 进到这个目录（只对目录）。
     OpenFolder,
     /// 把用户那条终端的当前目录换到这个条目上。
@@ -61,12 +63,13 @@ pub enum SftpEntryAction {
 
 impl SftpEntryAction {
     /// 菜单里的项，从上到下的顺序（照原型）。
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Edit,
         Self::Download,
         Self::OpenFolder,
         Self::CopyToSession,
         Self::CopyToDirectory,
+        Self::MoveToDirectory,
         Self::CdHere,
         Self::CopyPath,
         Self::Rename,
@@ -81,6 +84,7 @@ impl SftpEntryAction {
             Self::Download => t!("sftp_menu.download"),
             Self::CopyToSession => t!("sftp_menu.copy_to_session"),
             Self::CopyToDirectory => t!("sftp_menu.copy_to_directory"),
+            Self::MoveToDirectory => t!("sftp_menu.move_to_directory"),
             Self::OpenFolder => t!("sftp_menu.open_folder"),
             Self::CdHere => t!("sftp_menu.cd_here"),
             Self::CopyPath => t!("sftp_menu.copy_path"),
@@ -100,6 +104,7 @@ impl SftpEntryAction {
             Self::Download => Icon::new(AppIcon::Download),
             Self::CopyToSession => Icon::new(AppIcon::FolderSync),
             Self::CopyToDirectory => Icon::new(IconName::Copy),
+            Self::MoveToDirectory => Icon::new(IconName::ArrowRight),
             Self::OpenFolder => Icon::new(IconName::Folder),
             Self::CdHere => Icon::new(AppIcon::Terminal),
             Self::CopyPath => Icon::new(IconName::Copy),
@@ -117,6 +122,7 @@ impl SftpEntryAction {
             Self::Download => palette::teal(),
             Self::CopyToSession => palette::teal(),
             Self::CopyToDirectory => palette::teal(),
+            Self::MoveToDirectory => palette::amber(),
             Self::OpenFolder => palette::coral(),
             Self::CdHere => palette::teal(),
             Self::CopyPath => palette::idle(cx),
@@ -128,9 +134,9 @@ impl SftpEntryAction {
 
     /// 这个动作适不适用于这一批条目。目录与文件能做的事不一样，一个与一批也不一样。
     ///
-    /// 两档复制只有 SFTP 有（FTP / S3 / WebDAV 没有第二条 SFTP 通道可落），而且
-    /// 门槛不同：跨会话还要宿主把 Dock 交进来（`copy_to_session`），同会话换目录
-    /// 只要这一栏自己是 SFTP（`copy_to_directory`）。
+    /// 三档远端搬运只有 SFTP 有（FTP / S3 / WebDAV 没有第二条 SFTP 通道可落），
+    /// 而且门槛不同：跨会话还要宿主把 Dock 交进来（`copy_to_session`），同会话
+    /// 换目录 / 移动只要这一栏自己是 SFTP（`copy_to_directory`）。
     fn applies_to(
         self,
         entries: &[FileEntry],
@@ -146,7 +152,7 @@ impl SftpEntryAction {
                 Self::Edit => !entry.kind.is_dir(),
                 Self::OpenFolder => entry.kind.is_dir(),
                 Self::CopyToSession => copy_to_session,
-                Self::CopyToDirectory => copy_to_directory,
+                Self::CopyToDirectory | Self::MoveToDirectory => copy_to_directory,
                 _ => true,
             },
             // 多选：只留对一批条目都说得通的。编辑器一次开一个文件，改名、chmod、
@@ -154,7 +160,7 @@ impl SftpEntryAction {
             _ => match self {
                 Self::Download | Self::CopyPath | Self::Delete => true,
                 Self::CopyToSession => copy_to_session,
-                Self::CopyToDirectory => copy_to_directory,
+                Self::CopyToDirectory | Self::MoveToDirectory => copy_to_directory,
                 _ => false,
             },
         }
@@ -192,7 +198,8 @@ pub struct SftpEntryMenu;
 impl SftpEntryMenu {
     /// 直接向已有的 [`PopupMenu`] 填充条目。`entries` 是这次右键对着的那些
     /// （右键选中集内的一行就是整份选中集，选中集外的一行就是它自己）。
-    /// 两个布尔量说明这一栏能开哪几档复制，含义见 [`SftpEntryAction::applies_to`]。
+    /// 两个布尔量说明这一栏能开哪几档远端搬运（复制 / 移动），含义见
+    /// [`SftpEntryAction::applies_to`]。
     pub fn build(
         menu: PopupMenu,
         entries: &[FileEntry],

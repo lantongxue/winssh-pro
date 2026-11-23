@@ -460,9 +460,9 @@ impl S3Service {
             let outcome = match direction {
                 TransferDirection::Download => download(resolver, &job, &ctx).await,
                 TransferDirection::Upload => upload(resolver, &job, &ctx).await,
-                // 跨会话复制只发生在两条 SFTP 通道之间，S3 这一档没有这条入口。
-                TransferDirection::RemoteCopy => {
-                    unreachable!("S3 不支持远端到远端的跨会话复制")
+                // 跨会话复制与移动只发生在 SFTP 通道之间，S3 这一档没有这两条入口。
+                TransferDirection::RemoteCopy | TransferDirection::RemoteMove => {
+                    unreachable!("S3 不支持远端到远端的复制 / 移动")
                 }
             };
             report_done(&progress, job.id, outcome, task_cancel.is_cancelled());

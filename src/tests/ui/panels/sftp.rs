@@ -89,6 +89,32 @@
     }
 
     #[test]
+    fn moving_to_the_current_folder_is_a_noop() {
+        // 拖回原来那一层 = 源与目标相同，`mv` 会直接报错，队列里也不该多一行。
+        let file = FileEntry {
+            path: SharedString::from("/opt/www/kafka/kafka.yml"),
+            ..entry("kafka.yml")
+        };
+        assert!(move_is_noop(&file, "/opt/www/kafka"));
+        assert!(move_is_noop(&file, "/opt/www/kafka/"));
+        assert!(!move_is_noop(&file, "/opt/www/backup"));
+    }
+
+    #[test]
+    fn moving_a_folder_into_its_own_subtree_is_blocked() {
+        // 与复制同一道防线：落进自己的子树会把源树搬进它自己里面。
+        let folder = FileEntry {
+            path: SharedString::from("/opt/www/kafka"),
+            kind: FileKind::Dir,
+            ..entry("kafka")
+        };
+        assert!(copy_lands_on_source(&folder, "/opt/www/kafka/sub"));
+        // 落到兄弟目录里是正经移动。
+        assert!(move_is_noop(&folder, "/opt/www"));
+        assert!(!copy_lands_on_source(&folder, "/opt/www/backup"));
+    }
+
+    #[test]
     fn windows_hosts_fall_back_to_relay_instead_of_cp() {
         // Windows OpenSSH 的登录 shell 是 cmd，没有 /bin/sh 与 cp。
         assert!(is_windows_platform("Windows OpenSSH"));
@@ -394,6 +420,7 @@
                 entry("with space.log"),
                 entry("it's.conf"),
             ]),
+            origin: None,
         };
         assert_eq!(
             dragged.shell_paths().as_deref(),
@@ -402,6 +429,7 @@
 
         let only_parent = DraggedRemoteEntries {
             entries: Rc::new(vec![parent_row()]),
+            origin: None,
         };
         assert_eq!(only_parent.shell_paths(), None);
     }

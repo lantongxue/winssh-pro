@@ -74,9 +74,9 @@ async fn transfer(
     } = match request.direction {
         TransferDirection::Upload => plan_upload(&sftp, &request).await?,
         TransferDirection::Download => plan_download(&sftp, &request).await?,
-        // 助手只搬本机与当前会话之间；跨服务器复制没有本机那一头。
-        TransferDirection::RemoteCopy => {
-            unreachable!("助手不搬远端到远端的复制")
+        // 助手只搬本机与当前会话之间；跨服务器复制 / 移动没有本机那一头。
+        TransferDirection::RemoteCopy | TransferDirection::RemoteMove => {
+            unreachable!("助手不搬远端到远端的复制 / 移动")
         }
     };
 
@@ -84,8 +84,8 @@ async fn transfer(
     let task = match request.direction {
         TransferDirection::Upload => sftp.spawn_upload(job, tx),
         TransferDirection::Download => sftp.spawn_download(job, tx),
-        TransferDirection::RemoteCopy => {
-            unreachable!("助手不搬远端到远端的复制")
+        TransferDirection::RemoteCopy | TransferDirection::RemoteMove => {
+            unreachable!("助手不搬远端到远端的复制 / 移动")
         }
     };
 

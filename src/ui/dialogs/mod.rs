@@ -52,6 +52,7 @@ pub use mihomo_download::MihomoDownloadDialog;
 pub use password_generator::PasswordGeneratorDialog;
 pub use remote_copy::{
     RemoteCopyChannel, RemoteCopyDialog, RemoteCopyHandler, RemoteCopyRequest, RemoteCopyTarget,
+    RemoteTransferKind,
 };
 pub use sftp_chmod::{ChmodHandler, SftpChmodDialog};
 pub use sftp_form::{SftpFormDialog, SftpFormKind, SftpNameHandler};

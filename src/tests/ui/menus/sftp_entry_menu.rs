@@ -49,11 +49,23 @@
 
     #[test]
     fn ftp_s3_and_webdav_get_no_copy_entry() {
-        // 这几档没有 SFTP 通道，两档复制都得消失，别留一个点了没反应的菜单项。
+        // 这几档没有 SFTP 通道，两档复制与移动都得消失，别留一个点了没反应的菜单项。
         let actions = actions(&[file()], false, false);
         assert!(!actions.contains(&SftpEntryAction::CopyToSession));
         assert!(!actions.contains(&SftpEntryAction::CopyToDirectory));
+        assert!(!actions.contains(&SftpEntryAction::MoveToDirectory));
         assert!(actions.contains(&SftpEntryAction::Download));
+    }
+
+    #[test]
+    fn move_follows_the_same_gate_as_copy_to_directory() {
+        // 移动与"复制到其他目录"共用同一条 SFTP 通道，门槛也一样：不需要 Dock。
+        assert!(actions(&[file()], false, true).contains(&SftpEntryAction::MoveToDirectory));
+        assert!(!actions(&[file()], true, false).contains(&SftpEntryAction::MoveToDirectory));
+        // 多选时一批条目一起挪也说得通。
+        assert!(
+            actions(&[file(), folder()], true, true).contains(&SftpEntryAction::MoveToDirectory)
+        );
     }
 
     #[test]
