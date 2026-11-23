@@ -24,6 +24,9 @@ ironrdp-dvc = { workspace = true }
 ironrdp-svc = { workspace = true }
 ironrdp-displaycontrol = { workspace = true }
 ironrdp-egfx = { workspace = true }
+# 声音输出（MS-RDPEA）：协议状态机 + cpal 本地播放后端（见根 Cargo.toml 的注）。
+ironrdp-rdpsnd = { workspace = true }
+ironrdp-rdpsnd-native = { workspace = true }
 # 只为把 sspi 钉在 0.23.0（picky 版本对齐，见根 Cargo.toml）；CredSSP 实际由 connector 驱动。
 sspi = { workspace = true }
 ironrdp-tokio = { workspace = true }

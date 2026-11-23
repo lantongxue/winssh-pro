@@ -357,3 +357,54 @@
         assert_eq!(pointers, 4);
         assert_eq!(frames, 1);
     }
+
+    /// `audio` 那档就是 `enable_audio_playback` 那面旗：关档时必须落
+    /// `INFO_NOAUDIOPLAYBACK`，服务器才不会往没人接的通道推声音。
+    #[test]
+    fn audio_setting_drives_the_playback_flag() {
+        let host = Host {
+            id: "test".into(),
+            name: "test".into(),
+            kind: winssh_domain::host::HostKind::Rdp,
+            user: "test".into(),
+            hostname: "localhost".into(),
+            port: 3389,
+            platform: "".into(),
+            auth_method: winssh_domain::host::AuthMethod::Password,
+            password: "".into(),
+            key_content: "".into(),
+            key_passphrase: "".into(),
+            jump_host_id: None,
+            monitor_intervals: Default::default(),
+            forwards: Vec::new(),
+            tags: Vec::new(),
+            proxy: Default::default(),
+            vnc: Default::default(),
+            rdp: RdpSettings {
+                audio: true,
+                ..Default::default()
+            },
+            serial: Default::default(),
+            easytier: Default::default(),
+            s3: Default::default(),
+            ftp: Default::default(),
+            webdav: Default::default(),
+            sftp: Default::default(),
+            terminal_scheme: "".into(),
+            shell_integration: false,
+            favorites: Vec::new(),
+        };
+        let config = connector_config(&host, (800, 600), &host.rdp);
+        assert!(config.enable_audio_playback);
+        // 麦克风重定向没做，恒关。
+        assert!(!config.enable_audio_capture);
+
+        let muted = Host {
+            rdp: RdpSettings {
+                audio: false,
+                ..Default::default()
+            },
+            ..host
+        };
+        assert!(!connector_config(&muted, (800, 600), &muted.rdp).enable_audio_playback);
+    }

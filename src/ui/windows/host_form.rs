@@ -407,6 +407,7 @@ pub struct HostForm {
     rdp_depth: Entity<SelectState<Vec<SharedString>>>,
     rdp_performance: Entity<SelectState<Vec<SharedString>>>,
     rdp_clipboard: Entity<SelectState<Vec<SharedString>>>,
+    rdp_audio: Entity<SelectState<Vec<SharedString>>>,
     rdp_compression: Entity<SelectState<Vec<SharedString>>>,
     /// Windows 域（`DOMAIN\user` 的那个 `DOMAIN`），空串是本地账号。
     rdp_domain: Entity<InputState>,
@@ -776,6 +777,14 @@ impl HostForm {
             SelectState::new(
                 toggle_choices(),
                 Some(IndexPath::new(usize::from(!initial_rdp.clipboard))),
+                window,
+                cx,
+            )
+        });
+        let rdp_audio = cx.new(|cx| {
+            SelectState::new(
+                toggle_choices(),
+                Some(IndexPath::new(usize::from(!initial_rdp.audio))),
                 window,
                 cx,
             )
@@ -1202,6 +1211,7 @@ impl HostForm {
             rdp_depth,
             rdp_performance,
             rdp_clipboard,
+            rdp_audio,
             rdp_compression,
             rdp_domain,
             serial_baud,
@@ -1416,6 +1426,7 @@ impl HostForm {
             performance: RdpPerformance::from_index(row(&self.rdp_performance)),
             // 开/关两格，0 就是开 —— 和共享档同一个写法。
             clipboard: row(&self.rdp_clipboard) == 0,
+            audio: row(&self.rdp_audio) == 0,
             compression: row(&self.rdp_compression) == 0,
             // 域不 trim：Windows 的域名里真可能有空格？不，域是 NetBIOS 名或
             // DNS 后缀，前后空白只可能是粘贴带进来的，剪掉。
@@ -2684,8 +2695,11 @@ impl HostForm {
                     cx,
                 ),
                 1.,
-                // 右半留白：这一行只有一格，和上面两行对齐。
-                div(),
+                field(
+                    t!("host_form.field_rdp_audio").into(),
+                    Select::new(&self.rdp_audio).w_full(),
+                    cx,
+                ),
                 1.,
             ))
             .child(

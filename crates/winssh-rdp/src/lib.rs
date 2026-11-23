@@ -19,17 +19,20 @@
 //!   提示，保存到本地的一个目录（GPUI 的剪贴板写不进文件）。
 //! - **光标**（[`pointer`]）：服务器发来的光标位图原样解成 GPUI 的
 //!   `CursorImage`，由平台当真正的系统光标显示（和 mstsc 一样跟手、反色）。
+//! - **声音**（[`audio`]）：RDPSND / AUDIO_PLAYBACK_DVC 收到的音频解码后
+//!   经 cpal 直接放本地默认输出设备，不经 GPUI（线程账见该模块文档）。
 //! - **画面呈现**（[`tiles`]）：桌面切成 256 见方的格子，发布一帧只重建
 //!   损伤盖到的格子；干净格子的 GPU 纹理常驻复用，不整屏重传。
-//! - **连接配置**（[`settings`]）：安全档、色深、性能档、剪贴板、压缩、域，
-//!   摆在主机表单里由用户自己拧。
+//! - **连接配置**（[`settings`]）：安全档、色深、性能档、剪贴板、声音、
+//!   压缩、域，摆在主机表单里由用户自己拧。
 //!
 //! 界面上那扇窗是 [`crate::ui::panels::RdpPanel`]，这里只到"会话"为止。
 //!
 //! 支持的档：直连 / SOCKS5、TLS + CredSSP(NLA) / 仅 TLS / NLA 强制、
 //! 用户名密码（可带域）、32/16 位色深、RemoteFX 与 MPPC 64K 压缩、
-//! 动态改分辨率（DisplayControl DVC）、双向文本剪贴板、剪贴板文件复制。
-//! 不支持的（有意，见 [`session`] 的模块文档）：声音、驱动器重定向、
+//! 动态改分辨率（DisplayControl DVC）、双向文本剪贴板、剪贴板文件复制、
+//! 远端声音本地播放（RDPSND）。
+//! 不支持的（有意，见 [`session`] 的模块文档）：麦克风重定向、驱动器重定向、
 //! 智能卡、UDP 多传输、Kerberos。
 
 // 面向用户的文案走多语言查表，`t!` 展开成本 crate 的 `_rust_i18n_t!`；
@@ -40,6 +43,7 @@ rust_i18n::i18n!("../../locales", fallback = "en");
 // 加了文件就照样补一行。没人引用的 const 不进二进制。
 const _: &str = include_str!("../../../locales/app.yml");
 
+mod audio;
 mod bitmap;
 mod clipboard;
 mod file_copy;

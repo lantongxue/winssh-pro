@@ -403,6 +403,20 @@ ironrdp-svc = "0.10"
 ironrdp-displaycontrol = "0.10"
 ironrdp-egfx = "0.5"
 ironrdp-egfx-native = "0.2"
+# RDPSND 声音输出（MS-RDPEA）：`ironrdp-rdpsnd` 是协议状态机（静态 RDPSND 通道、
+# AUDIO_PLAYBACK_DVC[_LOSSY] 动态通道、PCM/ADPCM/G.711 纯 Rust 解码），
+# `ironrdp-rdpsnd-native` 是本地播放后端（cpal：macOS CoreAudio / Windows
+# WASAPI / Linux ALSA）。与上面同一批：rdpsnd 0.11 的依赖表就是
+# core 0.3 / pdu 0.11 / svc 0.10 / dvc 0.10。
+#
+# native 那份关掉默认特性、只点 `aac`：默认的 `opus` 走 opus2 bundled，
+# 要 cmake 现编 libopus —— 为一个服务器本来就会回退的编码（Windows 按客户端
+# 报上去的格式表挑，报不上 Opus 就用 ADPCM/PCM）给全平台加一个重构建依赖，
+# 不成比例。`aac` 只门 Windows 的 Media Foundation 解码（`windows` crate 本来
+# 就在树里），零构建成本，而 Win10+ 服务器在 DVC 上恰恰偏好 AAC。
+# Linux 上 cpal 要 `libasound2-dev`（见 release.yml 的构建依赖）。
+ironrdp-rdpsnd = "0.11"
+ironrdp-rdpsnd-native = { version = "0.8", default-features = false, features = ["aac"] }
 # 精确钉 0.23.0：0.23.1 把 picky 锁在 =7.0.0-rc.27，而 connector 0.12 锁
 # =7.0.0-rc.26，两份精确锁 Cargo 解不开；0.23.0 与 connector 同锁 rc.26。
 sspi = "=0.23.0"
