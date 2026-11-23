@@ -1,14 +1,19 @@
-//! WSL 发行版里的文件系统：把 `\\wsl.localhost\<发行版>` 这条共享包装成和
-//! SFTP 同一套目录模型，供底部文件栏使用。
+//! WSL 发行版的接入层：文件系统与一次性命令。
 //!
-//! 为什么走共享而不是在发行版里起 sftp-server：`openssh-sftp-server` 不是
-//! 每个发行版都装，装没装还得先探一次；而共享是 WSL 自己提供的，发行版一装上
-//! 就在。代价是 Windows 这侧的 `Metadata` 没有 POSIX mode 与 uid —— 那两列
-//! 由 [`meta`] 里那次 `find -printf` 补回来，补不到就显示 `—`，不编。
+//! 文件这一半把 `\\wsl.localhost\<发行版>` 这条共享包装成和 SFTP 同一套目录
+//! 模型，供底部文件栏使用。为什么走共享而不是在发行版里起 sftp-server：
+//! `openssh-sftp-server` 不是每个发行版都装，装没装还得先探一次；而共享是
+//! WSL 自己提供的，发行版一装上就在。代价是 Windows 这侧的 `Metadata` 没有
+//! POSIX mode 与 uid —— 那两列由 [`meta`] 里那次 `find -printf` 补回来，
+//! 补不到就显示 `—`，不编。
 //!
 //! 路径一律用发行版里的 Linux 绝对路径（`/home/kali`）在上下游走，只有真正
 //! 碰文件系统的那一刻才经 [`unc::to_windows`] 换成共享路径。所以界面、传输
 //! 队列与 SFTP 那一档说同一种话。
+//!
+//! 命令那一半（[`exec`]）把一段 POSIX sh 脚本喂进发行版的 `/bin/sh` 跑一次，
+//! 监控面板的采集脚本与 `kill` 走它 —— 与 SSH 那一档同形，只是通道换成了
+//! `wsl.exe` 的 stdin/stdout 管道。
 //!
 //! 所有阻塞动作（`std::fs`、`wsl.exe` 子进程）都经 `blocking` 派到 blocking
 //! 池上：共享第一次访问会顺手把发行版拉起来，慢的时候以秒计，不能堵在
@@ -30,6 +35,7 @@ rust_i18n::i18n!("../../locales", fallback = "en");
 // dep-info，只改文案时 cargo 才会重编本 crate，sccache 也不会把旧产物当命中。
 const _: &str = include_str!("../../../locales/app.yml");
 
+pub mod exec;
 pub mod meta;
 pub mod unc;
 
@@ -596,7 +602,7 @@ fn home_blocking(distro: &str) -> Result<String> {
 /// `wsl.exe` 自己的提示（代理配置、升级提醒）往 stderr 写的是 UTF-16LE，
 /// 发行版里那个程序写的却是 UTF-8。判据与 `terminal::wsl` 一致：有 UTF-16LE
 /// 的 BOM，或者 NUL 密度高，就按 UTF-16 解；否则按 UTF-8。
-fn decode_text(bytes: &[u8]) -> String {
+pub(crate) fn decode_text(bytes: &[u8]) -> String {
     let bom = bytes.starts_with(&[0xFF, 0xFE]);
     let nuls = bytes.iter().filter(|byte| **byte == 0).count();
     if bom || nuls * 4 > bytes.len() {

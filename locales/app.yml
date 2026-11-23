@@ -5340,12 +5340,13 @@ sftp_err.move_into_place:
   en: Could not move %{from} into place as %{to}
   zh-CN: 将 %{from} 移动为 %{to} 失败
 
-# ── WSL 文件服务的错误 ───────────────────────────────────────────────────
+# ── WSL 接入层的错误 ─────────────────────────────────────────────────────
 # WSL 发行版的根挂在 `\\wsl.localhost\<发行版>`（旧版本只有 `\\wsl$`）这条
-# Windows 共享上，文件动作走 `std::fs`，mode/属主由发行版里的 `find` 补齐。
+# Windows 共享上，文件动作走 `std::fs`，mode/属主由发行版里的 `find` 补齐；
+# 一次性命令（监控采集、kill）经 `wsl.exe` 喂进发行版的 /bin/sh。
 wslfs.err.unsupported:
-  en: WSL file access is only available on Windows
-  zh-CN: WSL 文件访问只在 Windows 上可用
+  en: WSL is only available on Windows
+  zh-CN: WSL 只在 Windows 上可用
 wslfs.err.distro_not_found:
   en: 'Cannot reach WSL distro %{distro}: neither \\wsl.localhost nor \\wsl$ answered'
   zh-CN: '连不上 WSL 发行版 %{distro}：\\wsl.localhost 与 \\wsl$ 都没有响应'
@@ -5358,6 +5359,9 @@ wslfs.err.command_failed:
 wslfs.err.interrupted:
   en: The WSL file task was interrupted
   zh-CN: WSL 文件任务被中断
+wslfs.exec.timeout:
+  en: 'The command inside WSL %{distro} did not return within %{seconds} s'
+  zh-CN: '在 WSL %{distro} 里运行的命令超过 %{seconds} 秒未返回'
 
 # ── 主机配置服务 ─────────────────────────────────────────────────────────
 host_service.no_data_dir:

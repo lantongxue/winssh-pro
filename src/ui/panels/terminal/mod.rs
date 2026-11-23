@@ -20,7 +20,9 @@
 //!
 //! 本机 Shell 与 WSL 那两档没有 SSH 连接（见 [`Source`]）：字节源就是本机
 //! PTY。WSL 的文件栏不走 sftp 子系统，走 `\\wsl.localhost\<发行版>` 共享
-//! （见 `winssh_service::WslFileService`），但面板仍是同一个 [`SftpPanel`]。
+//! （见 `winssh_service::WslFileService`），但面板仍是同一个 [`SftpPanel`]；
+//! 监控也不走 SSH，采集脚本经 `wsl.exe` 进发行版跑（`MonitorService::wsl`），
+//! 面板仍是同一个 [`MonitorPanel`]。
 //!
 //! 分屏只有三档（单屏 / 上下 / 左右），不是任意布局 —— 取舍写在 [`split`]
 //! 的模块文档里。
@@ -159,20 +161,34 @@ enum Source {
 impl Source {
     /// 这条会话背后有没有一条 SSH 连接。
     ///
-    /// 决定信息栏右边那两颗按钮（端口转发、资源监控）和它们的快捷键在不在：
-    /// 两件事都是"在这条 SSH 连接上再开一条通道"做出来的 —— 隧道要
-    /// `direct-tcpip`，监控要在对端跑采集脚本。本机 shell 没有连接可开，
-    /// 所以那两颗不画（点不动的控件比没有更让人困惑），动作也不注册：
-    /// Alt+M/P 照旧作为转义序列进本机 shell，那才是本机 shell 里该有的行为。
+    /// 决定信息栏上端口转发那颗按钮和它的快捷键在不在：隧道要在这条连接上
+    /// 开 `direct-tcpip` 通道，没有连接就无从开起。本机 shell 与 WSL 都不画
+    /// （点不动的控件比没有更让人困惑），动作也不注册：Alt+P 照旧作为转义
+    /// 序列进 shell，那才是本机 shell 里该有的行为。
     ///
-    /// 文件栏不归这一条管：WSL 没有 SSH 连接也有得管，见
-    /// [`Self::has_file_panel`]。
+    /// 监控与文件栏不归这一条管：WSL 没有 SSH 连接也两样都有，见
+    /// [`Self::has_monitor`] 与 [`Self::has_file_panel`]。
     fn over_ssh(&self) -> bool {
         match self {
             Self::Ssh => true,
             Self::Local | Self::Wsl(_) => false,
             // 测试里那个壳按 SSH 会话算：整帧渲染那个测试要能走到那几颗按钮，
             // 它们各自都还有点亮/不点亮两条分支。
+            #[cfg(test)]
+            Self::Detached => true,
+        }
+    }
+
+    /// 这条会话有没有资源监控。
+    ///
+    /// SSH 有（在对端跑采集脚本），WSL 也有 —— 脚本经 `wsl.exe` 喂进本机
+    /// 发行版的 `/bin/sh`，读的是发行版自己的 `/proc`（见
+    /// `MonitorService::wsl`）。本机 shell 没有可采的"对端"，这一颗不画，
+    /// Alt+M 也照旧进 shell。
+    fn has_monitor(&self) -> bool {
+        match self {
+            Self::Ssh | Self::Wsl(_) => true,
+            Self::Local => false,
             #[cfg(test)]
             Self::Detached => true,
         }
@@ -624,6 +640,11 @@ impl TerminalPanel {
                         cx,
                     )
                 });
+                // 监控同理：采集脚本经 `wsl.exe` 进发行版跑，不等"连上"那一声
+                // （这一档根本没有拨号）。接上就开始轻量轮询 —— 终端下沿的
+                // 状态栏一直看得见，那几个数从第一轮采集起就有。
+                let monitor = crate::service::MonitorService::wsl(distro.to_string());
+                monitor_panel.update(cx, |panel, cx| panel.attach(monitor, cx));
             }
             // 第一个窗格没有连接可借，SSH 那一档只能自己拨号；本机与 WSL
             // 那两档在 [`PaneOrigin`] 里各自带话。
@@ -2040,6 +2061,7 @@ impl Render for TerminalPanel {
         let history_open = self.shown_tool == Some(SessionTool::History);
         let split = self.split;
         let over_ssh = self.source.over_ssh();
+        let has_monitor = self.source.has_monitor();
         let has_file_panel = self.source.has_file_panel();
         let has_history = self.history.is_some();
         // 库里有没有这台主机。信息栏上"命令历史"与"配色"那两颗都跟着它走
@@ -2055,13 +2077,15 @@ impl Render for TerminalPanel {
             .size_full()
             .bg(cx.theme().background)
             // 按键归窗格自己收（它才知道是哪一个终端）。留在这一层的只有
-            // 作用于整个标签页的那两个 —— 它们是从窗格那边冒上来的，
+            // 作用于整个标签页的那几个 —— 它们是从窗格那边冒上来的，
             // 所以焦点不在任何一个窗格里时压根不会走到这儿。
-            // 本机 shell 那一档两个都不接，见 [`Source::over_ssh`]；文件栏另算，
-            // WSL 也接（它的文件不走 SSH，见 [`Source::has_file_panel`]）。
+            // 转发只接 SSH（见 [`Source::over_ssh`]）；监控与文件栏 WSL 也接
+            // （它们不走 SSH，见 [`Source::has_monitor`] / [`Source::has_file_panel`]）。
             .when(over_ssh, |this| {
+                this.on_action(cx.listener(Self::on_toggle_forwards))
+            })
+            .when(has_monitor, |this| {
                 this.on_action(cx.listener(Self::on_toggle_monitor))
-                    .on_action(cx.listener(Self::on_toggle_forwards))
             })
             .when(has_file_panel, |this| {
                 this.on_action(cx.listener(Self::on_toggle_sftp))
@@ -2082,20 +2106,23 @@ impl Render for TerminalPanel {
                 .on_split(cx.listener(move |this, layout: &SplitLayout, window, cx| {
                     this.set_split(*layout, window, cx);
                 }))
-                // 隧道 / 监控只对 SSH 会话接：不接的那两颗信息栏不画。
-                // 它们 now 是"开右栏对应页"的入口，点亮跟着右栏走。
+                // 隧道只对 SSH 会话接：不接的那颗信息栏不画。
+                // 它是"开右栏对应页"的入口，点亮跟着右栏走。
                 .when(over_ssh, |bar| {
                     bar.tunnels_count(tunnels)
                         .forwards_active(forwards_open)
                         .on_tunnels(cx.listener(|this, _, window, cx| {
                             this.open_forwards(window, cx);
                         }))
-                        .on_monitor(
-                            monitor_open,
-                            cx.listener(|this, _, window, cx| {
-                                this.request_tool(SessionTool::Monitor, window, cx);
-                            }),
-                        )
+                })
+                // 监控 SSH 与 WSL 都有（见 [`Source::has_monitor`]）。
+                .when(has_monitor, |bar| {
+                    bar.on_monitor(
+                        monitor_open,
+                        cx.listener(|this, _, window, cx| {
+                            this.request_tool(SessionTool::Monitor, window, cx);
+                        }),
+                    )
                 })
                 // 文件栏 SSH 与 WSL 都有（见 [`Source::has_file_panel`]）。
                 .when(has_file_panel, |bar| {

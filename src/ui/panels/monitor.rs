@@ -7,10 +7,12 @@
 //! 它不是一个 Dock `Panel`，而是每个终端会话自己持有的一块侧栏，生命周期跟着
 //! `TerminalPanel` 走。
 //!
-//! **数字全部来自对端**：`TerminalPanel` 的 SSH 连接建好之后把一个
-//! [`MonitorService`] 交过来（[`MonitorPanel::attach`]），这里就开一条轮询任务，
-//! 每隔几秒采一次（[`crate::monitor::probe`] 的脚本读 `/proc`），采不到就把
-//! 原因显示出来。没有会话（本地 Shell、还没连上）时显示空状态，不编数字。
+//! **数字全部来自对端**：`TerminalPanel` 把一个 [`MonitorService`] 交过来
+//! （[`MonitorPanel::attach`]），这里就开一条轮询任务，每隔几秒采一次
+//! （[`crate::monitor::probe`] 的脚本读 `/proc`），采不到就把原因显示出来。
+//! SSH 会话在连接建好之后接，WSL 会话一建面板就接（脚本经 `wsl.exe` 进
+//! 本机发行版跑，没有"连上"那一声）。没有会话（本地 Shell、还没连上）时
+//! 显示空状态，不编数字。
 //!
 //! 轮询在面板收起时也继续，但用的是轻量脚本 —— 终端下沿的状态栏要那几个数，
 //! 而它一直看得见；进程列表只在真的显示着的时候才采。
@@ -166,7 +168,8 @@ pub struct MonitorPanel {
     /// "正在生效的值" —— 两者不等时保存按钮才亮。
     monitor_input: Entity<InputState>,
     status_input: Entity<InputState>,
-    /// 采集入口。`None` 表示这条会话没有可采的对端（本地 Shell，或 SSH 还没连上）。
+    /// 采集入口。`None` 表示这条会话没有可采的对端（本地 Shell，或 SSH 还没连上）；
+    /// WSL 会话一建面板就有（采集经 `wsl.exe`，不等连接）。
     service: Option<MonitorService>,
     /// 最近一次成功的读数。没采到过就是 `None`，界面显示空状态而不是 0。
     telemetry: Option<MonitorTelemetry>,
@@ -265,7 +268,8 @@ impl MonitorPanel {
         })
     }
 
-    /// 会话的 SSH 连接建好了：接上采集入口并立刻开始轮询。
+    /// 接上采集入口并立刻开始轮询。SSH 会话在连接建好时调，WSL 会话在面板
+    /// 建好时调（它的采集不经连接）。
     ///
     /// 重连会再调一次，这时旧的轮询任务连同它记的累计值一起丢掉 —— 换了连接，
     /// 之前那台机器的计数器不能拿来相减。

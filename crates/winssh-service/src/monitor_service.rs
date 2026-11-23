@@ -1,10 +1,13 @@
 //! 监控采集服务：右侧监控面板拿数据的唯一入口。
 //!
-//! 一条会话一个实例。它握着那条 SSH 连接的 `Handle`（与终端共享，见
-//! [`crate::ssh`]），每次采集在同一条连接上另开一条通道跑 [`crate::monitor::probe`]
-//! 的脚本，把结果交给 [`MonitorCollector`] 攒成 [`MonitorTelemetry`]。
+//! 一条会话一个实例。脚本在哪儿跑由后端决定：SSH 会话握着那条连接的 `Handle`
+//! （与终端共享，见 [`crate::ssh`]），每次采集在同一条连接上另开一条通道；
+//! WSL 会话没有连接可开，脚本经 `wsl.exe` 喂进本机发行版的 `/bin/sh`
+//! （见 [`crate::wslfs::exec`]）。两档跑的是同一份 [`crate::monitor::probe`]
+//! 脚本 —— WSL 里也是真的 Linux `/proc`，解析与累加（[`MonitorCollector`]）
+//! 一个字都不用分叉。
 //!
-//! 界面因此完全不知道 `russh`、`/proc` 与 shell 的存在，只会两件事：
+//! 界面因此完全不知道 `russh`、`wsl.exe`、`/proc` 与 shell 的存在，只会两件事：
 //! `poll` 要一份读数，`kill_process` 请求一个动作。
 //!
 //! 累加器（上一次的累计值、CPU 曲线）藏在服务里而不是界面里：速率算得对不对
@@ -18,12 +21,13 @@ use russh::client::Handle;
 
 use crate::{
     monitor::{MonitorCollector, MonitorTelemetry, ProbeOptions, parse_probe, probe},
-    ssh::{SshHandler, exec_script},
+    ssh::{SshHandler, exec::ExecOutput, exec_script},
 };
 use rust_i18n::t;
 
 /// 一次采集最多等多久。远端读 `/proc` 是微秒级的事，超过这个数说明对端在挨打
-/// （负载爆表、盘 hang），这一次就放弃，下一次轮询再试。
+/// （负载爆表、盘 hang），这一次就放弃，下一次轮询再试。WSL 那一档还要兜住
+/// 发行版冷启动（第一次访问会把整条发行版拉起来，以秒计）。
 const PROBE_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// 一个动作（`kill`）最多等多久。对端正忙的时候连发个信号都可能排上一会儿。
@@ -32,14 +36,31 @@ const ACTION_TIMEOUT: Duration = Duration::from_secs(25);
 /// 一条会话的监控采集入口。廉价克隆（两个 `Arc`），可以直接搬进轮询任务里。
 #[derive(Clone)]
 pub struct MonitorService {
-    handle: Arc<Handle<SshHandler>>,
+    backend: Backend,
     collector: Arc<Mutex<MonitorCollector>>,
+}
+
+/// 采集脚本在哪儿跑。
+#[derive(Clone)]
+enum Backend {
+    /// 一条已认证的 SSH 连接，采集在它上面另开通道。
+    Ssh(Arc<Handle<SshHandler>>),
+    /// 本机的一条 WSL 发行版，采集经 `wsl.exe` 进它的 `/bin/sh`。
+    Wsl(String),
 }
 
 impl MonitorService {
     pub fn new(handle: Arc<Handle<SshHandler>>) -> Self {
         Self {
-            handle,
+            backend: Backend::Ssh(handle),
+            collector: Arc::new(Mutex::new(MonitorCollector::new())),
+        }
+    }
+
+    /// WSL 发行版那一档：没有 SSH 连接，脚本与 `kill` 都经 `wsl.exe` 跑。
+    pub fn wsl(distro: impl Into<String>) -> Self {
+        Self {
+            backend: Backend::Wsl(distro.into()),
             collector: Arc::new(Mutex::new(MonitorCollector::new())),
         }
     }
@@ -47,13 +68,12 @@ impl MonitorService {
     /// 采一次，产出这一刻的遥测。
     pub async fn poll(&self, options: ProbeOptions) -> Result<MonitorTelemetry> {
         let script = probe::script(&options);
-        let handle = self.handle.clone();
 
         let started = Instant::now();
-        let output =
-            crate::db::run(async move { exec_script(&handle, &script, PROBE_TIMEOUT).await })
-                .await
-                .with_context(|| t!("monitor_service.exec_failed").to_string())?;
+        let output = self
+            .exec(&script, PROBE_TIMEOUT)
+            .await
+            .with_context(|| t!("monitor_service.exec_failed").to_string())?;
         let elapsed = started.elapsed();
 
         let sample = parse_probe(&output.stdout).with_context(|| {
@@ -71,7 +91,7 @@ impl MonitorService {
 
         // 往返耗时里要扣掉远端故意睡的那段采样窗口，否则"RTT"里混着 300ms 的
         // 自家开销。剩下的仍然含远端读 `/proc` 的时间，所以它是"采集往返"，
-        // 比纯网络 RTT 略大。
+        // 比纯网络 RTT 略大（WSL 那一档含的是 wsl.exe 起进程的开销）。
         let window = Duration::from_secs_f64(sample.window_secs.clamp(0., 5.));
         let latency_ms = elapsed
             .saturating_sub(window)
@@ -101,14 +121,32 @@ impl MonitorService {
 
     /// 跑一条一次性命令，只关心成没成。
     async fn run(&self, command: String) -> Result<()> {
-        let handle = self.handle.clone();
-        let output =
-            crate::db::run(async move { exec_script(&handle, &command, ACTION_TIMEOUT).await })
-                .await?;
+        let output = self.exec(&command, ACTION_TIMEOUT).await?;
         if !output.success() {
             bail!("{}", output.failure_reason());
         }
         Ok(())
+    }
+
+    /// 把脚本送到对端跑一次，收归一成 [`ExecOutput`]。那个类型只是"一次性
+    /// 命令的输出"这个形状（stdout/stderr/退出码），不独属于 SSH —— WSL 那档
+    /// 收回来的字节填进同一个形状，成败判断与失败文案两档共用。
+    async fn exec(&self, script: &str, timeout: Duration) -> Result<ExecOutput> {
+        match &self.backend {
+            Backend::Ssh(handle) => {
+                let handle = handle.clone();
+                let script = script.to_owned();
+                crate::db::run(async move { exec_script(&handle, &script, timeout).await }).await
+            }
+            Backend::Wsl(distro) => {
+                let output = crate::wslfs::exec::exec_script(distro, script, timeout).await?;
+                Ok(ExecOutput {
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                    exit_status: output.exit_status,
+                })
+            }
+        }
     }
 }
 

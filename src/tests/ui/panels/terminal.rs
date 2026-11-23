@@ -622,18 +622,21 @@
         run(cx, &pane, "再加 SFTP 栏");
     }
 
-    /// WSL 会话有文件栏（走 `\\wsl.localhost` 共享），但没有 SSH 才成立的那
-    /// 两颗工具（隧道、监控）—— 本机 Shell 两者都没有。
+    /// WSL 会话有文件栏（走 `\\wsl.localhost` 共享）也有监控（采集经 `wsl.exe`
+    /// 进发行版跑），但没有 SSH 才成立的隧道 —— 本机 Shell 三样都没有。
     #[test]
-    fn wsl_gets_the_file_panel_but_not_the_ssh_only_tools() {
+    fn wsl_gets_file_panel_and_monitor_but_not_the_ssh_only_tunnel() {
         let wsl = Source::Wsl("Ubuntu-24.04".into());
         assert!(wsl.has_file_panel());
+        assert!(wsl.has_monitor());
         assert!(!wsl.over_ssh());
 
         assert!(Source::Ssh.has_file_panel());
+        assert!(Source::Ssh.has_monitor());
         assert!(Source::Ssh.over_ssh());
 
         assert!(!Source::Local.has_file_panel());
+        assert!(!Source::Local.has_monitor());
         assert!(!Source::Local.over_ssh());
     }
 

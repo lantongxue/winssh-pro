@@ -89,3 +89,28 @@
             assert_eq!(seen.script(), "kill -15 4321");
         });
     }
+
+    /// WSL 那一档的整条采集路：拼脚本 → 经 `wsl.exe` 进发行版的 /bin/sh →
+    /// 解析 → 累加成遥测。与 SSH 共用同一份脚本与解析，这里验的是"通道换成
+    /// wsl.exe 之后整条路仍然通"。环境敏感（本机得真装着 WSL），按项目规矩
+    /// 标 `#[ignore]`：`WSL_TEST_DISTRO=Ubuntu-24.04 cargo test -p winssh-service
+    /// wsl -- --ignored`。
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "需要本机装有 WSL，并用 WSL_TEST_DISTRO 指定发行版"]
+    fn wsl_poll_reads_the_distro() {
+        let Ok(distro) = std::env::var("WSL_TEST_DISTRO") else {
+            return;
+        };
+        crate::db::runtime().block_on(async {
+            let service = MonitorService::wsl(distro);
+            let telemetry = service
+                .poll(ProbeOptions::full())
+                .await
+                .expect("WSL 采集应成功");
+            assert!(telemetry.memory_total_gb > 0., "发行版内存总量应读得出来");
+            assert!(!telemetry.processes.is_empty(), "发行版里总有进程在跑");
+            assert!(telemetry.process_total.is_some(), "进程总数应单独回传");
+            assert!(telemetry.disk_total_gb > 0., "根文件系统容量应读得出来");
+        });
+    }

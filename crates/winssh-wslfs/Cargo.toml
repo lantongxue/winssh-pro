@@ -2,7 +2,7 @@
 name = "winssh-wslfs"
 version = "0.1.0"
 edition = "2024"
-description = "WinSSH Pro 的 WSL 文件系统访问层：Linux 路径 ⇄ \\\\wsl.localhost 共享，列目录、读写、删除、chmod"
+description = "WinSSH Pro 的 WSL 接入层：Linux 路径 ⇄ \\\\wsl.localhost 共享（列目录、读写、删除、chmod），以及经 wsl.exe 在发行版里跑一次性命令（监控采集、kill）"
 license = "Apache-2.0"
 
 [dependencies]
