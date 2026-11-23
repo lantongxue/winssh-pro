@@ -39,16 +39,17 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, StyledExt as _,
     VirtualListScrollHandle, WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
-    chart::{AreaChart, BarChart},
+    chart::AreaChart,
     dialog::DialogButtonProps,
     h_flex,
     input::{Input, InputEvent, InputState, NumberInput},
+    progress::ProgressCircle,
     scroll::{ScrollableElement as _, ScrollbarAxis},
     tooltip::Tooltip,
     v_flex, v_virtual_list,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Corners, Entity, EventEmitter, FocusHandle,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
     Focusable, Hsla, InteractiveElement as _, IntoElement, ParentElement, Pixels, Render,
     SharedString, Size, StatefulInteractiveElement as _, Styled, Task, Window, div,
     linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px, rgb, size,
@@ -73,13 +74,21 @@ const RETRY_INTERVAL: Duration = Duration::from_secs(10);
 /// **真的**是这么高 —— 对不上就会错行。一行是 `text_xs` 加上下各 6px 内边距。
 const PROCESS_ROW_HEIGHT: Pixels = px(28.);
 
-/// CPU 两张卡里图的高度：总占用卡是一条加高的历史面积图，每核卡的柱子
-/// 矮一截，只要分得清忙闲就行。
+/// CPU 总占用卡里那条历史面积图的高度。
 const CPU_HISTORY_HEIGHT: Pixels = px(88.);
-const CPU_CORES_HEIGHT: Pixels = px(56.);
 
-/// 每核柱状图的配色轮盘：按核心编号循环取色，相邻的核颜色不同，
-/// 一眼能对上"第几根柱子是第几颗核"。色值跟这张面板其它卡片用的同一族
+/// 每核环形进度条的直径。44px 是"环心写得下 `100%`"的下限：环 stroke 占 5px，
+/// 里面净空 34px，11px 等宽字的四个字符正好 26px 出头。核多的机器靠换行铺开，
+/// 一格尺寸不变 —— 环形图不像柱子那样会被挤扁。
+const CORE_RING_SIZE: Pixels = px(44.);
+
+/// 一格的高度：环 44 ＋ 下面那行核心编号 12。写死不留给内容去量 —— 核多的
+/// 机器这一格有几十上百个，尺寸确定才不用每帧重新量一遍（同
+/// [`PROCESS_ROW_HEIGHT`] 那条理由）。也是采不到每核读数时留白的高度。
+const CORE_CELL_HEIGHT: Pixels = px(56.);
+
+/// 每核环的配色轮盘：按核心编号循环取色，相邻的核颜色不同，
+/// 一眼能对上"第几个环是第几颗核"。色值跟这张面板其它卡片用的同一族
 /// （VS Code 暗色主题那套），不另起炉灶。
 const CORE_COLORS: [u32; 8] = [
     0x569CD6, // 蓝
@@ -888,22 +897,15 @@ impl MonitorPanel {
             )
     }
 
-    /// 每核负载卡：一排柱子，一颗核一根。
+    /// 每核负载卡：一颗核一个环形进度条，环心写占用、环下写核心编号。
     fn render_cpu_cores_card(&self, telemetry: &MonitorTelemetry, cx: &App) -> impl IntoElement {
         let teal = rgb(0x4EC9B0);
-        // 每颗核一根柱子。band 是核心编号（悬停提示的标题），value 是那颗核的
-        // 占用百分比。轻量采集算不出每核读数时这一格是空的。
-        let cores: Vec<CorePoint> = telemetry
-            .cpu_per_core
-            .iter()
-            .enumerate()
-            .map(|(core, percent)| CorePoint {
-                core,
-                label: SharedString::from(core.to_string()),
-                value: *percent as f64,
-            })
-            .collect();
-        let count = cores.len();
+        // 主题取色与字体在循环外取一次：核多的机器这一格有几十上百个，
+        // 每颗核都去查一遍全局主题是白付的（这一栏每帧都重建）。
+        let theme = cx.theme();
+        let mono = theme.mono_font_family.clone();
+        let (value_color, index_color) = (theme.foreground, theme.muted_foreground);
+        let count = telemetry.cpu_per_core.len();
         v_flex()
             .w_full()
             .gap_1()
@@ -933,21 +935,43 @@ impl MonitorPanel {
                     }),
             )
             .child(
-                // 每核占用柱状图：没有轴线、没有网格，柱宽封顶，核多的机器
-                // （几十上百颗）也不会把柱子挤到看不清。每颗核一个颜色，
-                // 按核心编号从配色轮盘里循环取，相邻的核颜色不同。
-                div().w_full().h(CPU_CORES_HEIGHT).child(
-                    BarChart::new(cores)
-                        .band(|core| core.label.clone())
-                        .value(|core| core.value)
-                        .fill(|core, _, _, _| rgb(CORE_COLORS[core.core % CORE_COLORS.len()]))
-                        .tooltip_value(|_, value| SharedString::from(format!("{value:.1}%")))
-                        .corner_radii(Corners::all(px(1.)))
-                        .max_band_width(px(16.))
-                        .label_axis(false)
-                        .value_axis(false)
-                        .grid(false),
-                ),
+                // 每核一个环，按核心编号排、排满一行就换行：这一栏宽度用户能拖
+                // （280–700），列数只能跟着宽度走。轻量采集算不出每核读数时这里
+                // 是空的，但留着一格的高度，免得两种采集切换时卡片一跳一跳。
+                //
+                // 一格是 block `div()` 而不是 `v_flex()`：环与编号都是块级盒子，
+                // 本来就上下排，套一层 flex 只会让这一格整棵子树多排一遍版
+                // （见 [`Self::render_metrics`]）。
+                h_flex()
+                    .w_full()
+                    .flex_wrap()
+                    .gap_x_3()
+                    .gap_y_2()
+                    .min_h(CORE_CELL_HEIGHT)
+                    .children(telemetry.cpu_per_core.iter().enumerate().map(|(core, percent)| {
+                        let percent = *percent;
+                        div()
+                            .w(CORE_RING_SIZE)
+                            .h(CORE_CELL_HEIGHT)
+                            .text_center()
+                            .child(
+                                ProgressCircle::new(("monitor-core", core))
+                                    .size(CORE_RING_SIZE)
+                                    .value(percent)
+                                    .color(rgb(CORE_COLORS[core % CORE_COLORS.len()]))
+                                    .text_size(px(11.))
+                                    .font_family(mono.clone())
+                                    .text_color(value_color)
+                                    .child(SharedString::from(format!("{percent:.0}%"))),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .line_height(px(12.))
+                                    .text_color(index_color)
+                                    .child(SharedString::from(core.to_string())),
+                            )
+                    })),
             )
     }
 
@@ -1557,15 +1581,6 @@ impl Render for MonitorPanel {
 /// `label` 是采样的序号（只当 x 轴的刻度键，卡片里不显示），`value` 是那一
 /// 次的占用百分比 —— 图表库的 Y 轴只接受 `f64`，所以从 `f32` 转过来。
 struct HistoryPoint {
-    label: SharedString,
-    value: f64,
-}
-
-/// CPU 卡片每核柱状图里的一根柱子：`core` 是核心编号（配色的轮盘下标），
-/// `label` 是它转成文本后的刻度键（也用作悬停提示的标题），`value` 是那颗
-/// 核的占用百分比 —— 图表库的 Y 轴只接受 `f64`，所以从 `f32` 转过来。
-struct CorePoint {
-    core: usize,
     label: SharedString,
     value: f64,
 }

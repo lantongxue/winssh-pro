@@ -172,11 +172,24 @@
     /// 那 6.9→2.4 全部来自**拆掉内容尺寸的 flex 层级**：一个尺寸靠内容决定的
     /// flex 容器会让它下面整棵子树多排一遍版，四张卡片、十行预览、Metrics 那一列
     /// 各少一层，就是三倍。加内容之前先看一眼这个数。
+    ///
+    /// 每核那一格从柱状图换成环形进度条（`ProgressCircle`）之后又量了一次。
+    /// 这回是 **dev 档**（依赖 O3、根包未优化 —— 与上表不同档，只能同档比），
+    /// 三次取中位数：
+    ///
+    /// | 页 | 柱状图 | 每核一个环 |
+    /// | --- | --- | --- |
+    /// | Metrics（8 核） | 0.62ms | 1.0ms |
+    /// | Metrics（64 核） | 0.69ms | 3.25ms |
+    ///
+    /// 一格环是五个元素 ＋ 两次圆弧绘制，代价跟着核数线性涨；柱状图整张图只有
+    /// 一个元素，核多核少一个价。8 核多付 0.4ms，64 核就要多付 2.6ms。格子定高
+    /// （`CORE_CELL_HEIGHT`）＋ 主题取色移出每核循环，合起来只压下去一成上下 ——
+    /// 大头在元素与绘制，不在量尺寸。**再往这一页加东西之前，先想想 64 核那一档。**
     #[gpui_kit::test]
     #[ignore = "性能量尺，按需手动跑"]
     fn frame_cost(cx: &mut gpui_kit::TestAppContext) {
         use gpui_kit::component::Root;
-        use std::time::Instant;
 
         cx.update(gpui_kit::init);
         let (root, cx) = cx.add_window_view(|window, cx| {
@@ -197,23 +210,44 @@
                 bench.panel.update(cx, |panel, _| panel.active_tab = tab);
                 cx.notify();
             });
-            // 预热两帧：第一帧建元素状态，行排版缓存还是冷的。
-            for _ in 0..2 {
-                cx.update(|window, cx| window.draw(cx).clear(cx));
-            }
-            const FRAMES: u32 = 100;
-            let start = Instant::now();
-            for _ in 0..FRAMES {
-                cx.update(|window, cx| {
-                    bench.update(cx, |bench, cx| {
-                        bench.panel.update(cx, |_, cx| cx.notify());
-                        cx.notify();
-                    });
-                    window.draw(cx).clear(cx)
-                });
-            }
-            println!("{tab:?}: {:?}/frame", start.elapsed() / FRAMES);
+            measure(&format!("{tab:?}"), &bench, cx);
         }
+
+        // 每核那一格是五个元素，这一页的元素数跟着核数线性涨 —— 8 核量出来的数
+        // 说明不了 64 核的机器。单独量一遍：这一栏最容易在"服务器上开监控"时
+        // 悄悄超预算。
+        bench.update(cx, |bench, cx| {
+            bench.panel.update(cx, |panel, _| {
+                panel.active_tab = MonitorTab::Metrics;
+                if let Some(telemetry) = panel.telemetry.as_mut() {
+                    telemetry.cpu_per_core = (0..64).map(|core| 5. + core as f32).collect();
+                }
+            });
+            cx.notify();
+        });
+        measure("Metrics/64cores", &bench, cx);
+    }
+
+    /// 量一页：先预热两帧（第一帧建元素状态，行排版缓存还是冷的），再量 100 帧
+    /// 取平均。每一帧都真的把面板标脏，模拟终端刷屏时那一层缓存不命中的情形。
+    fn measure(label: &str, bench: &Entity<Bench>, cx: &mut gpui_kit::VisualTestContext) {
+        use std::time::Instant;
+
+        for _ in 0..2 {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        const FRAMES: u32 = 100;
+        let start = Instant::now();
+        for _ in 0..FRAMES {
+            cx.update(|window, cx| {
+                bench.update(cx, |bench, cx| {
+                    bench.panel.update(cx, |_, cx| cx.notify());
+                    cx.notify();
+                });
+                window.draw(cx).clear(cx)
+            });
+        }
+        println!("{label}: {:?}/frame", start.elapsed() / FRAMES);
     }
 
     /// 一份"像真的"的读数：满历史、四十条进程，用来量一帧的代价。
