@@ -1,5 +1,19 @@
     use super::*;
 
+    /// 线上踩过的坑：不带 `--cd ~` 时 wsl.exe 把 Windows 进程的 cwd 翻译成
+    /// `/mnt/c/...` 当起始目录，从安装版打开 WSL 落在
+    /// `/mnt/c/Program Files/WinSSH Pro` 而不是 Linux 用户主目录。
+    #[test]
+    fn shell_starts_in_linux_home_directory() {
+        assert_eq!(
+            shell("Ubuntu-24.04"),
+            Shell::new(
+                "wsl.exe".into(),
+                vec!["-d".into(), "Ubuntu-24.04".into(), "--cd".into(), "~".into()],
+            )
+        );
+    }
+
     #[test]
     fn utf8_output_yields_one_distro_per_line() {
         let distros = parse_distros(b"Ubuntu-22.04\r\ndebian\r\n\r\n");

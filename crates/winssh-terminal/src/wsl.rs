@@ -10,8 +10,16 @@ use std::process::Command;
 use alacritty_terminal::tty::Shell;
 
 /// 走 WSL 的那条 PTY 要跑的程序与参数。
+///
+/// `--cd ~` 不能省：不带它时 `wsl.exe` 把 Windows 进程的当前目录翻译成
+/// `/mnt/c/...` 当起始目录 —— 从安装版（exe 在 `C:\Program Files\...`）
+/// 打开 WSL 会落在那里而不是 Linux 用户的主目录。`~` 由 wsl.exe 自己
+/// 解释成该发行版登录用户的主目录。
 pub fn shell(distro: &str) -> Shell {
-    Shell::new("wsl.exe".into(), vec!["-d".into(), distro.into()])
+    Shell::new(
+        "wsl.exe".into(),
+        vec!["-d".into(), distro.into(), "--cd".into(), "~".into()],
+    )
 }
 
 /// 列出这台机器上已注册的 WSL 发行版（`wsl.exe --list --quiet`）。

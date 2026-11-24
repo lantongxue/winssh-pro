@@ -357,7 +357,7 @@ impl TerminalPane {
     fn spawn_wsl(&mut self, distro: &str, cx: &mut Context<Self>) {
         self.spawn_on_pty(
             Some(crate::terminal::wsl::shell(distro)),
-            format!("wsl.exe -d {distro}"),
+            format!("wsl.exe -d {distro} --cd ~"),
             t!("terminal.banner_wsl_ready").to_string(),
             |error| t!("terminal.wsl_shell_failed", error => error).to_string(),
             cx,
