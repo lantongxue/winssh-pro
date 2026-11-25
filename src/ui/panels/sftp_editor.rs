@@ -12,6 +12,8 @@
 //!   一个空框让人以为文件是空的），再按工具栏上选的编码解（见
 //!   [`crate::ui::menus::TextEncoding`]）。解不动就停在失败态、不建编辑器，并在
 //!   工具栏上留着编码键让人换一档。读到的原始字节会留一份，换编码不用再跑一趟远端。
+//!   工具栏的重载键会再跑一趟远端、整篇顶掉正文（远端被别人改过时用）；有未保存的
+//!   改动先问一句再丢。
 //! - **写**走 [`crate::service::FileService::write_bytes`]（整篇覆盖），按同一档编码编回字节；
 //!   有编不下的字符就让保存失败，不写替换字符。**保存失败不关标签页**：内容还在
 //!   编辑器里，改完再存一次。保存成功也不关 —— 标签页是常驻的，存完接着编是常态。
@@ -82,6 +84,9 @@ const SERVER_PROBE: &str = "sftp-editor-server";
 /// 路径那一格的测试探针名。路径要能点着复制，测试靠它找到落点。
 const PATH_PROBE: &str = "sftp-editor-path";
 
+/// 重载按钮的测试探针名。改工具栏时最容易把这一格弄丢，测试靠它钉住。
+const RELOAD_PROBE: &str = "sftp-editor-reload";
+
 /// 正文这一侧的读取状态。
 enum Read {
     /// 正在从对端读。
@@ -90,6 +95,13 @@ enum Read {
     Ready,
     /// 读不出来：对端 / 本地文件系统给的原因，或者按当前编码解不动。
     Failed(SharedString),
+}
+
+/// 重载按钮此刻能不能点。正在读、正在存（内容是在点下保存那一刻取走的，
+/// 这时重读会把正要写回的正文顶掉）都不行；读失败（`Failed`）反而要能点 ——
+/// 那正是重试的入口。
+fn can_reload(read: &Read, saving: bool) -> bool {
+    !matches!(read, Read::Pending) && !saving
 }
 
 /// 工具栏左端的服务器标识：这份文件所属主机的显示名与地址。
@@ -424,6 +436,68 @@ impl SftpEditorPanel {
             // 上次连"字节"都没读到（网络、超限那一类）：换档顺手重试一次。
             self.start_read(window, cx);
         }
+    }
+
+    /// 工具栏上点重载：重新去远端读这份文件，整篇顶掉正文。
+    ///
+    /// 有未保存的改动就先问一句（见 [`Self::confirm_reload`]）—— 重载丢改动和
+    /// 关标签页丢改动同级；没改动就直接重读。读失败时也能点，那是重试入口。
+    fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !can_reload(&self.read, self.saving) {
+            return;
+        }
+        if self.dirty {
+            self.confirm_reload(window, cx);
+        } else {
+            self.start_read(window, cx);
+        }
+    }
+
+    /// 重载一份有未保存改动的文件之前问一句：丢弃并重载，还是取消。
+    ///
+    /// 确认框和 [`Self::confirm_close`] 同一套（组件库的 `AlertDialog`），但只有
+    /// 两个出口 —— 不提供"保存并重载"：想存的话工具栏上就有保存键，存完再点重载
+    /// 自然不会再问。丢弃会丢东西，配危险色。
+    fn confirm_reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.weak_entity();
+        let name = self.name.clone();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            // 外壳闭包是 `Fn`，弹一次搭一次：弱句柄在这里复制一份才能挪进消费它的回调。
+            let name = name.clone();
+            let discard = this.clone();
+            alert
+                .title(t!("sftp_editor.close_dirty_title"))
+                .description(SharedString::from(t!(
+                    "sftp_editor.reload_dirty_confirm",
+                    name => name,
+                )))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("sftp-editor-reload-cancel")
+                                .ghost()
+                                .label(t!("sftp_editor.close_cancel"))
+                                .on_click(move |_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("sftp-editor-reload-discard")
+                                .danger()
+                                .label(t!("sftp_editor.reload_discard"))
+                                .on_click(move |_, window, cx| {
+                                    // 先收起确认框，再去重读。
+                                    window.close_dialog(cx);
+                                    if let Some(editor) = discard.upgrade() {
+                                        editor.update(cx, |editor, cx| {
+                                            // 用户已经选了丢弃：脏标记先清掉。这样就算这一趟
+                                            // 读失败，标签页也不会再回到"有未保存"的样子。
+                                            editor.dirty = false;
+                                            editor.start_read(window, cx);
+                                        });
+                                    }
+                                }),
+                        ),
+                )
+        });
     }
 
     // ─── 行跳转（Ctrl+G / Cmd+G） ────────────────────────────────────────────
@@ -861,7 +935,7 @@ impl Render for SftpEditorPanel {
             .on_action(cx.listener(|this, action: &CloseGoToLine, window, cx| {
                 this.on_close_goto(action, window, cx)
             }))
-            // 工具栏：服务器标识 + 远端路径 + 语言标签 + 保存按钮。和终端会话的信息栏
+            // 工具栏：服务器标识 + 远端路径 + 语言标签 + 编码 + 重载 + 保存按钮。和终端会话的信息栏
             // 同一套 chrome —— 固定 26 高、凹陷底色、一道下边线、`text_xs` 的安静前景，
             // 让编辑标签页和终端标签页并排时读起来是同一条上沿。
             .child(
@@ -968,6 +1042,30 @@ impl Render for SftpEditorPanel {
                                     .on_change(cx.listener(|this, encoding, window, cx| {
                                         this.set_encoding(*encoding, window, cx)
                                     })),
+                            )
+                            // 重载：重新去远端读这份文件（远端被别人改过时用）。
+                            // 正在读/存时灰着；读失败时能点，那是重试入口。
+                            // 探针挂在 block div 上（Button 不收 debug_selector），
+                            // 不加 flex 层。
+                            .child(
+                                div()
+                                    .id(RELOAD_PROBE)
+                                    .debug_selector(|| RELOAD_PROBE.to_string())
+                                    .flex_shrink_0()
+                                    .child(
+                                        Button::new("sftp-editor-reload")
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(
+                                                Icon::new(AppIcon::RefreshCw)
+                                                    .with_size(ICON_SIZE),
+                                            )
+                                            .tooltip(t!("sftp_editor.reload_tooltip"))
+                                            .disabled(!can_reload(&self.read, self.saving))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.reload(window, cx)
+                                            })),
+                                    ),
                             ),
                     )
                     .child(

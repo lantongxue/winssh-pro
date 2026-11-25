@@ -1,6 +1,6 @@
     use super::{
-        PATH_PROBE, SERVER_PROBE, ServerIdentity, SftpEditorPanel, language_for,
-        language_for_shebang, open_after_host, parse_goto,
+        PATH_PROBE, RELOAD_PROBE, Read, SERVER_PROBE, ServerIdentity, SftpEditorPanel, can_reload,
+        language_for, language_for_shebang, open_after_host, parse_goto,
     };
 
     /// 编辑页开在打开它的那个会话标签页后面，关掉它要落回那一页。
@@ -188,6 +188,27 @@
         cx.simulate_click(path.center(), gpui_kit::Modifiers::none());
         let copied = cx.read_from_clipboard().and_then(|item| item.text());
         assert_eq!(copied.as_deref(), Some("/tmp/detached.conf"));
+    }
+
+    /// 工具栏编码键旁边有重载按钮：远端被别人改过时重新读这份文件。
+    /// 改工具栏时最容易把这一格弄丢，钉住它在。
+    #[gpui_kit::test]
+    fn toolbar_has_a_reload_button(cx: &mut gpui_kit::TestAppContext) {
+        let (_root, cx) = drawn_editor(cx, None);
+        assert!(
+            cx.debug_bounds(RELOAD_PROBE).is_some(),
+            "工具栏上没有重载按钮"
+        );
+    }
+
+    /// 重载的闸门：正在读、正在存时不能点（存盘那一下重读会把正要写回的正文
+    /// 顶掉）；读失败反而要能点 —— 那是重试入口，灰掉它用户就没路可走了。
+    #[test]
+    fn reload_is_blocked_while_reading_or_saving() {
+        assert!(!can_reload(&Read::Pending, false));
+        assert!(!can_reload(&Read::Ready, true));
+        assert!(can_reload(&Read::Ready, false));
+        assert!(can_reload(&Read::Failed("boom".into()), false));
     }
 
     #[test]

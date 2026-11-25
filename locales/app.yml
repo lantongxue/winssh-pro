@@ -4278,6 +4278,15 @@ sftp_editor.goto_placeholder:
 sftp_editor.encoding_locked:
   en: Save or discard the changes before switching encoding
   zh-CN: 有未保存的更改，保存后才能切换编码
+sftp_editor.reload_tooltip:
+  en: Reload the file from the remote
+  zh-CN: 重新读取远端文件
+sftp_editor.reload_dirty_confirm:
+  en: "Reloading “%{name}” re-reads it from the remote; unsaved changes will be lost."
+  zh-CN: 重载“%{name}”会重新读取远端内容，未保存的更改将丢失。
+sftp_editor.reload_discard:
+  en: Discard & reload
+  zh-CN: 丢弃并重载
 sftp_editor.decode_failed:
   en: "Cannot read this file as %{encoding}. Pick another encoding on the toolbar."
   zh-CN: 按 %{encoding} 读不出这个文件，可以在工具栏换一档编码。
