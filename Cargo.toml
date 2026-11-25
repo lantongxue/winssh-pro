@@ -417,6 +417,11 @@ ironrdp-egfx-native = "0.2"
 # Linux 上 cpal 要 `libasound2-dev`（见 release.yml 的构建依赖）。
 ironrdp-rdpsnd = "0.11"
 ironrdp-rdpsnd-native = { version = "0.8", default-features = false, features = ["aac"] }
+# RDPDR（设备重定向，MS-RDPEFS）。我们一样设备都不重定向，只挂它的空后端：
+# Windows 是经这条通道给会话建"远程音频"设备的，不报它就整场没有声音
+# （见 `crates/winssh-rdp/src/session.rs` 的 `attach_audio`）。同一批：
+# rdpdr 0.9 的依赖表是 core 0.3 / pdu 0.11 / svc 0.10。
+ironrdp-rdpdr = "0.9"
 # 精确钉 0.23.0：0.23.1 把 picky 锁在 =7.0.0-rc.27，而 connector 0.12 锁
 # =7.0.0-rc.26，两份精确锁 Cargo 解不开；0.23.0 与 connector 同锁 rc.26。
 sspi = "=0.23.0"
@@ -751,6 +756,12 @@ ironrdp-connector = { path = "vendor/ironrdp-connector" }
 # tile 缓存）。上游 0.11 的解码器是纯标量、tile 状态用 BTreeMap 搬 24KB 值。
 # 这份补丁副本做数据结构和 SIMD 优化，理由与逐文件改动见 vendor/ironrdp-graphics/PATCHES.md。
 ironrdp-graphics = { path = "vendor/ironrdp-graphics" }
+# GFX 的 AVC420 路径每一帧都把整张画面从 YUV 4:2:0 转成 RGBA，上游 0.5.0 是逐像素
+# 调辅助函数 + `extend_from_slice`（2560x1440 实测 41.7ms/帧）。这份副本只改
+# `Yuv420Frame::to_rgba` 一处：色度项按色度行算一次、整行写进预分配的缓冲，
+# 输出逐字节不变（5.1ms/帧）。上游同一处改动挂在 Devolutions/IronRDP#2216 未合并，
+# 合并发版后这份副本就该撤掉。理由与验证见 vendor/ironrdp-egfx/PATCHES.md。
+ironrdp-egfx = { path = "vendor/ironrdp-egfx" }
 gpui-pre = { path = "vendor/gpui-pre" }
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 gpui-pre-macos = { path = "vendor/gpui-pre-macos" }

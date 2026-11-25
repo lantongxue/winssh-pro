@@ -56,6 +56,9 @@
 //! 优先走的动态通道）。三条共享同一个 cpal 播放后端
 //! （[`super::audio::SharedPlayback`]），解码出的音频直接进本地默认输出
 //! 设备，不经 GPUI，会话循环只承担 wave 块的解码（约 10µs/块）。
+//! 另外**必须**陪挂一条空的 RDPDR（设备重定向）静态通道：Windows 没见到它
+//! 就不给这条会话建"远程音频"设备，三条声音通道全程一个字节都收不到
+//! （见 [`attach_audio`]）。
 //!
 //! 不支持的（有意）：麦克风重定向（MS-RDPEAI）、驱动器重定向、智能卡、
 //! UDP 多传输、Kerberos（NTLM 够用，Kerberos 要 KDC 配置，走不到）。
@@ -98,6 +101,7 @@ use ironrdp_pdu::rdp::client_info::{CompressionType, TimezoneInfo};
 use ironrdp_pdu::rdp::headers::{ShareControlHeader, ShareControlPdu, ShareDataPdu};
 use ironrdp_pdu::surface_commands::FrameAction;
 use ironrdp_pdu::{Action, PduResult, mcs, x224::X224};
+use ironrdp_rdpdr::{NoopRdpdrBackend, Rdpdr};
 use ironrdp_rdpsnd::client::{
     DVC_CHANNEL_NAME, LOSSY_DVC_CHANNEL_NAME, Rdpsnd, RdpsndDvcState,
 };
@@ -377,30 +381,15 @@ async fn open(
             platform_h264_decoder(),
         ));
 
-    // 声音输出（MS-RDPEA）：一个 SharedPlayback 后端同时喂静态 RDPSND 通道
-    // 与 AUDIO_PLAYBACK_DVC[_LOSSY] 两条动态通道（Windows 8+ 优先走动态，
-    // 静态是老服务器的回退）。两条动态通道共享一份协商状态，用 factory 注册，
-    // 服务器关掉再开时状态机重建（见 `super::audio` 的模块文档）。
-    let playback = settings.audio.then(SharedPlayback::new);
-    if let Some(playback) = &playback {
-        let state = RdpsndDvcState::new(Box::new(playback.clone())).with_clock(audio::clock());
-        let lossy = state.clone();
-        drdynvc = drdynvc
-            .with_dynamic_channel_factory(DVC_CHANNEL_NAME, move || state.channel())
-            .with_dynamic_channel_factory(LOSSY_DVC_CHANNEL_NAME, move || lossy.lossy_channel());
+    if settings.audio {
+        drdynvc = attach_audio(&mut connector, drdynvc, client_name(&host));
     }
-    connector = connector.with_static_channel(drdynvc);
+    connector.attach_static_channel(drdynvc);
 
     if settings.clipboard {
         connector.attach_static_channel(Cliprdr::new(Box::new(GpuiClipboard::new(
             clip_tx, events_tx, local,
         ))));
-    }
-
-    // 静态 RDPSND 通道：和动态通道驱动同一个后端（`with_clock` 让 Wave Confirm
-    // 报得上持有时间，服务器靠它给音频流调速）。
-    if let Some(playback) = playback {
-        connector.attach_static_channel(Rdpsnd::new(Box::new(playback)).with_clock(audio::clock()));
     }
 
     let should_upgrade = connect_begin(&mut framed, &mut connector)
@@ -435,6 +424,47 @@ async fn open(
     .map_err(connect_error)?;
 
     Ok((framed, connection_result, peer))
+}
+
+/// 声音输出（MS-RDPEA）要挂的全部通道，返回添好两条动态通道的 `drdynvc`。
+///
+/// 一个 [`SharedPlayback`] 后端同时喂静态 RDPSND 通道与
+/// AUDIO_PLAYBACK_DVC[_LOSSY] 两条动态通道（Windows 8+ 优先走动态，静态是
+/// 老服务器的回退）。两条动态通道共享一份协商状态，用 factory 注册，服务器
+/// 关掉再开时状态机重建（见 `super::audio` 的模块文档）；`with_clock` 让
+/// Wave Confirm 报得上持有时间，服务器靠它给音频流调速。
+///
+/// **RDPDR 那条不能省。** 它是设备重定向（驱动器、打印机、智能卡）的通道，
+/// 我们一样设备都不重定向，后端是空的，握手完就没有下文 —— 但 Windows 是
+/// 经它给会话建"远程音频"播放设备的：客户端不报 `rdpdr`，服务器就不建设备，
+/// 既不来开 AUDIO_PLAYBACK_DVC，也不在静态 RDPSND 上发格式表，声音通道全程
+/// 一个字节都没有，远端应用照常"播放"，本地一片安静。FreeRDP 的命令行里
+/// 同一处写着"rdpsnd requires rdpdr to be registered"。
+///
+/// 事故："远程桌面没有声音"（2026-11，Win10 精简版虚拟机实测）：只挂 RDPSND
+/// 时会话线程的 rdpsnd 日志是空的；补上这条通道，同一条播放命令立刻走完
+/// 格式协商（AAC 44.1kHz）并出声。拿掉再测又归零，一挂一摘对照过。
+fn attach_audio(
+    connector: &mut ClientConnector,
+    drdynvc: DrdynvcClient,
+    client_name: String,
+) -> DrdynvcClient {
+    let playback = SharedPlayback::new();
+    let state = RdpsndDvcState::new(Box::new(playback.clone())).with_clock(audio::clock());
+    let lossy = state.clone();
+    connector.attach_static_channel(Rdpsnd::new(Box::new(playback)).with_clock(audio::clock()));
+    connector.attach_static_channel(Rdpdr::new(Box::new(NoopRdpdrBackend), client_name));
+    drdynvc
+        .with_dynamic_channel_factory(DVC_CHANNEL_NAME, move || state.channel())
+        .with_dynamic_channel_factory(LOSSY_DVC_CHANNEL_NAME, move || lossy.lossy_channel())
+}
+
+/// 报给服务器的客户端名：主机配置的名字，没起名就用应用名。
+fn client_name(host: &Host) -> String {
+    match host.name.is_empty() {
+        true => "WinSSH-Pro".to_owned(),
+        false => host.name.to_string(),
+    }
 }
 
 /// GFX 事件回调：能力确认后记一笔协商到的档（实机排障用），其余全用默认。
@@ -522,10 +552,7 @@ fn connector_config(
         codecs,
     };
 
-    let client_name = match host.name.is_empty() {
-        true => "WinSSH-Pro".to_owned(),
-        false => host.name.to_string(),
-    };
+    let client_name = client_name(host);
 
     ironrdp_connector::Config {
         credentials: Credentials::UsernamePassword {

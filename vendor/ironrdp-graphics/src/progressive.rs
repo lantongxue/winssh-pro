@@ -663,24 +663,33 @@ fn band_zero_count(sign: &[i8], band: &BandInfo) -> usize {
     clippy::cast_sign_loss,
     reason = "value is clamped to 0..255 before cast"
 )]
-fn clamp_u8(value: i64) -> u8 {
+fn clamp_u8(value: i32) -> u8 {
     value.clamp(0, 255) as u8
 }
 
 /// ITU-R BT.601 YCbCr to RGB with 16-bit fixed point.
 ///
 /// The samples come off the wire and can reach the full i16 range, where
-/// the fixed-point products overflow i32. Widening keeps the arithmetic
-/// exact for every input a tile can hold, and `clamp_u8` still bounds the
-/// result.
+/// the textbook products (`cr * 91881`, `cb * 116130`, the `cb`/`cr` sum)
+/// overflow i32.
+///
+/// PATCH(winssh-pro): upstream widened to i64, which no SIMD target multiplies
+/// cheaply, so this loop stayed scalar. Each coefficient is split at a multiple
+/// of 2^16 instead — `91881 = 65536 + 26345`, `46802 = 65536 - 18734`,
+/// `116130 = 2 * 65536 - 14942` — and the multiple leaves the `>> 16` as a
+/// plain add (`(k * 65536 + z) >> 16 == k + (z >> 16)` for a floor shift).
+/// What is left to multiply fits i16, so every product and sum stays inside
+/// i32 for the whole i16 input range (worst case `32768 * (22554 + 18734)`
+/// = 1.35e9) and the result is bit-identical to the i64 formula;
+/// `ycbcr_to_rgb_matches_the_widened_formula` pins that down.
 fn ycbcr_to_rgb(y: i16, cb: i16, cr: i16) -> [u8; 3] {
-    let y = i64::from(y) + 128;
-    let cb = i64::from(cb);
-    let cr = i64::from(cr);
+    let y = i32::from(y) + 128;
+    let cb = i32::from(cb);
+    let cr = i32::from(cr);
 
-    let r = y + ((cr * 91881 + 32768) >> 16);
-    let g = y - ((cb * 22554 + cr * 46802 + 32768) >> 16);
-    let b = y + ((cb * 116130 + 32768) >> 16);
+    let r = y + cr + ((cr * 26345 + 32768) >> 16);
+    let g = y - cr - ((cb * 22554 - cr * 18734 + 32768) >> 16);
+    let b = y + 2 * cb + ((32768 - cb * 14942) >> 16);
 
     [clamp_u8(r), clamp_u8(g), clamp_u8(b)]
 }
@@ -1034,13 +1043,13 @@ impl TileState {
         }
 
         // YCbCr to RGBA conversion.
-        for i in 0..64 * 64 {
-            let [r, g, b] = ycbcr_to_rgb(y_buf[i], cb_buf[i], cr_buf[i]);
-            let off = i * 4;
-            pixels[off] = r;
-            pixels[off + 1] = g;
-            pixels[off + 2] = b;
-            pixels[off + 3] = 0xFF;
+        // PATCH(winssh-pro): whole-pixel chunks zipped with the three planes, so
+        // the loop carries no index arithmetic or bounds checks and the i32
+        // conversion above vectorizes.
+        let (rgba, _) = pixels[..64 * 64 * 4].as_chunks_mut::<4>();
+        for (((pixel, &y), &cb), &cr) in rgba.iter_mut().zip(&y_buf).zip(&cb_buf).zip(&cr_buf) {
+            let [r, g, b] = ycbcr_to_rgb(y, cb, cr);
+            *pixel = [r, g, b, 0xFF];
         }
     }
 }
@@ -2771,6 +2780,172 @@ mod tests {
         for (y, cb, cr, expected) in cases {
             assert_eq!(ycbcr_to_rgb(y, cb, cr), expected, "y={y} cb={cb} cr={cr}");
         }
+    }
+
+    // PATCH(winssh-pro): the i32 conversion must not drift from the i64 formula it
+    // replaced by even one level — a tile is rebuilt from the same coefficients on
+    // every refinement pass, and a pixel that flips between two values shimmers.
+    #[test]
+    fn ycbcr_to_rgb_matches_the_widened_formula() {
+        fn widened(y: i16, cb: i16, cr: i16) -> [u8; 3] {
+            let clamp = |value: i64| u8::try_from(value.clamp(0, 255)).expect("clamped to a byte");
+            let y = i64::from(y) + 128;
+            let cb = i64::from(cb);
+            let cr = i64::from(cr);
+            [
+                clamp(y + ((cr * 91881 + 32768) >> 16)),
+                clamp(y - ((cb * 22554 + cr * 46802 + 32768) >> 16)),
+                clamp(y + ((cb * 116130 + 32768) >> 16)),
+            ]
+        }
+
+        // A luma that cancels the chroma term keeps the channel off the clamp
+        // rails, where a wrong low bit would otherwise be hidden by saturation.
+        let luma = |value: i64| {
+            i16::try_from(value.clamp(i64::from(i16::MIN), i64::from(i16::MAX))).expect("clamped to i16")
+        };
+
+        // Red depends on `cr` alone and blue on `cb` alone: walk each exhaustively.
+        for chroma in i16::MIN..=i16::MAX {
+            let wide = i64::from(chroma);
+            for y in [0, luma(-((wide * 91881) >> 16)), luma(-((wide * 116130) >> 16))] {
+                assert_eq!(ycbcr_to_rgb(y, 0, chroma), widened(y, 0, chroma), "y={y} cr={chroma}");
+                assert_eq!(ycbcr_to_rgb(y, chroma, 0), widened(y, chroma, 0), "y={y} cb={chroma}");
+            }
+        }
+
+        // Green mixes both: a coprime-stride grid over the full range, plus the
+        // corners where the two products add up to the largest magnitude.
+        let axis = |stride: usize| {
+            (i16::MIN..=i16::MAX)
+                .step_by(stride)
+                .chain([i16::MIN, -1, 0, 1, i16::MAX])
+        };
+        for cb in axis(211) {
+            for cr in axis(197) {
+                let cancelling = luma((i64::from(cb) * 22554 + i64::from(cr) * 46802) >> 16);
+                for y in [i16::MIN, -128, 0, 127, i16::MAX, cancelling] {
+                    assert_eq!(ycbcr_to_rgb(y, cb, cr), widened(y, cb, cr), "y={y} cb={cb} cr={cr}");
+                }
+            }
+        }
+    }
+
+    /// What `reconstruct_to_rgba` did before the lifted inverse DWT and the i32
+    /// color conversion: the upstream scalar lifter, the i64 fixed point, and
+    /// the indexed pixel loop. The "before" side of the cost bench below.
+    #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn reconstruct_upstream(tile: &TileState, pixels: &mut [u8]) {
+        fn widened(y: i16, cb: i16, cr: i16) -> [u8; 3] {
+            // `as u8` after the clamp, exactly as upstream's `clamp_u8` had it.
+            let clamp = |value: i64| value.clamp(0, 255) as u8;
+            let y = i64::from(y) + 128;
+            let cb = i64::from(cb);
+            let cr = i64::from(cr);
+            [
+                clamp(y + ((cr * 91881 + 32768) >> 16)),
+                clamp(y - ((cb * 22554 + cr * 46802 + 32768) >> 16)),
+                clamp(y + ((cb * 116130 + 32768) >> 16)),
+            ]
+        }
+
+        let mut planes = tile.coefficients;
+        let mut temp = [0i16; COEFFICIENTS_PER_COMPONENT];
+        for (plane, quant) in planes.iter_mut().zip(&tile.base_quant) {
+            dequantize_component_ccq(plane, quant, true);
+            crate::dwt_extrapolate::decode_scalar(plane, &mut temp);
+        }
+        for i in 0..64 * 64 {
+            let [r, g, b] = widened(planes[0][i], planes[1][i], planes[2][i]);
+            let off = i * 4;
+            pixels[off] = r;
+            pixels[off + 1] = g;
+            pixels[off + 2] = b;
+            pixels[off + 3] = 0xFF;
+        }
+    }
+
+    /// 量尺：一个 tile 从系数重建成 RGBA 要多久，改之前（上游标量路径）对改
+    /// 之后。`cargo test --manifest-path vendor/ironrdp-graphics/Cargo.toml
+    /// --release reconstruct_cost -- --ignored --nocapture`。
+    ///
+    /// 两条路在同一个进程里交替跑、各取中位数 —— 这台机器噪声大，分两次
+    /// 进程跑出来的差值不可信。顺带逐字节比对输出：量尺同时是一条回归。
+    /// 记下的数见 `PATCHES.md` 的"重建路径向量化"。
+    #[test]
+    #[ignore = "timing bench; needs --release"]
+    #[expect(clippy::as_conversions, clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    fn reconstruct_cost_against_the_upstream_scalar_path() {
+        use std::time::Instant;
+
+        // 1920x1080 铺满是 30 x 17 = 510 个 64 见方的 tile：整屏滚动时一帧的量。
+        const TILES_PER_FRAME: usize = 510;
+        const DISTINCT_TILES: usize = 64;
+        const ROUNDS: usize = 31;
+
+        // 系数取贴近真实的幅度（低频大、高频小），量化表取非 6 的值让反量化
+        // 两个分支都走到。两条路都没有数据相关的分支，幅度不影响耗时。
+        let quant = ComponentCodecQuant {
+            ll3: 6,
+            hl3: 6,
+            lh3: 6,
+            hh3: 7,
+            hl2: 7,
+            lh2: 7,
+            hh2: 8,
+            hl1: 8,
+            lh1: 8,
+            hh1: 9,
+        };
+        let mut seed: u32 = 20261125;
+        let tiles: Vec<TileState> = (0..DISTINCT_TILES)
+            .map(|_| {
+                let mut tile = TileState::new();
+                tile.use_reduce_extrapolate = true;
+                tile.base_quant = [quant; 3];
+                for plane in &mut tile.coefficients {
+                    for (index, value) in plane.iter_mut().enumerate() {
+                        seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+                        // LL3 sits at the tail of the buffer and carries the energy.
+                        let shift = if index >= 4015 { 5 } else { 10 };
+                        *value = ((seed >> 16) as i16) >> shift;
+                    }
+                }
+                tile
+            })
+            .collect();
+
+        let mut upstream_pixels = vec![0u8; 64 * 64 * 4];
+        let mut patched_pixels = vec![0u8; 64 * 64 * 4];
+        for tile in &tiles {
+            reconstruct_upstream(tile, &mut upstream_pixels);
+            tile.reconstruct_to_rgba(&mut patched_pixels);
+            assert_eq!(patched_pixels, upstream_pixels);
+        }
+
+        let frame = |reconstruct: &dyn Fn(&TileState, &mut [u8]), pixels: &mut [u8]| {
+            let started = Instant::now();
+            for index in 0..TILES_PER_FRAME {
+                reconstruct(core::hint::black_box(&tiles[index % DISTINCT_TILES]), pixels);
+                core::hint::black_box(&*pixels);
+            }
+            started.elapsed().as_secs_f64() * 1e3
+        };
+        let mut upstream = Vec::with_capacity(ROUNDS);
+        let mut patched = Vec::with_capacity(ROUNDS);
+        for _ in 0..ROUNDS {
+            upstream.push(frame(&reconstruct_upstream, &mut upstream_pixels));
+            patched.push(frame(&|tile, pixels| tile.reconstruct_to_rgba(pixels), &mut patched_pixels));
+        }
+        upstream.sort_by(f64::total_cmp);
+        patched.sort_by(f64::total_cmp);
+        let (upstream, patched) = (upstream[ROUNDS / 2], patched[ROUNDS / 2]);
+        println!(
+            "reconstruct, {TILES_PER_FRAME} tiles (one 1080p frame): upstream {upstream:.2} ms ({:.1} us/tile), patched {patched:.2} ms ({:.1} us/tile), x{:.2}",
+            upstream * 1e3 / TILES_PER_FRAME as f64,
+            patched * 1e3 / TILES_PER_FRAME as f64,
+            upstream / patched,
+        );
     }
 
     #[test]

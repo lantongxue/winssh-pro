@@ -8,6 +8,10 @@
 vendor/gpui-pre-windows/target
 vendor/gpui-pre-macos/target
 vendor/gpui-pre-linux/target
+# 两份 IronRDP 补丁副本单独跑测试 / 量尺（`cargo test --manifest-path vendor/...`）
+# 时同样会在自己目录下留 target。
+vendor/ironrdp-graphics/target
+vendor/ironrdp-egfx/target
 # 本地参考用的 zed 克隆（只看不编），不进仓库 —— 当成 gitlink 提交上去而
 # .gitmodules 里没有它，CI 的 `submodules: recursive` 会直接 fatal。
 /refs/zed/

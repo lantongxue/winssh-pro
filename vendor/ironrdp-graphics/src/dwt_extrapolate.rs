@@ -127,12 +127,185 @@ pub fn encode(buffer: &mut [i16], temp: &mut [i16]) {
 // Inverse (decode) implementation
 // ---------------------------------------------------------------------------
 
+// PATCH(winssh-pro): the inverse transform below is a restructuring of the
+// upstream scalar lifter (kept further down as `decode_block_scalar`, the test
+// oracle). Upstream walks each row / column once, carrying the previous even
+// sample and high coefficient in registers — one sample per iteration, and the
+// column walk strides through the tile. But the 5/3 inverse is two lifting
+// steps with no dependence *between* samples of the same step:
+//
+//   even[j] = low[j]  - (high[j-1] + high[j]) / 2      inputs only
+//   odd[j]  = (even[j] + even[j+1]) / 2 + 2 * high[j]  finished evens only
+//
+// so each step is an element-wise map over whole slices. Rows get the two maps
+// plus an interleave; columns get them applied to entire rows at a time (every
+// column advances in lockstep), which also turns the strided column walk into
+// sequential reads. Both shapes auto-vectorize.
+//
+// The arithmetic stays in i16: upstream computes in i32 and truncates with
+// `as i16`, and truncation commutes with wrapping add/sub/shift, so only the
+// halving needs care (see `half_sum`). Output is bit-identical for every input,
+// including coefficients that wrap — `decode_block_matches_the_scalar_lifter`.
+
+/// `(a + b) / 2` as upstream computes it — the sum in i32, the division rounding
+/// toward zero — without leaving i16.
+///
+/// `(a & b) + ((a ^ b) >> 1)` is the floor of the exact half-sum and cannot
+/// overflow. Flooring and rounding toward zero differ only for an odd negative
+/// sum, where the floor is one too low: add the sum's parity bit back when the
+/// floor is negative.
+#[inline]
+fn half_sum(a: i16, b: i16) -> i16 {
+    let floor = (a & b).wrapping_add((a ^ b) >> 1);
+    floor.wrapping_add((a ^ b) & (floor >> 15) & 1)
+}
+
+/// Lifting step 1 over a run of samples: `even = low - (high_prev + high) / 2`.
+#[inline]
+fn lift_even(even: &mut [i16], low: &[i16], high_prev: &[i16], high: &[i16]) {
+    for (((even, &low), &high_prev), &high) in even.iter_mut().zip(low).zip(high_prev).zip(high) {
+        *even = low.wrapping_sub(half_sum(high_prev, high));
+    }
+}
+
+/// Lifting step 2 over a run of samples: `odd = (even + even_next) / 2 + 2 * high`.
+#[inline]
+fn lift_odd(odd: &mut [i16], even: &[i16], even_next: &[i16], high: &[i16]) {
+    for (((odd, &even), &even_next), &high) in odd.iter_mut().zip(even).zip(even_next).zip(high) {
+        *odd = half_sum(even, even_next).wrapping_add(high.wrapping_mul(2));
+    }
+}
+
+/// Longest high band a level can have (level 1: 31), with headroom.
+const MAX_HIGH: usize = 32;
+
+/// 1D inverse DWT on a contiguous row: `low.len() + high.len()` samples into `dst`.
+///
+/// `low` is one or two samples longer than `high` (the reduce-extrapolate
+/// split of an odd or even length).
+#[inline]
+fn idwt_row_lifted(low: &[i16], high: &[i16], dst: &mut [i16]) {
+    let n_h = high.len();
+    let extrapolated = low.len() == n_h + 2;
+
+    let mut even = [0i16; MAX_HIGH + 1];
+    let mut odd = [0i16; MAX_HIGH];
+    let even = &mut even[..=n_h];
+    let odd = &mut odd[..n_h];
+
+    even[0] = low[0].wrapping_sub(high[0]);
+    lift_even(&mut even[1..n_h], &low[1..n_h], &high[..n_h - 1], &high[1..]);
+    even[n_h] = low[n_h].wrapping_sub(if extrapolated { high[n_h - 1] / 2 } else { high[n_h - 1] });
+    lift_odd(odd, &even[..n_h], &even[1..], high);
+
+    let (pairs, _) = dst.as_chunks_mut::<2>();
+    for ((pair, &even), &odd) in pairs.iter_mut().zip(even.iter()).zip(odd.iter()) {
+        *pair = [even, odd];
+    }
+    dst[2 * n_h] = even[n_h];
+    if extrapolated {
+        dst[2 * n_h + 1] = half_sum(even[n_h], low[n_h + 1]);
+    }
+}
+
+/// Inverse DWT down every column at once.
+///
+/// `low` holds `n_l` rows and `high` `n_h` rows of `width` samples; `dst`
+/// receives the `n_l + n_h` reconstructed rows. Same lifting as
+/// [`idwt_row_lifted`], with a whole row standing where a sample stood.
+fn idwt_columns_lifted(low: &[i16], high: &[i16], dst: &mut [i16], width: usize, n_l: usize, n_h: usize) {
+    let extrapolated = n_l == n_h + 2;
+    let row = |index: usize| index * width..(index + 1) * width;
+
+    // Even output rows.
+    for ((even, &low), &high) in dst[row(0)].iter_mut().zip(&low[row(0)]).zip(&high[row(0)]) {
+        *even = low.wrapping_sub(high);
+    }
+    for j in 1..n_h {
+        lift_even(&mut dst[row(2 * j)], &low[row(j)], &high[row(j - 1)], &high[row(j)]);
+    }
+    for ((even, &low), &high) in dst[row(2 * n_h)]
+        .iter_mut()
+        .zip(&low[row(n_h)])
+        .zip(&high[row(n_h - 1)])
+    {
+        *even = low.wrapping_sub(if extrapolated { high / 2 } else { high });
+    }
+    if extrapolated {
+        let (even, last) = dst[2 * n_h * width..(2 * n_h + 2) * width].split_at_mut(width);
+        for ((last, &even), &low) in last.iter_mut().zip(even.iter()).zip(&low[row(n_h + 1)]) {
+            *last = half_sum(even, low);
+        }
+    }
+
+    // Odd output rows, each between the two even rows just written.
+    for j in 0..n_h {
+        let (even, rest) = dst[2 * j * width..(2 * j + 3) * width].split_at_mut(width);
+        let (odd, even_next) = rest.split_at_mut(width);
+        lift_odd(odd, even, even_next, &high[row(j)]);
+    }
+}
+
 /// Inverse DWT for one decomposition level.
 ///
 /// `n_l` and `n_h` are the low-pass and high-pass band counts.
 /// Buffer contains `[HL, LH, HH, LL]` contiguously.
 #[expect(clippy::similar_names, reason = "hl/lh/hh/ll are standard DWT subband names")]
 fn decode_block(buffer: &mut [i16], temp: &mut [i16], n_l: usize, n_h: usize) {
+    debug_assert!((1..=MAX_HIGH).contains(&n_h), "high band length out of range");
+    debug_assert!(n_l == n_h + 1 || n_l == n_h + 2, "not a reduce-extrapolate split");
+
+    let dst_w = n_l + n_h;
+
+    let hl_off = 0;
+    let lh_off = n_h * n_l;
+    let hh_off = lh_off + n_l * n_h;
+    let ll_off = hh_off + n_h * n_h;
+
+    // Temp: L half (n_l rows x dst_w cols) then H half (n_h rows x dst_w cols)
+    let (l_rows, h_rows) = temp[..dst_w * dst_w].split_at_mut(n_l * dst_w);
+
+    // Horizontal inverse: (LL + HL) -> L rows
+    for (row, l_row) in l_rows.chunks_exact_mut(dst_w).enumerate() {
+        let ll_start = ll_off + row * n_l;
+        let hl_start = hl_off + row * n_h;
+        idwt_row_lifted(
+            &buffer[ll_start..ll_start + n_l],
+            &buffer[hl_start..hl_start + n_h],
+            l_row,
+        );
+    }
+
+    // Horizontal inverse: (LH + HH) -> H rows
+    for (row, h_row) in h_rows.chunks_exact_mut(dst_w).enumerate() {
+        let lh_start = lh_off + row * n_l;
+        let hh_start = hh_off + row * n_h;
+        idwt_row_lifted(
+            &buffer[lh_start..lh_start + n_l],
+            &buffer[hh_start..hh_start + n_h],
+            h_row,
+        );
+    }
+
+    // Vertical inverse: (L + H) -> reconstructed rows in buffer
+    idwt_columns_lifted(l_rows, h_rows, &mut buffer[..dst_w * dst_w], dst_w, n_l, n_h);
+}
+
+/// The whole upstream inverse transform: what [`decode`] was before the
+/// restructuring. Test oracle, and the "before" side of the cost bench in
+/// `progressive::tests`.
+#[cfg(test)]
+pub(crate) fn decode_scalar(buffer: &mut [i16], temp: &mut [i16]) {
+    decode_block_scalar(&mut buffer[3807..], temp, 9, 8);
+    decode_block_scalar(&mut buffer[3007..], temp, 17, 16);
+    decode_block_scalar(buffer, temp, 33, 31);
+}
+
+/// The upstream scalar lifter, kept as the oracle the restructured
+/// [`decode_block`] is checked against.
+#[cfg(test)]
+#[expect(clippy::similar_names, reason = "hl/lh/hh/ll are standard DWT subband names")]
+fn decode_block_scalar(buffer: &mut [i16], temp: &mut [i16], n_l: usize, n_h: usize) {
     let dst_w = n_l + n_h;
 
     // Subband offsets within this block's buffer region
@@ -179,7 +352,10 @@ fn decode_block(buffer: &mut [i16], temp: &mut [i16], n_l: usize, n_h: usize) {
 ///
 /// Reconstructs `n_l + n_h` output samples from `n_l` low-pass and `n_h`
 /// high-pass coefficients.
-// PATCH(winssh-pro): hot inner loop; inline so the lifter stays in registers.
+// PATCH(winssh-pro): test-only since `idwt_row_lifted` took over the decode path.
+// Still `#[inline]`, as it was while it served decoding, so that the cost bench
+// times the path that actually shipped.
+#[cfg(test)]
 #[inline]
 fn idwt_row(low: &[i16], high: &[i16], dst: &mut [i16]) {
     let n_l = low.len();
@@ -225,9 +401,11 @@ fn idwt_row(low: &[i16], high: &[i16], dst: &mut [i16]) {
 /// 1D inverse DWT on a strided column.
 ///
 /// Reads from `src` with stride, writes to `dst` with stride.
-#[expect(clippy::too_many_arguments)]
-// PATCH(winssh-pro): hot inner loop; inline so the lifter stays in registers.
+// PATCH(winssh-pro): test-only since `idwt_columns_lifted` took over the decode path
+// (`#[inline]` kept for the same reason as on `idwt_row`).
+#[cfg(test)]
 #[inline]
+#[expect(clippy::too_many_arguments)]
 fn idwt_col(
     src: &[i16],
     l_start: usize,
@@ -568,6 +746,93 @@ mod tests {
         // Reduce-extrapolate DWT has slightly more rounding error at
         // boundaries than standard DWT due to asymmetric sample counts
         assert!(max_err <= 6, "max round-trip error {max_err} exceeds tolerance");
+    }
+
+    /// Coefficients from a small LCG; `shift` narrows the range (0 = full i16).
+    fn lcg_fill(buffer: &mut [i16], seed: &mut u32, shift: u32) {
+        for value in buffer.iter_mut() {
+            *seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+            *value = ((*seed >> 16) as i16) >> shift;
+        }
+    }
+
+    // PATCH(winssh-pro): the lifted transform replaces upstream's on the decode
+    // path, so it has to agree bit for bit — including on full-range input,
+    // where the i32 sums no longer fit i16 and the result wraps.
+    #[test]
+    fn half_sum_matches_the_widened_division() {
+        let axis = |stride: usize| {
+            (i16::MIN..=i16::MAX)
+                .step_by(stride)
+                .chain([i16::MIN, i16::MIN + 1, -2, -1, 0, 1, 2, i16::MAX - 1, i16::MAX])
+        };
+        for a in axis(61) {
+            for b in axis(53) {
+                let expected = t((i32::from(a) + i32::from(b)) / 2);
+                assert_eq!(half_sum(a, b), expected, "a={a} b={b}");
+            }
+        }
+    }
+
+    #[test]
+    fn idwt_row_lifted_matches_the_scalar_lifter() {
+        let mut seed: u32 = 2024;
+        // Every (low, high) split the three levels use, at coefficient ranges
+        // from realistic (>> 6) to wrapping (>> 0).
+        for (n_l, n_h) in [(9, 8), (17, 16), (33, 31), (2, 1), (3, 1)] {
+            for shift in [6, 3, 0] {
+                for _ in 0..64 {
+                    let mut low = vec![0i16; n_l];
+                    let mut high = vec![0i16; n_h];
+                    lcg_fill(&mut low, &mut seed, shift);
+                    lcg_fill(&mut high, &mut seed, shift);
+
+                    let mut expected = vec![0i16; n_l + n_h];
+                    let mut actual = vec![0i16; n_l + n_h];
+                    idwt_row(&low, &high, &mut expected);
+                    idwt_row_lifted(&low, &high, &mut actual);
+                    assert_eq!(actual, expected, "n_l={n_l} n_h={n_h} shift={shift}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decode_block_matches_the_scalar_lifter() {
+        let mut seed: u32 = 777;
+        for (offset, n_l, n_h) in [(3807, 9, 8), (3007, 17, 16), (0, 33, 31)] {
+            for shift in [6, 3, 0] {
+                for _ in 0..16 {
+                    let mut expected = vec![0i16; 4096];
+                    lcg_fill(&mut expected, &mut seed, shift);
+                    let mut actual = expected.clone();
+
+                    // Stale scratch must not leak into the result either.
+                    let mut temp_expected = vec![0x5a5a_i16; 4096];
+                    let mut temp_actual = vec![-0x1234_i16; 4096];
+                    decode_block_scalar(&mut expected[offset..], &mut temp_expected, n_l, n_h);
+                    decode_block(&mut actual[offset..], &mut temp_actual, n_l, n_h);
+                    assert_eq!(actual, expected, "n_l={n_l} n_h={n_h} shift={shift}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decode_matches_the_scalar_lifter_on_whole_tiles() {
+        let mut seed: u32 = 31337;
+        for shift in [6, 3, 0] {
+            for _ in 0..16 {
+                let mut expected = vec![0i16; 4096];
+                lcg_fill(&mut expected, &mut seed, shift);
+                let mut actual = expected.clone();
+                let mut temp = vec![0i16; 4096];
+
+                decode_scalar(&mut expected, &mut temp);
+                decode(&mut actual, &mut temp);
+                assert_eq!(actual, expected, "shift={shift}");
+            }
+        }
     }
 
     #[test]
