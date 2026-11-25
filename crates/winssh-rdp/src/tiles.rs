@@ -60,22 +60,21 @@ pub(super) fn dirty_grid(width: u16, height: u16, dirty: &[InclusiveRectangle]) 
 
 /// 一条会话的 tile 缓存：上一帧的格子与桌面尺寸。
 ///
-/// `pixel` 和 `spare` 是脏 tile 拷出时用的双缓冲，跨帧复用：`pixel` 被消费
-/// 进 `RgbaImage` 后，`spare` 变成下一次的 `pixel`，原 `pixel` 的 Vec
-/// （现在被 `RgbaImage` 持有）下次回来当 `spare`。这样每个脏 tile **零分配**
-/// ——不需要 `Vec::with_capacity(256KB)`。
-/// 256×256×4 = 256KB，两个缓冲共 512KB，一帧最多用一次，不会被多线程碰。
+/// 每个脏格子要一块自己的像素缓冲（256×256×4 = 256KB）：它被 `RgbaImage`
+/// 吃进去、随 `RenderImage` 交给 GPUI，什么时候放手由界面与纹理图集决定，
+/// 这边收不回来，所以**没法跨帧复用**，一个脏格子一次分配是这条路的底价。
+/// （这里曾经有一对 `pixel` / `spare` 字段号称"双缓冲零分配"：每轮把填好
+/// 的那块 `take` 走之后，留下的是一个没有容量的空 Vec，下一格照样重新分配，
+/// 多出来的只是一次 swap。已删。）要再省，得让干净格子更多 —— 也就是让
+/// 上游报的脏矩形更准，而不是在这里倒腾缓冲。
 ///
 /// `tiles` 用 `Arc<Vec>` 包装：`build` 返回的 `TiledFrame` 持有同一份
-/// `Arc`，避免每帧 clone 135 个 `Arc<RenderImage>` 产生新 `Vec` 分配。
+/// `Arc`，帧在各处传递时不必逐格克隆 `Arc<RenderImage>`。
 #[derive(Default)]
 pub(super) struct TileCache {
     width: u16,
     height: u16,
     tiles: Arc<Vec<Arc<RenderImage>>>,
-    pixel: Vec<u8>,
-    /// 双缓冲的备用缓冲：`pixel` 被 `RgbaImage` 消费后用它顶替。
-    spare: Vec<u8>,
 }
 
 impl TileCache {
@@ -113,11 +112,14 @@ impl TileCache {
         };
         let data = image.data();
         let stride = image.stride();
-        // 取出 Vec 原地修改：Arc::get_mut 在没有其他引用时成功（上一帧
-        // TiledFrame 已 drop）。有其他引用时（旧帧还在显示中）从 Arc 拿出
-        // 一份 clone——只在跨帧引用未释放时多一次 Vec 分配，正常情况零分配。
-        let mut tiles = Arc::try_unwrap(self.tiles.clone())
-            .unwrap_or_else(|arc| (*arc).clone());
+        // 把格子表从 self 里**拿出来**再拆：上一帧的 `TiledFrame` 已经放手时
+        // 这份 `Arc` 是独占的，直接拆出 Vec 原地改；界面还攥着上一帧时才克隆
+        // （一次小 Vec 分配 + 每格一次引用计数）。原先写的是
+        // `Arc::try_unwrap(self.tiles.clone())` —— self 手里还留着一份，计数
+        // 至少是 2，那个 try_unwrap 永远失败，等于每帧无条件克隆。
+        // 中途提前返回会把 self.tiles 留成空表：下一帧 `len != count`，
+        // 走全量重建，不会拿半截表去拼帧。
+        let mut tiles = Arc::unwrap_or_clone(std::mem::take(&mut self.tiles));
         if tiles.len() != count {
             tiles.clear();
             tiles.reserve(count);
@@ -130,20 +132,15 @@ impl TileCache {
             let row = index as u32 / cols;
             let (x, y, w, h) = tile_rect(width, height, col, row);
             let needed = (w * h * 4) as usize;
-            self.pixel.clear();
-            self.pixel.reserve(needed);
+            let mut buffer = Vec::with_capacity(needed);
             for ty in 0..h {
                 let start = (y + ty) as usize * stride + x as usize * 4;
-                self.pixel.extend_from_slice(&data[start..start + w as usize * 4]);
+                buffer.extend_from_slice(&data[start..start + w as usize * 4]);
             }
             // BgrX32 的 X 是填充字节，上传前补成不透明；按 4 字节一组可向量化。
-            for pixel in self.pixel.as_chunks_mut::<4>().0 {
+            for pixel in buffer.as_chunks_mut::<4>().0 {
                 pixel[3] = 255;
             }
-            // 双缓冲：swap 后 spare 持有刚填好的数据，pixel 拿到 spare 的旧
-            // Vec（有容量，下次循环 clear+reserve 复用）。take spare 给 RgbaImage。
-            std::mem::swap(&mut self.pixel, &mut self.spare);
-            let buffer = std::mem::take(&mut self.spare);
             debug_assert!(buffer.len() == needed);
             let tile = RgbaImage::from_raw(w, h, buffer)?;
             let tile = Arc::new(RenderImage::new(vec![Frame::new(tile)]));

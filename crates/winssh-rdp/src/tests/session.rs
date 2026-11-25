@@ -133,9 +133,8 @@
         }
     }
 
-    fn test_connection(desktop: (u16, u16)) -> ConnectionResult {
-        use ironrdp_connector::connection_activation::ConnectionActivationFactory;
-        let host = Host {
+    fn test_host() -> Host {
+        Host {
             id: "test".into(),
             name: "test".into(),
             kind: winssh_domain::host::HostKind::Rdp,
@@ -163,7 +162,12 @@
             terminal_scheme: "".into(),
             shell_integration: false,
             favorites: Vec::new(),
-        };
+        }
+    }
+
+    fn test_connection(desktop: (u16, u16)) -> ConnectionResult {
+        use ironrdp_connector::connection_activation::ConnectionActivationFactory;
+        let host = test_host();
         let config = connector_config(&host, desktop, &host.rdp);
         ConnectionResult {
             io_channel_id: 1003,
@@ -408,3 +412,32 @@
         };
         assert!(!connector_config(&muted, (800, 600), &muted.rdp).enable_audio_playback);
     }
+
+    /// 声音那档要连 RDPDR 一起挂。
+    #[test]
+    fn audio_channels_bring_the_device_redirection_channel_along() {
+        let host = test_host();
+        let config = connector_config(&host, (800, 600), &host.rdp);
+        let mut connector = ClientConnector::new(config, "127.0.0.1:0".parse().unwrap());
+        let _drdynvc = attach_audio(&mut connector, DrdynvcClient::new(), client_name(&host));
+
+        assert!(connector.static_channels.get_by_type::<Rdpsnd>().is_some());
+        // 事故："远程桌面没有声音"。Windows 是经 RDPDR 给会话建"远程音频"设备
+        // 的：只报 rdpsnd 不报 rdpdr，服务器不开 AUDIO_PLAYBACK_DVC、也不在静态
+        // 通道上发格式表，三条声音通道一个字节都收不到。这条断言掉了就是它回来了。
+        assert!(connector.static_channels.get_by_type::<Rdpdr>().is_some());
+    }
+
+    /// 主机没起名时报应用名，不报空串（空的客户端名在服务器的会话列表里是一行空白）。
+    #[test]
+    fn client_name_falls_back_to_the_application_name() {
+        let named = test_host();
+        assert_eq!(client_name(&named), "test");
+
+        let unnamed = Host {
+            name: "".into(),
+            ..named
+        };
+        assert_eq!(client_name(&unnamed), "WinSSH-Pro");
+    }
+

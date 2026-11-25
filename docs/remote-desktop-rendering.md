@@ -545,3 +545,139 @@ cargo test --release -p winssh-rdp -p winssh-desktop -- --test-threads=1 # 79 + 
 ```
 
 不自动启动应用、不截图界面（见 [[no-auto-launch-for-verification]]）。
+
+## 第七轮：重建路径向量化 + AVC420 色彩转换 + 远程音频（缺 RDPDR 通道）
+
+分支 `rdp-optimize`。第六轮的结论是"progressive 的解码 CPU 是 codec 固有成本，软件侧
+空间已探尽"。**这个结论下早了**：跨帧合并那条路确实走不通，但单个 tile 的重建本身
+——第五轮采样里占会话线程七成的那一块——还能便宜三倍多；H.264 那条"正路"上也压着
+一个每帧整幅画面的逐像素循环。
+
+### 根因
+
+- **逆 DWT 的"循环携带依赖"是写法带来的，不是算法要求的。** LeGall 5/3 的逆变换是两步
+  提升：偶数样本只读输入，奇数样本只读已经算完的偶数样本，同一步里的样本彼此不依赖。
+  上游把两步揉进一趟循环、用寄存器接力上一个偶数样本，才串行了；列方向还按步长跨行
+  跳着读。
+- **色彩转换升到 i64 只是为了躲溢出。** `cr * 91881` 在 i32 里会溢出，上游就整体升到
+  i64；没有哪个 SIMD 目标能便宜地做 64 位整数乘法，这个循环于是一直是标量。
+- **AVC420 → RGBA 一个像素算一次。** `Yuv420Frame::to_rgba` 每个像素两次带边界检查的
+  色度行查找、一次重复的色度项计算（4:2:0 的一个色度样本管四个像素，四次算的是同一个
+  数）、一次 `extend_from_slice`。2560×1440 一帧 ≈42 ms —— 服务器肯发 H.264 时，
+  "硬解接近零 CPU" 的好处被这一步吃掉。
+- **`TileCache` 每帧无条件克隆格子表。** `Arc::try_unwrap(self.tiles.clone())`：self 手里
+  还留着一份，计数至少是 2，永远失败。那对号称"双缓冲零分配"的 `pixel` / `spare` 也
+  从来没生效过（填好的那块被 `take` 走，留下的是没有容量的空 Vec）。
+- **远程音频完全没声音：会话没挂 RDPDR（设备重定向）静态通道。** Windows 是经 RDPDR
+  给会话建"远程音频"设备的；客户端只报 `rdpsnd`、不报 `rdpdr`，服务器就当这条会话没有
+  音频设备 —— 不开 `AUDIO_PLAYBACK_DVC`，静态 `rdpsnd` 通道上也一个字节不发，客户端
+  这边连格式协商都等不到，自然没声音也没报错。对 Win10 虚拟机实测（2026-11-25）：
+  不挂 RDPDR，`ironrdp_rdpsnd` 的日志是 0 行；挂上一条空的（`NoopRdpdrBackend`，
+  不宣告任何设备），服务器立刻开出 `AUDIO_PLAYBACK_DVC` 与 `AUDIO_PLAYBACK_LOSSY_DVC`。
+  上游 `ironrdp-client` 也是这么挂的。
+- **远程音频（次要）：每次协议层 `close()` 都立刻拆掉播放流。** `ironrdp-rdpsnd-native`
+  的 cpal 后端 `close()` 是马上 join 播放线程、不等缓冲放完；而协议层在服务器发 Close、
+  格式重协商、DVC 起停时都会调它。Windows 是**每段声音协商一次格式**的（实测连放三段
+  提示音，服务器发了三轮 Server Audio Formats + Training），立刻拆流的话每段尾巴被切、
+  下一段又要重新开设备，还把会话线程卡在 join 上。
+
+### 修复
+
+- `vendor/ironrdp-graphics`（理由与逐文件改动见该目录 `PATCHES.md`）：
+  - `dwt_extrapolate.rs`：解码路径按提升步骤拆开 —— 行方向两次逐元素映射加一次交织，
+    列方向"一整行当一个样本"让所有列齐步走。算术留在 i16（`half_sum` 用
+    `(a & b) + ((a ^ b) >> 1)` 做不溢出的半和，负奇数补 1 还原向零取整），
+    SSE2 一条指令 8 个样本。
+  - `progressive.rs`：`ycbcr_to_rgb` 把每个系数在 2^16 的整数倍处拆开
+    （`91881 = 65536 + 26345` 等），整数倍那部分出了 `>> 16` 就是加法，剩下的乘积
+    全范围最坏也在 i32 内；像素循环改成 `as_chunks_mut::<4>` 与三个平面 zip。
+- `vendor/ironrdp-egfx`（新增副本，0.5.0，只改 `src/decode.rs`，见该目录 `PATCHES.md`）：
+  利用 `(256·y + k) >> 8 == y + (k >> 8)`，色度项每个色度行算一次、铺成整行，
+  两行亮度共用；输出一次分配到位。上游同方向的 PR Devolutions/IronRDP#2216 还开着，
+  它发版后这份副本即可删除。
+- `crates/winssh-rdp/src/tiles.rs`：格子表改 `Arc::unwrap_or_clone(mem::take(..))`，
+  上一帧已放手时原地改、不克隆；删掉 `pixel` / `spare`。一个脏格子一次 256KB 分配是
+  这条路的底价（缓冲随 `RenderImage` 交给 GPUI，收不回来），注释里写明了。
+- `crates/winssh-rdp/src/session.rs`：音频相关的通道收进 `attach_audio` 一处 —— 静态
+  `rdpsnd`、两条音频 DVC，**外加一条空的 `Rdpdr`**（新依赖 `ironrdp-rdpdr 0.9`，与其余
+  ironrdp 子 crate 同一批，`cargo tree -d` 无重复）。不宣告智能卡、不宣告磁盘，只让
+  服务器看到这条通道在。回归测试 `audio_channels_bring_the_device_redirection_channel_along`
+  守着"开音频必带 RDPDR"。
+- `crates/winssh-rdp/src/audio.rs`：**延迟关闭**。`close()` 不再拆流，只登记一个 2 秒后
+  的期限（FreeRDP 早期版本也是这个思路）；期限内来了新的 wave 就取消，流一直开着；到期才由
+  一条 `rdpsnd-linger` 线程真正关掉。会话结束（`Drop`）仍立即收走。期限判定是纯函数
+  `Linger::verdict(now)`，测试在 `src/tests/audio.rs`（9 项）。
+
+全部**逐位等于上游**：没有 `unsafe`、没有 `std::arch`，只是把循环改成编译器能自动
+向量化的样子。上游的标量实现原样留在 `#[cfg(test)]` 里当对照 —— progressive 的 tile
+每个 refinement pass 都重建一次，差一个灰阶就会闪，"误差可容忍"在这里不成立。
+
+### 测量（Windows 11 x86_64，release，2026-11-25）
+
+都是**进程内量尺**：新旧实现同一进程里交替跑、取中位数（这台机器噪声大），各跑 5 遍。
+
+| 路径 | 负载 | 上游 | 本轮 | 倍数 |
+| --- | --- | --- | --- | --- |
+| progressive 重建 | 510 tile（1080p 一整帧） | 26.1 – 27.6 ms | 7.1 – 7.5 ms | ×3.6 – 3.7 |
+| AVC420 → RGBA | 2560×1440 一帧 | 40.9 – 43.9 ms | 4.7 – 5.05 ms | ×8.3 – 9.4 |
+
+### 如实的边界
+
+- **渲染没有真实会话的数。** 两张表都是进程内量尺，`WINSSH_RDP_PROF` 的分段 CPU 没在
+  真实会话上重量。"滚动时会话线程 CPU 降一半上下"是拿第五轮的七成占比推出来的，
+  不是量出来的。
+- **RLGR 熵解码没动**，它才是真串行（下一个符号从哪一位开始取决于上一个解出了什么）；
+  0.11.0 已经是 64 位窗口读位，没有便宜可占。重建便宜之后它的占比会升上来。
+- **内存基本没降。** 每个 64×64 tile 的 codec 状态约 60KB（系数 24KB + 符号 12KB +
+  参考 24KB），1080p ≈31MB、4K ≈122MB，这是 progressive 协议要求客户端记住的东西。
+  把 `references` 与 `TileState` 的系数并成一份能省四成，但第六轮动这块状态出过残影，
+  没有真机回归不敢动。本轮只去掉了每帧一次的格子表克隆。
+- **音频验到协议与设备这一层，没有用耳朵听。** `live_scroll` 对虚拟机跑出来的是：格式
+  协商完成（服务器 26 种、客户端认 22 种，选中 AAC 44.1kHz 立体声）→ Media Foundation
+  AAC 解码器起来 → cpal 开流 → `Playing audio device=wasapi:…`；连放三段只开了一次流
+  （延迟关闭生效），其间有 3 次 `underruns=1` 的缓冲修正，出在段与段之间的静默处。
+  音质、有没有爆音、音画同步，要人在应用里听。
+- **只对一台 Win10 精简版虚拟机验过。** xrdp、Windows Server、别的 Windows 版本没试；
+  RDPDR 是协议里的标准通道，挂一条空的不该有副作用，但这是推断。
+- AVC444 的 `to_rgba`、`ironrdp-egfx-native` 里 NV12 的拆分没动（收益小 / 在另一个 crate）。
+
+### 换库评估
+
+查了 GitHub（2026-11-25）：IronRDP 各子 crate 都已是最新发布版，没有"升级即修"的路。
+相关的上游 PR 都还没合：#2216（AVC420 转换，本轮已在副本里做了同样的事）、#2036
+（progressive 大区域 rayon 并行解码 —— 降的是墙钟不是总 CPU）、#2509（给 progressive
+解码器内存设上限 —— 只封顶不减量）、#1793（RemoteFX 解码优化）。换成 FreeRDP 意味着
+C 依赖 + FFI + 整个会话层重写，而上面的差距靠补丁就能追平，**结论是留在 IronRDP**。
+
+### 验证
+
+```sh
+cargo test --release --manifest-path vendor/ironrdp-graphics/Cargo.toml   # 257 项，1 ignored
+CARGO_TARGET_DIR=target/vendor-egfx   cargo test --release --manifest-path vendor/ironrdp-egfx/Cargo.toml     # 70 项，1 ignored
+cargo test --release -p winssh-rdp -p winssh-desktop -- --test-threads=1  # 87 + 11 项
+
+# 两把量尺
+cargo test --release --manifest-path vendor/ironrdp-graphics/Cargo.toml   reconstruct_cost -- --ignored --nocapture
+CARGO_TARGET_DIR=target/vendor-egfx   cargo test --release --manifest-path vendor/ironrdp-egfx/Cargo.toml   to_rgba_cost -- --ignored --nocapture
+```
+
+音频对真实服务器的协议级复验（地址与账号走环境变量，别写进文件；`WINSSH_RDP_LOG`
+**不要**点 `ironrdp_connector`，它会把登录报文连密码一起打出来）：
+
+```sh
+WINSSH_RDP_HOST=… WINSSH_RDP_USER=… WINSSH_RDP_PASS=… \
+WINSSH_RDP_SIZE=1280x720 WINSSH_RDP_SECONDS=14 WINSSH_RDP_SCROLL_RATE=1 \
+WINSSH_RDP_SETTLE=5 WINSSH_RDP_LOG=ironrdp_rdpsnd \
+WINSSH_RDP_LAUNCH='powershell -c "1..3|%{(New-Object Media.SoundPlayer C:\Windows\Media\Alarm01.wav).PlaySync()}"' \
+cargo test --release -p winssh-rdp live_scroll -- --ignored --nocapture
+# 期望依次看到：Audio output channel started ×2 → AudioFormat → Advertising audio output
+# formats → Training → Opened playback stream → Playing audio
+```
+
+Windows 是**有声音要放时才协商格式**的：远端不出声，日志停在 `channel started` 是正常的，
+不代表没修好。接管已有会话时服务器会先给登录桌面再切到用户桌面，首帧后立刻发的按键
+会丢，所以要 `WINSSH_RDP_SETTLE`。
+
+待人工验：在应用里连一台真实 RDP 主机，放一段系统提示音和一段音乐，听有没有声音、
+尾音是否完整、连续播放是否顺；滚网页 / 放视频看 CPU（`WINSSH_RDP_PROF=1`）。
+不自动启动应用、不截图界面。
