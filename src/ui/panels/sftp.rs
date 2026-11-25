@@ -1636,9 +1636,27 @@ impl SftpPanel {
         // 换了通道就是换了文件系统：旧的条目与"停在哪一格"都不该留着。
         self.remote = Pane::default();
         self.remote_path.clear();
+        self.path_input.update(cx, |state, cx| state.set_value("", window, cx));
         if self.open {
             self.enter_remote_home(window, cx);
         }
+        cx.notify();
+    }
+
+    /// 宿主重拨 SSH 前摘掉旧通道。正在跑的传输也随这次换连接取消，避免它们
+    /// 在新会话里继续写远端；未打开的栏不预建通道，连上后仍按原规则补开。
+    pub fn detach(&mut self, cx: &mut Context<Self>) {
+        for (_, (_, handle)) in self.running.drain() {
+            handle.cancel();
+        }
+        self.pending.clear();
+        self.copy_targets.clear();
+        self.service = None;
+        self.ssh = None;
+        self.connect_error = None;
+        self.remote = Pane::default();
+        self.remote_path.clear();
+        self.elevating = false;
         cx.notify();
     }
 

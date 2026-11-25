@@ -194,6 +194,18 @@ impl Source {
         }
     }
 
+    /// 这条会话能不能重新拨号。`Ssh` 这一档同时罩着 SSH、Telnet 与串口 ——
+    /// 后两档也是照着主机拨号，重连就是把它们再拨一次；它们没有 SSH 那组
+    /// 附属通道，重连里清监控 / 转发 / SFTP 的那几下对它们是空操作。
+    fn can_reconnect(&self) -> bool {
+        match self {
+            Self::Ssh => true,
+            Self::Local | Self::Wsl(_) => false,
+            #[cfg(test)]
+            Self::Detached => true,
+        }
+    }
+
     /// 这条会话有没有底部文件栏。
     ///
     /// SSH 有（sftp 子系统通道），WSL 也有 —— 走的是
@@ -507,6 +519,11 @@ pub struct TerminalPanel {
     /// 所在的 Dock。SFTP 面板要编辑远端文件时，靠它在中心区开一个编辑器标签页 ——
     /// 子面板够不到 Dock，这个弱句柄是从工作区一路穿下来的（[`Self::subscribe_sftp`]）。
     dock_area: WeakEntity<DockArea>,
+    /// 一次 SSH 重连是否还在途中。防止连点开出多趟拨号；首个窗格连上时解除。
+    reconnecting: bool,
+    /// 本条 SSH 会话的重连代次。只有当前这一趟拨号可以接回面板，避免上一次
+    /// 慢回来的 SFTP 结果覆盖新连接；每次重连自增。
+    reconnect_epoch: u64,
     /// 上一次报出去的存活状态，[`Self::sync_liveness`] 拿它判断"翻面了没有"。
     /// 开局是 `false`：还没连上的会话不算活着。
     alive: bool,
@@ -730,6 +747,8 @@ impl TerminalPanel {
                 history,
                 hosts,
                 dock_area,
+                reconnecting: false,
+                reconnect_epoch: 0,
                 alive: false,
                 forwards: None,
                 host,
@@ -763,6 +782,40 @@ impl TerminalPanel {
         self.active = self.panes.len() - 1;
     }
 
+    /// 重拨这条会话（见 [`Source::can_reconnect`]）。保留分屏档位与右栏 /
+    /// SFTP 开合，但所有窗格都从新连接重开；旧 shell、监控轮询、转发和
+    /// SFTP 通道在这里一起退役 —— 后三者只对 SSH 存在，别的档位上是空操作。
+    fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.source.can_reconnect() || self.reconnecting {
+            return;
+        }
+        self.reconnecting = true;
+        self.reconnect_epoch = self.reconnect_epoch.wrapping_add(1);
+
+        // 先切断旧连接：面板手上这份 session 先放，随后 `panes.clear()` 会让
+        // 每个窗格的 Emulator 掉地、SSH 通道的 I/O 任务随之 abort。不另起任务
+        // 做优雅断开 —— 对端见到的就是一条普通断线，和网线被拔没有两样。
+        self.ssh = None;
+        self.telemetry = None;
+        self.monitor_panel.update(cx, |monitor, cx| monitor.detach(cx));
+        self.forwards = None;
+        self.forwards_view.update(cx, |view, cx| view.unbind(cx));
+        self.docker_view.update(cx, |view, cx| view.unbind(cx));
+        self.sftp_opening = false;
+        self.sftp_panel.update(cx, |panel, cx| panel.detach(cx));
+
+        let origins: Vec<PaneOrigin> = self.panes.iter().map(|_| PaneOrigin::Dial).collect();
+        self.panes.clear();
+        self.active = 0;
+        for origin in origins {
+            let pane = TerminalPane::new(self.host.clone(), origin, window, cx);
+            self.adopt_pane(pane, window, cx);
+        }
+        self.sync_liveness(cx);
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
     fn on_pane_event(
         &mut self,
         pane: &Entity<TerminalPane>,
@@ -770,12 +823,20 @@ impl TerminalPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // 重连刚换下去的旧窗格差一口气才冒上来的事件：它的订阅还没断
+        // （`Subscription` 掉地才断），事件却已经不该再动这个面板。
+        if !self.panes.iter().any(|held| held.entity_id() == pane.entity_id()) {
+            return;
+        }
         match event {
             TerminalPaneEvent::Connected(session) => {
                 // 又有一个窗格连上了：主机列表上那颗点要跟着亮。这一步在下面
                 // 那个提前返回之前 —— 第一个窗格死了、再分屏连上第二个的时候，
                 // 走到这儿的正是"报的是同一条连接"那一档。
                 self.sync_liveness(cx);
+                if self.source.can_reconnect() {
+                    self.reconnecting = false;
+                }
                 // 第一个连上的窗格提供这条会话的连接。第二个窗格是在同一条上
                 // 开出来的，报的是同一条连接，接不接都一样 —— 但监控与 SFTP
                 // 已经挂好了，不能再挂一遍。
@@ -800,6 +861,16 @@ impl TerminalPanel {
                 self.start_saved_forwards(session.clone(), window, cx);
                 self.attach_docker(session.handle.clone(), session.clone(), cx);
                 cx.notify();
+            }
+            TerminalPaneEvent::DialFinished => {
+                // 这一趟拨号收场了（失败原因窗格自己已写进占位终端）。把"重连
+                // 在途"收掉，按钮恢复可点；信任确认框若还开着不受影响 ——
+                // 框里点"信任"会再拨一次，成功照样走上面的 `Connected`。
+                // Telnet / 串口拨完也报这一条，它们本来就没有转圈，清了无害。
+                if self.reconnecting {
+                    self.reconnecting = false;
+                    cx.notify();
+                }
             }
             TerminalPaneEvent::Changed => {
                 self.sync_active(window, cx);
@@ -1292,9 +1363,22 @@ impl TerminalPanel {
         // 把这条连接借给 SFTP 栏：从它上面打开的编辑页要带着这台机器。
         panel.update(cx, |panel, _| panel.bind_session(handle.clone()));
         self.sftp_opening = true;
+        let epoch = self.reconnect_epoch;
         cx.spawn_in(window, async move |this, cx| {
             let outcome = crate::service::SftpService::connect(handle, launch).await;
-            _ = this.update(cx, |this, _| this.sftp_opening = false);
+            // 重连换代了的这一趟作废：旧连接上慢回来的结果不能顶掉新连接刚挂好的
+            // 通道，"正在开通道"的标记也不归它收。
+            let current = this
+                .update(cx, |this, _| {
+                    if this.reconnect_epoch == epoch {
+                        this.sftp_opening = false;
+                    }
+                    this.reconnect_epoch == epoch
+                })
+                .unwrap_or(false);
+            if !current {
+                return;
+            }
             let _ = panel.update_in(cx, |this, window, cx| match outcome {
                 Ok(service) => this.attach(
                     Some(crate::service::FileService::Sftp(service)),
@@ -2061,6 +2145,7 @@ impl Render for TerminalPanel {
         let history_open = self.shown_tool == Some(SessionTool::History);
         let split = self.split;
         let over_ssh = self.source.over_ssh();
+        let can_reconnect = self.source.can_reconnect();
         let has_monitor = self.source.has_monitor();
         let has_file_panel = self.source.has_file_panel();
         let has_history = self.history.is_some();
@@ -2130,6 +2215,14 @@ impl Render for TerminalPanel {
                         .on_sftp(cx.listener(|this, _, window, cx| {
                             this.toggle_sftp(window, cx);
                         }))
+                })
+                // 重连对需要拨号的会话接（见 [`Source::can_reconnect`]）：
+                // SSH 连同 Telnet / 串口；本机 shell 与 WSL 没有远端可重拨。
+                .when(can_reconnect, |bar| {
+                    bar.on_reconnect(
+                        self.reconnecting,
+                        cx.listener(|this, _, window, cx| this.reconnect(window, cx)),
+                    )
                 })
                 .when(has_history, |bar| {
                     bar.history_active(history_open)

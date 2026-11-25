@@ -192,6 +192,12 @@ session_info.monitor_hide:
 session_info.monitor_show:
   en: Show right-side monitor (Alt+M)
   zh-CN: 显示右侧资源监控（Alt+M）
+session_info.reconnect:
+  en: Reconnect
+  zh-CN: 重连
+session_info.reconnect_tooltip:
+  en: Close the current SSH connection and reconnect, restarting every terminal pane and its attached channels.
+  zh-CN: 断开当前 SSH 连接并重新连接，所有终端窗格及其附属通道都会重新建立。
 session_info.docker:
   en: Docker
   zh-CN: Docker

@@ -282,6 +282,20 @@ impl MonitorPanel {
         cx.notify();
     }
 
+    /// 会话要重拨了：停掉旧连接上的轮询，并清掉那一台连接的读数。
+    ///
+    /// 下一次 [`Self::attach`] 会起一条新轮询；在途结果即使随后回来，也只能
+    /// 被没有 service 的新轮询忽略，不会把旧读数又填回屏幕上。
+    pub fn detach(&mut self, cx: &mut Context<Self>) {
+        self.service = None;
+        self.poll = None;
+        self.polling = false;
+        self.telemetry = None;
+        self.error = None;
+        self.rebuild_process_view(cx);
+        cx.notify();
+    }
+
     /// 面板展开或收起。展开的那一下立刻采一次，不然要等一个轮询周期才有内容。
     pub fn set_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
         if self.expanded == expanded {

@@ -184,6 +184,11 @@ pub enum TerminalPaneEvent {
     /// SSH 通了，把这条连接交出去 —— SFTP、监控与端口转发都要在它上面
     /// 另开通道。
     Connected(SshSession),
+    /// 一趟拨号收场了，不论成没成：SSH 没连上、信任被拒，或 Telnet / 串口
+    /// 拨完（那两档连上了也不报 [`Self::Connected`]）。宿主拿它把"重连在途"
+    /// 的转圈收掉；若信任确认框还开着不受影响 —— 框里点"信任"会再拨一次，
+    /// 成功照样报 [`Self::Connected`]。
+    DialFinished,
     /// 有东西变了（标题、目录、退出状态、焦点），上下两条 chrome 要重画。
     Changed,
     /// 用户点了右键菜单里的"关闭"。关掉的是标签页还是这半边，窗格不管。
@@ -335,6 +340,15 @@ impl TerminalPane {
     }
 
     // ─── 字节源 ─────────────────────────────────────────────────────────────
+
+    /// 一趟拨号收场（Telnet / 串口那两档在拨号任务里直接调；SSH 与信任拒绝
+    /// 在 [`Self::show_ssh_failure`] / [`Self::show_trust_rejected`]）。
+    /// 报 [`TerminalPaneEvent::DialFinished`] 让宿主收掉"重连在途"的转圈。
+    /// 首次拨号也走这里，那时本来就没在转，报了是无害的。
+    fn dial_finished(&mut self, cx: &mut Context<Self>) {
+        cx.emit(TerminalPaneEvent::DialFinished);
+        cx.notify();
+    }
 
     /// 本机登录 shell，不经过 SSH。
     fn spawn_local(&mut self, cx: &mut Context<Self>) {
@@ -576,6 +590,9 @@ impl TerminalPane {
                 Ok(conn) => this.adopt_telnet(conn, cx),
                 Err(error) => this.handle_fallback_telnet(&error, &placeholder, cx),
             });
+            let _ = this.update(cx, |this, cx| {
+                this.dial_finished(cx);
+            });
         })
         .detach();
     }
@@ -671,6 +688,9 @@ impl TerminalPane {
                 Ok(conn) => this.adopt_serial(conn, cx),
                 Err(error) => this.show_serial_failure(&error, &placeholder, cx),
             });
+            let _ = this.update(cx, |this, cx| {
+                this.dial_finished(cx);
+            });
         })
         .detach();
     }
@@ -744,6 +764,9 @@ impl TerminalPane {
             );
             em.write_output(msg.as_bytes(), cx);
         });
+        // 拨号收场了没连上：宿主好把"重连在途"的转圈收掉（首次拨号也走这里，
+        // 那时本来就没在转，报了是无害的）。
+        cx.emit(TerminalPaneEvent::DialFinished);
         cx.notify();
     }
 
@@ -763,6 +786,8 @@ impl TerminalPane {
         placeholder.update(cx, |em, cx| {
             em.write_output(format!("\r\n\x1b[33m{banner}\x1b[0m\r\n").as_bytes(), cx);
         });
+        // 同 [`Self::show_ssh_failure`]：这趟拨号到此收场，没连上。
+        cx.emit(TerminalPaneEvent::DialFinished);
         cx.notify();
     }
 

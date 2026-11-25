@@ -144,6 +144,13 @@ impl ForwardsView {
         cx.notify();
     }
 
+    /// 重拨期间摘掉旧连接：丢掉它会让仍在跑的隧道取消，视图也回到未连接态。
+    pub(crate) fn unbind(&mut self, cx: &mut Context<Self>) {
+        self.service = None;
+        self.test_result = None;
+        cx.notify();
+    }
+
     /// 此刻的隧道实况。没连上就是空表 —— 正文据此画空状态。
     fn live(&self) -> std::collections::HashMap<SharedString, ForwardRuntime> {
         self.service

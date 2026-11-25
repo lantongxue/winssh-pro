@@ -26,6 +26,6 @@ pub use session_status::SessionStatusBar;
 // 组网面板的节点表同理：速率的换算与时延的配色都借这边那一份。
 pub(crate) use session_status::{format_rate, fps_cell, latency_color, link_stats_group};
 
-// 配色那一颗的测试探针：量它的用例在标签页那一层（见 [`session_info`]）。
+// 信息栏上配色与重连的测试探针：量它们的用例在标签页那一层（见 [`session_info`]）。
 #[cfg(test)]
-pub(crate) use session_info::SCHEME_PROBE;
+pub(crate) use session_info::{RECONNECT_PROBE, SCHEME_PROBE};

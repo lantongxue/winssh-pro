@@ -1,7 +1,7 @@
     use super::*;
 
     use crate::service::HostService;
-    use crate::ui::bars::SCHEME_PROBE;
+    use crate::ui::bars::{RECONNECT_PROBE, SCHEME_PROBE};
 
     /// 把这一栏完整画一遍：layout → prepaint → paint 全走完。
     ///
@@ -92,6 +92,35 @@
             "配色那一颗被压没了（{:?}）",
             bounds.size
         );
+    }
+
+    /// 断线之后重连是唯一的回头路，信息栏上得摆着那一颗。
+    ///
+    /// 这个壳用的是 `Source::Detached`，测试里等同 SSH 那一档（见
+    /// [`Source::can_reconnect`]）；本机 shell 与 WSL 不画它。
+    #[gpui_kit::test]
+    fn the_bar_draws_a_reconnect_button(cx: &mut gpui_kit::TestAppContext) {
+        let (_panel, cx) = draw_panel(cx);
+        // 再画一帧：理由同 [`the_panel_draws_all_the_way_through`]。
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let bounds = cx
+            .debug_bounds(RECONNECT_PROBE)
+            .expect("SSH 会话的信息栏上该有重连按钮");
+        assert!(
+            bounds.size.width > px(0.) && bounds.size.height > px(0.),
+            "重连按钮被压没了（{:?}）",
+            bounds.size
+        );
+    }
+
+    /// 重连只对真 SSH 会话接：本机 shell 与 WSL 没有远端连接可重拨。
+    #[test]
+    fn only_ssh_sessions_can_reconnect() {
+        assert!(Source::Ssh.can_reconnect());
+        assert!(!Source::Local.can_reconnect());
+        assert!(!Source::Wsl("Ubuntu".into()).can_reconnect());
+        assert!(Source::Detached.can_reconnect());
     }
 
     /// 换配色要推给**每一个**窗格，不只是活动的那一半。

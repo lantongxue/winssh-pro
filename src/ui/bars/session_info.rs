@@ -54,6 +54,11 @@ const SWATCH_SIZE: Pixels = px(18.);
 /// —— 那条用例在标签页那一层，量不到这个模块的私有名）。
 pub(crate) const SCHEME_PROBE: &str = "session-info-scheme";
 
+/// 重连按钮的测试探针名。`Button` 的元素 id 不进调试边界表（只有挂了
+/// `debug_selector` 的才记），所以按钮自己挂一个；导出给标签页那一层的
+/// 测试，理由同 [`SCHEME_PROBE`]。
+pub(crate) const RECONNECT_PROBE: &str = "session-info-reconnect";
+
 type Handler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 /// 点了分屏那一组里的某一档。参数是**点中的那一档**，不是"下一档"
@@ -73,6 +78,8 @@ pub struct SessionInfoBar {
     on_history: Option<Handler>,
     on_sftp: Option<Handler>,
     on_monitor: Option<Handler>,
+    on_reconnect: Option<Handler>,
+    reconnecting: bool,
     on_scheme: Option<Handler>,
     /// 这个终端现在用的是哪一套配色：方案 id，空串是"跟随全局"。
     /// 它决定了那颗方块画成什么颜色（见 [`Self::render_scheme`]）。
@@ -106,6 +113,8 @@ impl SessionInfoBar {
             on_history: None,
             on_sftp: None,
             on_monitor: None,
+            on_reconnect: None,
+            reconnecting: false,
             on_scheme: None,
             scheme: SharedString::default(),
             on_split: None,
@@ -212,6 +221,18 @@ impl SessionInfoBar {
     ) -> Self {
         self.monitor_active = active;
         self.on_monitor = Some(Box::new(handler));
+        self
+    }
+
+    /// 重连这条会话。需要拨号的会话（SSH / Telnet / 串口）会接这个回调；
+    /// 本机 shell 与 WSL 没有远端可重拨，不画它。
+    pub fn on_reconnect(
+        mut self,
+        reconnecting: bool,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.reconnecting = reconnecting;
+        self.on_reconnect = Some(Box::new(handler));
         self
     }
 
@@ -451,6 +472,29 @@ impl SessionInfoBar {
         Some(btn.into_any_element())
     }
 
+    /// 重连那一颗：刷新图标告诉用户"这条连接重拨一次"，而不是只刷新某个列表。
+    fn render_reconnect(&mut self, cx: &App) -> Option<AnyElement> {
+        let handler = self.on_reconnect.take()?;
+        let label = t!("session_info.reconnect");
+        Some(
+            Button::new("session-info-reconnect")
+                .ghost()
+                .xsmall()
+                .icon(
+                    Icon::new(IconName::RefreshCw)
+                        .with_size(ICON_SIZE)
+                        .text_color(palette::idle(cx)),
+                )
+                .label(label.clone())
+                .loading(self.reconnecting)
+                .tooltip(t!("session_info.reconnect_tooltip"))
+                .accessibility_id(label)
+                .debug_selector(|| RECONNECT_PROBE.to_owned())
+                .on_click(handler)
+                .into_any_element(),
+        )
+    }
+
     /// 监控那一颗。没接 [`Self::on_monitor`] 时不画（见 [`Self::render_tunnels`]）。
     fn render_monitor(&mut self, cx: &App) -> Option<AnyElement> {
         let handler = self.on_monitor.take()?;
@@ -495,6 +539,7 @@ impl RenderOnce for SessionInfoBar {
         let history = self.render_history(cx);
         let sftp = self.render_sftp(cx);
         let monitor = self.render_monitor(cx);
+        let reconnect = self.render_reconnect(cx);
         let scheme = self.render_scheme(cx);
 
         h_flex()
@@ -571,6 +616,7 @@ impl RenderOnce for SessionInfoBar {
                     .children(history)
                     .children(sftp)
                     .children(monitor)
+                    .children(reconnect)
                     .children(scheme)
                     .child(
                         Button::new("session-info-copy")

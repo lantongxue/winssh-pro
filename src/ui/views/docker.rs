@@ -158,6 +158,20 @@ impl DockerView {
         cx.notify();
     }
 
+    /// 重拨期间摘掉旧连接，不让详情页继续拿已断开的连接开容器终端。
+    pub(crate) fn unbind(&mut self, cx: &mut Context<Self>) {
+        self.service = None;
+        self.session = None;
+        self.engine = None;
+        self.error = None;
+        self.containers.clear();
+        self.images.clear();
+        self.services.clear();
+        self.nodes.clear();
+        self.swarm = SwarmStatus::default();
+        cx.notify();
+    }
+
     /// 右栏开始 / 停止看这一页。看着时起心跳，不看就丢掉 —— 常驻实体不该为
     /// 没人看的内容每 3s 醒一次。
     pub(crate) fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
